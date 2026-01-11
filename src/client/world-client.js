@@ -6,6 +6,7 @@ import { css } from '@firebolt-dev/css'
 
 import { createClientWorld } from '../core/createClientWorld'
 import { CoreUI } from './components/CoreUI'
+import createSolanaIntegration from './solana-integration'
 
 export { System } from '../core/systems/System'
 
@@ -43,6 +44,9 @@ export function Client({ wsUrl, onSetup }) {
       const config = { viewport, ui, wsUrl, baseEnvironment }
       onSetup?.(world, config)
       world.init(config)
+
+      // Solana統合を初期化
+      createSolanaIntegration(world)
     }
     init()
   }, [])

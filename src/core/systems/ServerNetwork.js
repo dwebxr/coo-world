@@ -14,6 +14,10 @@ const defaultSpawn = '{ "position": [0, 0, 0], "quaternion": [0, 0, 0, 1] }'
 
 const HEALTH_MAX = 100
 
+// Solanaトークンゲーティング設定
+const TOKEN_GATING_ENABLED = !!process.env.PUBLIC_TOKEN_MINT
+const REQUIRED_TOKEN_AMOUNT = Number(process.env.PUBLIC_REQUIRED_TOKEN_AMOUNT) || 10000
+
 /**
  * Server Network System
  *
@@ -426,6 +430,54 @@ export class ServerNetwork extends System {
     // visitors cannot mute anyone
     if (socket.player.data.rank <= player.data.rank) return
     this.world.livekit.setMuted(data.playerId, data.muted)
+  }
+
+  // Solanaトークンによるビルダー権限リクエスト
+  onRequestBuilderByToken = async (socket, data) => {
+    if (!TOKEN_GATING_ENABLED) {
+      return console.log('Token gating is not enabled')
+    }
+
+    const { walletAddress, tokenBalance } = data
+    if (!walletAddress || typeof tokenBalance !== 'number') {
+      return console.error('Invalid token request data')
+    }
+
+    // クライアントから報告されたトークン残高をチェック
+    // 注意: 本番環境ではサーバー側でも残高を検証することを推奨
+    if (tokenBalance < REQUIRED_TOKEN_AMOUNT) {
+      socket.send('chatAdded', {
+        id: uuid(),
+        body: `ビルダー権限には ${REQUIRED_TOKEN_AMOUNT.toLocaleString()} トークンが必要です (現在: ${tokenBalance.toLocaleString()})`,
+        createdAt: moment().toISOString(),
+      })
+      return
+    }
+
+    const player = socket.player
+    if (!player) return
+
+    // 既にビルダー以上の権限を持っている場合はスキップ
+    if (player.data.rank >= Ranks.BUILDER) {
+      return
+    }
+
+    // ビルダー権限を付与
+    const rank = Ranks.BUILDER
+    player.modify({ rank })
+    this.send('entityModified', { id: player.data.id, rank })
+
+    // データベースを更新
+    await this.db('users').where('id', player.data.id).update({ rank })
+
+    // 通知を送信
+    socket.send('chatAdded', {
+      id: uuid(),
+      body: `トークン認証成功! ビルダー権限が付与されました (${tokenBalance.toLocaleString()} tokens)`,
+      createdAt: moment().toISOString(),
+    })
+
+    console.log(`Builder rank granted to ${player.data.name} via token (${walletAddress}: ${tokenBalance} tokens)`)
   }
 
   onBlueprintAdded = (socket, blueprint) => {

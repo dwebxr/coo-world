@@ -81,7 +81,7 @@ CHANGELOG.md       - Version history and changes
 
 This world implements token gating via Solana wallet connection. Users holding a specified amount of a particular token are automatically granted builder permissions.
 
-### Try it Live
+### Try it Live (Coo World)
 
 🌐 **[https://play.dwebxr.xyz](https://play.dwebxr.xyz)**
 

@@ -77,6 +77,42 @@ src/
 CHANGELOG.md       - Version history and changes
 ```
 
+## 🔐 Solana Token Gating
+
+このワールドはSolanaウォレット接続によるトークンゲーティング機能を実装しています。特定のトークンを一定量保有しているユーザーにビルダー権限を自動付与します。
+
+### 設定方法
+
+`.env`ファイルに以下の環境変数を設定してください：
+
+```bash
+# Solana RPC URL (Helius推奨)
+PUBLIC_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_API_KEY
+
+# トークンミントアドレス (SPLトークンのアドレス)
+PUBLIC_TOKEN_MINT=8MXWPUCmxtmaxNSmAve3YvQNAKmAbZJ1XxSnrqN9pump
+
+# ビルダー権限に必要なトークン量
+PUBLIC_REQUIRED_TOKEN_AMOUNT=100000
+
+# トークンのデシマル（小数点以下の桁数）
+PUBLIC_TOKEN_DECIMALS=6
+```
+
+### 機能
+
+- **Connect Wallet**: Phantom等のSolanaウォレットを接続
+- **トークン残高表示**: 設定されたトークンの保有量を表示
+- **自動権限付与**: 必要量以上のトークン保有でビルダー権限を自動付与
+- **セッション限定**: トークンで付与された権限はセッション中のみ有効（リロードでリセット）
+- **ウォレット切断時**: ビルダー権限が自動的に解除
+
+### 注意事項
+
+- 無料のPublic RPCは制限があるため、[Helius](https://helius.dev/)などのRPCプロバイダーを推奨
+- トークンミントアドレスはSolanaのSPLトークンアドレスを指定
+- `PUBLIC_`プレフィックスの環境変数はクライアントに公開されます
+
 ## 🛠️ Development
 
 ### Key Commands

@@ -81,6 +81,15 @@ CHANGELOG.md       - Version history and changes
 
 This world implements token gating via Solana wallet connection. Users holding a specified amount of a particular token are automatically granted builder permissions.
 
+### Try it Live
+
+🌐 **[https://play.dwebxr.xyz](https://play.dwebxr.xyz)**
+
+Connect a Solana wallet holding **100,000 COO** tokens to receive builder permissions.
+
+- **Token Mint Address**: `8MXWPUCmxtmaxNSmAve3YvQNAKmAbZJ1XxSnrqN9pump`
+- **Required Amount**: 100,000 COO
+
 ### Configuration
 
 Add the following environment variables to your `.env` file:

@@ -79,39 +79,39 @@ CHANGELOG.md       - Version history and changes
 
 ## 🔐 Solana Token Gating
 
-このワールドはSolanaウォレット接続によるトークンゲーティング機能を実装しています。特定のトークンを一定量保有しているユーザーにビルダー権限を自動付与します。
+This world implements token gating via Solana wallet connection. Users holding a specified amount of a particular token are automatically granted builder permissions.
 
-### 設定方法
+### Configuration
 
-`.env`ファイルに以下の環境変数を設定してください：
+Add the following environment variables to your `.env` file:
 
 ```bash
-# Solana RPC URL (Helius推奨)
+# Solana RPC URL (Helius recommended)
 PUBLIC_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_API_KEY
 
-# トークンミントアドレス (SPLトークンのアドレス)
+# Token mint address (SPL token address)
 PUBLIC_TOKEN_MINT=8MXWPUCmxtmaxNSmAve3YvQNAKmAbZJ1XxSnrqN9pump
 
-# ビルダー権限に必要なトークン量
+# Required token amount for builder permissions
 PUBLIC_REQUIRED_TOKEN_AMOUNT=100000
 
-# トークンのデシマル（小数点以下の桁数）
+# Token decimals
 PUBLIC_TOKEN_DECIMALS=6
 ```
 
-### 機能
+### Features
 
-- **Connect Wallet**: Phantom等のSolanaウォレットを接続
-- **トークン残高表示**: 設定されたトークンの保有量を表示
-- **自動権限付与**: 必要量以上のトークン保有でビルダー権限を自動付与
-- **セッション限定**: トークンで付与された権限はセッション中のみ有効（リロードでリセット）
-- **ウォレット切断時**: ビルダー権限が自動的に解除
+- **Connect Wallet**: Connect Solana wallets like Phantom
+- **Token Balance Display**: Shows the balance of the configured token
+- **Automatic Permission Grant**: Builder permissions are automatically granted when holding the required token amount
+- **Session-Only**: Permissions granted via token are valid only for the current session (reset on reload)
+- **Wallet Disconnect**: Builder permissions are automatically revoked when wallet is disconnected
 
-### 注意事項
+### Notes
 
-- 無料のPublic RPCは制限があるため、[Helius](https://helius.dev/)などのRPCプロバイダーを推奨
-- トークンミントアドレスはSolanaのSPLトークンアドレスを指定
-- `PUBLIC_`プレフィックスの環境変数はクライアントに公開されます
+- Free public RPCs have rate limits; using an RPC provider like [Helius](https://helius.dev/) is recommended
+- Token mint address should be a Solana SPL token address
+- Environment variables with `PUBLIC_` prefix are exposed to the client
 
 ## 🛠️ Development
 

@@ -1,15 +1,15 @@
-# Hyperfy ⚡️
+# Coo World 🌐
 
 <div align="center">
-  <img src="overview.png" alt="Hyperfy Ecosystem" width="100%" />
+  <img src="overview.png" alt="Coo World" width="100%" />
   <p>
-    <strong>Build, deploy, and experience interactive 3D virtual worlds</strong>
+    <strong>A customized 3D virtual world built on Hyperfy</strong>
   </p>
 </div>
 
-## What is Hyperfy?
+## What is Coo World?
 
-Hyperfy is an open-source framework for building interactive 3D virtual worlds. It combines a powerful physics engine, networked real-time collaboration, and a component-based application system to create immersive experiences that can be self-hosted or connected to the wider Hyperfy ecosystem.
+Coo World is a customized 3D virtual world built by forking and extending [Hyperfy](https://github.com/hyperfy-xyz/hyperfy), an open-source framework for building interactive 3D virtual worlds. It combines Hyperfy's powerful physics engine, networked real-time collaboration, and component-based application system with custom features like Solana token gating for access control.
 
 ## 🧬 Key Features
 
@@ -21,7 +21,7 @@ Hyperfy is an open-source framework for building interactive 3D virtual worlds. 
 - **WebXR support** - Experience worlds in VR
 - **Extensible architecture** - Highly customizable for various use cases
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/hyperfy-xyz/hyperfy)
+Based on [Hyperfy](https://github.com/hyperfy-xyz/hyperfy) v0.16.0
 
 ## 🚀 Quick Start
 
@@ -33,7 +33,7 @@ Hyperfy is an open-source framework for building interactive 3D virtual worlds. 
 
 ```bash
 # Clone the repository
-git clone https://github.com/hyperfy-xyz/hyperfy.git my-world
+git clone https://github.com/dwebxr/coo-world.git my-world
 cd my-world
 
 # Copy example environment settings

@@ -26,6 +26,8 @@ const names = [
   'ai',
   'ping',
   'pong',
+  'requestBuilderByToken',
+  'revokeBuilderByToken',
 ]
 
 const byName = {}

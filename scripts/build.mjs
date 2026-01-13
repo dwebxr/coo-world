@@ -11,6 +11,14 @@ const dirname = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = path.join(dirname, '../')
 const buildDir = path.join(rootDir, 'build')
 
+// PUBLIC_ で始まる環境変数をクライアントに渡す
+const publicEnvDefines = {}
+for (const [key, value] of Object.entries(process.env)) {
+  if (key.startsWith('PUBLIC_')) {
+    publicEnvDefines[`process.env.${key}`] = JSON.stringify(value)
+  }
+}
+
 // await fs.emptyDir(buildDir)
 await fs.emptyDir(path.join(buildDir, 'public'))
 
@@ -39,6 +47,7 @@ const clientHtmlDest = path.join(rootDir, 'build/public/index.html')
     jsxImportSource: '@firebolt-dev/jsx',
     define: {
       'process.env.NODE_ENV': dev ? '"development"' : '"production"',
+      ...publicEnvDefines,
     },
     loader: {
       '.js': 'jsx',

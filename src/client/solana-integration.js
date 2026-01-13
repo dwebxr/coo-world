@@ -29,6 +29,8 @@ export default function createSolanaIntegration(world) {
     tokenDecimals: Number(process.env.PUBLIC_TOKEN_DECIMALS) || DEFAULT_CONFIG.tokenDecimals,
   }
 
+  console.log('[Solana] Config loaded:', config)
+
   // Solana RPC接続
   let connection = null
   try {
@@ -39,7 +41,15 @@ export default function createSolanaIntegration(world) {
 
   // トークン残高を取得する関数
   const fetchTokenBalance = async walletAddr => {
+    console.log('[Solana] fetchTokenBalance called', {
+      hasConnection: !!connection,
+      tokenMint: config.tokenMint,
+      walletAddr,
+      rpcUrl: config.rpcUrl,
+    })
+
     if (!connection || !config.tokenMint || !walletAddr) {
+      console.log('[Solana] Missing required params, returning 0')
       return 0
     }
 
@@ -49,19 +59,22 @@ export default function createSolanaIntegration(world) {
 
       // 関連トークンアカウントのアドレスを取得
       const ataAddress = await getAssociatedTokenAddress(mintPubkey, walletPubkey)
+      console.log('[Solana] ATA address:', ataAddress.toString())
 
       // トークンアカウントの情報を取得
       const tokenAccount = await getAccount(connection, ataAddress)
+      console.log('[Solana] Token account:', tokenAccount)
 
       // 残高を計算 (decimalsを考慮)
       const balance = Number(tokenAccount.amount) / Math.pow(10, config.tokenDecimals)
+      console.log('[Solana] Calculated balance:', balance)
       return balance
     } catch (error) {
       // トークンアカウントが存在しない場合は0を返す
+      console.error('[Solana] Error fetching balance:', error.name, error.message)
       if (error.name === 'TokenAccountNotFoundError') {
         return 0
       }
-      console.error('トークン残高取得エラー:', error)
       return 0
     }
   }
@@ -151,6 +164,11 @@ export default function createSolanaIntegration(world) {
       try {
         if (typeof window !== 'undefined' && window.solana) {
           await window.solana.disconnect()
+        }
+
+        // ビルダー権限を持っていた場合、サーバーに剥奪をリクエスト
+        if (hasBuilderAccess && world.network) {
+          world.network.send('revokeBuilderByToken', {})
         }
 
         // 接続状態をリセット

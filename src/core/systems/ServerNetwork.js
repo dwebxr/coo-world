@@ -462,13 +462,11 @@ export class ServerNetwork extends System {
       return
     }
 
-    // ビルダー権限を付与
+    // ビルダー権限を付与（セッション限定、DBには保存しない）
     const rank = Ranks.BUILDER
     player.modify({ rank })
+    player.data.tokenGrantedRank = true // トークンで付与されたことを記録
     this.send('entityModified', { id: player.data.id, rank })
-
-    // データベースを更新
-    await this.db('users').where('id', player.data.id).update({ rank })
 
     // 通知を送信
     socket.send('chatAdded', {
@@ -478,6 +476,37 @@ export class ServerNetwork extends System {
     })
 
     console.log(`Builder rank granted to ${player.data.name} via token (${walletAddress}: ${tokenBalance} tokens)`)
+  }
+
+  // Solanaウォレット切断時にビルダー権限を剥奪
+  onRevokeBuilderByToken = async (socket, data) => {
+    if (!TOKEN_GATING_ENABLED) {
+      return
+    }
+
+    const player = socket.player
+    if (!player) return
+
+    // 管理者の場合は権限を剥奪しない
+    if (player.data.rank >= Ranks.ADMIN) {
+      return
+    }
+
+    // トークンで付与されたビルダー権限のみ剥奪（ビジターに戻す）
+    if (player.data.rank === Ranks.BUILDER && player.data.tokenGrantedRank) {
+      const rank = Ranks.VISITOR
+      player.modify({ rank })
+      player.data.tokenGrantedRank = false
+      this.send('entityModified', { id: player.data.id, rank })
+
+      socket.send('chatAdded', {
+        id: uuid(),
+        body: 'ウォレット切断: ビルダー権限が解除されました',
+        createdAt: moment().toISOString(),
+      })
+
+      console.log(`Builder rank revoked from ${player.data.name} (wallet disconnected)`)
+    }
   }
 
   onBlueprintAdded = (socket, blueprint) => {

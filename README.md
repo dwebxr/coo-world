@@ -1,3 +1,5 @@
+This repository is for technical experimentation and access control testing. Not investment advice. No purchase instructions.
+
 # Coo World 🌐
 
 <div align="center">

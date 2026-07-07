@@ -3,6 +3,7 @@
 !.env.example
 *.notes.md
 localstorage.json
+.agent-token-*.json
 .notes/
 node_modules/
 build/

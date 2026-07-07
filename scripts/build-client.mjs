@@ -16,8 +16,6 @@ await fs.emptyDir(buildDir)
  * Build Client
  */
 
-const buildDirectory = path.join(rootDir, 'build')
-
 {
   const clientCtx = await esbuild.context({
     entryPoints: ['src/client/world-client.js'],

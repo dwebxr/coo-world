@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - 'main'
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.1.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Required gate: lint baseline is clean (0 errors) as of the phased cleanup.
+      - name: Lint
+        run: npm run lint
+
+      # NOTE: client/viewer/node-client builds each empty build/, so run the
+      # server build last to mirror the documented local build order.
+      - name: Build (client)
+        run: npm run client:build
+
+      - name: Build (viewer)
+        run: npm run viewer:build
+
+      - name: Build (node-client)
+        run: npm run node-client:build
+
+      - name: Build (server)
+        run: npm run build
+
+      - name: Test
+        run: npm test

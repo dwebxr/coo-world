@@ -4,6 +4,13 @@
     "es2021": true,
     "node": true
   },
+  "globals": {
+    "PHYSX": "readonly",
+    "lockdown": "readonly",
+    "Compartment": "readonly",
+    "env": "readonly",
+    "monaco": "readonly"
+  },
   "extends": [
     "eslint:recommended",
     "plugin:react/recommended",
@@ -31,6 +38,7 @@
   "rules": {
     "react/prop-types": "off",
     "react/react-in-jsx-scope": "off",
+    "react/no-unknown-property": ["error", { "ignore": ["css"] }],
     "no-unused-vars": ["warn", {
       "argsIgnorePattern": "^_",
       "varsIgnorePattern": "^_"
@@ -41,6 +49,33 @@
     "prefer-const": "warn",
     "no-var": "error"
   },
+  "overrides": [
+    {
+      "files": ["examples/**/*.js", "src/world/assets/*.js"],
+      "globals": {
+        "app": "readonly",
+        "world": "readonly",
+        "props": "readonly",
+        "fetch": "readonly",
+        "Vector3": "readonly",
+        "Quaternion": "readonly",
+        "Euler": "readonly",
+        "Matrix4": "readonly",
+        "Object3D": "readonly",
+        "LerpVector3": "readonly",
+        "LerpQuaternion": "readonly",
+        "BufferedLerpVector3": "readonly",
+        "BufferedLerpQuaternion": "readonly",
+        "Curve": "readonly",
+        "num": "readonly",
+        "prng": "readonly",
+        "clamp": "readonly",
+        "DEG2RAD": "readonly",
+        "RAD2DEG": "readonly",
+        "uuid": "readonly"
+      }
+    }
+  ],
   "ignorePatterns": [
     "build/**/*",
     "world/**/*",

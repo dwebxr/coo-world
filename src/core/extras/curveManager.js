@@ -1,4 +1,4 @@
-import { clamp } from 'lodash'
+import { clamp } from 'lodash-es'
 import * as d3 from 'd3'
 
 import { Curve } from './Curve'

@@ -1,6 +1,6 @@
 import fs from 'fs-extra'
 import path from 'path'
-import { hashFile } from '../core/utils-server'
+import { computeAssetFilename, isUploadedAssetFilename } from './assetFilename'
 
 export class AssetsLocal {
   constructor() {
@@ -18,11 +18,7 @@ export class AssetsLocal {
   }
 
   async upload(file) {
-    const arrayBuffer = await file.arrayBuffer()
-    const buffer = Buffer.from(arrayBuffer)
-    const hash = await hashFile(buffer)
-    const ext = file.name.split('.').pop().toLowerCase()
-    const filename = `${hash}.${ext}`
+    const { filename, buffer } = await computeAssetFilename(file)
     const assetPath = path.join(this.dir, filename)
     const exists = await fs.exists(assetPath)
     if (exists) return
@@ -45,7 +41,7 @@ export class AssetsLocal {
       const relPath = path.relative(this.dir, filePath)
       // HACK: we only want to include uploaded assets (not core/assets/*) so we do a check
       // if its filename is a 64 character hash
-      const isAsset = relPath.split('.')[0].length === 64
+      const isAsset = isUploadedAssetFilename(relPath)
       if (!isAsset) continue
       assets.add(relPath)
     }

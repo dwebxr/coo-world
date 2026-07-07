@@ -159,12 +159,18 @@ if (typeof window !== 'undefined') {
 
 const applyTexture = (material, textureUrl, loader) => {
   if (!material._texPromise) {
-    material._texPromise = new Promise(async resolve => {
-      let texture = loader.get('texture', textureUrl)
-      if (!texture) texture = await loader.load('texture', textureUrl)
-      material.map = texture
-      material._texApplied = true
-      resolve()
+    material._texPromise = new Promise((resolve, reject) => {
+      ;(async () => {
+        try {
+          let texture = loader.get('texture', textureUrl)
+          if (!texture) texture = await loader.load('texture', textureUrl)
+          material.map = texture
+          material._texApplied = true
+          resolve()
+        } catch (e) {
+          reject(e)
+        }
+      })()
     })
   }
   return material._texPromise
@@ -446,9 +452,10 @@ export class Prim extends Node {
         return [this.scale.x * 2, this.scale.y, this.scale.z * 2]
       case 'cone':
         return [this.scale.x * 2, this.scale.y, this.scale.z * 2]
-      case 'torus':
+      case 'torus': {
         const diameter = (this.scale.x + this.scale.x * 0.3) * 2
         return [diameter, this.scale.x * 0.3 * 2, diameter]
+      }
       default:
         return [this.scale.x, this.scale.y, this.scale.z]
     }
@@ -941,6 +948,7 @@ export class Prim extends Node {
         },
         get transparent() {
           // return self.transparent
+          return undefined
         },
         set transparent(value) {
           console.warn('prim.transparent deprecated')

@@ -4,6 +4,7 @@ import * as THREE from '../extras/three'
 import { System } from './System'
 import { isBoolean } from 'lodash-es'
 import { TrackSource } from 'livekit-server-sdk'
+import { prepareVideoElement } from './ClientLoader'
 
 const v1 = new THREE.Vector3()
 const v2 = new THREE.Vector3()
@@ -399,54 +400,8 @@ function createPlayerScreen({ world, playerId, targetId, track, participant }) {
   texture.magFilter = THREE.LinearFilter
   texture.anisotropy = world.graphics.maxAnisotropy
   texture.needsUpdate = true
-  let width
-  let height
-  let ready = false
-  const prepare = (function () {
-    /**
-     *
-     * A regular video will load data automatically BUT a stream
-     * needs to hit play() before it gets that data.
-     *
-     * The following code handles this for us, and when streaming
-     * will hit play just until we get the data needed, then pause.
-     */
-    return new Promise(async resolve => {
-      let playing = false
-      let data = false
-      elem.addEventListener(
-        'loadeddata',
-        async () => {
-          // if we needed to hit play to fetch data then revert back to paused
-          // console.log('[video] loadeddata', { playing })
-          if (playing) elem.pause()
-          data = true
-          // await new Promise(resolve => setTimeout(resolve, 2000))
-          width = elem.videoWidth
-          height = elem.videoHeight
-          console.log({ width, height })
-          ready = true
-          resolve()
-        },
-        { once: true }
-      )
-      elem.addEventListener(
-        'loadedmetadata',
-        async () => {
-          // we need a gesture before we can potentially hit play
-          // console.log('[video] ready')
-          // await this.engine.driver.gesture
-          // if we already have data do nothing, we're done!
-          // console.log('[video] gesture', { data })
-          if (data) return
-          // otherwise hit play to force data loading for streams
-          // elem.play()
-          // playing = true
-        },
-        { once: true }
-      )
-    })
-  })()
+  const state = { width: undefined, height: undefined, ready: false }
+  const prepare = prepareVideoElement(elem, state, { forcePlayOnMetadata: false, logDimensions: true })
   function isPlaying() {
     return true
     // return elem.currentTime > 0 && !elem.paused && !elem.ended && elem.readyState > 2
@@ -486,13 +441,13 @@ function createPlayerScreen({ world, playerId, targetId, track, participant }) {
     texture,
     prepare,
     get ready() {
-      return ready
+      return state.ready
     },
     get width() {
-      return width
+      return state.width
     },
     get height() {
-      return height
+      return state.height
     },
     get loop() {
       return false

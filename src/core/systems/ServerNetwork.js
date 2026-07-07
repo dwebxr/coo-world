@@ -1,22 +1,19 @@
 import moment from 'moment'
 import { writePacket } from '../packets'
 import { Socket } from '../Socket'
-import { uuid } from '../utils'
+import { createDispatchQueue, uuid } from '../utils'
 import { System } from './System'
 import { createJWT, readJWT } from '../utils-server'
 import { cloneDeep, isNumber } from 'lodash-es'
 import * as THREE from '../extras/three'
 import { Ranks } from '../extras/ranks'
+import * as solanaGating from '../../server/solana-gating'
 
 const SAVE_INTERVAL = parseInt(process.env.SAVE_INTERVAL || '60') // seconds
 const PING_RATE = 10 // seconds
 const defaultSpawn = '{ "position": [0, 0, 0], "quaternion": [0, 0, 0, 1] }'
 
 const HEALTH_MAX = 100
-
-// Solanaトークンゲーティング設定
-const TOKEN_GATING_ENABLED = !!process.env.PUBLIC_TOKEN_MINT
-const REQUIRED_TOKEN_AMOUNT = Number(process.env.PUBLIC_REQUIRED_TOKEN_AMOUNT) || 10000
 
 /**
  * Server Network System
@@ -36,7 +33,7 @@ export class ServerNetwork extends System {
     this.dirtyBlueprints = new Set()
     this.dirtyApps = new Set()
     this.isServer = true
-    this.queue = []
+    this.queue = createDispatchQueue()
   }
 
   init({ db }) {
@@ -109,91 +106,98 @@ export class ServerNetwork extends System {
   }
 
   enqueue(socket, method, data) {
-    this.queue.push([socket, method, data])
+    this.queue.enqueue(socket, method, data)
   }
 
   flush() {
-    while (this.queue.length) {
-      try {
-        const [socket, method, data] = this.queue.shift()
-        this[method]?.(socket, data)
-      } catch (err) {
-        console.error(err)
-      }
-    }
+    this.queue.flush((socket, method, data) => this[method]?.(socket, data))
   }
 
   getTime() {
     return performance.now() / 1000 // seconds
   }
 
+  requireBuilder(socket, action) {
+    if (socket.player.isBuilder()) return true
+    console.error(`player attempted to ${action} without builder permission`)
+    return false
+  }
+
   save = async () => {
-    const counts = {
-      upsertedBlueprints: 0,
-      upsertedApps: 0,
-      deletedApps: 0,
-    }
-    const now = moment().toISOString()
-    // blueprints
-    for (const id of this.dirtyBlueprints) {
-      const blueprint = this.world.blueprints.get(id)
-      try {
-        const record = {
-          id: blueprint.id,
-          data: JSON.stringify(blueprint),
-        }
-        await this.db('blueprints')
-          .insert({ ...record, createdAt: now, updatedAt: now })
-          .onConflict('id')
-          .merge({ ...record, updatedAt: now })
-        counts.upsertedBlueprints++
-        this.dirtyBlueprints.delete(id)
-      } catch (err) {
-        console.log(`error saving blueprint: ${blueprint.id}`)
-        console.error(err)
+    try {
+      const counts = {
+        upsertedBlueprints: 0,
+        upsertedApps: 0,
+        deletedApps: 0,
       }
-    }
-    // app entities
-    for (const id of this.dirtyApps) {
-      const entity = this.world.entities.get(id)
-      if (entity) {
-        // it needs creating/updating
-        if (entity.data.uploader || entity.data.mover) {
-          continue // ignore while uploading or moving
-        }
+      const now = moment().toISOString()
+      // blueprints
+      for (const id of this.dirtyBlueprints) {
+        const blueprint = this.world.blueprints.get(id)
         try {
-          const data = cloneDeep(entity.data)
-          data.state = null
           const record = {
-            id: entity.data.id,
-            data: JSON.stringify(entity.data),
+            id: blueprint.id,
+            data: JSON.stringify(blueprint),
           }
-          await this.db('entities')
+          await this.db('blueprints')
             .insert({ ...record, createdAt: now, updatedAt: now })
             .onConflict('id')
             .merge({ ...record, updatedAt: now })
-          counts.upsertedApps++
-          this.dirtyApps.delete(id)
+          counts.upsertedBlueprints++
+          this.dirtyBlueprints.delete(id)
         } catch (err) {
-          console.log(`error saving entity: ${entity.data.id}`)
+          console.log(`error saving blueprint: ${blueprint.id}`)
           console.error(err)
         }
-      } else {
-        // it was removed
-        await this.db('entities').where('id', id).delete()
-        counts.deletedApps++
-        this.dirtyApps.delete(id)
       }
+      // app entities
+      for (const id of this.dirtyApps) {
+        const entity = this.world.entities.get(id)
+        if (entity) {
+          // it needs creating/updating
+          if (entity.data.uploader || entity.data.mover) {
+            continue // ignore while uploading or moving
+          }
+          try {
+            const data = cloneDeep(entity.data)
+            data.state = null
+            const record = {
+              id: entity.data.id,
+              data: JSON.stringify(entity.data),
+            }
+            await this.db('entities')
+              .insert({ ...record, createdAt: now, updatedAt: now })
+              .onConflict('id')
+              .merge({ ...record, updatedAt: now })
+            counts.upsertedApps++
+            this.dirtyApps.delete(id)
+          } catch (err) {
+            console.log(`error saving entity: ${entity.data.id}`)
+            console.error(err)
+          }
+        } else {
+          // it was removed
+          try {
+            await this.db('entities').where('id', id).delete()
+            counts.deletedApps++
+            this.dirtyApps.delete(id)
+          } catch (err) {
+            console.log(`error deleting entity: ${id}`)
+            console.error(err)
+          }
+        }
+      }
+      // log
+      const didSave = counts.upsertedBlueprints > 0 || counts.upsertedApps > 0 || counts.deletedApps > 0
+      if (didSave) {
+        console.log(
+          `world saved (${counts.upsertedBlueprints} blueprints, ${counts.upsertedApps} apps, ${counts.deletedApps} apps removed)`
+        )
+      }
+    } finally {
+      // queue again, even if something above threw
+      this.saveTimerId = setTimeout(this.save, SAVE_INTERVAL * 1000)
     }
-    // log
-    const didSave = counts.upsertedBlueprints > 0 || counts.upsertedApps > 0 || counts.deletedApps > 0
-    if (didSave) {
-      console.log(
-        `world saved (${counts.upsertedBlueprints} blueprints, ${counts.upsertedApps} apps, ${counts.deletedApps} apps removed)`
-      )
-    }
-    // queue again
-    this.saveTimerId = setTimeout(this.save, SAVE_INTERVAL * 1000)
   }
 
   saveSettings = async () => {
@@ -376,7 +380,7 @@ export class ServerNetwork extends System {
     if (cmd === 'server') {
       const op = arg1
       if (op === 'stats') {
-        function send(body) {
+        const send = body => {
           socket.send('chatAdded', {
             id: uuid(),
             from: null,
@@ -418,6 +422,7 @@ export class ServerNetwork extends System {
     // visitors cannot kick anyone
     if (socket.player.data.rank <= player.data.rank) return
     const tSocket = this.sockets.get(playerId)
+    if (!tSocket) return
     tSocket.send('kick', 'moderation')
     tSocket.disconnect()
   }
@@ -432,33 +437,50 @@ export class ServerNetwork extends System {
     this.world.livekit.setMuted(data.playerId, data.muted)
   }
 
+  // Solanaビルダーゲーティング: ウォレット所有証明用の nonce を発行
+  onRequestBuilderNonce = (socket, data) => {
+    if (!solanaGating.TOKEN_GATING_ENABLED) return
+    const walletAddress = data?.walletAddress
+    if (!walletAddress || typeof walletAddress !== 'string') return
+    // per-socket レート制限 (RPC 枯渇 DoS 防止)
+    if (!solanaGating.checkRateLimit(socket.id)) return
+    const nonce = solanaGating.issueNonce(socket.id, walletAddress)
+    socket.send('builderNonce', { nonce })
+  }
+
   // Solanaトークンによるビルダー権限リクエスト
+  // 署名でウォレット所有を証明し、残高はサーバー側で on-chain 検証する
+  // (クライアント自己申告のアドレス/残高は一切信用しない)
   onRequestBuilderByToken = async (socket, data) => {
-    if (!TOKEN_GATING_ENABLED) {
-      return console.log('Token gating is not enabled')
-    }
+    if (!solanaGating.TOKEN_GATING_ENABLED) return
 
-    const { walletAddress, tokenBalance } = data
-    if (!walletAddress || typeof tokenBalance !== 'number') {
-      return console.error('Invalid token request data')
-    }
-
-    // クライアントから報告されたトークン残高をチェック
-    // 注意: 本番環境ではサーバー側でも残高を検証することを推奨
-    if (tokenBalance < REQUIRED_TOKEN_AMOUNT) {
-      socket.send('chatAdded', {
-        id: uuid(),
-        body: `ビルダー権限には ${REQUIRED_TOKEN_AMOUNT.toLocaleString()} トークンが必要です (現在: ${tokenBalance.toLocaleString()})`,
-        createdAt: moment().toISOString(),
-      })
-      return
+    const { walletAddress, signature, nonce } = data || {}
+    if (!walletAddress || !signature || !nonce) {
+      return console.error('Invalid builder token request (missing walletAddress/signature/nonce)')
     }
 
     const player = socket.player
     if (!player) return
 
     // 既にビルダー以上の権限を持っている場合はスキップ
-    if (player.data.rank >= Ranks.BUILDER) {
+    if (player.data.rank >= Ranks.BUILDER) return
+
+    const result = await solanaGating.verifyAndCheckBalance({
+      socketId: socket.id,
+      walletAddress,
+      signature,
+      nonce,
+    })
+
+    if (!result.ok) {
+      // 残高不足はユーザーに具体的に通知。それ以外の失敗理由は詳細を伏せる
+      const body =
+        result.reason === 'insufficient'
+          ? `ビルダー権限には ${solanaGating.REQUIRED_TOKEN_AMOUNT.toLocaleString()} トークンが必要です (現在: ${Number(
+              result.balance || 0
+            ).toLocaleString()})`
+          : 'ウォレット認証に失敗しました'
+      socket.send('chatAdded', { id: uuid(), body, createdAt: moment().toISOString() })
       return
     }
 
@@ -468,19 +490,20 @@ export class ServerNetwork extends System {
     player.data.tokenGrantedRank = true // トークンで付与されたことを記録
     this.send('entityModified', { id: player.data.id, rank })
 
-    // 通知を送信
     socket.send('chatAdded', {
       id: uuid(),
-      body: `トークン認証成功! ビルダー権限が付与されました (${tokenBalance.toLocaleString()} tokens)`,
+      body: `トークン認証成功! ビルダー権限が付与されました (${Number(result.balance).toLocaleString()} tokens)`,
       createdAt: moment().toISOString(),
     })
 
-    console.log(`Builder rank granted to ${player.data.name} via token (${walletAddress}: ${tokenBalance} tokens)`)
+    console.log(
+      `Builder rank granted to ${player.data.name} via verified wallet ownership (${walletAddress}: ${result.balance} tokens)`
+    )
   }
 
-  // Solanaウォレット切断時にビルダー権限を剥奪
+  // Solanaウォレット切断時にビルダー権限を剥奪 (自己降格のみ・署名検証不要)
   onRevokeBuilderByToken = async (socket, data) => {
-    if (!TOKEN_GATING_ENABLED) {
+    if (!solanaGating.TOKEN_GATING_ENABLED) {
       return
     }
 
@@ -510,19 +533,16 @@ export class ServerNetwork extends System {
   }
 
   onBlueprintAdded = (socket, blueprint) => {
-    if (!socket.player.isBuilder()) {
-      return console.error('player attempted to add blueprint without builder permission')
-    }
+    if (!this.requireBuilder(socket, 'add blueprint')) return
     this.world.blueprints.add(blueprint)
     this.send('blueprintAdded', blueprint, socket.id)
     this.dirtyBlueprints.add(blueprint.id)
   }
 
   onBlueprintModified = (socket, data) => {
-    if (!socket.player.isBuilder()) {
-      return console.error('player attempted to modify blueprint without builder permission')
-    }
+    if (!this.requireBuilder(socket, 'modify blueprint')) return
     const blueprint = this.world.blueprints.get(data.id)
+    if (!blueprint) return console.error('onBlueprintModified: no blueprint found', data)
     // if new version is greater than current version, allow it
     if (data.version > blueprint.version) {
       this.world.blueprints.modify(data)
@@ -536,9 +556,7 @@ export class ServerNetwork extends System {
   }
 
   onEntityAdded = (socket, data) => {
-    if (!socket.player.isBuilder()) {
-      return console.error('player attempted to add entity without builder permission')
-    }
+    if (!this.requireBuilder(socket, 'add entity')) return
     const entity = this.world.entities.add(data)
     this.send('entityAdded', data, socket.id)
     if (entity.isApp) this.dirtyApps.add(entity.data.id)
@@ -557,11 +575,11 @@ export class ServerNetwork extends System {
       // persist player name and avatar changes
       const changes = {}
       let changed
-      if (data.hasOwnProperty('name')) {
+      if (Object.prototype.hasOwnProperty.call(data, 'name')) {
         changes.name = data.name
         changed = true
       }
-      if (data.hasOwnProperty('avatar')) {
+      if (Object.prototype.hasOwnProperty.call(data, 'avatar')) {
         changes.avatar = data.avatar
         changed = true
       }
@@ -578,24 +596,21 @@ export class ServerNetwork extends System {
   }
 
   onEntityRemoved = (socket, id) => {
-    if (!socket.player.isBuilder()) return console.error('player attempted to remove entity without builder permission')
+    if (!this.requireBuilder(socket, 'remove entity')) return
     const entity = this.world.entities.get(id)
     this.world.entities.remove(id)
     this.send('entityRemoved', id, socket.id)
-    if (entity.isApp) this.dirtyApps.add(id)
+    if (entity?.isApp) this.dirtyApps.add(id)
   }
 
   onSettingsModified = (socket, data) => {
-    if (!socket.player.isBuilder())
-      return console.error('player attempted to modify settings without builder permission')
+    if (!this.requireBuilder(socket, 'modify settings')) return
     this.world.settings.set(data.key, data.value)
     this.send('settingsModified', data, socket.id)
   }
 
   onSpawnModified = async (socket, op) => {
-    if (!socket.player.isBuilder()) {
-      return console.error('player attempted to modify spawn without builder permission')
-    }
+    if (!this.requireBuilder(socket, 'modify spawn')) return
     const player = socket.player
     if (op === 'set') {
       this.spawn = { position: player.data.position.slice(), quaternion: player.data.quaternion.slice() }
@@ -648,6 +663,7 @@ export class ServerNetwork extends System {
 
   onDisconnect = (socket, code) => {
     this.world.livekit.clearModifiers(socket.id)
+    solanaGating.clearSocket(socket.id)
     socket.player.destroy(true)
     this.sockets.delete(socket.id)
   }

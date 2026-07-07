@@ -155,29 +155,35 @@ export function ScriptEditor({ app, onHandle }) {
 let promise
 const load = () => {
   if (promise) return promise
-  promise = new Promise(async resolve => {
-    // init require
-    window.require = {
-      paths: {
-        vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.49.0/min/vs',
-      },
-    }
-    // load loader
-    await new Promise(resolve => {
-      const script = document.createElement('script')
-      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.49.0/min/vs/loader.js' // prettier-ignore
-      script.onload = () => resolve()
-      document.head.appendChild(script)
-    })
-    // load editor
-    await new Promise(resolve => {
-      window.require(['vs/editor/editor.main'], () => {
-        resolve()
-      })
-    })
-    monaco.editor.defineTheme('default', darkPlusTheme)
-    monaco.editor.setTheme('default')
-    resolve(window.monaco)
+  promise = new Promise((resolve, reject) => {
+    ;(async () => {
+      try {
+        // init require
+        window.require = {
+          paths: {
+            vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.49.0/min/vs',
+          },
+        }
+        // load loader
+        await new Promise(resolve => {
+          const script = document.createElement('script')
+          script.src = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.49.0/min/vs/loader.js' // prettier-ignore
+          script.onload = () => resolve()
+          document.head.appendChild(script)
+        })
+        // load editor
+        await new Promise(resolve => {
+          window.require(['vs/editor/editor.main'], () => {
+            resolve()
+          })
+        })
+        monaco.editor.defineTheme('default', darkPlusTheme)
+        monaco.editor.setTheme('default')
+        resolve(window.monaco)
+      } catch (e) {
+        reject(e)
+      }
+    })()
   })
   return promise
 }

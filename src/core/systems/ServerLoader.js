@@ -106,79 +106,87 @@ export class ServerLoader extends System {
       // ...
     }
     if (type === 'model') {
-      promise = new Promise(async (resolve, reject) => {
-        try {
-          const arrayBuffer = await this.fetchArrayBuffer(url)
-          this.gltfLoader.parse(arrayBuffer, '', glb => {
-            const node = glbToNodes(glb, this.world)
-            const model = {
-              toNodes() {
-                return node.clone(true)
-              },
-            }
-            this.results.set(key, model)
-            resolve(model)
-          })
-        } catch (err) {
-          reject(err)
-        }
+      promise = new Promise((resolve, reject) => {
+        ;(async () => {
+          try {
+            const arrayBuffer = await this.fetchArrayBuffer(url)
+            this.gltfLoader.parse(arrayBuffer, '', glb => {
+              const node = glbToNodes(glb, this.world)
+              const model = {
+                toNodes() {
+                  return node.clone(true)
+                },
+              }
+              this.results.set(key, model)
+              resolve(model)
+            })
+          } catch (err) {
+            reject(err)
+          }
+        })()
       })
     }
     if (type === 'emote') {
-      promise = new Promise(async (resolve, reject) => {
-        try {
-          const arrayBuffer = await this.fetchArrayBuffer(url)
-          this.gltfLoader.parse(arrayBuffer, '', glb => {
-            const factory = createEmoteFactory(glb, url)
-            const emote = {
-              toClip(options) {
-                return factory.toClip(options)
-              },
-            }
-            this.results.set(key, emote)
-            resolve(emote)
-          })
-        } catch (err) {
-          reject(err)
-        }
+      promise = new Promise((resolve, reject) => {
+        ;(async () => {
+          try {
+            const arrayBuffer = await this.fetchArrayBuffer(url)
+            this.gltfLoader.parse(arrayBuffer, '', glb => {
+              const factory = createEmoteFactory(glb, url)
+              const emote = {
+                toClip(options) {
+                  return factory.toClip(options)
+                },
+              }
+              this.results.set(key, emote)
+              resolve(emote)
+            })
+          } catch (err) {
+            reject(err)
+          }
+        })()
       })
     }
     if (type === 'avatar') {
-      promise = new Promise(async (resolve, reject) => {
-        try {
-          // NOTE: we can't load vrms on the server yet but we don't need 'em anyway
-          let node
-          const glb = {
-            toNodes: () => {
-              if (!node) {
-                node = createNode('group')
-                const node2 = createNode('avatar', { id: 'avatar', factory: null })
-                node.add(node2)
-              }
-              return node.clone(true)
-            },
+      promise = new Promise((resolve, reject) => {
+        ;(async () => {
+          try {
+            // NOTE: we can't load vrms on the server yet but we don't need 'em anyway
+            let node
+            const glb = {
+              toNodes: () => {
+                if (!node) {
+                  node = createNode('group')
+                  const node2 = createNode('avatar', { id: 'avatar', factory: null })
+                  node.add(node2)
+                }
+                return node.clone(true)
+              },
+            }
+            this.results.set(key, glb)
+            resolve(glb)
+          } catch (err) {
+            reject(err)
           }
-          this.results.set(key, glb)
-          resolve(glb)
-        } catch (err) {
-          reject(err)
-        }
+        })()
       })
     }
     if (type === 'script') {
-      promise = new Promise(async (resolve, reject) => {
-        try {
-          const code = await this.fetchText(url)
-          const script = this.world.scripts.evaluate(code)
-          this.results.set(key, script)
-          resolve(script)
-        } catch (err) {
-          reject(err)
-        }
+      promise = new Promise((resolve, reject) => {
+        ;(async () => {
+          try {
+            const code = await this.fetchText(url)
+            const script = this.world.scripts.evaluate(code)
+            this.results.set(key, script)
+            resolve(script)
+          } catch (err) {
+            reject(err)
+          }
+        })()
       })
     }
     if (type === 'audio') {
-      promise = new Promise(async (resolve, reject) => {
+      promise = new Promise((resolve, reject) => {
         reject(null)
       })
     }

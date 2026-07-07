@@ -5,7 +5,7 @@
  * and modernized to work with newer build tools and ES6+
  */
 
-const DEFAULT_SEED = 149304961039362642461
+const DEFAULT_SEED = 149304961039362650000
 const REGISTER_LENGTH = 31
 const FLUSH_TIMES = 20
 

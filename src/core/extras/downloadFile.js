@@ -4,5 +4,5 @@ export function downloadFile(file) {
   a.href = url
   a.download = file.name
   a.click()
-  URL.revokeObjectURL(url)
+  setTimeout(() => URL.revokeObjectURL(url), 0)
 }

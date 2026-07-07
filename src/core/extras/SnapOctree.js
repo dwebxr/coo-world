@@ -88,14 +88,6 @@ export class SnapOctree {
     results.sort(sortAscending)
     return results
   }
-
-  getDepth() {
-    return this.root.getDepth()
-  }
-
-  getCount() {
-    return this.root.getCount()
-  }
 }
 
 class SnapOctreeNode {
@@ -231,21 +223,6 @@ class SnapOctreeNode {
     for (const child of this.children) {
       child.query(sphere, results)
     }
-  }
-
-  getDepth() {
-    if (this.children.length === 0) {
-      return 1
-    }
-    return 1 + Math.max(...this.children.map(child => child.getDepth()))
-  }
-
-  getCount() {
-    let count = 1
-    for (const child of this.children) {
-      count += child.getCount()
-    }
-    return count
   }
 
   destroy() {

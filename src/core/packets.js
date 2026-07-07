@@ -28,6 +28,8 @@ const names = [
   'pong',
   'requestBuilderByToken',
   'revokeBuilderByToken',
+  'requestBuilderNonce',
+  'builderNonce',
 ]
 
 const byName = {}

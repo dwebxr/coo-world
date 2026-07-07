@@ -6,7 +6,7 @@ import { css } from '@firebolt-dev/css'
 
 import { createClientWorld } from '../core/createClientWorld'
 import { CoreUI } from './components/CoreUI'
-import createSolanaIntegration from './solana-integration'
+import { createSolanaIntegration } from './solana-integration'
 
 export { System } from '../core/systems/System'
 
@@ -45,7 +45,7 @@ export function Client({ wsUrl, onSetup }) {
       onSetup?.(world, config)
       world.init(config)
 
-      // Solana統合を初期化
+      // Solana統合を初期化 (tokenMint 未設定時は no-op で world.solana を生やさない)
       createSolanaIntegration(world)
     }
     init()

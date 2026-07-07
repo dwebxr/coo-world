@@ -363,7 +363,7 @@ export class UI extends Node {
         // calculate scale factor based on the distance
         // When distance is at min, scale is 1.0 (or some other base scale)
         // When distance is at max, scale adjusts proportionally
-        let scaleFactor = (baseScale * (worldToScreenFactor * clampedDistance)) / this._size
+        const scaleFactor = (baseScale * (worldToScreenFactor * clampedDistance)) / this._size
         // if (world.xr.session) scaleFactor *= 0.3 // roughly matches desktop fov etc
         sca.setScalar(scaleFactor)
       }
@@ -778,7 +778,7 @@ export class UI extends Node {
   }
 
   get flexWrap() {
-    return this.flexWrap
+    return this._flexWrap
   }
 
   set flexWrap(value = defaults.flexWrap) {
@@ -807,7 +807,7 @@ export class UI extends Node {
 
   getProxy() {
     if (!this.proxy) {
-      var self = this
+      const self = this
       let proxy = {
         get space() {
           return self.space

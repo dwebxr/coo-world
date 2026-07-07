@@ -211,7 +211,8 @@ export class Stage extends System {
       //   return self.createMaterial(options).proxy
       // },
       get _ref() {
-        if (world._allowMaterial) return material
+        if (self.world._allowMaterial) return material
+        return undefined
       },
     }
     material.raw = raw

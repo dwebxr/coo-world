@@ -170,58 +170,21 @@ export class ClientLoader extends System {
       if (type === 'model') {
         const buffer = await file.arrayBuffer()
         const glb = await this.gltfLoader.parseAsync(buffer)
-        const node = glbToNodes(glb, this.world)
-        const model = {
-          toNodes() {
-            return node.clone(true)
-          },
-          getStats() {
-            const stats = node.getStats(true)
-            // append file size
-            stats.fileBytes = file.size
-            return stats
-          },
-        }
+        const model = buildModelResult(glb, this.world, file)
         this.results.set(key, model)
         return model
       }
       if (type === 'emote') {
         const buffer = await file.arrayBuffer()
         const glb = await this.gltfLoader.parseAsync(buffer)
-        const factory = createEmoteFactory(glb, url)
-        const emote = {
-          toClip(options) {
-            return factory.toClip(options)
-          },
-        }
+        const emote = buildEmoteResult(glb, url)
         this.results.set(key, emote)
         return emote
       }
       if (type === 'avatar') {
         const buffer = await file.arrayBuffer()
         const glb = await this.gltfLoader.parseAsync(buffer)
-        const factory = createVRMFactory(glb, this.world.setupMaterial)
-        const hooks = this.vrmHooks
-        const node = createNode('group', { id: '$root' })
-        const node2 = createNode('avatar', { id: 'avatar', factory, hooks })
-        node.add(node2)
-        const avatar = {
-          factory,
-          hooks,
-          toNodes(customHooks) {
-            const clone = node.clone(true)
-            if (customHooks) {
-              clone.get('avatar').hooks = customHooks
-            }
-            return clone
-          },
-          getStats() {
-            const stats = node.getStats(true)
-            // append file size
-            stats.fileBytes = file.size
-            return stats
-          },
-        }
+        const avatar = buildAvatarResult(glb, this.world, file, this.vrmHooks)
         this.results.set(key, avatar)
         return avatar
       }
@@ -276,84 +239,51 @@ export class ClientLoader extends System {
     }
     if (type === 'model') {
       promise = this.gltfLoader.loadAsync(localUrl).then(glb => {
-        const node = glbToNodes(glb, this.world)
-        const model = {
-          toNodes() {
-            return node.clone(true)
-          },
-          getStats() {
-            const stats = node.getStats(true)
-            // append file size
-            stats.fileBytes = file.size
-            return stats
-          },
-        }
+        const model = buildModelResult(glb, this.world, file)
         this.results.set(key, model)
         return model
       })
     }
     if (type === 'emote') {
       promise = this.gltfLoader.loadAsync(localUrl).then(glb => {
-        const factory = createEmoteFactory(glb, url)
-        const emote = {
-          toClip(options) {
-            return factory.toClip(options)
-          },
-        }
+        const emote = buildEmoteResult(glb, url)
         this.results.set(key, emote)
         return emote
       })
     }
     if (type === 'avatar') {
       promise = this.gltfLoader.loadAsync(localUrl).then(glb => {
-        const factory = createVRMFactory(glb, this.world.setupMaterial)
-        const hooks = this.vrmHooks
-        const node = createNode('group', { id: '$root' })
-        const node2 = createNode('avatar', { id: 'avatar', factory, hooks })
-        node.add(node2)
-        const avatar = {
-          factory,
-          hooks,
-          toNodes(customHooks) {
-            const clone = node.clone(true)
-            if (customHooks) {
-              clone.get('avatar').hooks = customHooks
-            }
-            return clone
-          },
-          getStats() {
-            const stats = node.getStats(true)
-            // append file size
-            stats.fileBytes = file.size
-            return stats
-          },
-        }
+        const avatar = buildAvatarResult(glb, this.world, file, this.vrmHooks)
         this.results.set(key, avatar)
         return avatar
       })
     }
     if (type === 'script') {
-      promise = new Promise(async (resolve, reject) => {
-        try {
-          const code = await file.text()
-          const script = this.world.scripts.evaluate(code)
-          this.results.set(key, script)
-          resolve(script)
-        } catch (err) {
-          reject(err)
-        }
+      promise = new Promise((resolve, reject) => {
+        ;(async () => {
+          try {
+            const code = await file.text()
+            const script = this.world.scripts.evaluate(code)
+            this.results.set(key, script)
+            resolve(script)
+          } catch (err) {
+            reject(err)
+          }
+        })()
       })
     }
     if (type === 'audio') {
-      promise = new Promise(async (resolve, reject) => {
-        try {
-          const arrayBuffer = await file.arrayBuffer()
-          const audioBuffer = await this.world.audio.ctx.decodeAudioData(arrayBuffer)
-          this.results.set(key, audioBuffer)
-          resolve(audioBuffer)
-        } catch (err) {
-          reject(err)
-        }
+      promise = new Promise((resolve, reject) => {
+        ;(async () => {
+          try {
+            const arrayBuffer = await file.arrayBuffer()
+            const audioBuffer = await this.world.audio.ctx.decodeAudioData(arrayBuffer)
+            this.results.set(key, audioBuffer)
+            resolve(audioBuffer)
+          } catch (err) {
+            reject(err)
+          }
+        })()
       })
     }
     this.promises.set(key, promise)
@@ -367,13 +297,104 @@ export class ClientLoader extends System {
   }
 }
 
+function buildModelResult(glb, world, file) {
+  const node = glbToNodes(glb, world)
+  return {
+    toNodes() {
+      return node.clone(true)
+    },
+    getStats() {
+      const stats = node.getStats(true)
+      // append file size
+      stats.fileBytes = file.size
+      return stats
+    },
+  }
+}
+
+function buildEmoteResult(glb, url) {
+  const factory = createEmoteFactory(glb, url)
+  return {
+    toClip(options) {
+      return factory.toClip(options)
+    },
+  }
+}
+
+function buildAvatarResult(glb, world, file, vrmHooks) {
+  const factory = createVRMFactory(glb, world.setupMaterial)
+  const hooks = vrmHooks
+  const node = createNode('group', { id: '$root' })
+  const node2 = createNode('avatar', { id: 'avatar', factory, hooks })
+  node.add(node2)
+  return {
+    factory,
+    hooks,
+    toNodes(customHooks) {
+      const clone = node.clone(true)
+      if (customHooks) {
+        clone.get('avatar').hooks = customHooks
+      }
+      return clone
+    },
+    getStats() {
+      const stats = node.getStats(true)
+      // append file size
+      stats.fileBytes = file.size
+      return stats
+    },
+  }
+}
+
+/**
+ * A regular video will load data automatically BUT a stream
+ * needs to hit play() before it gets that data.
+ *
+ * The following code handles this for us, and when streaming
+ * will hit play just until we get the data needed, then pause.
+ *
+ * Shared between ClientLoader.js (createVideoFactory) and ClientLiveKit.js (createPlayerScreen).
+ */
+export function prepareVideoElement(elem, state, { trackDuration = false, forcePlayOnMetadata = true, logDimensions = false } = {}) {
+  return new Promise(resolve => {
+    let playing = false
+    let data = false
+    elem.addEventListener(
+      'loadeddata',
+      async () => {
+        // if we needed to hit play to fetch data then revert back to paused
+        if (playing) elem.pause()
+        data = true
+        state.width = elem.videoWidth
+        state.height = elem.videoHeight
+        if (trackDuration) state.duration = elem.duration
+        if (logDimensions) console.log({ width: state.width, height: state.height })
+        state.ready = true
+        resolve()
+      },
+      { once: true }
+    )
+    elem.addEventListener(
+      'loadedmetadata',
+      async () => {
+        // we need a gesture before we can potentially hit play
+        // if we already have data do nothing, we're done!
+        if (data) return
+        // otherwise hit play to force data loading for streams
+        if (forcePlayOnMetadata) {
+          elem.play()
+          playing = true
+        }
+      },
+      { once: true }
+    )
+  })
+}
+
 function createVideoFactory(world, url) {
   const isHLS = url?.endsWith('.m3u8')
   const sources = {}
-  let width
-  let height
-  let duration
-  let ready = false
+  const state = { width: undefined, height: undefined, duration: undefined, ready: false }
   let prepare
   function createSource(key) {
     const elem = document.createElement('video')
@@ -410,51 +431,7 @@ function createVideoFactory(world, url) {
     texture.magFilter = THREE.LinearFilter
     texture.anisotropy = world.graphics.maxAnisotropy
     if (!prepare) {
-      prepare = (function () {
-        /**
-         *
-         * A regular video will load data automatically BUT a stream
-         * needs to hit play() before it gets that data.
-         *
-         * The following code handles this for us, and when streaming
-         * will hit play just until we get the data needed, then pause.
-         */
-        return new Promise(async resolve => {
-          let playing = false
-          let data = false
-          elem.addEventListener(
-            'loadeddata',
-            async () => {
-              // if we needed to hit play to fetch data then revert back to paused
-              // console.log('[video] loadeddata', { playing })
-              if (playing) elem.pause()
-              data = true
-              // await new Promise(resolve => setTimeout(resolve, 2000))
-              width = elem.videoWidth
-              height = elem.videoHeight
-              duration = elem.duration
-              ready = true
-              resolve()
-            },
-            { once: true }
-          )
-          elem.addEventListener(
-            'loadedmetadata',
-            async () => {
-              // we need a gesture before we can potentially hit play
-              // console.log('[video] ready')
-              // await this.engine.driver.gesture
-              // if we already have data do nothing, we're done!
-              // console.log('[video] gesture', { data })
-              if (data) return
-              // otherwise hit play to force data loading for streams
-              elem.play()
-              playing = true
-            },
-            { once: true }
-          )
-        })
-      })()
+      prepare = prepareVideoElement(elem, state, { trackDuration: true })
     }
     function isPlaying() {
       return elem.currentTime > 0 && !elem.paused && !elem.ended && elem.readyState > 2
@@ -490,16 +467,16 @@ function createVideoFactory(world, url) {
       texture,
       prepare,
       get ready() {
-        return ready
+        return state.ready
       },
       get width() {
-        return width
+        return state.width
       },
       get height() {
-        return height
+        return state.height
       },
       get duration() {
-        return duration
+        return state.duration
       },
       get loop() {
         return elem.loop

@@ -21,11 +21,12 @@ const zAxis = new Vector3(0, 0, 1)
 self.onmessage = msg => {
   msg = msg.data
   switch (msg.op) {
-    case 'create':
+    case 'create': {
       // console.log('create!!')
       const system = createEmitter(msg)
       emitters[msg.id] = system
       break
+    }
     case 'emitting':
       emitters[msg.emitterId]?.setEmitting(msg.value)
       break
@@ -986,7 +987,7 @@ function createShape(config) {
 
     default:
       console.warn(`[particles] unknown shape: ${type}, using 'point' as fallback`)
-      return createShape('point', dimensions, thickness)
+      return createShape(['point'])
   }
 }
 

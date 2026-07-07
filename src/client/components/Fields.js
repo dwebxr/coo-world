@@ -1,6 +1,6 @@
 import { css } from '@firebolt-dev/css'
-import { useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { HintContext } from './Hint'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useHintProps } from './Hint'
 import { ChevronLeftIcon, ChevronRightIcon } from './Icons'
 import { useUpdate } from './useUpdate'
 import { hashFile } from '../../core/utils-client'
@@ -14,7 +14,7 @@ import { downloadFile } from '../../core/extras/downloadFile'
 import { HexColorPicker } from 'react-colorful'
 
 export function FieldText({ label, hint, placeholder, value, onChange }) {
-  const { setHint } = useContext(HintContext)
+  const hintProps = useHintProps(hint)
   const [localValue, setLocalValue] = useState(value)
   useEffect(() => {
     if (localValue !== value) setLocalValue(value)
@@ -53,8 +53,7 @@ export function FieldText({ label, hint, placeholder, value, onChange }) {
           background-color: rgba(255, 255, 255, 0.03);
         }
       `}
-      onPointerEnter={() => setHint(hint)}
-      onPointerLeave={() => setHint(null)}
+      {...hintProps}
     >
       <div className='fieldtext-label'>{label}</div>
       <div className='fieldtext-field'>
@@ -81,7 +80,7 @@ export function FieldText({ label, hint, placeholder, value, onChange }) {
 }
 
 export function FieldTextarea({ label, hint, placeholder, value, onChange }) {
-  const { setHint } = useContext(HintContext)
+  const hintProps = useHintProps(hint)
   const textareaRef = useRef()
   const [localValue, setLocalValue] = useState(value)
   useEffect(() => {
@@ -140,8 +139,7 @@ export function FieldTextarea({ label, hint, placeholder, value, onChange }) {
           background-color: rgba(255, 255, 255, 0.03);
         }
       `}
-      onPointerEnter={() => setHint(hint)}
-      onPointerLeave={() => setHint(null)}
+      {...hintProps}
     >
       <div className='fieldtextarea-label'>{label}</div>
       <div className='fieldtextarea-field'>
@@ -169,7 +167,7 @@ export function FieldTextarea({ label, hint, placeholder, value, onChange }) {
 
 export function FieldSwitch({ label, hint, options, value, onChange }) {
   options = options || []
-  const { setHint } = useContext(HintContext)
+  const hintProps = useHintProps(hint)
   const idx = options.findIndex(o => o.value === value)
   const selected = options[idx]
   const prev = () => {
@@ -223,8 +221,7 @@ export function FieldSwitch({ label, hint, options, value, onChange }) {
           }
         }
       `}
-      onPointerEnter={() => setHint(hint)}
-      onPointerLeave={() => setHint(null)}
+      {...hintProps}
     >
       <div className='fieldswitch-label'>{label}</div>
       <div className='fieldswitch-btn left' onClick={prev}>
@@ -239,7 +236,7 @@ export function FieldSwitch({ label, hint, options, value, onChange }) {
 }
 
 export function FieldToggle({ label, hint, trueLabel = 'Yes', falseLabel = 'No', value, onChange }) {
-  const { setHint } = useContext(HintContext)
+  const hintProps = useHintProps(hint)
   return (
     <div
       className='fieldtoggle'
@@ -265,8 +262,7 @@ export function FieldToggle({ label, hint, trueLabel = 'Yes', falseLabel = 'No',
           background: rgba(255, 255, 255, 0.03);
         }
       `}
-      onPointerEnter={() => setHint(hint)}
-      onPointerLeave={() => setHint(null)}
+      {...hintProps}
       onClick={() => onChange(!value)}
     >
       <div className='fieldtoggle-label'>{label}</div>
@@ -276,7 +272,7 @@ export function FieldToggle({ label, hint, trueLabel = 'Yes', falseLabel = 'No',
 }
 
 export function FieldRange({ label, hint, min = 0, max = 1, step = 0.05, instant, value, onChange }) {
-  const { setHint } = useContext(HintContext)
+  const hintProps = useHintProps(hint)
   const trackRef = useRef()
   if (value === undefined || value === null) {
     value = 0
@@ -387,8 +383,7 @@ export function FieldRange({ label, hint, min = 0, max = 1, step = 0.05, instant
           }
         }
       `}
-      onPointerEnter={() => setHint(hint)}
-      onPointerLeave={() => setHint(null)}
+      {...hintProps}
     >
       <div className='fieldrange-label'>{label}</div>
       <div className='fieldrange-text'>{text}</div>
@@ -451,7 +446,7 @@ export const fileKinds = {
 }
 
 export function FieldFile({ world, label, hint, kind: kindName, value, onChange }) {
-  const { setHint } = useContext(HintContext)
+  const hintProps = useHintProps(hint)
   const nRef = useRef(0)
   const update = useUpdate()
   const [loading, setLoading] = useState(null)
@@ -578,8 +573,7 @@ export function FieldFile({ world, label, hint, kind: kindName, value, onChange 
           background: rgba(255, 255, 255, 0.03);
         }
       `}
-      onPointerEnter={() => setHint(hint)}
-      onPointerLeave={() => setHint(null)}
+      {...hintProps}
       onClick={handleDownload}
     >
       <div className='fieldfile-label'>{label}</div>
@@ -611,7 +605,7 @@ export function FieldNumber({
   value,
   onChange,
 }) {
-  const { setHint } = useContext(HintContext)
+  const hintProps = useHintProps(hint)
   if (value === undefined || value === null) {
     value = 0
   }
@@ -675,8 +669,7 @@ export function FieldNumber({
           background: rgba(255, 255, 255, 0.03);
         }
       `}
-      onPointerEnter={() => setHint(hint)}
-      onPointerLeave={() => setHint(null)}
+      {...hintProps}
     >
       <div className='fieldnumber-label'>{label}</div>
       <div className='fieldnumber-field'>
@@ -730,7 +723,7 @@ export function FieldVec3({
   value,
   onChange,
 }) {
-  const { setHint } = useContext(HintContext)
+  const hintProps = useHintProps(hint)
   let valueX = value?.[0] || 0
   let valueY = value?.[1] || 0
   let valueZ = value?.[2] || 0
@@ -802,135 +795,63 @@ export function FieldVec3({
           background: rgba(255, 255, 255, 0.03);
         }
       `}
-      onPointerEnter={() => setHint(hint)}
-      onPointerLeave={() => setHint(null)}
+      {...hintProps}
     >
       <div className='fieldvec3-label'>{label}</div>
       <div className='fieldvec3-field'>
-        <input
-          type='text'
-          value={localX}
-          onChange={e => setLocalX(e.target.value)}
-          onKeyDown={e => {
-            if (e.code === 'Enter') {
-              e.preventDefault()
-              e.target.blur()
-            }
-            if (e.code === 'ArrowUp') {
-              const amount = e.shiftKey ? bigStep : e.altKey ? smallStep : step
-              const num = parseStr(valueX + amount)
-              setLocalX(num.toFixed(dp))
-              onChange([+num.toFixed(dp), valueY, valueZ])
-            }
-            if (e.code === 'ArrowDown') {
-              const amount = e.shiftKey ? bigStep : e.altKey ? smallStep : step
-              const num = parseStr(valueX - amount)
-              setLocalX(num.toFixed(dp))
-              onChange([+num.toFixed(dp), valueY, valueZ])
-            }
-          }}
-          onFocus={e => {
-            setFocused(true)
-            e.target.select()
-          }}
-          onBlur={e => {
-            setFocused(false)
-            // if blank, set back to original
-            if (localX === '') {
-              setLocalX(valueX.toFixed(dp))
-              return
-            }
-            // otherwise run through pipeline
-            const num = parseStr(localX)
-            setLocalX(num.toFixed(dp))
-            onChange([+num.toFixed(dp), valueY, valueZ])
-          }}
-        />
-        <input
-          type='text'
-          value={localY}
-          onChange={e => setLocalY(e.target.value)}
-          onKeyDown={e => {
-            if (e.code === 'Enter') {
-              e.preventDefault()
-              e.target.blur()
-            }
-            if (e.code === 'ArrowUp') {
-              const amount = e.shiftKey ? bigStep : e.altKey ? smallStep : step
-              const num = parseStr(valueY + amount)
-              setLocalY(num.toFixed(dp))
-              onChange([valueX, +num.toFixed(dp), valueZ])
-            }
-            if (e.code === 'ArrowDown') {
-              const amount = e.shiftKey ? bigStep : e.altKey ? smallStep : step
-              const num = parseStr(valueY - amount)
-              setLocalY(num.toFixed(dp))
-              onChange([valueX, +num.toFixed(dp), valueZ])
-            }
-          }}
-          onFocus={e => {
-            setFocused(true)
-            e.target.select()
-          }}
-          onBlur={e => {
-            setFocused(false)
-            // if blank, set back to original
-            if (localY === '') {
-              setLocalY(valueY.toFixed(dp))
-              return
-            }
-            // otherwise run through pipeline
-            const num = parseStr(localY)
-            setLocalY(num.toFixed(dp))
-            onChange([valueX, +num.toFixed(dp), valueZ])
-          }}
-        />
-        <input
-          type='text'
-          value={localZ}
-          onChange={e => setLocalZ(e.target.value)}
-          onKeyDown={e => {
-            if (e.code === 'Enter') {
-              e.preventDefault()
-              e.target.blur()
-            }
-            if (e.code === 'ArrowUp') {
-              const amount = e.shiftKey ? bigStep : e.altKey ? smallStep : step
-              const num = parseStr(valueZ + amount)
-              setLocalZ(num.toFixed(dp))
-              onChange([valueX, valueY, +num.toFixed(dp)])
-            }
-            if (e.code === 'ArrowDown') {
-              const amount = e.shiftKey ? bigStep : e.altKey ? smallStep : step
-              const num = parseStr(valueZ - amount)
-              setLocalZ(num.toFixed(dp))
-              onChange([valueX, valueY, +num.toFixed(dp)])
-            }
-          }}
-          onFocus={e => {
-            setFocused(true)
-            e.target.select()
-          }}
-          onBlur={e => {
-            setFocused(false)
-            // if blank, set back to original
-            if (localZ === '') {
-              setLocalZ(valueZ.toFixed(dp))
-              return
-            }
-            // otherwise run through pipeline
-            const num = parseStr(localZ)
-            setLocalZ(num.toFixed(dp))
-            onChange([valueX, valueY, +num.toFixed(dp)])
-          }}
-        />
+        {[
+          { value: valueX, local: localX, setLocal: setLocalX, build: v => [v, valueY, valueZ] },
+          { value: valueY, local: localY, setLocal: setLocalY, build: v => [valueX, v, valueZ] },
+          { value: valueZ, local: localZ, setLocal: setLocalZ, build: v => [valueX, valueY, v] },
+        ].map((axis, idx) => (
+          <input
+            key={idx}
+            type='text'
+            value={axis.local}
+            onChange={e => axis.setLocal(e.target.value)}
+            onKeyDown={e => {
+              if (e.code === 'Enter') {
+                e.preventDefault()
+                e.target.blur()
+              }
+              if (e.code === 'ArrowUp') {
+                const amount = e.shiftKey ? bigStep : e.altKey ? smallStep : step
+                const num = parseStr(axis.value + amount)
+                axis.setLocal(num.toFixed(dp))
+                onChange(axis.build(+num.toFixed(dp)))
+              }
+              if (e.code === 'ArrowDown') {
+                const amount = e.shiftKey ? bigStep : e.altKey ? smallStep : step
+                const num = parseStr(axis.value - amount)
+                axis.setLocal(num.toFixed(dp))
+                onChange(axis.build(+num.toFixed(dp)))
+              }
+            }}
+            onFocus={e => {
+              setFocused(true)
+              e.target.select()
+            }}
+            onBlur={e => {
+              setFocused(false)
+              // if blank, set back to original
+              if (axis.local === '') {
+                axis.setLocal(axis.value.toFixed(dp))
+                return
+              }
+              // otherwise run through pipeline
+              const num = parseStr(axis.local)
+              axis.setLocal(num.toFixed(dp))
+              onChange(axis.build(+num.toFixed(dp)))
+            }}
+          />
+        ))}
       </div>
     </label>
   )
 }
 
 export function FieldCurve({ label, hint, x, xRange, y, yMin, yMax, value, onChange }) {
-  const { setHint } = useContext(HintContext)
+  const hintProps = useHintProps(hint)
   const curve = useMemo(() => new Curve().deserialize(value || '0,0.5,0,0|1,0.5,0,0'), [value])
   const [edit, setEdit] = useState(false)
   return (
@@ -972,8 +893,7 @@ export function FieldCurve({ label, hint, x, xRange, y, yMin, yMax, value, onCha
             setEdit(curve.clone())
           }
         }}
-        onPointerEnter={() => setHint(hint)}
-        onPointerLeave={() => setHint(null)}
+        {...hintProps}
       >
         <div className='fieldcurve-label'>{label}</div>
         <div className='fieldcurve-curve'>
@@ -1005,7 +925,7 @@ export function FieldCurve({ label, hint, x, xRange, y, yMin, yMax, value, onCha
 }
 
 export function FieldBtn({ label, note, hint, nav, onClick }) {
-  const { setHint } = useContext(HintContext)
+  const hintProps = useHintProps(hint)
   return (
     <div
       className='fieldbtn'
@@ -1031,8 +951,7 @@ export function FieldBtn({ label, note, hint, nav, onClick }) {
           background: rgba(255, 255, 255, 0.03);
         }
       `}
-      onPointerEnter={() => setHint(hint)}
-      onPointerLeave={() => setHint(null)}
+      {...hintProps}
       onClick={onClick}
     >
       <div className='fieldbtn-label'>{label}</div>
@@ -1043,7 +962,7 @@ export function FieldBtn({ label, note, hint, nav, onClick }) {
 }
 
 export function FieldColor({ label, hint, value, onChange }) {
-  const { setHint } = useContext(HintContext)
+  const hintProps = useHintProps(hint)
   const [showPicker, setShowPicker] = useState(false)
   const [localValue, setLocalValue] = useState(value || '#ffffff')
   const [hexInput, setHexInput] = useState(value || '#ffffff')
@@ -1277,8 +1196,7 @@ export function FieldColor({ label, hint, value, onChange }) {
             0 0 0 3px rgba(0, 0, 0, 0.5);
         }
       `}
-      onPointerEnter={() => setHint(hint)}
-      onPointerLeave={() => setHint(null)}
+      {...hintProps}
     >
       <div ref={controlRef} className='fieldcolor-control' onClick={handleControlClick}>
         <div className='fieldcolor-label'>{label}</div>

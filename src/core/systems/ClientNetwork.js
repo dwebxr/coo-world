@@ -2,7 +2,7 @@ import moment from 'moment'
 import { emoteUrls } from '../extras/playerEmotes'
 import { readPacket, writePacket } from '../packets'
 import { storage } from '../storage'
-import { uuid } from '../utils'
+import { createDispatchQueue, uuid } from '../utils'
 import { hashFile } from '../utils-client'
 import { System } from './System'
 
@@ -21,12 +21,16 @@ export class ClientNetwork extends System {
     this.apiUrl = null
     this.id = null
     this.isClient = true
-    this.queue = []
+    this.queue = createDispatchQueue()
   }
 
-  init({ wsUrl, name, avatar }) {
-    const authToken = storage.get('authToken')
-    let url = `${wsUrl}?authToken=${authToken}`
+  init({ wsUrl, name, avatar, authToken, onAuthToken }) {
+    // authToken/onAuthToken を渡すと、プロセス共有の singleton storage
+    // (localstorage.json) を使わず呼び出し側がトークンを管理する。
+    // これにより同一マシンで複数の node-client エージェントを衝突なく起動できる。
+    this.onAuthToken = onAuthToken || null
+    const token = authToken ?? (this.onAuthToken ? '' : storage.get('authToken'))
+    let url = `${wsUrl}?authToken=${token}`
     if (name) url += `&name=${encodeURIComponent(name)}`
     if (avatar) url += `&avatar=${encodeURIComponent(avatar)}`
     this.ws = new WebSocket(url)
@@ -67,18 +71,11 @@ export class ClientNetwork extends System {
   }
 
   enqueue(method, data) {
-    this.queue.push([method, data])
+    this.queue.enqueue(method, data)
   }
 
   flush() {
-    while (this.queue.length) {
-      try {
-        const [method, data] = this.queue.shift()
-        this[method]?.(data)
-      } catch (err) {
-        console.error(err)
-      }
-    }
+    this.queue.flush((method, data) => this[method]?.(data))
   }
 
   getTime() {
@@ -138,11 +135,16 @@ export class ClientNetwork extends System {
     this.world.settings.deserialize(data.settings)
     this.world.settings.setHasAdminCode(data.hasAdminCode)
     this.world.chat.deserialize(data.chat)
-    this.world.ai.deserialize(data.ai)
+    this.world.ai?.deserialize(data.ai)
     this.world.blueprints.deserialize(data.blueprints)
     this.world.entities.deserialize(data.entities)
     this.world.livekit?.deserialize(data.livekit)
-    storage.set('authToken', data.authToken)
+    // caller がトークン管理する場合は singleton storage を汚さない
+    if (this.onAuthToken) {
+      this.onAuthToken(data.authToken)
+    } else {
+      storage.set('authToken', data.authToken)
+    }
   }
 
   onSettingsModified = data => {
@@ -205,6 +207,11 @@ export class ClientNetwork extends System {
     this.world.livekit.setMuted(data.playerId, data.muted)
   }
 
+  // Solanaビルダーゲーティング: サーバー発行 nonce を solana-integration に中継
+  onBuilderNonce = data => {
+    this.world.emit('solana:builderNonce', data?.nonce)
+  }
+
   onPong = time => {
     this.world.stats?.onPong(time)
   }
@@ -214,6 +221,10 @@ export class ClientNetwork extends System {
   }
 
   onClose = code => {
+    // 切断前に受信済みのパケット (kick 等) を処理しておく。
+    // これをしないと、キューされた 'kick' が tick で flush される前に
+    // 'disconnect' が発火し、consumer が world を破棄して kick 理由を取りこぼす。
+    this.flush()
     this.world.chat.add({
       id: uuid(),
       from: null,

@@ -126,205 +126,11 @@ export class ClientControls extends System {
       const frame = this.world.graphics.renderer.xr.getFrame()
       const player = this.world.entities.player
       this.xrSession.inputSources?.forEach(src => {
-        // left
         if (src.gamepad && src.handedness === HandednessLeft) {
-          captured.clear()
-          for (const control of this.controls) {
-            if (control.entries.xrLeftRayPose) {
-              if (src.targetRaySpace) {
-                const ray = frame.getPose(src.targetRaySpace, referenceSpace)
-                if (ray) {
-                  const pose = control.entries.xrLeftRayPose
-                  // apply tremor smoothing to local change
-                  if (!pose.lPosition) {
-                    pose.lPosition = new THREE.Vector3().copy(ray.transform.position)
-                    pose.lQuaternion = new THREE.Quaternion().copy(ray.transform.orientation)
-                  }
-                  pose.lPosition.lerp(v1.copy(ray.transform.position), 1 - XR_TREMOR_SMOOTHING_FACTOR)
-                  pose.lQuaternion.slerp(q1.copy(ray.transform.orientation), 1 - XR_TREMOR_SMOOTHING_FACTOR)
-                  // world transform is applied above in this.applyXRRig()
-                }
-              }
-            }
-            if (control.entries.xrLeftGripPose) {
-              if (src.gripSpace) {
-                const grip = frame.getPose(src.gripSpace, referenceSpace)
-                if (grip) {
-                  const pose = control.entries.xrLeftGripPose
-                  // todo: tremor smoothing?
-                  pose.position.copy(grip.transform.position)
-                  pose.quaternion.copy(grip.transform.orientation)
-                  // pose.matrix.fromArray(grip.transform.matrix)
-                }
-              }
-            }
-            if (control.entries.xrLeftStick) {
-              if (captured.has('xrLeftStick')) {
-                control.entries.xrLeftStick.value.x = 0
-                control.entries.xrLeftStick.value.z = 0
-              } else {
-                control.entries.xrLeftStick.value.x = src.gamepad.axes[2]
-                control.entries.xrLeftStick.value.z = src.gamepad.axes[3]
-                if (control.entries.xrLeftStick.capture) {
-                  captured.add('xrLeftStick')
-                }
-              }
-            }
-            if (control.entries.xrLeftTrigger) {
-              const button = control.entries.xrLeftTrigger
-              const down = src.gamepad.buttons[0].value > 0.9
-              if (down && !button.down) {
-                button.pressed = true
-                button.onPress?.()
-              }
-              if (!down && button.down) {
-                button.released = true
-                button.onRelease?.()
-              }
-              button.down = down
-              button.value = src.gamepad.buttons[0].value
-            }
-            if (control.entries.xrLeftGrip) {
-              const button = control.entries.xrLeftGrip
-              const down = src.gamepad.buttons[1].pressed
-              if (down && !button.down) {
-                button.pressed = true
-                button.onPress?.()
-              }
-              if (!down && button.down) {
-                button.released = true
-                button.onRelease?.()
-              }
-              button.down = down
-              button.value = src.gamepad.buttons[1].value
-            }
-            if (control.entries.xrLeftBtn1) {
-              const button = control.entries.xrLeftBtn1
-              const down = src.gamepad.buttons[4].pressed
-              if (down && !button.down) {
-                button.pressed = true
-                button.onPress?.()
-              }
-              if (!down && button.down) {
-                button.released = true
-                button.onRelease?.()
-              }
-              button.down = down
-            }
-            if (control.entries.xrLeftBtn2) {
-              const button = control.entries.xrLeftBtn2
-              const down = src.gamepad.buttons[5].pressed
-              if (down && !button.down) {
-                button.pressed = true
-                button.onPress?.()
-              }
-              if (!down && button.down) {
-                button.released = true
-                button.onRelease?.()
-              }
-              button.down = down
-            }
-          }
+          updateXRHand(this, src, frame, referenceSpace, 'Left')
         }
-        // right
         if (src.gamepad && src.handedness === HandednessRight) {
-          captured.clear()
-          for (const control of this.controls) {
-            if (control.entries.xrRightRayPose) {
-              if (src.targetRaySpace) {
-                const ray = frame.getPose(src.targetRaySpace, referenceSpace)
-                if (ray) {
-                  const pose = control.entries.xrRightRayPose
-                  // apply tremor smoothing to local change
-                  if (!pose.lPosition) {
-                    pose.lPosition = new THREE.Vector3().copy(ray.transform.position)
-                    pose.lQuaternion = new THREE.Quaternion().copy(ray.transform.orientation)
-                  }
-                  pose.lPosition.lerp(v1.copy(ray.transform.position), 1 - XR_TREMOR_SMOOTHING_FACTOR)
-                  pose.lQuaternion.slerp(q1.copy(ray.transform.orientation), 1 - XR_TREMOR_SMOOTHING_FACTOR)
-                  // world transform is applied above in this.applyXRRig()
-                }
-              }
-            }
-            if (control.entries.xrRightGripPose) {
-              if (src.gripSpace) {
-                const grip = frame.getPose(src.gripSpace, referenceSpace)
-                if (grip) {
-                  const pose = control.entries.xrRightGripPose
-                  // todo: tremor smoothing?
-                  pose.position.copy(grip.transform.position)
-                  pose.quaternion.copy(grip.transform.orientation)
-                  // pose.matrix.fromArray(grip.transform.matrix)
-                }
-              }
-            }
-            if (control.entries.xrRightStick) {
-              if (captured.has('xrRightStick')) {
-                control.entries.xrRightStick.value.x = 0
-                control.entries.xrRightStick.value.z = 0
-              } else {
-                control.entries.xrRightStick.value.x = src.gamepad.axes[2]
-                control.entries.xrRightStick.value.z = src.gamepad.axes[3]
-                if (control.entries.xrRightStick.capture) {
-                  captured.add('xrRightStick')
-                }
-              }
-            }
-            if (control.entries.xrRightTrigger) {
-              const button = control.entries.xrRightTrigger
-              const down = src.gamepad.buttons[0].value > 0.9
-              if (down && !button.down) {
-                button.pressed = true
-                button.onPress?.()
-              }
-              if (!down && button.down) {
-                button.released = true
-                button.onRelease?.()
-              }
-              button.down = down
-              button.value = src.gamepad.buttons[0].value
-            }
-            if (control.entries.xrRightGrip) {
-              const button = control.entries.xrRightGrip
-              const down = src.gamepad.buttons[1].pressed
-              if (down && !button.down) {
-                button.pressed = true
-                button.onPress?.()
-              }
-              if (!down && button.down) {
-                button.released = true
-                button.onRelease?.()
-              }
-              button.down = down
-              button.value = src.gamepad.buttons[1].value
-            }
-            if (control.entries.xrRightBtn1) {
-              const button = control.entries.xrRightBtn1
-              const down = src.gamepad.buttons[4].pressed
-              if (down && !button.down) {
-                button.pressed = true
-                button.onPress?.()
-              }
-              if (!down && button.down) {
-                button.released = true
-                button.onRelease?.()
-              }
-              button.down = down
-            }
-            if (control.entries.xrRightBtn2) {
-              const button = control.entries.xrRightBtn2
-              const down = src.gamepad.buttons[5].pressed
-              if (down && !button.down) {
-                button.pressed = true
-                button.onPress?.()
-              }
-              if (!down && button.down) {
-                button.released = true
-                button.onRelease?.()
-              }
-              button.down = down
-            }
-          }
+          updateXRHand(this, src, frame, referenceSpace, 'Right')
         }
       })
     }
@@ -532,7 +338,7 @@ export class ClientControls extends System {
           const capture = button.onPress?.()
           if (capture || button.capture) break
         }
-        const capture = control.onButtonPress?.(prop, text)
+        const capture = control.onButtonPress?.(prop)
         if (capture) break
       }
     } else {
@@ -809,6 +615,113 @@ export class ClientControls extends System {
     window.removeEventListener('resize', this.onResize)
     window.removeEventListener('focus', this.onFocus)
     window.removeEventListener('blur', this.onBlur)
+  }
+}
+
+function updateXRHand(controls, src, frame, referenceSpace, side) {
+  const rayPoseProp = `xr${side}RayPose`
+  const gripPoseProp = `xr${side}GripPose`
+  const stickProp = `xr${side}Stick`
+  const triggerProp = `xr${side}Trigger`
+  const gripProp = `xr${side}Grip`
+  const btn1Prop = `xr${side}Btn1`
+  const btn2Prop = `xr${side}Btn2`
+  captured.clear()
+  for (const control of controls.controls) {
+    if (control.entries[rayPoseProp]) {
+      if (src.targetRaySpace) {
+        const ray = frame.getPose(src.targetRaySpace, referenceSpace)
+        if (ray) {
+          const pose = control.entries[rayPoseProp]
+          // apply tremor smoothing to local change
+          if (!pose.lPosition) {
+            pose.lPosition = new THREE.Vector3().copy(ray.transform.position)
+            pose.lQuaternion = new THREE.Quaternion().copy(ray.transform.orientation)
+          }
+          pose.lPosition.lerp(v1.copy(ray.transform.position), 1 - XR_TREMOR_SMOOTHING_FACTOR)
+          pose.lQuaternion.slerp(q1.copy(ray.transform.orientation), 1 - XR_TREMOR_SMOOTHING_FACTOR)
+          // world transform is applied above in this.applyXRRig()
+        }
+      }
+    }
+    if (control.entries[gripPoseProp]) {
+      if (src.gripSpace) {
+        const grip = frame.getPose(src.gripSpace, referenceSpace)
+        if (grip) {
+          const pose = control.entries[gripPoseProp]
+          // todo: tremor smoothing?
+          pose.position.copy(grip.transform.position)
+          pose.quaternion.copy(grip.transform.orientation)
+          // pose.matrix.fromArray(grip.transform.matrix)
+        }
+      }
+    }
+    if (control.entries[stickProp]) {
+      if (captured.has(stickProp)) {
+        control.entries[stickProp].value.x = 0
+        control.entries[stickProp].value.z = 0
+      } else {
+        control.entries[stickProp].value.x = src.gamepad.axes[2]
+        control.entries[stickProp].value.z = src.gamepad.axes[3]
+        if (control.entries[stickProp].capture) {
+          captured.add(stickProp)
+        }
+      }
+    }
+    if (control.entries[triggerProp]) {
+      const button = control.entries[triggerProp]
+      const down = src.gamepad.buttons[0].value > 0.9
+      if (down && !button.down) {
+        button.pressed = true
+        button.onPress?.()
+      }
+      if (!down && button.down) {
+        button.released = true
+        button.onRelease?.()
+      }
+      button.down = down
+      button.value = src.gamepad.buttons[0].value
+    }
+    if (control.entries[gripProp]) {
+      const button = control.entries[gripProp]
+      const down = src.gamepad.buttons[1].pressed
+      if (down && !button.down) {
+        button.pressed = true
+        button.onPress?.()
+      }
+      if (!down && button.down) {
+        button.released = true
+        button.onRelease?.()
+      }
+      button.down = down
+      button.value = src.gamepad.buttons[1].value
+    }
+    if (control.entries[btn1Prop]) {
+      const button = control.entries[btn1Prop]
+      const down = src.gamepad.buttons[4].pressed
+      if (down && !button.down) {
+        button.pressed = true
+        button.onPress?.()
+      }
+      if (!down && button.down) {
+        button.released = true
+        button.onRelease?.()
+      }
+      button.down = down
+    }
+    if (control.entries[btn2Prop]) {
+      const button = control.entries[btn2Prop]
+      const down = src.gamepad.buttons[5].pressed
+      if (down && !button.down) {
+        button.pressed = true
+        button.onPress?.()
+      }
+      if (!down && button.down) {
+        button.released = true
+        button.onRelease?.()
+      }
+      button.down = down
+    }
   }
 }
 

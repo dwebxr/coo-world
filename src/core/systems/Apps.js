@@ -198,21 +198,23 @@ export class Apps extends System {
         }
       },
       load(entity, type, url) {
-        return new Promise(async (resolve, reject) => {
+        return new Promise((resolve, reject) => {
           const hook = entity.getDeadHook()
-          try {
-            if (!allowLoaders.includes(type)) {
-              return reject(new Error(`cannot load type: ${type}`))
+          ;(async () => {
+            try {
+              if (!allowLoaders.includes(type)) {
+                return reject(new Error(`cannot load type: ${type}`))
+              }
+              let glb = world.loader.get(type, url)
+              if (!glb) glb = await world.loader.load(type, url)
+              if (hook.dead) return
+              const root = glb.toNodes()
+              resolve(type === 'avatar' ? root.children[0] : root)
+            } catch (err) {
+              if (hook.dead) return
+              reject(err)
             }
-            let glb = world.loader.get(type, url)
-            if (!glb) glb = await world.loader.load(type, url)
-            if (hook.dead) return
-            const root = glb.toNodes()
-            resolve(type === 'avatar' ? root.children[0] : root)
-          } catch (err) {
-            if (hook.dead) return
-            reject(err)
-          }
+          })()
         })
       },
       getQueryParam(entity, key) {

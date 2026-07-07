@@ -7,10 +7,11 @@ import { DEG2RAD, RAD2DEG } from '../extras/general'
 import { createNode } from '../extras/createNode'
 import { bindRotations } from '../extras/bindRotations'
 import { simpleCamLerp } from '../extras/simpleCamLerp'
-import { Emotes } from '../extras/playerEmotes'
 import { ControlPriorities } from '../extras/ControlPriorities'
 import { isBoolean, isNumber } from 'lodash-es'
-import { hasRank, Ranks } from '../extras/ranks'
+import { Modes } from '../extras/locomotionModes'
+import { outranks, isAdmin, isBuilder, isMuted } from '../extras/playerRanks'
+import { createPlayerAura, chatBubble } from '../extras/playerAura'
 
 const UP = new THREE.Vector3(0, 1, 0)
 const DOWN = new THREE.Vector3(0, -1, 0)
@@ -43,17 +44,6 @@ const m3 = new THREE.Matrix4()
 
 const gazeTiltAngle = 10 * DEG2RAD
 const gazeTiltAxis = new THREE.Vector3(1, 0, 0) // X-axis for pitch
-
-// TODO: de-dup createVRMFactory.js has a copy
-const Modes = {
-  IDLE: 0,
-  WALK: 1,
-  RUN: 2,
-  JUMP: 3,
-  FALL: 4,
-  FLY: 5,
-  TALK: 6,
-}
 
 export class PlayerLocal extends Entity {
   constructor(world, data, local) {
@@ -127,39 +117,12 @@ export class PlayerLocal extends Entity {
     this.hmdDelta = new THREE.Vector3()
     this.hmdLast = new THREE.Vector3()
 
-    this.aura = createNode('group')
-
-    this.nametag = createNode('nametag', { label: '', health: this.data.health, active: false })
-    this.aura.add(this.nametag)
-
-    this.bubble = createNode('ui', {
-      id: 'bubble',
-      // space: 'screen',
-      width: 300,
-      height: 512,
-      // size: 0.01,
-      pivot: 'bottom-center',
-      // pivot: 'top-left',
-      billboard: 'full',
-      scaler: [3, 30],
-      justifyContent: 'flex-end',
-      alignItems: 'center',
-      active: false,
-    })
-    this.bubbleBox = createNode('uiview', {
-      backgroundColor: 'rgba(0, 0, 0, 0.8)',
-      borderRadius: 10,
-      padding: 10,
-    })
-    this.bubbleText = createNode('uitext', {
-      color: 'white',
-      fontWeight: 100,
-      lineHeight: 1.4,
-      fontSize: 16,
-    })
-    this.bubble.add(this.bubbleBox)
-    this.bubbleBox.add(this.bubbleText)
-    this.aura.add(this.bubble)
+    const auraNodes = createPlayerAura({ label: '', health: this.data.health, bubbleId: 'bubble' })
+    this.aura = auraNodes.aura
+    this.nametag = auraNodes.nametag
+    this.bubble = auraNodes.bubble
+    this.bubbleBox = auraNodes.bubbleBox
+    this.bubbleText = auraNodes.bubbleText
 
     this.aura.activate({ world: this.world, entity: this })
     this.base.activate({ world: this.world, entity: this })
@@ -400,23 +363,19 @@ export class PlayerLocal extends Entity {
   }
 
   outranks(otherPlayer) {
-    const rank = Math.max(this.data.rank, this.world.settings.effectiveRank)
-    const otherRank = Math.max(otherPlayer.data.rank, this.world.settings.effectiveRank)
-    return rank > otherRank
+    return outranks(this, otherPlayer)
   }
 
   isAdmin() {
-    const rank = Math.max(this.data.rank, this.world.settings.effectiveRank)
-    return hasRank(rank, Ranks.ADMIN)
+    return isAdmin(this)
   }
 
   isBuilder() {
-    const rank = Math.max(this.data.rank, this.world.settings.effectiveRank)
-    return hasRank(rank, Ranks.BUILDER)
+    return isBuilder(this)
   }
 
   isMuted() {
-    return this.world.livekit.isMuted(this.data.id)
+    return isMuted(this)
   }
 
   fixedUpdate(delta) {
@@ -1229,41 +1188,33 @@ export class PlayerLocal extends Entity {
   }
 
   chat(msg) {
-    this.nametag.active = false
-    this.bubbleText.value = msg
-    this.bubble.active = true
-    clearTimeout(this.chatTimer)
-    this.chatTimer = setTimeout(() => {
-      this.bubble.active = false
-      this.nametag.active = true
-    }, 5000)
+    chatBubble(this, msg)
   }
 
   modify(data) {
     let avatarChanged
     let changed
-    if (data.hasOwnProperty('name')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'name')) {
       this.data.name = data.name
       this.world.emit('name', { playerId: this.data.id, name: this.data.name })
       changed = true
     }
-    if (data.hasOwnProperty('health')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'health')) {
       this.data.health = data.health
       this.nametag.health = data.health
       this.world.events.emit('health', { playerId: this.data.id, health: data.health })
-      console.log('modify', data.health)
       // changed = true
     }
-    if (data.hasOwnProperty('avatar')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'avatar')) {
       this.data.avatar = data.avatar
       avatarChanged = true
       changed = true
     }
-    if (data.hasOwnProperty('sessionAvatar')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'sessionAvatar')) {
       this.data.sessionAvatar = data.sessionAvatar
       avatarChanged = true
     }
-    if (data.hasOwnProperty('ef')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'ef')) {
       if (this.data.effect) {
         this.data.effect = null
         this.onEffectEnd?.()
@@ -1271,7 +1222,7 @@ export class PlayerLocal extends Entity {
       }
       this.data.effect = data.ef
     }
-    if (data.hasOwnProperty('rank')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'rank')) {
       this.data.rank = data.rank
       this.world.emit('rank', { playerId: this.data.id, rank: this.data.rank })
       changed = true

@@ -7,7 +7,7 @@ import {
 } from '@aws-sdk/client-s3'
 import fs from 'fs-extra'
 import path from 'path'
-import { hashFile } from '../core/utils-server'
+import { computeAssetFilename, isUploadedAssetFilename } from './assetFilename'
 
 const contentTypes = {
   // Images
@@ -175,11 +175,7 @@ export class AssetsS3 {
   }
 
   async upload(file) {
-    const arrayBuffer = await file.arrayBuffer()
-    const buffer = Buffer.from(arrayBuffer)
-    const hash = await hashFile(buffer)
-    const ext = file.name.split('.').pop().toLowerCase()
-    const filename = `${hash}.${ext}`
+    const { filename, buffer } = await computeAssetFilename(file)
 
     // Check if file already exists
     const exists = await this.exists(filename)
@@ -248,7 +244,7 @@ export class AssetsS3 {
 
             // HACK: we only want to include uploaded assets (not core/assets/*) so we do a check
             // if its filename is a 64 character hash
-            const isAsset = filename.split('.')[0].length === 64
+            const isAsset = isUploadedAssetFilename(filename)
             if (isAsset) {
               assets.add(filename)
             }

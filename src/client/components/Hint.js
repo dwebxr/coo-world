@@ -9,3 +9,11 @@ export function HintProvider({ children }) {
   }, [hint])
   return <HintContext.Provider value={api}>{children}</HintContext.Provider>
 }
+
+export function useHintProps(hint) {
+  const { setHint } = useContext(HintContext)
+  return {
+    onPointerEnter: () => setHint(hint),
+    onPointerLeave: () => setHint(null),
+  }
+}

@@ -24,7 +24,6 @@ export class Entities extends System {
     this.players = new Map()
     this.player = null
     this.hot = new Set()
-    this.removed = []
   }
 
   get(id) {
@@ -68,7 +67,6 @@ export class Entities extends System {
     if (entity.isPlayer) this.players.delete(entity.data.id)
     entity.destroy()
     this.items.delete(id)
-    this.removed.push(id)
     this.emit('removed', entity)
   }
 

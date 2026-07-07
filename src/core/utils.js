@@ -1,4 +1,3 @@
-import { some } from 'lodash-es'
 import { customAlphabet } from 'nanoid'
 
 const ALPHABET = '1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -23,4 +22,29 @@ export function clamp(n, low, high) {
 export function num(min, max, dp = 0) {
   const value = Math.random() * (max - min) + min
   return parseFloat(value.toFixed(dp))
+}
+
+/**
+ * Dispatch Queue
+ *
+ * FIFO queue used by ServerNetwork/ClientNetwork to buffer incoming packets and
+ * drain them one at a time, isolating per-item errors so one bad packet doesn't
+ * block the rest of the queue.
+ *
+ */
+export function createDispatchQueue() {
+  const queue = []
+  function enqueue(...args) {
+    queue.push(args)
+  }
+  function flush(dispatch) {
+    while (queue.length) {
+      try {
+        dispatch(...queue.shift())
+      } catch (err) {
+        console.error(err)
+      }
+    }
+  }
+  return { enqueue, flush }
 }

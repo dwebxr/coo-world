@@ -1,15 +1,9 @@
-import * as THREE from '../extras/three'
-import { isArray, isFunction, isNumber, isString } from 'lodash-es'
-import moment from 'moment'
-
 import { Entity } from './Entity'
 import { createNode } from '../extras/createNode'
 import { LerpVector3 } from '../extras/LerpVector3'
 import { LerpQuaternion } from '../extras/LerpQuaternion'
-import { ControlPriorities } from '../extras/ControlPriorities'
-import { getRef } from '../nodes/Node'
-import { Layers } from '../extras/Layers'
 import { createPlayerProxy } from '../extras/createPlayerProxy'
+import { createEntityProxy } from '../extras/createEntityProxy'
 import { serializeError } from '../extras/serializeError'
 
 const hotEventNames = ['fixedUpdate', 'update', 'animate', 'lateUpdate']
@@ -270,19 +264,19 @@ export class App extends Entity {
 
   modify(data) {
     let rebuild
-    if (data.hasOwnProperty('blueprint')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'blueprint')) {
       this.data.blueprint = data.blueprint
       rebuild = true
     }
-    if (data.hasOwnProperty('uploader')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'uploader')) {
       this.data.uploader = data.uploader
       rebuild = true
     }
-    if (data.hasOwnProperty('mover')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'mover')) {
       this.data.mover = data.mover
       rebuild = true
     }
-    if (data.hasOwnProperty('position')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'position')) {
       this.data.position = data.position
       if (this.data.mover) {
         this.networkPos.pushArray(data.position)
@@ -290,7 +284,7 @@ export class App extends Entity {
         rebuild = true
       }
     }
-    if (data.hasOwnProperty('quaternion')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'quaternion')) {
       this.data.quaternion = data.quaternion
       if (this.data.mover) {
         this.networkQuat.pushArray(data.quaternion)
@@ -298,7 +292,7 @@ export class App extends Entity {
         rebuild = true
       }
     }
-    if (data.hasOwnProperty('scale')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'scale')) {
       this.data.scale = data.scale
       if (this.data.mover) {
         this.networkSca.pushArray(data.scale)
@@ -306,10 +300,10 @@ export class App extends Entity {
         rebuild = true
       }
     }
-    if (data.hasOwnProperty('pinned')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'pinned')) {
       this.data.pinned = data.pinned
     }
-    if (data.hasOwnProperty('state')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'state')) {
       this.data.state = data.state
       rebuild = true
     }
@@ -453,36 +447,11 @@ export class App extends Entity {
   getWorldProxy() {
     if (!this.worldProxy) {
       const entity = this
-      const getters = this.world.apps.worldGetters
-      const setters = this.world.apps.worldSetters
-      const methods = this.world.apps.worldMethods
-      this.worldProxy = new Proxy(
-        {},
-        {
-          get: (target, prop) => {
-            // getters
-            if (prop in getters) {
-              return getters[prop](entity)
-            }
-            // methods
-            if (prop in methods) {
-              const method = methods[prop]
-              return (...args) => {
-                return method(entity, ...args)
-              }
-            }
-            return undefined
-          },
-          set: (target, prop, value) => {
-            // setters
-            if (prop in setters) {
-              setters[prop](entity, value)
-              return true
-            }
-            return true
-          },
-        }
-      )
+      this.worldProxy = createEntityProxy(entity, {
+        getters: this.world.apps.worldGetters,
+        setters: this.world.apps.worldSetters,
+        methods: this.world.apps.worldMethods,
+      })
     }
     return this.worldProxy
   }
@@ -490,42 +459,20 @@ export class App extends Entity {
   getAppProxy() {
     if (!this.appProxy) {
       const entity = this
-      const getters = this.world.apps.appGetters
-      const setters = this.world.apps.appSetters
-      const methods = this.world.apps.appMethods
-      this.appProxy = new Proxy(
-        {},
-        {
-          get: (target, prop) => {
-            // getters
-            if (prop in getters) {
-              return getters[prop](entity)
-            }
-            // methods
-            if (prop in methods) {
-              const method = methods[prop]
-              return (...args) => {
-                return method(entity, ...args)
-              }
-            }
-            // root node props
-            return entity.root.getProxy()[prop]
-          },
-          set: (target, prop, value) => {
-            // setters
-            if (prop in setters) {
-              setters[prop](entity, value)
-              return true
-            }
-            // root node props
-            if (prop in entity.root.getProxy()) {
-              entity.root.getProxy()[prop] = value
-              return true
-            }
+      this.appProxy = createEntityProxy(entity, {
+        getters: this.world.apps.appGetters,
+        setters: this.world.apps.appSetters,
+        methods: this.world.apps.appMethods,
+        // root node props
+        fallbackGet: prop => entity.root.getProxy()[prop],
+        fallbackSet: (prop, value) => {
+          if (prop in entity.root.getProxy()) {
+            entity.root.getProxy()[prop] = value
             return true
-          },
-        }
-      )
+          }
+          return true
+        },
+      })
     }
     return this.appProxy
   }

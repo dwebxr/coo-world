@@ -247,7 +247,7 @@ export class UIText extends Node {
     }
     if (this._absolute === value) return
     this._absolute = value
-    this.yogaNode?.setPositionType(this._absolute ? Yoga.POSITION_TYPE_ABSOLUTE.ABSOLUTE : Yoga.POSITION_TYPE_RELATIVE)
+    this.yogaNode?.setPositionType(this._absolute ? Yoga.POSITION_TYPE_ABSOLUTE : Yoga.POSITION_TYPE_RELATIVE)
     this.ui?.redraw()
   }
 
@@ -367,7 +367,7 @@ export class UIText extends Node {
     if (!isEdge(value)) {
       throw new Error(`[uitext] padding not a number or array of numbers`)
     }
-    if (this._padding === value) rturn
+    if (this._padding === value) return
     this._padding = value
     if (isArray(this._padding)) {
       const [top, right, bottom, left] = this._padding
@@ -524,7 +524,7 @@ export class UIText extends Node {
   }
 
   getProxy() {
-    var self = this
+    const self = this
     if (!this.proxy) {
       let proxy = {
         get display() {

@@ -48,7 +48,7 @@ import {
   FieldVec3,
   FieldColor,
 } from './Fields'
-import { HintContext, HintProvider } from './Hint'
+import { HintContext, HintProvider, useHintProps } from './Hint'
 import { useFullscreen } from './useFullscreen'
 import { downloadFile } from '../../core/extras/downloadFile'
 import { exportApp } from '../../core/extras/appTools'
@@ -64,10 +64,6 @@ import { isTouch } from '../utils'
 import { uuid } from '../../core/utils'
 import { useRank } from './useRank'
 import { Ranks } from '../../core/extras/ranks'
-
-const mainSectionPanes = ['prefs']
-const worldSectionPanes = ['world', 'docs', 'apps', 'add']
-const appSectionPanes = ['app', 'script', 'nodes', 'meta']
 
 const e1 = new THREE.Euler(0, 0, 0, 'YXZ')
 const q1 = new THREE.Quaternion()
@@ -1006,7 +1002,13 @@ const allowedModels = ['glb', 'vrm']
 let showTransforms = false
 
 function App({ world, hidden }) {
-  const { setHint } = useContext(HintContext)
+  const downloadHintProps = useHintProps('Download this app')
+  const changeModelHintProps = useHintProps('Change this apps base model')
+  const deleteHintProps = useHintProps('Delete this app')
+  const disableHintProps = useHintProps('Disable this app so that it is no longer active in the world.')
+  const pinHintProps = useHintProps("Pin this app so it can't accidentally be moved.")
+  const preloadHintProps = useHintProps('Preload this app before entering the world.')
+  const uniqueHintProps = useHintProps('Make this app unique so that new duplicates are not linked to this one.')
   const app = world.ui.state.app
   const [pinned, setPinned] = useState(app.data.pinned)
   const [transforms, setTransforms] = useState(showTransforms)
@@ -1150,21 +1152,12 @@ function App({ world, hidden }) {
       >
         <div className='app-head'>
           <div className='app-title'>{app.blueprint.name}</div>
-          <div
-            className='app-btn'
-            onClick={download}
-            onPointerEnter={() => setHint('Download this app')}
-            onPointerLeave={() => setHint(null)}
-          >
+          <div className='app-btn' onClick={download} {...downloadHintProps}>
             <DownloadIcon size='1.125rem' />
           </div>
           {!frozen && (
-            <AppModelBtn value={blueprint.model} onChange={changeModel}>
-              <div
-                className='app-btn'
-                onPointerEnter={() => setHint('Change this apps base model')}
-                onPointerLeave={() => setHint(null)}
-              >
+            <AppModelBtn world={world} value={blueprint.model} onChange={changeModel}>
+              <div className='app-btn' {...changeModelHintProps}>
                 <BoxIcon size='1.125rem' />
               </div>
             </AppModelBtn>
@@ -1176,8 +1169,7 @@ function App({ world, hidden }) {
                 world.ui.setApp(null)
                 app.destroy(true)
               }}
-              onPointerEnter={() => setHint('Delete this app')}
-              onPointerLeave={() => setHint(null)}
+              {...deleteHintProps}
             >
               <Trash2Icon size='1.125rem' />
             </div>
@@ -1188,33 +1180,25 @@ function App({ world, hidden }) {
             <div
               className={cls('app-toggle', { active: blueprint.disabled })}
               onClick={() => toggleKey('disabled')}
-              onPointerEnter={() => setHint('Disable this app so that it is no longer active in the world.')}
-              onPointerLeave={() => setHint(null)}
+              {...disableHintProps}
             >
               <OctagonXIcon size='1.125rem' />
               {/* {blueprint.disabled ? <SquareIcon size='1.125rem' /> : <SquareCheckBigIcon size='1.125rem' />} */}
             </div>
-            <div
-              className={cls('app-toggle', { active: pinned })}
-              onClick={() => togglePinned()}
-              onPointerEnter={() => setHint("Pin this app so it can't accidentally be moved.")}
-              onPointerLeave={() => setHint(null)}
-            >
+            <div className={cls('app-toggle', { active: pinned })} onClick={() => togglePinned()} {...pinHintProps}>
               <PinIcon size='1.125rem' />
             </div>
             <div
               className={cls('app-toggle', { active: blueprint.preload })}
               onClick={() => toggleKey('preload')}
-              onPointerEnter={() => setHint('Preload this app before entering the world.')}
-              onPointerLeave={() => setHint(null)}
+              {...preloadHintProps}
             >
               <LoaderPinwheelIcon size='1.125rem' />
             </div>
             <div
               className={cls('app-toggle', { active: blueprint.unique })}
               onClick={() => toggleKey('unique')}
-              onPointerEnter={() => setHint('Make this app unique so that new duplicates are not linked to this one.')}
-              onPointerLeave={() => setHint(null)}
+              {...uniqueHintProps}
             >
               <SparkleIcon size='1.125rem' />
             </div>
@@ -1299,7 +1283,7 @@ function AppTransformFields({ app }) {
 // todo: blueprint models need migrating to file object format so
 // we can replace needing this and instead use MenuItemFile, but
 // that will also somehow need to support both model and avatar kinds.
-function AppModelBtn({ value, onChange, children }) {
+function AppModelBtn({ world, value, onChange, children }) {
   const [key, setKey] = useState(0)
   const handleDownload = e => {
     if (e.shiftKey) {

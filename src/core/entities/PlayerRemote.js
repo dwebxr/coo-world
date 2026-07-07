@@ -1,9 +1,8 @@
 import * as THREE from '../extras/three'
 import { Entity } from './Entity'
 import { createNode } from '../extras/createNode'
-import { LerpQuaternion } from '../extras/LerpQuaternion'
-import { LerpVector3 } from '../extras/LerpVector3'
-import { hasRank, Ranks } from '../extras/ranks'
+import { outranks, isAdmin, isBuilder, isMuted } from '../extras/playerRanks'
+import { createPlayerAura, chatBubble } from '../extras/playerAura'
 import { BufferedLerpVector3 } from '../extras/BufferedLerpVector3'
 import { BufferedLerpQuaternion } from '../extras/BufferedLerpQuaternion'
 
@@ -47,34 +46,12 @@ export class PlayerRemote extends Entity {
     // })
     // this.base.add(this.caps)
 
-    this.aura = createNode('group')
-    this.nametag = createNode('nametag', { label: this.data.name, health: this.data.health, active: false })
-    this.aura.add(this.nametag)
-
-    this.bubble = createNode('ui', {
-      width: 300,
-      height: 512,
-      pivot: 'bottom-center',
-      billboard: 'full',
-      scaler: [3, 30],
-      justifyContent: 'flex-end',
-      alignItems: 'center',
-      active: false,
-    })
-    this.bubbleBox = createNode('uiview', {
-      backgroundColor: 'rgba(0, 0, 0, 0.8)',
-      borderRadius: 10,
-      padding: 10,
-    })
-    this.bubbleText = createNode('uitext', {
-      color: 'white',
-      fontWeight: 100,
-      lineHeight: 1.4,
-      fontSize: 16,
-    })
-    this.bubble.add(this.bubbleBox)
-    this.bubbleBox.add(this.bubbleText)
-    this.aura.add(this.bubble)
+    const auraNodes = createPlayerAura({ label: this.data.name, health: this.data.health })
+    this.aura = auraNodes.aura
+    this.nametag = auraNodes.nametag
+    this.bubble = auraNodes.bubble
+    this.bubbleBox = auraNodes.bubbleBox
+    this.bubbleText = auraNodes.bubbleText
 
     this.aura.activate({ world: this.world, entity: this })
     this.base.activate({ world: this.world, entity: this })
@@ -115,23 +92,19 @@ export class PlayerRemote extends Entity {
   }
 
   outranks(otherPlayer) {
-    const rank = Math.max(this.data.rank, this.world.settings.effectiveRank)
-    const otherRank = Math.max(otherPlayer.data.rank, this.world.settings.effectiveRank)
-    return rank > otherRank
+    return outranks(this, otherPlayer)
   }
 
   isAdmin() {
-    const rank = Math.max(this.data.rank, this.world.settings.effectiveRank)
-    return hasRank(rank, Ranks.ADMIN)
+    return isAdmin(this)
   }
 
   isBuilder() {
-    const rank = Math.max(this.data.rank, this.world.settings.effectiveRank)
-    return hasRank(rank, Ranks.BUILDER)
+    return isBuilder(this)
   }
 
   isMuted() {
-    return this.world.livekit.isMuted(this.data.id)
+    return isMuted(this)
   }
 
   update(delta) {
@@ -182,54 +155,54 @@ export class PlayerRemote extends Entity {
 
   modify(data) {
     let avatarChanged
-    if (data.hasOwnProperty('t')) {
+    if (Object.prototype.hasOwnProperty.call(data, 't')) {
       this.teleport++
     }
-    if (data.hasOwnProperty('p')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'p')) {
       this.data.position = data.p
       this.position.push(data.p, this.teleport)
     }
-    if (data.hasOwnProperty('q')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'q')) {
       this.data.quaternion = data.q
       this.quaternion.push(data.q, this.teleport)
     }
-    if (data.hasOwnProperty('m')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'm')) {
       this.data.mode = data.m
       this.mode = data.m
     }
-    if (data.hasOwnProperty('a')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'a')) {
       this.data.axis = data.a
       this.axis.fromArray(data.a)
     }
-    if (data.hasOwnProperty('g')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'g')) {
       this.data.gaze = data.g
       this.gaze.fromArray(data.g)
     }
-    if (data.hasOwnProperty('e')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'e')) {
       this.data.emote = data.e
     }
-    if (data.hasOwnProperty('ef')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'ef')) {
       this.setEffect(data.ef)
     }
-    if (data.hasOwnProperty('name')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'name')) {
       this.data.name = data.name
       this.nametag.label = data.name
       this.world.emit('name', { playerId: this.data.id, name: this.data.name })
     }
-    if (data.hasOwnProperty('health')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'health')) {
       this.data.health = data.health
       this.nametag.health = data.health
       this.world.events.emit('health', { playerId: this.data.id, health: data.health })
     }
-    if (data.hasOwnProperty('avatar')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'avatar')) {
       this.data.avatar = data.avatar
       avatarChanged = true
     }
-    if (data.hasOwnProperty('sessionAvatar')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'sessionAvatar')) {
       this.data.sessionAvatar = data.sessionAvatar
       avatarChanged = true
     }
-    if (data.hasOwnProperty('rank')) {
+    if (Object.prototype.hasOwnProperty.call(data, 'rank')) {
       this.data.rank = data.rank
       this.world.emit('rank', { playerId: this.data.id, rank: this.data.rank })
     }
@@ -239,14 +212,7 @@ export class PlayerRemote extends Entity {
   }
 
   chat(msg) {
-    this.nametag.active = false
-    this.bubbleText.value = msg
-    this.bubble.active = true
-    clearTimeout(this.chatTimer)
-    this.chatTimer = setTimeout(() => {
-      this.bubble.active = false
-      this.nametag.active = true
-    }, 5000)
+    chatBubble(this, msg)
   }
 
   destroy(local) {

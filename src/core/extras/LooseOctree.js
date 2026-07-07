@@ -1,4 +1,3 @@
-import { isBoolean } from 'lodash-es'
 import * as THREE from './three'
 
 const _v1 = new THREE.Vector3()
@@ -16,7 +15,6 @@ export class LooseOctree {
   constructor({ scene, center, size }) {
     this.scene = scene
     this.root = new LooseOctreeNode(this, null, center, size)
-    this.helper = null
   }
 
   insert(item) {
@@ -123,25 +121,6 @@ export class LooseOctree {
   //   console.log('pruned:', this.pruneCount)
   // }
 
-  toggleHelper(enabled) {
-    enabled = isBoolean(enabled) ? enabled : !this.helper
-    if (enabled && !this.helper) {
-      this.helper = createHelper(this)
-      this.helper.init()
-    }
-    if (!enabled && this.helper) {
-      this.helper.destroy()
-      this.helper = null
-    }
-  }
-
-  getDepth() {
-    return this.root.getDepth()
-  }
-
-  getCount() {
-    return this.root.getCount()
-  }
 }
 
 class LooseOctreeNode {
@@ -161,7 +140,6 @@ class LooseOctreeNode {
     this.items = []
     this.count = 0
     this.children = []
-    this.mountHelper()
   }
 
   insert(item) {
@@ -336,32 +314,7 @@ class LooseOctreeNode {
   //   return empty
   // }
 
-  getDepth() {
-    if (this.children.length === 0) {
-      return 1
-    }
-    return 1 + Math.max(...this.children.map(child => child.getDepth()))
-  }
-
-  getCount() {
-    let count = 1
-    for (const child of this.children) {
-      count += child.getCount()
-    }
-    return count
-  }
-
-  mountHelper() {
-    this.octree.helper?.insert(this)
-  }
-
-  unmountHelper() {
-    this.octree.helper?.remove(this)
-  }
-
-  destroy() {
-    this.unmountHelper()
-  }
+  destroy() {}
 }
 
 function sortAscending(a, b) {
@@ -377,105 +330,3 @@ function sortAscending(a, b) {
 //   return '#' + hexColor;
 // }
 
-function createHelper(octree) {
-  const boxes = new THREE.BoxGeometry(1, 1, 1)
-  const edges = new THREE.EdgesGeometry(boxes)
-  const geometry = new THREE.InstancedBufferGeometry().copy(edges)
-  const iMatrix = new THREE.InstancedBufferAttribute(new Float32Array(1000000 * 16), 16)
-  iMatrix.setUsage(THREE.DynamicDrawUsage)
-  geometry.setAttribute('iMatrix', iMatrix)
-  const offset = new THREE.InstancedBufferAttribute(new Float32Array(100000 * 3), 3)
-  geometry.setAttribute('offset', offset)
-  const scale = new THREE.InstancedBufferAttribute(new Float32Array(100000 * 3), 3)
-  geometry.setAttribute('scale', scale)
-  geometry.instanceCount = 0
-  const material = new THREE.LineBasicMaterial({
-    color: 'red',
-    onBeforeCompile: shader => {
-      shader.vertexShader = shader.vertexShader.replace(
-        '#include <common>',
-        `
-        attribute mat4 iMatrix;
-        #include <common>
-        `
-      )
-      shader.vertexShader = shader.vertexShader.replace(
-        '#include <begin_vertex>',
-        `
-        #include <begin_vertex>
-        transformed = (iMatrix * vec4(position, 1.0)).xyz;
-        `
-      )
-    },
-  })
-  const mesh = new THREE.LineSegments(geometry, material)
-  mesh.frustumCulled = false
-  const items = []
-  function insert(node) {
-    const idx = mesh.geometry.instanceCount
-    mesh.geometry.instanceCount++
-    const position = _v1.copy(node.center)
-    const quaternion = _q1.set(0, 0, 0, 1)
-    const scale = _v2.setScalar(node.size * 2)
-    const matrix = new THREE.Matrix4().compose(position, quaternion, scale)
-    iMatrix.set(matrix.elements, idx * 16)
-    iMatrix.needsUpdate = true
-    node._helperItem = { idx, matrix }
-    items.push(node._helperItem)
-    // console.log('add', items.length)
-  }
-  function remove(node) {
-    const item = node._helperItem
-    const last = items[items.length - 1]
-    const isOnly = items.length === 1
-    const isLast = item === last
-    if (isOnly) {
-      items.length = 0
-      mesh.geometry.instanceCount = 0
-    } else if (isLast) {
-      items.pop()
-      mesh.geometry.instanceCount--
-    } else {
-      if (!last) {
-        console.log(
-          'wtf',
-          item,
-          items.indexOf(item),
-          last,
-          items.length,
-          // items[items.length - 1]
-          mesh.geometry.instanceCount,
-          items
-        )
-        throw new Error('wtf')
-      }
-      iMatrix.set(last.matrix.elements, item.idx * 16)
-      last.idx = item.idx
-      items[item.idx] = last
-      items.pop()
-      mesh.geometry.instanceCount--
-    }
-    iMatrix.needsUpdate = true
-  }
-  function traverse(node, callback) {
-    callback(node)
-    for (const child of node.children) {
-      traverse(child, callback)
-    }
-  }
-  function destroy() {
-    octree.scene.remove(mesh)
-  }
-  function init() {
-    traverse(octree.root, node => {
-      node.mountHelper()
-    })
-  }
-  octree.scene.add(mesh)
-  return {
-    init,
-    insert,
-    remove,
-    destroy,
-  }
-}

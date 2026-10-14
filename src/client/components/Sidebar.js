@@ -1052,8 +1052,19 @@ function App({ world, hidden }) {
     // update blueprint locally (also rebuilds apps)
     const version = blueprint.version + 1
     world.blueprints.modify({ id: blueprint.id, version, model: url })
+    const applied = world.blueprints.get(blueprint.id)
     // upload model
-    await world.network.upload(file)
+    try {
+      await world.network.upload(file)
+    } catch (err) {
+      console.error(err)
+      world.emit('toast', err.message)
+      // nothing reached the server: put the blueprint back, unless another change already replaced the one we set
+      if (world.blueprints.get(blueprint.id) === applied) {
+        world.blueprints.modify({ id: blueprint.id, version: blueprint.version, model: blueprint.model })
+      }
+      return
+    }
     // broadcast blueprint change to server + other clients
     world.network.send('blueprintModified', { id: blueprint.id, version, model: url })
   }

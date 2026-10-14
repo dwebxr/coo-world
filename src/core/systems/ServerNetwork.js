@@ -40,6 +40,7 @@ export class ServerNetwork extends System {
     this.id = 0
     this.ids = -1
     this.sockets = new Map()
+    this.connecting = new Set() // user ids reserved while their connection is still being set up
     this.socketIntervalId = setInterval(() => this.checkSockets(), PING_RATE * 1000)
     this.saveTimerId = null
     this.dirtyBlueprints = new Set()
@@ -232,6 +233,7 @@ export class ServerNetwork extends System {
   }
 
   async onConnection(ws, params) {
+    let reserved = null
     try {
       // check player limit
       const playerLimit = this.world.settings.playerLimit
@@ -254,7 +256,7 @@ export class ServerNetwork extends System {
           const { userId } = await readJWT(authToken)
           user = await this.db('users').where('id', userId).first()
         } catch (err) {
-          console.error('failed to read authToken:', authToken)
+          console.error('failed to read authToken:', err?.message || err)
         }
       }
       if (!user) {
@@ -269,13 +271,15 @@ export class ServerNetwork extends System {
         authToken = await createJWT({ userId: user.id })
       }
 
-      // disconnect if user already in this world
-      if (this.sockets.has(user.id)) {
+      // disconnect if user already in this world, or still connecting (the id is reserved before the next await)
+      if (this.sockets.has(user.id) || this.connecting.has(user.id)) {
         const packet = writePacket('kick', 'duplicate_user')
         ws.send(packet)
         ws.close()
         return
       }
+      reserved = user.id
+      this.connecting.add(user.id)
 
       // livekit options
       const livekit = await this.world.livekit.serialize(user.id)
@@ -327,6 +331,8 @@ export class ServerNetwork extends System {
       this.world.events.emit('enter', { playerId: socket.player.data.id })
     } catch (err) {
       console.error(err)
+    } finally {
+      if (reserved) this.connecting.delete(reserved)
     }
   }
 
@@ -676,11 +682,13 @@ export class ServerNetwork extends System {
   }
 
   onEntityRemoved = (socket, id) => {
-    if (!this.requireBuilder(socket, 'remove entity')) return
     if (typeof id !== 'string') return
     const entity = this.world.entities.get(id)
     if (!entity) return
     if (!entity.isApp) return console.error('player attempted to remove a non-app entity')
+    // a sender that lost builder may still cancel its own pending upload (see onEntityModified)
+    const uploader = entity.data.uploader === socket.id
+    if (!uploader && !this.requireBuilder(socket, 'remove entity')) return
     this.world.entities.remove(id)
     this.send('entityRemoved', id, socket.id)
     this.dirtyApps.add(id)
@@ -763,6 +771,7 @@ export class ServerNetwork extends System {
     this.world.livekit.clearModifiers(socket.id)
     solanaGating.clearSocket(socket.id)
     socket.player.destroy(true)
-    this.sockets.delete(socket.id)
+    // only drop the entry that still refers to this socket
+    if (this.sockets.get(socket.id) === socket) this.sockets.delete(socket.id)
   }
 }

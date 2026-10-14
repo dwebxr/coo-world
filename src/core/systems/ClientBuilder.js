@@ -1097,11 +1097,26 @@ export class ClientBuilder extends System {
         disabled: info.blueprint.disabled,
       }
       this.world.blueprints.modify(change)
+      const applied = this.world.blueprints.getScene()
       // upload assets
       const promises = info.assets.map(asset => {
         return this.world.network.upload(asset.file)
       })
-      await Promise.all(promises)
+      try {
+        await Promise.all(promises)
+      } catch (err) {
+        console.error(err)
+        this.world.emit('toast', err.message)
+        // nothing reached the server: put back only what this change touched, unless another change replaced it
+        if (this.world.blueprints.getScene() === applied) {
+          const revert = { id: blueprint.id }
+          for (const key in change) {
+            if (change[key] !== blueprint[key]) revert[key] = blueprint[key]
+          }
+          this.world.blueprints.modify(revert)
+        }
+        return
+      }
       // publish blueprint change for all
       this.world.network.send('blueprintModified', change)
       return
@@ -1149,7 +1164,9 @@ export class ClientBuilder extends System {
     } catch (err) {
       console.error('failed to upload .hyp assets')
       console.error(err)
-      app.destroy()
+      this.world.emit('toast', err.message)
+      // the placeholder was already broadcast with `uploader` set; remove it for everyone
+      app.destroy(true)
     }
   }
 
@@ -1201,7 +1218,15 @@ export class ClientBuilder extends System {
     }
     const app = this.world.entities.add(data, true)
     // upload the glb
-    await this.world.network.upload(file)
+    try {
+      await this.world.network.upload(file)
+    } catch (err) {
+      console.error(err)
+      this.world.emit('toast', err.message)
+      // the placeholder was already broadcast with `uploader` set; remove it for everyone
+      app.destroy(true)
+      return
+    }
     // mark as uploaded so other clients can load it in
     app.onUploaded()
   }
@@ -1261,8 +1286,16 @@ export class ClientBuilder extends System {
           state: {},
         }
         const app = this.world.entities.add(data, true)
-        // upload the glb
-        await this.world.network.upload(file)
+        // upload the vrm
+        try {
+          await this.world.network.upload(file)
+        } catch (err) {
+          console.error(err)
+          this.world.emit('toast', err.message)
+          // the placeholder was already broadcast with `uploader` set; remove it for everyone
+          app.destroy(true)
+          return
+        }
         // mark as uploaded so other clients can load it in
         app.onUploaded()
       },
@@ -1272,6 +1305,7 @@ export class ClientBuilder extends System {
         // prep new user data
         const player = this.world.entities.player
         const prevUrl = player.data.avatar
+        const prevSessionAvatar = player.data.sessionAvatar
         // update locally
         player.modify({ avatar: url, sessionAvatar: null })
         // upload
@@ -1279,8 +1313,11 @@ export class ClientBuilder extends System {
           await this.world.network.upload(file)
         } catch (err) {
           console.error(err)
-          // revert
-          player.modify({ avatar: prevUrl })
+          this.world.emit('toast', err.message)
+          // revert, unless the player equipped something else while this was uploading
+          if (player.data.avatar === url) {
+            player.modify({ avatar: prevUrl, sessionAvatar: prevSessionAvatar })
+          }
           return
         }
         if (player.data.avatar !== url) {

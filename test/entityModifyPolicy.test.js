@@ -208,12 +208,20 @@ const transform = { position: [1, 2, 3], quaternion: [0, 0, 0, 1], scale: [1, 1,
 test('sanitizeAppModify: builder keys survive with valid values', () => {
   const data = { id: appId, blueprint: 'bp', uploader: null, mover: me, pinned: true, state: { n: 1 }, ...transform }
   assert.deepEqual(sanitizeAppModify(data, me), data)
-  assert.deepEqual(sanitizeAppModify({ id: appId, uploader: me, mover: null, state: null }, me), {
+  assert.deepEqual(sanitizeAppModify({ id: appId, uploader: null, mover: null, state: null }, me), {
     id: appId,
-    uploader: me,
+    uploader: null,
     mover: null,
     state: null,
   })
+})
+
+test('sanitizeAppModify: uploader can only be cleared, never claimed (claims happen at entityAdded)', () => {
+  assert.deepEqual(sanitizeAppModify({ id: appId, uploader: null }, me), { id: appId, uploader: null })
+  assert.equal(sanitizeAppModify({ id: appId, uploader: me }, me), null)
+  assert.equal(sanitizeAppModify({ id: appId, uploader: other }, me), null)
+  assert.deepEqual(sanitizeAppModify({ id: appId, uploader: me, pinned: true }, me), { id: appId, pinned: true })
+  for (const v of [undefined, '', 0, false, {}]) assert.equal(sanitizeAppModify({ id: appId, uploader: v }, me), null)
 })
 
 test('sanitizeAppModify: junk keys and bad values are dropped, null when nothing remains', () => {
@@ -227,10 +235,11 @@ test('sanitizeAppModify: junk keys and bad values are dropped, null when nothing
   assert.equal(sanitizeAppModify(null, me), null)
 })
 
-test('sanitizeAppModify: mover and uploader may only be null or the sender', () => {
+test('sanitizeAppModify: mover may only be null or the sender; uploader only null', () => {
   assert.deepEqual(sanitizeAppModify({ id: appId, mover: other }, me), null)
   assert.deepEqual(sanitizeAppModify({ id: appId, uploader: other }, me), null)
   assert.deepEqual(sanitizeAppModify({ id: appId, mover: me, uploader: other }, me), { id: appId, mover: me })
+  assert.deepEqual(sanitizeAppModify({ id: appId, mover: me, uploader: me }, me), { id: appId, mover: me })
 })
 
 test('sanitizeAppModify: state must be a bounded json object or null', () => {

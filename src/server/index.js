@@ -9,15 +9,16 @@ import ws from '@fastify/websocket'
 import cors from '@fastify/cors'
 import compress from '@fastify/compress'
 import statics from '@fastify/static'
-import multipart from '@fastify/multipart'
 
 import { createServerWorld } from '../core/createServerWorld'
+import { readJWT } from '../core/utils-server'
 import { getDB } from './db'
 import { Storage } from './Storage'
 import { assets } from './assets'
 import { collections } from './collections'
 import { cleaner } from './cleaner'
 import { escapeHtml } from './escapeHtml'
+import { assetRoutes, uploadRoutes } from './uploadRoutes'
 
 const rootDir = path.join(__dirname, '../')
 const worldDir = path.join(rootDir, process.env.WORLD)
@@ -41,6 +42,10 @@ if (!process.env.SAVE_INTERVAL) {
 }
 if (!process.env.PUBLIC_MAX_UPLOAD_SIZE) {
   throw new Error('[envs] PUBLIC_MAX_UPLOAD_SIZE not set')
+}
+const maxUploadSize = Number(process.env.PUBLIC_MAX_UPLOAD_SIZE) // MB, the same limit the client applies
+if (!(maxUploadSize > 0)) {
+  throw new Error('[envs] PUBLIC_MAX_UPLOAD_SIZE must be a positive number of megabytes')
 }
 if (!process.env.PUBLIC_WS_URL) {
   throw new Error('[envs] PUBLIC_WS_URL not set')
@@ -119,22 +124,8 @@ fastify.register(statics, {
   },
 })
 if (world.assetsDir) {
-  fastify.register(statics, {
-    root: world.assetsDir,
-    prefix: '/assets/',
-    decorateReply: false,
-    setHeaders: res => {
-      // all assets are hashed & immutable so we can use aggressive caching
-      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable') // 1 year
-      res.setHeader('Expires', new Date(Date.now() + 31536000000).toUTCString()) // older browsers
-    },
-  })
+  fastify.register(assetRoutes, { root: world.assetsDir })
 }
-fastify.register(multipart, {
-  limits: {
-    fileSize: 200 * 1024 * 1024, // 200MB
-  },
-})
 fastify.register(ws)
 fastify.register(worldNetwork)
 
@@ -153,25 +144,14 @@ fastify.get('/env.js', async (req, reply) => {
   reply.type('application/javascript').send(envsCode)
 })
 
-fastify.post('/api/upload', async (req, reply) => {
-  const mp = await req.file()
-  // collect into buffer
-  const chunks = []
-  for await (const chunk of mp.file) {
-    chunks.push(chunk)
-  }
-  const buffer = Buffer.concat(chunks)
-  // convert to file
-  const file = new File([buffer], mp.filename, {
-    type: mp.mimetype || 'application/octet-stream',
-  })
-  // upload
-  await assets.upload(file)
-})
-
-fastify.get('/api/upload-check', async (req, reply) => {
-  const exists = await assets.exists(req.query.filename)
-  return { exists }
+// uploads are accepted from a connected session only: the bearer token names the user,
+// the live socket carries the rank. headers are never logged.
+fastify.register(uploadRoutes, {
+  readJWT,
+  getSocket: userId => world.network.sockets.get(userId),
+  assets,
+  getSettings: () => world.settings,
+  maxUploadSize,
 })
 
 fastify.get('/health', async (request, reply) => {

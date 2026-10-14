@@ -52,6 +52,15 @@ npm run dev
 
 For containerized deployment, check [DOCKER.md](DOCKER.md) for detailed instructions.
 
+### Uploads
+
+Files enter a world through `/api/upload` and are served back from `/assets/`:
+
+- Uploading needs a live session. The client sends its session token as `Authorization: Bearer`, and the server accepts it only from a user currently connected to the world with builder rank or higher. While **Custom Avatars** is enabled in the world settings, any connected user may upload a `.vrm` avatar.
+- Only `glb`, `vrm`, `js`, `jpg`, `jpeg`, `png`, `webp`, `mp4`, `mp3` and `hdr` files are accepted; binary types must carry the matching file signature, and `PUBLIC_MAX_UPLOAD_SIZE` (MB) is enforced server-side.
+- Assets served by this server (`ASSETS=local`) carry `X-Content-Type-Options: nosniff` and an explicit content type. Scripts, HDRs and anything that is not plain image/video/audio/model media are delivered as sandboxed downloads, so a file served under these rules cannot run as a page on the world's origin.
+- Limits: the response headers are not applied to S3-served assets (`ASSETS=s3`), which need an equivalent object or CDN policy. Files uploaded before these rules may still exist in the assets directory and in browser caches; before deploying, scan the existing assets for document-type files (`html`, `svg`, …) and review what references them.
+
 ## 🧩 Use Cases
 
 - **Virtual Events & Conferences** - Host live gatherings with spatial audio

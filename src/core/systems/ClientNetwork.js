@@ -19,6 +19,7 @@ export class ClientNetwork extends System {
     this.ids = -1
     this.ws = null
     this.apiUrl = null
+    this.authToken = null
     this.id = null
     this.isClient = true
     this.queue = createDispatchQueue()
@@ -50,13 +51,23 @@ export class ClientNetwork extends System {
   }
 
   async upload(file) {
+    // the server enforces the same cap; refusing here spares a doomed transfer and keeps the reason readable
+    const maxBytes = this.maxUploadSize * 1024 * 1024
+    if (maxBytes > 0 && file.size > maxBytes) {
+      const err = new Error(`Upload failed: file exceeds ${this.maxUploadSize}MB`)
+      err.status = 413
+      throw err
+    }
+    // the server only accepts uploads from a connected session; the token says which one
+    const headers = { Authorization: `Bearer ${this.authToken}` }
     {
       // first check if we even need to upload it
       const hash = await hashFile(file)
       const ext = file.name.split('.').pop().toLowerCase()
       const filename = `${hash}.${ext}`
       const url = `${this.apiUrl}/upload-check?filename=${filename}`
-      const resp = await fetch(url)
+      const resp = await fetch(url, { headers })
+      if (!resp.ok) throw await uploadError(resp)
       const data = await resp.json()
       if (data.exists) return // console.log('already uploaded:', filename)
     }
@@ -64,10 +75,12 @@ export class ClientNetwork extends System {
     const form = new FormData()
     form.append('file', file)
     const url = `${this.apiUrl}/upload`
-    await fetch(url, {
+    const resp = await fetch(url, {
       method: 'POST',
       body: form,
+      headers,
     })
+    if (!resp.ok) throw await uploadError(resp)
   }
 
   enqueue(method, data) {
@@ -139,6 +152,8 @@ export class ClientNetwork extends System {
     this.world.blueprints.deserialize(data.blueprints)
     this.world.entities.deserialize(data.entities)
     this.world.livekit?.deserialize(data.livekit)
+    // kept for authenticated api calls (uploads), whoever stores the token
+    this.authToken = data.authToken
     // caller がトークン管理する場合は singleton storage を汚さない
     if (this.onAuthToken) {
       this.onAuthToken(data.authToken)
@@ -246,4 +261,17 @@ export class ClientNetwork extends System {
       this.ws = null
     }
   }
+}
+
+// a rejected upload becomes an Error carrying the status and the server's reason, so callers can abort and report it
+async function uploadError(resp) {
+  let reason = resp.statusText || `HTTP ${resp.status}`
+  try {
+    reason = (await resp.json()).error || reason
+  } catch (_err) {
+    // not a json body; keep the status text
+  }
+  const err = new Error(`Upload failed: ${reason}`)
+  err.status = resp.status
+  return err
 }

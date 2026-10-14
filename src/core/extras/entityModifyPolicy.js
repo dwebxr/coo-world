@@ -115,7 +115,8 @@ export function sanitizeAppModify(data, socketId, { blueprintExists } = {}) {
   if (typeof data.blueprint === 'string' && data.blueprint) {
     if (!blueprintExists || blueprintExists(data.blueprint)) safe.blueprint = data.blueprint
   }
-  if (isOwnerOrNull(data.uploader)) safe.uploader = data.uploader
+  // `uploader` is claimed only when the app is added; a modify may only clear it
+  if (data.uploader === null) safe.uploader = null
   if (isOwnerOrNull(data.mover)) safe.mover = data.mover
   if (isFiniteArray(data.position, 3)) safe.position = data.position
   if (isFiniteArray(data.quaternion, 4)) safe.quaternion = data.quaternion

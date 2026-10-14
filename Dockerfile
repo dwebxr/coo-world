@@ -10,6 +10,9 @@ RUN npm install
 COPY . .
 RUN npm run build
 
+# The runtime only needs production dependencies; drop build/test tooling before the copy
+RUN npm prune --omit=dev
+
 # Production stage
 FROM node:22.11.0-alpine AS production
 WORKDIR /app

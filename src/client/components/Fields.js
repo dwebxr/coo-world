@@ -478,7 +478,14 @@ export function FieldFile({ world, label, hint, kind: kindName, value, onChange 
     }
     setLoading(newValue)
     // upload file
-    await world.network.upload(file)
+    try {
+      await world.network.upload(file)
+    } catch (err) {
+      console.error(err)
+      world.emit('toast', err.message)
+      if (nRef.current === n) setLoading(null)
+      return
+    }
     // ignore if new value/upload
     if (nRef.current !== n) return
     // cache file locally so this client can insta-load it

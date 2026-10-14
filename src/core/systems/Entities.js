@@ -38,9 +38,10 @@ export class Entities extends System {
     let Entity
     if (data.type === 'player') {
       Entity = Types[data.owner === this.world.network.id ? 'playerLocal' : 'playerRemote']
-    } else {
+    } else if (Object.prototype.hasOwnProperty.call(Types, data.type)) {
       Entity = Types[data.type]
     }
+    if (!Entity) return console.error(`unknown entity type: ${data.type}`)
     const entity = new Entity(this.world, data, local)
     this.items.set(entity.data.id, entity)
     if (data.type === 'player') {

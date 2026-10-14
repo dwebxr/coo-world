@@ -101,16 +101,17 @@ export class Physics extends System {
           return this
         },
         exec() {
+          // script callbacks run without a receiver
           if (this.fn0) {
             try {
-              this.fn0(this.event0)
+              this.fn0.call(undefined, this.event0)
             } catch (err) {
               console.error(err)
             }
           }
           if (this.fn1) {
             try {
-              this.fn1(this.event1)
+              this.fn1.call(undefined, this.event1)
             } catch (err) {
               console.error(err)
             }
@@ -195,7 +196,7 @@ export class Physics extends System {
         },
         exec() {
           try {
-            this.fn(this.event)
+            this.fn.call(undefined, this.event)
           } catch (err) {
             console.error(err)
           }

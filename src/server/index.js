@@ -17,6 +17,7 @@ import { Storage } from './Storage'
 import { assets } from './assets'
 import { collections } from './collections'
 import { cleaner } from './cleaner'
+import { escapeHtml } from './escapeHtml'
 
 const rootDir = path.join(__dirname, '../')
 const worldDir = path.join(rootDir, process.env.WORLD)
@@ -100,10 +101,11 @@ fastify.get('/', async (req, reply) => {
   const url = process.env.ASSETS_BASE_URL
   const filePath = path.join(__dirname, 'public', 'index.html')
   let html = fs.readFileSync(filePath, 'utf-8')
-  html = html.replaceAll('{url}', url)
-  html = html.replaceAll('{title}', title)
-  html = html.replaceAll('{desc}', desc)
-  html = html.replaceAll('{image}', image)
+  // function replacers insert the escaped text literally (no `$` pattern expansion)
+  html = html.replaceAll('{url}', () => escapeHtml(url))
+  html = html.replaceAll('{title}', () => escapeHtml(title))
+  html = html.replaceAll('{desc}', () => escapeHtml(desc))
+  html = html.replaceAll('{image}', () => escapeHtml(image))
   reply.type('text/html').send(html)
 })
 fastify.register(statics, {

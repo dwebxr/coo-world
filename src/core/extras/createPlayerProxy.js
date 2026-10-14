@@ -124,7 +124,7 @@ export function createPlayerProxy(entity, player) {
           if (activeEffectConfig !== config) return
           activeEffectConfig = null
           player.setEffect(null)
-          opts.onEnd?.()
+          opts.onEnd?.call(undefined)
         },
       }
       activeEffectConfig = config

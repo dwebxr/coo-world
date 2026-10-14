@@ -64,6 +64,7 @@ import { isTouch } from '../utils'
 import { uuid } from '../../core/utils'
 import { useRank } from './useRank'
 import { Ranks } from '../../core/extras/ranks'
+import { callScript } from '../../core/extras/callScript'
 
 const e1 = new THREE.Euler(0, 0, 0, 'YXZ')
 const q1 = new THREE.Quaternion()
@@ -1458,7 +1459,8 @@ function AppField({ world, props, field, value, modify }) {
     )
   }
   if (field.type === 'button') {
-    return <FieldBtn label={field.label} hint={field.hint} onClick={field.onClick} />
+    // a script callback: no receiver and no DOM event
+    return <FieldBtn label={field.label} hint={field.hint} onClick={() => callScript(field.onClick)} />
   }
   if (field.type === 'color') {
     return (

@@ -40,7 +40,9 @@ export function createDispatchQueue() {
   function flush(dispatch) {
     while (queue.length) {
       try {
-        dispatch(...queue.shift())
+        const result = dispatch(...queue.shift())
+        // async handlers reject later; keep those failures contained too
+        if (typeof result?.then === 'function') result.then(undefined, err => console.error(err))
       } catch (err) {
         console.error(err)
       }

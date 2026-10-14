@@ -7,6 +7,15 @@ import { createJWT, readJWT } from '../utils-server'
 import { cloneDeep, isNumber } from 'lodash-es'
 import * as THREE from '../extras/three'
 import { Ranks } from '../extras/ranks'
+import {
+  sanitizeAppModify,
+  sanitizeAppRelease,
+  sanitizeEntityAdd,
+  sanitizeName,
+  sanitizePlayerSelfModify,
+} from '../extras/entityModifyPolicy'
+import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../extras/settingsPolicy'
+import { internalEvents } from '../extras/internalEvents'
 import * as solanaGating from '../../server/solana-gating'
 
 const SAVE_INTERVAL = parseInt(process.env.SAVE_INTERVAL || '60') // seconds
@@ -14,6 +23,9 @@ const PING_RATE = 10 // seconds
 const defaultSpawn = '{ "position": [0, 0, 0], "quaternion": [0, 0, 0, 1] }'
 
 const HEALTH_MAX = 100
+
+// inbound packet payloads are untrusted; handlers check the root shape before any lookup
+const isObject = value => value !== null && typeof value === 'object'
 
 /**
  * Server Network System
@@ -201,17 +213,22 @@ export class ServerNetwork extends System {
   }
 
   saveSettings = async () => {
-    const data = this.world.settings.serialize()
-    const value = JSON.stringify(data)
-    await this.db('config')
-      .insert({
-        key: 'settings',
-        value,
-      })
-      .onConflict('key')
-      .merge({
-        value,
-      })
+    try {
+      const data = this.world.settings.serialize()
+      const value = JSON.stringify(data)
+      await this.db('config')
+        .insert({
+          key: 'settings',
+          value,
+        })
+        .onConflict('key')
+        .merge({
+          value,
+        })
+    } catch (err) {
+      console.error('error saving settings')
+      console.error(err)
+    }
   }
 
   async onConnection(ws, params) {
@@ -227,7 +244,7 @@ export class ServerNetwork extends System {
 
       // check connection params
       let authToken = params.authToken
-      let name = params.name
+      let name = sanitizeName(params.name)
       let avatar = params.avatar
 
       // get or create user
@@ -314,11 +331,16 @@ export class ServerNetwork extends System {
   }
 
   onChatAdded = async (socket, msg) => {
+    if (!isObject(msg)) return
+    // the sender identity comes from the socket, not the packet
+    msg.from = socket.player.data.name
+    msg.fromId = socket.player.data.id
     this.world.chat.add(msg, false)
     this.send('chatAdded', msg, socket.id)
   }
 
   onCommand = async (socket, data) => {
+    if (!isObject(data) || !Array.isArray(data.args)) return
     const { args } = data
     // handle slash commands
     const player = socket.player
@@ -346,11 +368,16 @@ export class ServerNetwork extends System {
           body: granted ? 'Admin granted!' : 'Admin revoked!',
           createdAt: moment().toISOString(),
         })
-        await this.db('users').where('id', userId).update({ rank })
+        try {
+          await this.db('users').where('id', userId).update({ rank })
+        } catch (err) {
+          console.error('error saving user rank')
+          console.error(err)
+        }
       }
     }
     if (cmd === 'name') {
-      const name = arg1
+      const name = sanitizeName(arg1)
       if (name) {
         const id = player.data.id
         const userId = player.data.userId
@@ -364,7 +391,12 @@ export class ServerNetwork extends System {
           body: `Name set to ${name}!`,
           createdAt: moment().toISOString(),
         })
-        await this.db('users').where('id', userId).update({ name })
+        try {
+          await this.db('users').where('id', userId).update({ name })
+        } catch (err) {
+          console.error('error saving user name')
+          console.error(err)
+        }
       }
     }
     if (cmd === 'spawn') {
@@ -404,14 +436,20 @@ export class ServerNetwork extends System {
 
   onModifyRank = async (socket, data) => {
     if (!socket.player.isAdmin()) return
+    if (!isObject(data)) return
     const { playerId, rank } = data
     if (!playerId) return
-    if (!isNumber(rank)) return
+    if (rank !== Ranks.VISITOR && rank !== Ranks.BUILDER && rank !== Ranks.ADMIN) return
     const player = this.world.entities.get(playerId)
     if (!player || !player.isPlayer) return
     player.modify({ rank })
     this.send('entityModified', { id: playerId, rank })
-    await this.db('users').where('id', playerId).update({ rank })
+    try {
+      await this.db('users').where('id', playerId).update({ rank })
+    } catch (err) {
+      console.error('error saving user rank')
+      console.error(err)
+    }
   }
 
   onKick = (socket, playerId) => {
@@ -428,6 +466,7 @@ export class ServerNetwork extends System {
   }
 
   onMute = (socket, data) => {
+    if (!isObject(data)) return
     const player = this.world.entities.get(data.playerId)
     if (!player) return
     // admins can mute builders + visitors
@@ -557,56 +596,110 @@ export class ServerNetwork extends System {
 
   onEntityAdded = (socket, data) => {
     if (!this.requireBuilder(socket, 'add entity')) return
-    const entity = this.world.entities.add(data)
-    this.send('entityAdded', data, socket.id)
-    if (entity.isApp) this.dirtyApps.add(entity.data.id)
+    // clients may only add apps, with a fresh id and an existing blueprint
+    const safe = sanitizeEntityAdd(data, socket.id, {
+      blueprintExists: id => !!this.world.blueprints.get(id),
+      entityExists: id => !!this.world.entities.get(id),
+    })
+    if (!safe) return console.error('onEntityAdded: invalid entity', data?.id)
+    const entity = this.world.entities.add(safe)
+    this.send('entityAdded', safe, socket.id)
+    this.dirtyApps.add(entity.data.id)
   }
 
   onEntityModified = async (socket, data) => {
+    if (!isObject(data)) return console.error('onEntityModified: invalid packet')
     const entity = this.world.entities.get(data.id)
     if (!entity) return console.error('onEntityModified: no entity found', data)
-    entity.modify(data)
-    this.send('entityModified', data, socket.id)
-    if (entity.isApp) {
-      // mark for saving
-      this.dirtyApps.add(entity.data.id)
-    }
     if (entity.isPlayer) {
+      // a socket may only modify its own player, and only the client-owned fields
+      if (entity !== socket.player) return console.error('player attempted to modify another player')
+      const allowAvatar = socket.player.isBuilder() || !!this.world.settings.customAvatars
+      const safe = sanitizePlayerSelfModify(data, socket.id, { allowAvatar })
+      if (!safe) return console.error('onEntityModified: no permitted fields', data.id)
+      entity.modify(safe)
+      this.send('entityModified', safe, socket.id)
+      // the sender applied its name locally before sending; correct it if it was truncated
+      if (Object.prototype.hasOwnProperty.call(safe, 'name') && safe.name !== data.name) {
+        socket.send('entityModified', { id: entity.data.id, name: safe.name })
+      }
       // persist player name and avatar changes
       const changes = {}
       let changed
-      if (Object.prototype.hasOwnProperty.call(data, 'name')) {
-        changes.name = data.name
+      if (Object.prototype.hasOwnProperty.call(safe, 'name')) {
+        changes.name = safe.name
         changed = true
       }
-      if (Object.prototype.hasOwnProperty.call(data, 'avatar')) {
-        changes.avatar = data.avatar
+      if (Object.prototype.hasOwnProperty.call(safe, 'avatar')) {
+        changes.avatar = safe.avatar
         changed = true
       }
       if (changed) {
-        await this.db('users').where('id', entity.data.userId).update(changes)
+        try {
+          await this.db('users').where('id', entity.data.userId).update(changes)
+        } catch (err) {
+          console.error('error saving user changes')
+          console.error(err)
+        }
       }
+      return
+    }
+    if (entity.isApp) {
+      let safe
+      if (socket.player.isBuilder()) {
+        safe = sanitizeAppModify(data, socket.id, { blueprintExists: id => !!this.world.blueprints.get(id) })
+      } else {
+        // a sender that lost builder may still finish or cancel its own move and upload
+        const mover = entity.data.mover === socket.id
+        const uploader = entity.data.uploader === socket.id
+        if (!mover && !uploader) {
+          return console.error('player attempted to modify entity without builder permission')
+        }
+        safe = sanitizeAppRelease(data, { mover, uploader })
+      }
+      if (!safe) return console.error('onEntityModified: no permitted fields', data.id)
+      entity.modify(safe)
+      this.send('entityModified', safe, socket.id)
+      // mark for saving
+      this.dirtyApps.add(entity.data.id)
     }
   }
 
   onEntityEvent = (socket, event) => {
+    if (!Array.isArray(event)) return
     const [id, version, name, data] = event
+    // engine hooks and world events are never raised from the network
+    if (typeof name !== 'string' || internalEvents.includes(name)) return
+    if (typeof version !== 'number') return
     const entity = this.world.entities.get(id)
     entity?.onEvent(version, name, data, socket.id)
   }
 
   onEntityRemoved = (socket, id) => {
     if (!this.requireBuilder(socket, 'remove entity')) return
+    if (typeof id !== 'string') return
     const entity = this.world.entities.get(id)
+    if (!entity) return
+    if (!entity.isApp) return console.error('player attempted to remove a non-app entity')
     this.world.entities.remove(id)
     this.send('entityRemoved', id, socket.id)
-    if (entity?.isApp) this.dirtyApps.add(id)
+    this.dirtyApps.add(id)
   }
 
   onSettingsModified = (socket, data) => {
     if (!this.requireBuilder(socket, 'modify settings')) return
-    this.world.settings.set(data.key, data.value)
-    this.send('settingsModified', data, socket.id)
+    if (!isObject(data)) return
+    const { key, value } = data
+    if (!isKnownSettingKey(key)) return console.error('onSettingsModified: unknown setting', key)
+    if (isAdminOnlySettingKey(key) && !socket.player.isAdmin()) {
+      return console.error('player attempted to modify setting without admin permission')
+    }
+    const result = normalizeSettingValue(key, value)
+    if (!result.ok) return console.error('onSettingsModified: invalid value for', key)
+    this.world.settings.set(key, result.value)
+    this.send('settingsModified', { key, value: result.value }, socket.id)
+    // the sender applied its value locally before sending; correct it if it was adjusted
+    if (result.changed) socket.send('settingsModified', { key, value: result.value })
   }
 
   onSpawnModified = async (socket, op) => {
@@ -620,15 +713,20 @@ export class ServerNetwork extends System {
       return
     }
     const data = JSON.stringify(this.spawn)
-    await this.db('config')
-      .insert({
-        key: 'spawn',
-        value: data,
-      })
-      .onConflict('key')
-      .merge({
-        value: data,
-      })
+    try {
+      await this.db('config')
+        .insert({
+          key: 'spawn',
+          value: data,
+        })
+        .onConflict('key')
+        .merge({
+          value: data,
+        })
+    } catch (err) {
+      console.error('error saving spawn')
+      console.error(err)
+    }
     socket.send('chatAdded', {
       id: uuid(),
       from: null,

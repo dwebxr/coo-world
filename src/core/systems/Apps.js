@@ -3,24 +3,27 @@ import { isArray, isEqual, isFunction, isNumber } from 'lodash-es'
 import * as THREE from '../extras/three'
 
 import { System } from './System'
-import { getRef } from '../nodes/Node'
+import { getNodeRef, resolveValueRef } from '../nodes/Node'
 import { Layers } from '../extras/Layers'
 import { ControlPriorities } from '../extras/ControlPriorities'
 import { warn } from '../extras/warn'
+import { applyCreateOptions, splitCreateOptions } from '../extras/createOptions'
+import { internalEvents } from '../extras/internalEvents'
 
 const isBrowser = typeof window !== 'undefined'
 
-const internalEvents = [
-  'fixedUpdate',
-  'updated',
-  'lateUpdate',
-  'destroy',
-  'enter',
-  'leave',
-  'chat',
-  'command',
-  'health',
-]
+// create options from scripts: geometry may be null, a geometry ref from another node, or a
+// real geometry (resolved here, once, like the proxy setter)
+function resolveCreateOption(key, value) {
+  if (key === 'geometry') {
+    if (value == null || value instanceof THREE.BufferGeometry) return value
+    const ref = resolveValueRef(value)
+    if (ref) return ref.value
+    console.error('[app.create] geometry invalid')
+    return undefined
+  }
+  return value
+}
 
 /**
  * Apps System
@@ -56,8 +59,11 @@ export class Apps extends System {
     }
     this.worldMethods = {
       add(entity, pNode) {
-        const node = getRef(pNode)
-        if (!node) return
+        const node = getNodeRef(pNode)
+        if (!node) {
+          if (pNode != null) console.error('[world.add] expected a node')
+          return
+        }
         if (node.parent) {
           node.parent.remove(node)
         }
@@ -65,16 +71,22 @@ export class Apps extends System {
         node.activate({ world, entity })
       },
       remove(entity, pNode) {
-        const node = getRef(pNode)
-        if (!node) return
+        const node = getNodeRef(pNode)
+        if (!node) {
+          if (pNode != null) console.error('[world.remove] expected a node')
+          return
+        }
         if (node.parent) return // its not in world
         if (!entity.worldNodes.has(node)) return
         entity.worldNodes.delete(node)
         node.deactivate()
       },
       attach(entity, pNode) {
-        const node = getRef(pNode)
-        if (!node) return
+        const node = getNodeRef(pNode)
+        if (!node) {
+          if (pNode != null) console.error('[world.attach] expected a node')
+          return
+        }
         const parent = node.parent
         if (!parent) return
         const finalMatrix = new THREE.Matrix4()
@@ -209,7 +221,7 @@ export class Apps extends System {
               if (!glb) glb = await world.loader.load(type, url)
               if (hook.dead) return
               const root = glb.toNodes()
-              resolve(type === 'avatar' ? root.children[0] : root)
+              resolve(type === 'avatar' ? root.children[0].getProxy() : root.getProxy())
             } catch (err) {
               if (hook.dead) return
               reject(err)
@@ -313,8 +325,12 @@ export class Apps extends System {
         world.events.emit(name, data)
       },
       create(entity, name, data) {
-        const node = entity.createNode(name, data)
-        return node.getProxy()
+        // construct from host-safe data, then apply the rest through the proxy's own setters
+        const { ctorData, options } = splitCreateOptions(data)
+        const node = entity.createNode(name, ctorData)
+        const proxy = node.getProxy()
+        applyCreateOptions(proxy, options, resolveCreateOption)
+        return proxy
       },
       control(entity, options) {
         entity.control?.release()

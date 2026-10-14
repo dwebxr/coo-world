@@ -5,6 +5,8 @@ import { LerpQuaternion } from '../extras/LerpQuaternion'
 import { createPlayerProxy } from '../extras/createPlayerProxy'
 import { createEntityProxy } from '../extras/createEntityProxy'
 import { serializeError } from '../extras/serializeError'
+import { registerAppProxy } from '../nodes/refs'
+import { createScriptTimers } from '../extras/scriptTimers'
 
 const hotEventNames = ['fixedUpdate', 'update', 'animate', 'lateUpdate']
 
@@ -42,6 +44,7 @@ export class App extends Entity {
     this.hitResultsPool = []
     this.hitResults = []
     this.deadHook = { dead: false }
+    this.timers = createScriptTimers()
     this.build()
   }
 
@@ -193,7 +196,9 @@ export class App extends Entity {
     // abort fetch's etc
     this.abortController?.abort()
     this.abortController = null
-    // mark dead and re-create hook (timers, async etc)
+    // cancel script timers
+    this.timers.clear()
+    // mark dead and re-create hook (async etc)
     this.deadHook.dead = true
     this.deadHook = { dead: false }
     // clear fields
@@ -409,13 +414,9 @@ export class App extends Entity {
     }
   }
 
+  // scripts get an opaque handle; the timer itself stays host-private
   setTimeout = (fn, ms) => {
-    const hook = this.getDeadHook()
-    const timerId = setTimeout(() => {
-      if (hook.dead) return
-      fn()
-    }, ms)
-    return timerId
+    return this.timers.set(fn, ms)
   }
 
   getDeadHook = () => {
@@ -466,13 +467,15 @@ export class App extends Entity {
         // root node props
         fallbackGet: prop => entity.root.getProxy()[prop],
         fallbackSet: (prop, value) => {
-          if (prop in entity.root.getProxy()) {
+          if (Object.prototype.hasOwnProperty.call(entity.root.getProxy(), prop)) {
             entity.root.getProxy()[prop] = value
             return true
           }
           return true
         },
       })
+      // lets world.add(app) etc resolve to the app's root node
+      registerAppProxy(this.appProxy, () => entity.root.getProxy())
     }
     return this.appProxy
   }

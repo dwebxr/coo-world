@@ -319,7 +319,7 @@ function createEmitter(world, system, node) {
       pending = false
     }
     if (msg.op === 'end') {
-      node._onEnd?.()
+      node._onEnd?.call(undefined) // script callbacks run without a receiver
     }
   }
 

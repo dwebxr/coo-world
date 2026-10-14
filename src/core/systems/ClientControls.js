@@ -3,6 +3,8 @@ import { bindRotations } from '../extras/bindRotations'
 import { buttons, codeToProp } from '../extras/buttons'
 import * as THREE from '../extras/three'
 import { System } from './System'
+import { createControlProxy } from './controlProxy'
+import { callEntry, callScript } from '../extras/callScript'
 
 const LMB = 1 // bitmask
 const RMB = 2 // bitmask
@@ -228,7 +230,8 @@ export class ClientControls extends System {
           const idx = this.controls.indexOf(control)
           if (idx === -1) return
           this.controls.splice(idx, 1)
-          options.onRelease?.()
+          // the options object is host-owned, so its callbacks run without a receiver
+          callScript(options.onRelease)
         },
       },
     }
@@ -242,30 +245,28 @@ export class ClientControls extends System {
     } else {
       this.controls.splice(idx, 0, control)
     }
-    // return proxy api
-    return new Proxy(control, {
-      get(target, prop) {
-        // internal property
-        if (prop in target.api) {
-          return target.api[prop]
-        }
-        // existing item
-        if (prop in entries) {
-          return entries[prop]
-        }
-        // new button item
-        if (buttons.has(prop)) {
-          entries[prop] = createButton(self, control, prop)
-          return entries[prop]
-        }
-        // new item based on type
-        const createType = controlTypes[prop]
-        if (createType) {
-          entries[prop] = createType(self, control, prop)
-          return entries[prop]
-        }
-        return undefined
-      },
+    // return proxy api (over an empty target so the control itself stays unreachable)
+    return createControlProxy(prop => {
+      // internal property
+      if (prop in control.api) {
+        return control.api[prop]
+      }
+      // existing item
+      if (prop in entries) {
+        return entries[prop]
+      }
+      // new button item
+      if (buttons.has(prop)) {
+        entries[prop] = createButton(self, control, prop)
+        return entries[prop]
+      }
+      // new item based on type
+      const createType = controlTypes[prop]
+      if (createType) {
+        entries[prop] = createType(self, control, prop)
+        return entries[prop]
+      }
+      return undefined
     })
   }
 
@@ -277,7 +278,7 @@ export class ClientControls extends System {
         if (value.$button && value.down) {
           value.released = true
           value.down = false
-          value.onRelease?.()
+          callEntry(value, 'onRelease')
         }
       }
     }
@@ -309,7 +310,7 @@ export class ClientControls extends System {
         if (button?.$button) {
           button.pressed = true
           button.down = true
-          const capture = button.onPress?.()
+          const capture = callEntry(button, 'onPress')
           if (capture || button.capture) break
         }
       }
@@ -320,7 +321,7 @@ export class ClientControls extends System {
         if (button?.$button && button.down) {
           button.down = false
           button.released = true
-          button.onRelease?.()
+          callEntry(button, 'onRelease')
         }
       }
     }
@@ -335,7 +336,7 @@ export class ClientControls extends System {
         if (button?.$button) {
           button.pressed = true
           button.down = true
-          const capture = button.onPress?.()
+          const capture = callEntry(button, 'onPress')
           if (capture || button.capture) break
         }
         const capture = control.onButtonPress?.(prop)
@@ -349,7 +350,7 @@ export class ClientControls extends System {
         if (button?.$button && button.down) {
           button.down = false
           button.released = true
-          button.onRelease?.()
+          callEntry(button, 'onRelease')
         }
       }
     }
@@ -372,7 +373,7 @@ export class ClientControls extends System {
       if (button?.$button) {
         button.pressed = true
         button.down = true
-        const capture = button.onPress?.()
+        const capture = callEntry(button, 'onPress')
         if (capture || button.capture) break
       }
       const capture = control.onButtonPress?.(prop, text)
@@ -396,7 +397,7 @@ export class ClientControls extends System {
       if (button?.$button && button.down) {
         button.down = false
         button.released = true
-        button.onRelease?.()
+        callEntry(button, 'onRelease')
       }
     }
   }
@@ -414,7 +415,7 @@ export class ClientControls extends System {
       }
       this.touches.set(e.pointerId, info)
       for (const control of this.controls) {
-        const consume = control.options.onTouch?.(info)
+        const consume = callScript(control.options.onTouch, info)
         if (consume) break
       }
     }
@@ -452,7 +453,7 @@ export class ClientControls extends System {
       const info = this.touches.get(e.pointerId)
       if (info) {
         for (const control of this.controls) {
-          const consume = control.options.onTouchEnd?.(info)
+          const consume = callScript(control.options.onTouchEnd, info)
           if (consume) break
         }
         this.touches.delete(e.pointerId)
@@ -472,7 +473,7 @@ export class ClientControls extends System {
         if (button) {
           button.down = true
           button.pressed = true
-          const capture = button.onPress?.()
+          const capture = callEntry(button, 'onPress')
           if (capture || button.capture) break
         }
       }
@@ -486,7 +487,7 @@ export class ClientControls extends System {
         if (button) {
           button.down = false
           button.released = true
-          button.onRelease?.()
+          callEntry(button, 'onRelease')
         }
       }
     }
@@ -500,7 +501,7 @@ export class ClientControls extends System {
         if (button) {
           button.down = true
           button.pressed = true
-          const capture = button.onPress?.()
+          const capture = callEntry(button, 'onPress')
           if (capture || button.capture) break
         }
       }
@@ -514,7 +515,7 @@ export class ClientControls extends System {
         if (button) {
           button.down = false
           button.released = true
-          button.onRelease?.()
+          callEntry(button, 'onRelease')
         }
       }
     }
@@ -673,11 +674,11 @@ function updateXRHand(controls, src, frame, referenceSpace, side) {
       const down = src.gamepad.buttons[0].value > 0.9
       if (down && !button.down) {
         button.pressed = true
-        button.onPress?.()
+        callEntry(button, 'onPress')
       }
       if (!down && button.down) {
         button.released = true
-        button.onRelease?.()
+        callEntry(button, 'onRelease')
       }
       button.down = down
       button.value = src.gamepad.buttons[0].value
@@ -687,11 +688,11 @@ function updateXRHand(controls, src, frame, referenceSpace, side) {
       const down = src.gamepad.buttons[1].pressed
       if (down && !button.down) {
         button.pressed = true
-        button.onPress?.()
+        callEntry(button, 'onPress')
       }
       if (!down && button.down) {
         button.released = true
-        button.onRelease?.()
+        callEntry(button, 'onRelease')
       }
       button.down = down
       button.value = src.gamepad.buttons[1].value
@@ -701,11 +702,11 @@ function updateXRHand(controls, src, frame, referenceSpace, side) {
       const down = src.gamepad.buttons[4].pressed
       if (down && !button.down) {
         button.pressed = true
-        button.onPress?.()
+        callEntry(button, 'onPress')
       }
       if (!down && button.down) {
         button.released = true
-        button.onRelease?.()
+        callEntry(button, 'onRelease')
       }
       button.down = down
     }
@@ -714,11 +715,11 @@ function updateXRHand(controls, src, frame, referenceSpace, side) {
       const down = src.gamepad.buttons[5].pressed
       if (down && !button.down) {
         button.pressed = true
-        button.onPress?.()
+        callEntry(button, 'onPress')
       }
       if (!down && button.down) {
         button.released = true
-        button.onRelease?.()
+        callEntry(button, 'onRelease')
       }
       button.down = down
     }

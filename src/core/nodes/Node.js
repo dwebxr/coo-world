@@ -1,5 +1,8 @@
 import { isBoolean } from 'lodash-es'
 import * as THREE from '../extras/three'
+import { getNodeRef, isRefAllowed, registerNodeRefGetter } from './refs'
+
+export { getRef, getNodeRef, resolveValueRef, secureRef } from './refs'
 
 const _v1 = new THREE.Vector3()
 const _v2 = new THREE.Vector3()
@@ -22,27 +25,6 @@ const defaults = {
 let nodeIds = -1
 
 const EPSILON = 0.000000001
-
-const secure = { allowRef: false }
-export function getRef(pNode) {
-  if (!pNode || !pNode._isRef) return pNode
-  secure.allowRef = true
-  const node = pNode._ref
-  secure.allowRef = false
-  return node
-}
-
-export function secureRef(obj = {}, getRef) {
-  const tpl = {
-    get _ref() {
-      if (!secure.allowRef) return null
-      return getRef()
-    },
-  }
-  obj._isRef = true
-  Object.defineProperty(obj, '_ref', Object.getOwnPropertyDescriptor(tpl, '_ref'))
-  return obj
-}
 
 export class Node {
   constructor(data = {}) {
@@ -454,12 +436,20 @@ export class Node {
           return self.getWorldMatrix(mat)
         },
         add(pNode) {
-          const node = getRef(pNode)
+          const node = getNodeRef(pNode)
+          if (!node && pNode != null) {
+            console.error('[node.add] expected a node')
+            return this
+          }
           self.add(node)
           return this
         },
         remove(pNode) {
-          const node = getRef(pNode)
+          const node = getNodeRef(pNode)
+          if (!node && pNode != null) {
+            console.error('[node.remove] expected a node')
+            return this
+          }
           self.remove(node)
           return this
         },
@@ -479,7 +469,7 @@ export class Node {
           self.clean()
         },
         get _ref() {
-          if (!secure.allowRef) return null
+          if (!isRefAllowed()) return null
           return self
         },
         get _isRef() {
@@ -516,6 +506,7 @@ export class Node {
           self.cursor = value
         },
       }
+      registerNodeRefGetter(proxy)
       this.proxy = proxy
     }
     return this.proxy

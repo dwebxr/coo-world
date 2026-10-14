@@ -2,15 +2,9 @@ name: Build docker image
 permissions:
   packages: write
 
+# Production deploys build from the Dockerfile via Fly, so GHCR publishing is manual only.
 on:
-  push:
-    branches:
-      - 'main'
-      - 'dev'
-      - 'solana-v2'
-      - 'ai'
-    tags:
-      - 'v*.*.*'
+  workflow_dispatch:
 
 jobs:
   build:

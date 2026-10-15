@@ -17,11 +17,11 @@ import {
 } from '../extras/entityModifyPolicy'
 import { createRelayDrop } from '../extras/playerRelayPolicy'
 import { sanitizeChatMessage } from '../extras/chatPolicy'
-import { sanitizeBlueprintAdd, sanitizeBlueprintModify } from '../extras/blueprintPolicy'
+import { sanitizeBlueprintAdd, sanitizeBlueprintModify, WORLD_BLUEPRINT_BYTES } from '../extras/blueprintPolicy'
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../extras/settingsPolicy'
 import { internalEvents } from '../extras/internalEvents'
 import { createInboundGate, createInboundScheduler, packetNodeLimit } from '../extras/inboundPolicy'
-import { PACKET_CAP, createWriteLedger } from '../extras/writeLedger'
+import { SNAPSHOT_CAP, createWriteLedger } from '../extras/writeLedger'
 import { briefError, createLogOnce } from '../extras/logOnce'
 import { readInboundPacket } from '../../server/inboundDecode'
 import * as solanaGating from '../../server/solana-gating'
@@ -75,6 +75,11 @@ export class ServerNetwork extends System {
     for (const blueprint of blueprints) {
       const data = JSON.parse(blueprint.data)
       this.world.blueprints.add(data, true)
+    }
+    if (this.world.blueprints.bytes > WORLD_BLUEPRINT_BYTES) {
+      console.warn(
+        `[network] world blueprint budget exceeded at startup: bytes=${this.world.blueprints.bytes} cap=${WORLD_BLUEPRINT_BYTES}`
+      )
     }
     // hydrate entities
     const entities = await this.db('entities')
@@ -151,6 +156,7 @@ export class ServerNetwork extends System {
 
   // Capacity is reserved before copying, including arrivals deferred during dispatch.
   enqueue(socket, packet, entry) {
+    if (socket.disconnected) return this.gate.refuse(socket, 'disconnected', entry.name, 'disconnected')
     if (!this.scheduler.reserve(socket, entry)) {
       return this.gate.refuse(socket, 'inbox', entry.name, 'inbox full')
     }
@@ -402,8 +408,8 @@ export class ServerNetwork extends System {
         hasAdminCode: !!process.env.ADMIN_CODE,
       })
 
-      if (snapshot.length > PACKET_CAP) throw new Error('snapshot too large')
-      if (!this.write(ws, snapshot, { name: 'snapshot' })) throw new Error('snapshot write failed')
+      if (snapshot.length > SNAPSHOT_CAP) throw new Error('snapshot too large')
+      if (!this.write(ws, snapshot, { name: 'snapshot', snapshot: true })) throw new Error('snapshot write failed')
 
       this.sockets.set(socket.id, socket)
 
@@ -701,12 +707,15 @@ export class ServerNetwork extends System {
     const { ok, value: safe } = sanitizeBlueprintAdd(blueprint, {
       onUnknownKey: key => this.logOnce(socket, 'blueprint-unknown', `blueprint: unknown key ${key}`),
     })
-    if (!ok) {
+    const fits = ok && this.world.blueprints.canFit(safe, true)
+    if (!fits) {
       // Clients announce the blueprint immediately before the entity that uses it.
       if (typeof blueprint?.id === 'string') {
         socket.refusedBlueprint = { id: blueprint.id, expiresAt: Date.now() + 10000 }
       }
-      return this.logOnce(socket, 'blueprint-add-invalid', 'onBlueprintAdded: invalid blueprint')
+      return ok
+        ? this.logOnce(socket, 'blueprint-add-budget', 'onBlueprintAdded: world blueprint budget exceeded')
+        : this.logOnce(socket, 'blueprint-add-invalid', 'onBlueprintAdded: invalid blueprint')
     }
     if (socket.refusedBlueprint?.id === safe.id) socket.refusedBlueprint = null
     this.world.blueprints.add(safe)
@@ -734,6 +743,11 @@ export class ServerNetwork extends System {
     }
     // if new version is greater than current version, allow it
     if (safe.version > blueprint.version) {
+      if (!this.world.blueprints.canFit(safe)) {
+        this.logOnce(socket, 'blueprint-modify-budget', 'onBlueprintModified: world blueprint budget exceeded')
+        this.revertBlueprint(socket, blueprint)
+        return
+      }
       this.send('blueprintModified', safe, socket.id)
       this.world.blueprints.modify(safe, false, { authorSocketId: socket.id })
       this.dirtyBlueprints.add(safe.id)
@@ -864,8 +878,7 @@ export class ServerNetwork extends System {
     const [id, version, name, data] = event
     // engine hooks and world events are never raised from the network
     if (typeof name !== 'string' || internalEvents.includes(name)) return
-    // NaN compares false to every version and would pass as current; Infinity would be queued for ever
-    if (!Number.isFinite(version)) return
+    if (!Number.isSafeInteger(version) || version < 0) return
     const entity = this.world.entities.get(id)
     entity?.onEvent(version, name, data, socket.id, meta)
   }

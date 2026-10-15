@@ -58,12 +58,13 @@ const make = ({ isServer = true, onScript } = {}) => {
 }
 
 test('App: current/older events emit, non-builders cannot keep, and far-future versions always drop', () => {
-  const { app, seen, logs, ledger } = make()
-  app.onEvent(0, 'probe', 'current', 'player', { ...meta, builder: false })
-  app.onEvent(-1, 'probe', 'old', 'player', { ...meta, builder: false })
-  app.onEvent(1, 'probe', 'no-meta', 'player')
-  app.onEvent(1, 'probe', 'non-builder', 'player', { ...meta, builder: false })
-  app.onEvent(2, 'probe', 'builder-far-future', 'builder', meta)
+  const { world, app, seen, logs, ledger } = make()
+  world.blueprints.modify({ id: 'bp', version: 1 })
+  app.onEvent(1, 'probe', 'current', 'player', { ...meta, builder: false })
+  app.onEvent(0, 'probe', 'old', 'player', { ...meta, builder: false })
+  app.onEvent(2, 'probe', 'no-meta', 'player')
+  app.onEvent(2, 'probe', 'non-builder', 'player', { ...meta, builder: false })
+  app.onEvent(3, 'probe', 'builder-far-future', 'builder', meta)
   app.onEvent(1e12, 'probe', 'far-future', 'builder', meta)
   assert.deepEqual(
     seen.map(e => e.data),
@@ -90,6 +91,26 @@ test("App: cached rebuild delivers an event received before the same builder's b
   assert.equal(app.eventQueue.size, 0)
   assert.equal(ledger.bytes, 0)
   assert.equal(ledger.keptBytes, 0)
+})
+
+test('App: fractional, negative and unsafe versions cannot occupy the ledger or bypass builder keeps', () => {
+  const { world, app, seen, ledger } = make()
+  world.blueprints.modify({ id: 'bp', version: 3 })
+  for (const builder of [false, true]) {
+    for (const building of [false, true]) {
+      app.building = building
+      for (const version of [3.5, -1, -0.5, 1e300, 2.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+        for (let i = 0; i < 64; i++) app.onEvent(version, 'probe', 'bad', 'player', { ...meta, builder })
+      }
+    }
+  }
+  assert.equal(app.eventQueue.size, 0)
+  assert.equal(ledger.bytes, 0)
+  assert.equal(ledger.nodes, 0)
+  assert.equal(seen.length, 0)
+  app.onEvent(4, 'probe', 'kept', 'builder', meta)
+  assert.equal(app.eventQueue.size, 1)
+  assert.equal(ledger.keptBytes, 2 * meta.bytes)
 })
 
 test('App: another builder, AI or script cannot authorize a kept event from a different socket', () => {

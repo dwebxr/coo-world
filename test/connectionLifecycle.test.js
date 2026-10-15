@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import vm from 'node:vm'
 import moment from 'moment'
 import { isAvatarUrl, sanitizeName } from '../src/core/extras/entityModifyPolicy.js'
-import { PACKET_CAP } from '../src/core/extras/writeLedger.js'
+import { SNAPSHOT_CAP } from '../src/core/extras/writeLedger.js'
 import { readPacket } from '../src/core/packets.js'
 import { createConnectionLimits, readConnectionLimitsEnv } from '../src/server/connectionLimits.js'
 import { connectionMethod, fakeWs, loadRoute, makeNetwork } from './lib/networkHarness.mjs'
@@ -295,7 +295,7 @@ test('onConnection: player limit kicks through the writer before touching the da
 test('onConnection: oversized and refused snapshots clean up the player before transport close', async () => {
   for (const oversized of [false, true]) {
     const f = fixture()
-    if (oversized) f.network.world.blueprints.serialize = () => 'x'.repeat(PACKET_CAP)
+    if (oversized) f.network.world.blueprints.serialize = () => 'x'.repeat(SNAPSHOT_CAP)
     else f.network.write = () => false
     await f.run()
     assert.equal(f.destroyed.length, 1)
@@ -308,6 +308,22 @@ test('onConnection: oversized and refused snapshots clean up the player before t
     f.ws.finishClose()
     assert.equal(f.limits.stats().active, 0)
   }
+})
+
+test('onConnection: a snapshot near 900 KiB is the first write and completes a join', async () => {
+  const f = fixture()
+  f.network.world.blueprints = { serialize: () => [{ id: 'loaded', props: { text: 'x'.repeat(900 * 1024) } }] }
+  await f.run()
+  assert.equal(f.network.sockets.size, 1)
+  assert.deepEqual(f.ws.closeCodes, [])
+  assert.equal(f.ws.packets.length, 1)
+  assert.ok(f.ws.packets[0].length > 900 * 1024)
+  assert.ok(f.ws.packets[0].length <= SNAPSHOT_CAP)
+  assert.equal(readPacket(f.ws.packets[0])[0], 'onSnapshot')
+  f.ws.drain()
+  assert.equal(f.network.writer.state(f.ws).queued, 0)
+  f.ws.finishClose()
+  assert.equal(f.limits.stats().active, 0)
 })
 
 test('onConnection: arbitrary thrown values are never inspected or stringified', async () => {

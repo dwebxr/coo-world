@@ -316,7 +316,8 @@ export class Apps extends System {
       },
       send(entity, name, data, ignoreSocketId) {
         if (internalEvents.includes(name)) {
-          return console.error(`apps cannot send internal events (${name})`)
+          console.error(`apps cannot send internal events (${name})`)
+          return false
         }
         // NOTE: on the client ignoreSocketId is a no-op because it can only send events to the server
         const event = [entity.data.id, entity.blueprint.version, name, data]
@@ -327,13 +328,14 @@ export class Apps extends System {
       },
       sendTo(entity, playerId, name, data) {
         if (internalEvents.includes(name)) {
-          return console.error(`apps cannot send internal events (${name})`)
+          console.error(`apps cannot send internal events (${name})`)
+          return false
         }
         if (!world.network.isServer) {
           throw new Error('sendTo can only be called on the server')
         }
         const player = world.entities.get(playerId)
-        if (!player) return
+        if (!player) return false
         const event = [entity.data.id, entity.blueprint.version, name, data]
         return world.network.asScript(() => world.network.sendTo(playerId, 'entityEvent', event), entity, name)
       },

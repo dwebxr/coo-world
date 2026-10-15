@@ -210,7 +210,6 @@ export function createPlayerProxy(entity, player) {
       'cancelEffect',
       'push',
       'setVoiceLevel',
-      '$cleanup',
     ]) {
       const method = proxy[name]
       proxy[name] = (...args) => world.network.asScript(() => method(...args), entity, name)

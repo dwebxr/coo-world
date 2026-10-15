@@ -418,11 +418,11 @@ export class App extends Entity {
   }
 
   onEvent(version, name, data, networkId, meta) {
+    if (!Number.isSafeInteger(version) || version < 0) return this.dropEvent('invalid version')
     const latest = this.world.blueprints.get(this.data.blueprint)?.version
-    if (version > latest + 1) return this.dropEvent('future version')
     // An optimistic upload can run its cached script before announcing the next blueprint version.
     const keep = version === latest + 1
-    if (keep && !meta?.builder) return this.dropEvent('future version')
+    if (version > latest && (!keep || !meta?.builder)) return this.dropEvent('future version')
     if (this.building || version > this.blueprint.version) {
       this.eventQueue.push({ version, name, data, networkId }, meta, { keep, blueprintId: this.data.blueprint })
     } else {

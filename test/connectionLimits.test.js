@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { SWEEP_INTERVAL_MS, createConnectionLimits, readConnectionLimitsEnv } from '../src/server/connectionLimits.js'
+import { clientIpKeys } from '../src/server/uploadLimits.js'
 
 const defaults = readConnectionLimitsEnv({})
 const clock = (start = 10_000_000) => {
@@ -18,6 +19,10 @@ test('readConnectionLimitsEnv: defaults, overrides, 0 disables, bad values throw
   assert.deepEqual(defaults, {
     ratePerMin: 10,
     burst: 20,
+    ratePerMin56: 20,
+    burst56: 40,
+    ratePerMin48: 40,
+    burst48: 80,
     concurrentPerIp: 8,
     concurrentPer56: 16,
     concurrentPer48: 32,
@@ -34,6 +39,10 @@ test('readConnectionLimitsEnv: defaults, overrides, 0 disables, bad values throw
     {
       ratePerMin: 0,
       burst: 20,
+      ratePerMin56: 20,
+      burst56: 40,
+      ratePerMin48: 40,
+      burst48: 80,
       concurrentPerIp: 16,
       concurrentPer56: 16,
       concurrentPer48: 32,
@@ -172,10 +181,128 @@ test('admit: parent/global defaults, overrides, disabled values and validation',
   assert.equal(config.concurrentPer56, 0)
   assert.equal(config.concurrentPer48, 0)
   assert.equal(config.maxSockets, 0)
-  const limits = createConnectionLimits({ ...config, ratePerMin: 0 })
+  const limits = createConnectionLimits({ ...config, ratePerMin: 0, ratePerMin56: 0, ratePerMin48: 0 })
   for (let i = 0; i < 100; i++) assert.equal(limits.admit({ key: `${i}`, parents: ['p::/56', 'p::/48'] }).ok, true)
   const custom = readConnectionLimitsEnv(Object.fromEntries(keys.map(key => [key, '1'])))
   assert.equal(custom.concurrentPer56, 1)
   assert.equal(custom.concurrentPer48, 1)
   assert.equal(custom.maxSockets, 1)
+})
+
+test('parent rate envs: overrides, either zero disables the bucket, and invalid values throw', () => {
+  for (const suffix of ['56', '48']) {
+    const rate = `WS_CONNECT_RATE_PER_MIN_${suffix}`
+    const burst = `WS_CONNECT_BURST_${suffix}`
+    for (const key of [rate, burst]) {
+      for (const value of ['-1', 'NaN', 'Infinity', 'bad']) {
+        assert.throws(() => readConnectionLimitsEnv({ [key]: value }), new RegExp(key))
+      }
+      const config = readConnectionLimitsEnv({ [key]: '0' })
+      const limits = createConnectionLimits({ ...config, concurrentPer56: 0, concurrentPer48: 0, maxSockets: 0 })
+      for (let i = 0; i < 100; i++) {
+        assert.equal(limits.admit({ key: `key-${i}`, parents: [`prefix::/${suffix}`] }).ok, true)
+      }
+    }
+    assert.throws(() => readConnectionLimitsEnv({ [burst]: '0.5' }), new RegExp(burst))
+    const config = readConnectionLimitsEnv({ [rate]: '12', [burst]: '24' })
+    assert.equal(config[`ratePerMin${suffix}`], 12)
+    assert.equal(config[`burst${suffix}`], 24)
+  }
+})
+
+test('admit: rotating /64s exhausts /56 and /48 bursts, then refills at their own rates', () => {
+  for (const [suffix, burst, interval] of [
+    ['56', 40, 3000],
+    ['48', 80, 1500],
+  ]) {
+    const { limits, c } = make()
+    let i = 0
+    const attempt = () => {
+      const lease = limits.admit({ key: `key-${i++}`, parents: [`prefix::/${suffix}`] })
+      if (lease.ok) lease.release()
+      return lease.ok
+    }
+    for (let j = 0; j < burst; j++) assert.equal(attempt(), true)
+    assert.equal(attempt(), false)
+    c.tick(interval - 1)
+    assert.equal(attempt(), false)
+    c.tick(2) // allow for floating-point refill rounding
+    assert.equal(attempt(), true)
+    assert.equal(attempt(), false)
+    c.tick(180000)
+    for (let j = 0; j < burst; j++) assert.equal(attempt(), true)
+    assert.equal(attempt(), false)
+  }
+})
+
+test('admit: parent rate or concurrency refusals charge no address or parent bucket', () => {
+  for (const concurrency of [false, true]) {
+    const { limits, c } = make({
+      burst: 1,
+      ratePerMin56: 1,
+      burst56: 1,
+      ratePerMin48: 60,
+      burst48: concurrency ? 10 : 1,
+      concurrentPer48: concurrency ? 1 : 0,
+    })
+    const first = limits.admit({ key: 'first', parents: ['first::/56', 'shared::/48'] })
+    assert.equal(first.ok, true)
+    if (!concurrency) first.release()
+    const candidate = { key: 'candidate', parents: ['candidate::/56', 'shared::/48'] }
+    for (let i = 0; i < 50; i++) assert.equal(limits.admit(candidate).ok, false)
+    assert.equal(limits.stats().tracked, 3, 'refused candidates create no partial entries')
+    if (concurrency) first.release()
+    else c.tick(1000)
+    assert.equal(limits.admit(candidate).ok, true, 'earlier buckets retained their only token')
+  }
+  const { limits } = make({ burst: 1, burst56: 1, burst48: 2 })
+  limits.admit({ key: 'first', parents: ['shared::/56', 'shared::/48'] }).release()
+  for (let i = 0; i < 50; i++) {
+    assert.equal(limits.admit({ key: 'refused', parents: ['shared::/56', 'shared::/48'] }).ok, false)
+  }
+  assert.equal(limits.admit({ key: 'other', parents: ['other::/56', 'shared::/48'] }).ok, true)
+})
+
+test('parent entries: shared table cap and idle purge preserve partially refilled and active buckets', () => {
+  const { limits, c } = make({ maxEntries: 4 })
+  const parents = ['prefix::/56', 'prefix::/48']
+  const first = limits.admit({ key: 'a', parents })
+  const second = limits.admit({ key: 'b', parents })
+  assert.equal(first.ok && second.ok, true)
+  assert.equal(limits.stats().tracked, 4)
+  assert.deepEqual(limits.admit({ key: 'c', parents }), { ok: false, reason: 'busy' })
+  first.release()
+  second.release()
+  assert.equal(limits.admit({ key: 'c', parents }).ok, false, 'unfilled buckets are retained')
+  c.tick(6000)
+  const next = limits.admit({ key: 'next', parents: ['next::/56', 'next::/48'] })
+  assert.equal(next.ok, true, 'on-demand purge frees all three bucket levels')
+  assert.equal(limits.stats().tracked, 3)
+  c.tick(SWEEP_INTERVAL_MS)
+  assert.equal(limits.admit({ key: 'ipv4' }).ok, true)
+  assert.equal(limits.stats().tracked, 4, 'active parent entries survive the sweep')
+  next.release()
+  c.tick(SWEEP_INTERVAL_MS)
+  limits.admit({ key: 'ipv4' })
+  assert.equal(limits.stats().tracked, 1)
+})
+
+test('admit: reviewer /48 churn stays below burst plus 40 per minute', () => {
+  let now = 0
+  const limits = createConnectionLimits(defaults, { now: () => now })
+  const live = []
+  let admitted = 0
+  let address = 0
+  for (; now < 60000; now++) {
+    while (live.length && live[0].end <= now) live.shift().release()
+    while (live.length < 32) {
+      const keys = clientIpKeys(`2001:db8:1:${(address++ % 65536).toString(16)}::1`)
+      const lease = limits.admit(keys)
+      if (!lease.ok) break
+      admitted++
+      live.push({ end: now + 20, release: lease.release })
+    }
+  }
+  assert.ok(admitted >= 118 && admitted <= 120, `admitted ${admitted}`)
+  assert.ok(limits.stats().tracked <= defaults.maxEntries)
 })

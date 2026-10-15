@@ -45,6 +45,8 @@ export function serverEnv(port, world, extra = {}) {
     // the defaults (pass '' to get them back)
     WS_CONNECT_RATE_PER_MIN: '0',
     WS_CONNECT_BURST: '0',
+    WS_CONNECT_RATE_PER_MIN_56: '0',
+    WS_CONNECT_RATE_PER_MIN_48: '0',
     WS_CONNECT_CONCURRENT_PER_IP: '0',
     ...extra,
   }

@@ -723,7 +723,13 @@ async function probes(admin, watcher) {
       port,
       worldSource: WORLD_SOURCE,
       logPath: path.join(OUT, `fullstack-${ENGINE}-limited-server.log`),
-      env: { WS_CONNECT_RATE_PER_MIN: '', WS_CONNECT_BURST: '', WS_CONNECT_CONCURRENT_PER_IP: '' },
+      env: {
+        WS_CONNECT_RATE_PER_MIN: '',
+        WS_CONNECT_BURST: '',
+        WS_CONNECT_RATE_PER_MIN_56: '',
+        WS_CONNECT_RATE_PER_MIN_48: '',
+        WS_CONNECT_CONCURRENT_PER_IP: '',
+      },
     })
     try {
       const started = performance.now()
@@ -911,6 +917,20 @@ async function probes(admin, watcher) {
     ok(admin.isOpen && watcher.isOpen, 'both connections remain open')
   })
 
+  await step('A19 invalid event versions cannot wait through a later blueprint rebuild', async () => {
+    const from = watcher.mark()
+    for (const version of [4.5, -1, -0.5, 1e300, 3.5]) {
+      watcher.send('entityEvent', ['s-event', version, 'probe', 'invalid-version'])
+    }
+    watcher.send('entityEvent', ['s-event', 4, 'probe', 'before-rebuild'])
+    eq((await watcher.waitForReport('P5_PING', { from })).data, 'before-rebuild', 'invalid events did not emit')
+    admin.send('blueprintModified', { id: 's-event-bp', version: 5, props: { revision: 5 } })
+    admin.send('entityEvent', ['s-event', 5, 'probe', 'after-rebuild'])
+    await watcher.waitFor(m => m.method === 'onChatAdded' && m.data.body?.includes('after-rebuild'), { from })
+    eq(pingReports(watcher, from).length, 2, 'only the two valid barriers delivered across the rebuild')
+    ok(admin.isOpen && watcher.isOpen, 'invalid versions leave the connections open')
+  })
+
   // the server-phase apps go away before the browser loads the world
   for (const id of [
     's-observer',
@@ -944,7 +964,9 @@ async function probes(admin, watcher) {
       rendered: [...document.querySelectorAll('.mainchat-msgs .message-body')].map(e => e.textContent),
     }))
     ok(chat.stored.length > 0 && chat.stored.every(t => t === 'string'), `bodies: ${chat.stored.join(',')}`)
-    ok(chat.rendered.includes('P4_CHAT_OK'), 'the valid message is rendered')
+    // the probes report through chat, so the 50-message history may have moved past P4_CHAT_OK by now; every
+    // message it still holds must render as its text
+    eq(chat.rendered.length, chat.stored.length, 'every stored message is rendered')
     ok(!chat.rendered.some(t => t.includes('[object Object]')), 'no object rendered as text')
     eq(errorLines().length + pageErrors.length, 0, 'no errors while rendering the chat')
     return `${chat.rendered.length} messages rendered`
@@ -1096,6 +1118,98 @@ async function probes(admin, watcher) {
       await page.evaluate(() => window.world.ui.setApp(null))
     }
   })
+
+  await step('B4f a blueprint policy refusal shows a toast without changing local state', async () => {
+    const refused = await page.evaluate(() => {
+      const w = window.world
+      const result = w.blueprints.modify({ id: 'b-event-bp', version: 1, disabled: 'invalid' }, true)
+      return result === false && JSON.stringify(w.blueprints.get('b-event-bp')) === window.limitBefore
+    })
+    ok(refused, 'policy refusal returns false and changes no local state')
+    await page.waitForFunction(() => window.limitToasts.includes('This change could not be saved'))
+    eq(await page.locator('.toast-msg').textContent(), 'This change could not be saved', 'visible policy refusal')
+  })
+
+  await step(
+    'B4g the world blueprint budget removes refused entities, reverts edits and permits new joins',
+    async () => {
+      const ids = Array.from({ length: 9 }, (_, i) => `b-budget-${i}`)
+      const barrier = async tag => {
+        const from = bystander.mark()
+        await page.evaluate(tag => window.world.network.send('entityEvent', ['b-event', 0, 'probe', tag]), tag)
+        eq((await bystander.waitForReport('P5_PING', { from })).data, tag, 'same-connection barrier delivered')
+      }
+      try {
+        await page.evaluate(ids => {
+          const w = window.world
+          for (const id of ids) {
+            w.blueprints.add({ id, version: 0, disabled: true, props: { notes: 'n'.repeat(60000) } }, true)
+            w.entities.add(
+              {
+                id,
+                type: 'app',
+                blueprint: id,
+                position: [0, 0, 0],
+                quaternion: [0, 0, 0, 1],
+                scale: [1, 1, 1],
+                mover: null,
+                uploader: null,
+                pinned: false,
+                state: {},
+              },
+              true
+            )
+          }
+        }, ids)
+        await barrier('budget-adds')
+        const snap = await snapshot(PORT)
+        const accepted = ids.filter(id => snap.blueprints.some(bp => bp.id === id))
+        ok(accepted.length > 0 && accepted.length < 9, 'some 60 KB adds fit and the over-budget add is refused')
+        const total = snap.blueprints.reduce((sum, bp) => sum + writePacket('blueprintAdded', bp).length, 0)
+        ok(total <= 512 * 1024, `world blueprint bytes ${total}`)
+        await page.waitForFunction(
+          ({ ids, accepted }) => ids.every(id => !!window.world.entities.get(id) === accepted.includes(id)),
+          { ids, accepted }
+        )
+        ok(
+          !snap.entities.some(e => ids.includes(e.id) && !accepted.includes(e.id)),
+          'refused entities are absent on the server'
+        )
+        await page.evaluate(() =>
+          window.world.blueprints.modify(
+            {
+              id: 'b-event-bp',
+              version: 1,
+              props: { text: 'x'.repeat(64000) },
+            },
+            true
+          )
+        )
+        await barrier('budget-modify')
+        await page.waitForFunction(
+          () => JSON.stringify(window.world.blueprints.get('b-event-bp')) === window.limitBefore
+        )
+        ok(
+          await page.evaluate(() => window.world.network.ws.readyState === WebSocket.OPEN),
+          'revert leaves the browser connected'
+        )
+        eq(
+          (await snapshot(PORT)).blueprints.find(bp => bp.id === 'b-event-bp').version,
+          0,
+          'joins still work after a refused modify'
+        )
+      } finally {
+        await page.evaluate(ids => {
+          const w = window.world
+          for (const id of ids) {
+            w.entities.get(id)?.destroy(true)
+            w.blueprints.add({ id, version: 0, disabled: true, props: {} }, true)
+          }
+        }, ids)
+        await barrier('budget-cleanup')
+      }
+    }
+  )
 
   // browser-side probes (these also run on the server, under different ids)
   await installApp(page, {

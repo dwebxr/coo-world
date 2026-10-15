@@ -1,8 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { readPacket, writeClientPacket } from '../src/core/packets.js'
-import { sanitizeBlueprintAdd, sanitizeBlueprintModify } from '../src/core/extras/blueprintPolicy.js'
+import { readPacket, writeClientPacket, writePacket } from '../src/core/packets.js'
+import {
+  sanitizeBlueprintAdd,
+  sanitizeBlueprintModify,
+  WORLD_BLUEPRINT_BYTES,
+} from '../src/core/extras/blueprintPolicy.js'
 import { Blueprints } from './lib/clientHarness.mjs'
 import { fakeWs, makeNetwork, Socket } from './lib/networkHarness.mjs'
 
@@ -214,6 +218,84 @@ test('blueprint enforcement: five production shapes and four collection files ar
     assert.deepEqual(f.packets(), [['onBlueprintAdded', blueprint]])
     assert.deepEqual(f.logs, [])
   }
+})
+
+const largeBlueprint = (id, length = 60000) => ({ id, version: 0, props: { notes: 'n'.repeat(length) } })
+const totalBytes = blueprints =>
+  blueprints.serialize().reduce((total, bp) => total + writePacket('blueprintAdded', bp).length, 0)
+
+test('blueprint budget: ninth 60 KB add is refused, its entity removed, and the world snapshot still writes', () => {
+  const f = fixture()
+  for (let i = 0; i < 9; i++) f.send('blueprintAdded', largeBlueprint(`bp${i}`))
+  assert.equal(f.world.blueprints.items.size, 8)
+  assert.equal(f.world.blueprints.bytes, totalBytes(f.world.blueprints))
+  assert.ok(f.world.blueprints.bytes <= WORLD_BLUEPRINT_BYTES)
+  f.send('entityAdded', app('refused', 'bp8'))
+  assert.deepEqual(f.packets(f.author), [['onEntityRemoved', 'refused']])
+  assert.equal(f.world.entities.get('refused'), undefined)
+  f.send('blueprintAdded', largeBlueprint('bp9'))
+  assert.equal(f.logs.filter(line => line.includes('world blueprint budget')).length, 1)
+  const ws = fakeWs()
+  assert.equal(
+    f.network.write(ws, writePacket('snapshot', { blueprints: f.world.blueprints.serialize() }), { snapshot: true }),
+    true
+  )
+  assert.equal(readPacket(ws.packets[0])[1].blueprints.length, 8)
+  assert.equal(ws.terminations, 0)
+})
+
+test('blueprint budget: modifications measure the merged blueprint and share the rate-limited revert path', t => {
+  let now = 0
+  t.mock.method(Date, 'now', () => now)
+  const f = fixture()
+  for (let i = 0; i < 8; i++) f.world.blueprints.add(largeBlueprint(`bp${i}`))
+  f.world.blueprints.add(largeBlueprint('bp8', 40000))
+  const original = f.world.blueprints.get('bp8')
+  const before = f.world.blueprints.bytes
+  for (let i = 0; i < 2; i++)
+    f.send('blueprintModified', { id: 'bp8', version: 1, props: { notes: 'n'.repeat(60000) } })
+  assert.equal(f.world.blueprints.get('bp8'), original)
+  assert.equal(f.world.blueprints.bytes, before)
+  assert.deepEqual(f.packets(f.author), [['onBlueprintModified', original]])
+  assert.equal(f.packets().length, 0)
+  assert.equal(f.network.dirtyBlueprints.size, 0)
+  assert.equal(f.logs.length, 1)
+  now = 1000
+  f.send('blueprintModified', { id: 'bp8', version: 1, props: { notes: 'n'.repeat(60000) } })
+  assert.equal(f.packets(f.author).length, 2)
+  f.send('blueprintModified', { id: 'bp8', version: 1, props: {} })
+  assert.ok(f.world.blueprints.bytes < before)
+  assert.equal(f.world.blueprints.bytes, totalBytes(f.world.blueprints))
+  f.send('blueprintAdded', largeBlueprint('bp8', 30000))
+  assert.equal(f.world.blueprints.bytes, totalBytes(f.world.blueprints), 'replacement add subtracts the old size')
+  f.world.blueprints.destroy()
+  assert.equal(f.world.blueprints.bytes, 0)
+  assert.equal(f.world.blueprints.sizes.size, 0)
+})
+
+test('blueprint budget: over-budget startup loads and warns, then allows only non-growing changes', async t => {
+  const warnings = []
+  t.mock.method(console, 'warn', line => warnings.push(line))
+  const f = fixture()
+  const rows = Array.from({ length: 9 }, (_, i) => ({ data: JSON.stringify(largeBlueprint(`bp${i}`)) }))
+  f.network.db = table =>
+    table === 'config' ? { where: () => ({ first: async () => undefined }) } : table === 'blueprints' ? rows : []
+  f.world.settings = { deserialize() {}, setHasAdminCode() {}, on() {} }
+  await f.network.start()
+  assert.equal(f.world.blueprints.items.size, 9)
+  assert.equal(f.world.blueprints.bytes, totalBytes(f.world.blueprints))
+  assert.ok(f.world.blueprints.bytes > WORLD_BLUEPRINT_BYTES)
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /world blueprint budget exceeded at startup/)
+  const before = f.world.blueprints.bytes
+  f.send('blueprintAdded', { id: 'new', version: 0 })
+  f.send('blueprintModified', { id: 'bp0', version: 1, name: 'growth' })
+  assert.equal(f.world.blueprints.bytes, before)
+  f.send('blueprintModified', { id: 'bp0', version: 1, props: { notes: 'n'.repeat(59000) } })
+  assert.ok(f.world.blueprints.bytes < before && f.world.blueprints.bytes > WORLD_BLUEPRINT_BYTES)
+  f.send('blueprintAdded', largeBlueprint('bp1', 59000))
+  assert.equal(f.world.blueprints.get('bp1').props.notes.length, 59000)
+  assert.equal(f.world.blueprints.bytes, totalBytes(f.world.blueprints))
 })
 
 test('announce before apply: blueprint broadcast precedes the synchronous rebuild event and preserves author', () => {

@@ -3,11 +3,15 @@ import fs from 'node:fs'
 import vm from 'node:vm'
 import { EventEmitter } from 'node:events'
 import { PROTOCOL_VERSION, packetNameById, peekPacketId, writePacket } from '../../src/core/packets.js'
-import { createWriteLedger, PACKET_CAP } from '../../src/core/extras/writeLedger.js'
+import { createWriteLedger, SNAPSHOT_CAP } from '../../src/core/extras/writeLedger.js'
 import { createInboundGate, createInboundScheduler, packetNodeLimit } from '../../src/core/extras/inboundPolicy.js'
 import { createEventLedger } from '../../src/core/extras/appEventQueue.js'
 import { briefError, createLogOnce } from '../../src/core/extras/logOnce.js'
-import { sanitizeBlueprintAdd, sanitizeBlueprintModify } from '../../src/core/extras/blueprintPolicy.js'
+import {
+  sanitizeBlueprintAdd,
+  sanitizeBlueprintModify,
+  WORLD_BLUEPRINT_BYTES,
+} from '../../src/core/extras/blueprintPolicy.js'
 import {
   sanitizeAppModify,
   sanitizeAppRelease,
@@ -20,6 +24,7 @@ import { clientIpKeys } from '../../src/server/uploadLimits.js'
 export const serverSource = fs.readFileSync(new URL('../../src/server/index.js', import.meta.url), 'utf8')
 const source = fs.readFileSync(new URL('../../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
 const names = [
+  'start',
   'preFixedUpdate',
   'asScript',
   'write',
@@ -38,7 +43,7 @@ const names = [
 ]
 const methods = names
   .map(name => {
-    const method = source.match(new RegExp(`^  ${name}(?:\\(| = )[^]*?^  }`, 'm'))?.[0]
+    const method = source.match(new RegExp(`^  (?:async )?${name}(?:\\(| = )[^]*?^  }`, 'm'))?.[0]
     assert.ok(method, `${name} method found`)
     return method
   })
@@ -54,6 +59,11 @@ const Network = vm.runInNewContext(`(class Network { ${methods} })`, {
   briefError,
   sanitizeBlueprintAdd,
   sanitizeBlueprintModify,
+  WORLD_BLUEPRINT_BYTES,
+  defaultSpawn: '{"position":[0,0,0],"quaternion":[0,0,0,1]}',
+  SAVE_INTERVAL: 0,
+  process: { env: {} },
+  console,
   sanitizeAppModify,
   sanitizeAppRelease,
   sanitizeEntityAdd,
@@ -138,7 +148,7 @@ export function connectionMethod(context) {
   assert.ok(method)
   return vm.runInNewContext(`(class { ${method} }).prototype.onConnection`, {
     writePacket,
-    PACKET_CAP,
+    SNAPSHOT_CAP,
     Socket,
     briefError,
     ...context,

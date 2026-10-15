@@ -3,6 +3,9 @@ export const BACKLOG_CAP = 1024 * 1024
 export const SCRIPT_BACKLOG_CAP = 512 * 1024
 export const SCRIPT_TICK_CAP = 512 * 1024
 export const WRITE_OVERHEAD = 1024
+export const SNAPSHOT_CAP = BACKLOG_CAP - WRITE_OVERHEAD
+
+let snapshotWarned = false
 
 // Transport state is weakly held; callbacks own their credit until ws completes each write.
 export function createWriteLedger({ log = () => {} } = {}) {
@@ -56,9 +59,14 @@ export function createWriteLedger({ log = () => {} } = {}) {
   }
 
   // Called once before fan-out, so shared bytes and the exact-size copy are reserved only once.
-  function prepare(packet, { script = false, name = 'packet' } = {}) {
+  function prepare(packet, { script = false, name = 'packet', snapshot = false } = {}) {
     script ||= scriptDepth > 0
-    if (packet.length > PACKET_CAP) return refuse(name, 'packet too large')
+    snapshot &&= !script
+    if (packet.length > (snapshot ? SNAPSHOT_CAP : PACKET_CAP)) return refuse(name, 'packet too large')
+    if (snapshot && packet.length > SNAPSHOT_CAP / 2 && !snapshotWarned) {
+      snapshotWarned = true
+      log(`[network] warning: snapshot exceeds 50% of cap: bytes=${packet.length} cap=${SNAPSHOT_CAP}`)
+    }
     if (script) {
       if (scriptBytesThisTick + packet.length > SCRIPT_TICK_CAP) return refuse(name, 'script tick full')
       scriptBytesThisTick += packet.length
@@ -70,13 +78,13 @@ export function createWriteLedger({ log = () => {} } = {}) {
   }
 
   // A null packet is a ping. It has the same callback accounting as a data write.
-  function write(ws, packet, { script = false, name = 'packet', prepared = false } = {}) {
+  function write(ws, packet, { script = false, name = 'packet', prepared = false, snapshot = false } = {}) {
     script ||= scriptDepth > 0
     const entry = state(ws)
     if (entry.terminated || ws.readyState !== 1) return failed()
     const ping = packet === null
     if (!ping && !prepared) {
-      packet = prepare(packet, { script, name })
+      packet = prepare(packet, { script, name, snapshot })
       if (packet === false) return false
     }
     const cost = (ping ? 0 : packet.length) + WRITE_OVERHEAD

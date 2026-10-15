@@ -167,6 +167,18 @@ test('enqueue: capacity is reserved before copying and a failed copy releases it
   assert.equal(socket.inbox.length, 0)
 })
 
+test('enqueue: late packets for a disconnected socket are counted as disconnected without copying', () => {
+  const { network, ws, socket, logs } = make()
+  ws.emit('close')
+  for (let i = 0; i < 2; i++) ws.emit('message', writeClientPacket('ping', i))
+  assert.equal(network.gate.dropped(socket), 2)
+  assert.equal(logs.length, 1)
+  assert.match(logs[0], /dropped: disconnected /)
+  assert.equal(socket.inbox.length, 0)
+  assert.equal(socket.inboxCost, 0)
+  assert.equal(network.scheduler.pool, 0)
+})
+
 test('onDisconnect: release queued and deferred credit synchronously, with lazy skipping on the next flush', () => {
   const { network, ws, socket } = make()
   const packet = writeClientPacket('entityEvent', 'x'.repeat(60000))
@@ -213,13 +225,26 @@ test('flush: synchronous and async handler errors are brief, logged once, and do
   assert.equal(socket.inboxCost, 0)
 })
 
-test('onEntityEvent: rejects non-finite versions and passes scheduler metadata to the app', () => {
-  const { network, socket, ws } = make()
+test('onEntityEvent: rejects invalid versions silently and passes scheduler metadata to the app', () => {
+  const { network, socket, ws, logs } = make()
   const seen = []
   network.world.entities = { get: id => (id === 'app' ? { onEvent: (...args) => seen.push(args) } : undefined) }
-  for (const version of [NaN, Infinity, -Infinity, '1', null, undefined]) {
+  for (const version of [
+    NaN,
+    Infinity,
+    -Infinity,
+    '1',
+    null,
+    undefined,
+    0.5,
+    -1,
+    -0.5,
+    1e300,
+    Number.MAX_SAFE_INTEGER + 1,
+  ]) {
     network.onEntityEvent(socket, ['app', version, 'probe', 'bad'], {})
   }
+  assert.deepEqual(logs, [])
   network.onEntityEvent(socket, ['app', 0, 'update', 'internal'], {})
   assert.equal(seen.length, 0)
   const packet = writeClientPacket('entityEvent', ['app', 1, 'probe', 'ok'])
@@ -234,7 +259,11 @@ test('onBlueprintModified: passes the editing socket as author without changing 
   const { network, socket } = make()
   const seen = []
   network.requireBuilder = () => true
-  network.world.blueprints = { get: () => ({ id: 'bp', version: 0 }), modify: (...args) => seen.push(args) }
+  network.world.blueprints = {
+    canFit: () => true,
+    get: () => ({ id: 'bp', version: 0 }),
+    modify: (...args) => seen.push(args),
+  }
   network.send = () => {}
   network.dirtyBlueprints = new Set()
   const data = { id: 'bp', version: 1 }

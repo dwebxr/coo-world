@@ -1,7 +1,8 @@
 import { isEqual, merge } from 'lodash-es'
 import { System } from './System'
-import { sanitizeBlueprintAdd, sanitizeBlueprintModify } from '../extras/blueprintPolicy'
+import { sanitizeBlueprintAdd, sanitizeBlueprintModify, WORLD_BLUEPRINT_BYTES } from '../extras/blueprintPolicy'
 import { preflightPacket } from '../extras/clientPreflight'
+import { writePacket } from '../packets'
 
 /**
  * Blueprints System
@@ -15,6 +16,8 @@ export class Blueprints extends System {
     super(world)
     this.items = new Map()
     this.authors = new Map()
+    this.sizes = new Map()
+    this.bytes = 0
   }
 
   get(id) {
@@ -31,6 +34,7 @@ export class Blueprints extends System {
       if (!data || !this.world.network.send('blueprintAdded', data)) return false
     }
     this.items.set(data.id, data)
+    this.trackSize(data)
     this.authors.delete(data.id)
     if (local && !this.world.network.isClient) {
       this.world.network.send('blueprintAdded', data)
@@ -40,7 +44,10 @@ export class Blueprints extends System {
 
   preflight(data, add = false) {
     const result = add ? sanitizeBlueprintAdd(data) : sanitizeBlueprintModify(data)
-    if (!result.ok) return false
+    if (!result.ok) {
+      this.world.emit('toast', 'This change could not be saved')
+      return false
+    }
     if (!preflightPacket(this.world, add ? 'blueprintAdded' : 'blueprintModified', result.value)) return false
     return result.value
   }
@@ -58,6 +65,7 @@ export class Blueprints extends System {
     const changed = !isEqual(blueprint, modified)
     if (!changed) return true
     this.items.set(blueprint.id, modified)
+    this.trackSize(modified)
     if (this.world.network.isServer) {
       this.authors.set(blueprint.id, { version: modified.version, socketId: authorSocketId })
     }
@@ -69,6 +77,21 @@ export class Blueprints extends System {
     }
     this.emit('modify', modified)
     return true
+  }
+
+  canFit(data, add = false) {
+    const blueprint = add ? data : { ...this.items.get(data.id), ...data }
+    const bytes = writePacket('blueprintAdded', blueprint).length
+    const total = this.bytes - (this.sizes.get(data.id) || 0) + bytes
+    // Existing worlds may exceed the budget, but may not grow further.
+    return total <= Math.max(WORLD_BLUEPRINT_BYTES, this.bytes)
+  }
+
+  trackSize(data) {
+    if (!this.world.network.isServer) return
+    const bytes = writePacket('blueprintAdded', data).length
+    this.bytes += bytes - (this.sizes.get(data.id) || 0)
+    this.sizes.set(data.id, bytes)
   }
 
   serialize() {
@@ -88,5 +111,7 @@ export class Blueprints extends System {
   destroy() {
     this.items.clear()
     this.authors.clear()
+    this.sizes.clear()
+    this.bytes = 0
   }
 }

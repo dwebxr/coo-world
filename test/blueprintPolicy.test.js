@@ -81,6 +81,8 @@ test('blueprintPolicy: walk counts every key and value, with a shared 8192-item 
   assert.equal(sanitizeBlueprintAdd({ ...base, props, image: {} }).ok, false)
   props.list.push(null)
   assert.equal(sanitizeBlueprintAdd({ ...base, props }).ok, false)
+  assert.equal(sanitizeBlueprintAdd({ ...base, props: { list: Array(8189) } }).ok, true)
+  assert.equal(sanitizeBlueprintAdd({ ...base, props: { list: Array(8190) } }).ok, false)
   const pairs = Object.fromEntries(Array.from({ length: 4095 }, (_, i) => [`k${i}`, i]))
   assert.equal(sanitizeBlueprintAdd({ ...base, props: pairs }).ok, true)
   pairs.extra = 1
@@ -109,7 +111,7 @@ test('blueprintPolicy: undefined is absent and special keys cannot pollute proto
   assert.equal(safe.ok, true)
   assert.equal(safe.changed, true)
   assert.equal(Object.hasOwn(safe.value.props, 'absent'), false)
-  assert.deepEqual(safe.value.props.array, [1, 2])
+  assert.deepEqual(safe.value.props.array, [1, null, 2])
   assert.equal(Object.getPrototypeOf(safe.value.props), Object.prototype)
   assert.equal(Object.hasOwn(safe.value.props, '__proto__'), true)
   assert.equal({}.polluted, undefined)
@@ -159,6 +161,7 @@ test('blueprintPolicy: client normalization and the server policy on strict-deco
     ...collection,
     { ...base, name: '😀'.repeat(1000), props: { text: 'x'.repeat(20000) } },
     { ...base, author: null },
+    { ...base, props: { list: [1, undefined, ...Array(1), 2], absent: undefined } },
     { ...base, disabled: 'bad' },
   ]
   for (const data of inputs) {

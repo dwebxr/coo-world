@@ -1,13 +1,15 @@
 import { cutText } from './chatPolicy.js'
 import { isPlainObject } from './entityModifyPolicy.js'
 
+export const WORLD_BLUEPRINT_BYTES = 512 * 1024
+
 const textLimits = { name: 256, desc: 4096, author: 256, url: 2048, model: 2048, script: 2048 }
 const flags = new Set(['preload', 'public', 'locked', 'frozen', 'unique', 'scene', 'disabled'])
 const fields = new Set(['id', 'version', ...Object.keys(textLimits), ...flags, 'image', 'props'])
 const nullable = new Set([...Object.keys(textLimits), 'image', 'props'])
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key)
 
-// Count values and keys, copying only JSON values. Undefined entries are absent; strings stay whole.
+// Count values and keys, copying only JSON values. Undefined follows JSON semantics; strings stay whole.
 function walk(value, depth, state) {
   if (++state.items > 8192 || depth > 16) throw new Error('json limit')
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
@@ -18,10 +20,11 @@ function walk(value, depth, state) {
   const result = array ? [] : {}
   const keys = array ? Array.prototype.keys.call(value) : Object.keys(value)
   for (const key of keys) {
-    const item = value[key]
+    let item = value[key]
     if (item === undefined) {
       state.changed = true
-      continue
+      if (!array) continue
+      item = null
     }
     if (!array && ++state.items > 8192) throw new Error('json limit')
     const copy = walk(item, depth + 1, state)

@@ -107,10 +107,16 @@ test('blueprint registry: refusal changes no state, emits no modify and sends no
   assert.equal(world.blueprints.get('new'), undefined)
   assert.equal(world.blueprints.modify({ id: 'bp', version: 1, props: { text: 'x'.repeat(70 * 1024) } }, true), false)
   assert.equal(world.blueprints.modify({ id: 'bp', disabled: 'yes' }, true), false)
+  assert.equal(world.blueprints.add({ id: 'invalid', version: -1 }, true), false)
+  assert.equal(world.blueprints.get('invalid'), undefined)
   assert.equal(world.blueprints.get('bp'), original)
   assert.equal(modified, 0)
   assert.equal(world.packets.length, 0)
-  assert.deepEqual(world.toasts, [CHANGE_TOO_LARGE, CHANGE_TOO_LARGE])
+  assert.deepEqual(world.toasts, [
+    CHANGE_TOO_LARGE,
+    CHANGE_TOO_LARGE,
+    ...Array(2).fill('This change could not be saved'),
+  ])
   world.network.send = () => false
   assert.equal(world.blueprints.modify({ id: 'bp', version: 1 }, true), false)
   assert.equal(world.blueprints.get('bp'), original)

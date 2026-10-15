@@ -9,6 +9,7 @@ import * as THREE from 'three'
 import {
   createWriteLedger,
   PACKET_CAP,
+  SNAPSHOT_CAP,
   BACKLOG_CAP,
   SCRIPT_BACKLOG_CAP,
   SCRIPT_TICK_CAP,
@@ -52,6 +53,32 @@ test('writeLedger: exact cap is accepted; larger packets refuse without terminat
   assert.equal(ws.terminations, 0)
   assert.equal(logs.length, 1)
   assert.equal(ws.packets.length, 1)
+})
+
+test('writeLedger: only explicit system snapshots get the larger cap; warn once across writers', () => {
+  const logs = []
+  const ledger = createWriteLedger({ log: line => logs.push(line) })
+  const ws = fakeWs()
+  assert.equal(ledger.write(ws, bytes(SNAPSHOT_CAP / 2), { snapshot: true }), true)
+  assert.equal(logs.length, 0)
+  ws.drain()
+  assert.equal(ledger.write(ws, bytes(SNAPSHOT_CAP / 2 + 1), { snapshot: true }), true)
+  assert.equal(logs.length, 1)
+  assert.match(logs[0], /warning: snapshot exceeds 50%/)
+  ws.drain()
+  const other = createWriteLedger({ log: line => logs.push(line) })
+  assert.equal(other.write(ws, bytes(SNAPSHOT_CAP), { snapshot: true }), true)
+  assert.equal(other.state(ws).queued, BACKLOG_CAP)
+  assert.equal(logs.length, 1, 'the warning is per process, not per socket or writer')
+  ws.drain()
+  assert.equal(other.state(ws).queued, 0)
+  assert.equal(other.write(ws, bytes(SNAPSHOT_CAP + 1), { snapshot: true }), false)
+  assert.equal(other.write(ws, bytes(900 * 1024), { name: 'snapshot' }), false)
+  assert.equal(
+    other.asScript(() => other.write(ws, bytes(900 * 1024), { snapshot: true })),
+    false
+  )
+  assert.equal(ws.terminations, 0)
 })
 
 test('writeLedger: only the recipient exceeding its system backlog terminates; callbacks retain credit', () => {
@@ -275,9 +302,31 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
   ])
     assert.equal(call(), false)
   assert.equal(socket.ws.packets.length, 0)
-  assert.equal(network.send('chatAdded', { body: 'system' }), true)
+  // Engine teardown must undo voice overrides even when scripts exhausted their tick budget.
+  proxy.setVoiceLevel('global')
+  proxy.$cleanup()
   assert.equal(socket.ws.packets.length, 1)
+  assert.equal(network.writer.state(socket.ws).queued > 0, true)
+  assert.equal(network.send('chatAdded', { body: 'system' }), true)
+  assert.equal(socket.ws.packets.length, 2)
   assert.equal(socket.ws.terminations, 0)
+})
+
+test('Apps: unknown players and internal-event refusals return false without sending', () => {
+  const logs = []
+  const Apps = loadClass('systems/Apps.js', 'Apps', {
+    internalEvents: ['update'],
+    console: { error: line => logs.push(line) },
+  })
+  const world = {
+    network: { isServer: true, send: () => assert.fail('unexpected send') },
+    entities: { get: () => undefined },
+  }
+  const apps = new Apps(world)
+  assert.equal(apps.appMethods.send({}, 'update', {}), false)
+  assert.equal(apps.appMethods.sendTo({}, 'missing', 'update', {}), false)
+  assert.equal(apps.appMethods.sendTo({}, 'missing', 'probe', {}), false)
+  assert.equal(logs.length, 2)
 })
 
 test('ServerNetwork: oversized snapshot closes with 1011 and never writes the snapshot', async () => {
@@ -294,7 +343,7 @@ test('ServerNetwork: oversized snapshot closes with 1011 and never writes the sn
     collections: serial,
     chat: serial,
     ai: serial,
-    blueprints: { serialize: () => 'x'.repeat(PACKET_CAP) },
+    blueprints: { serialize: () => 'x'.repeat(SNAPSHOT_CAP) },
     entities: { ...serial, add: () => ({ data: user }) },
     events: { emit() {} },
   }

@@ -5,11 +5,15 @@ import { isEqual, cloneDeep, isBoolean, isNumber } from 'lodash-es'
 import moment from 'moment'
 import { uuid, createDispatchQueue } from '../../src/core/utils.js'
 import { createUploadQueue } from '../../src/core/extras/uploadQueue.js'
-import { writeClientPacket } from '../../src/core/packets.js'
+import { writeClientPacket, writePacket } from '../../src/core/packets.js'
 import { BUILDER_ONLY_PACKETS, packetByteLimit, packetNodeLimit } from '../../src/core/extras/inboundPolicy.js'
 import { strictDecode } from '../../src/core/extras/strictDecode.js'
 import { CHANGE_TOO_LARGE, preflightPacket } from '../../src/core/extras/clientPreflight.js'
-import { sanitizeBlueprintAdd, sanitizeBlueprintModify } from '../../src/core/extras/blueprintPolicy.js'
+import {
+  sanitizeBlueprintAdd,
+  sanitizeBlueprintModify,
+  WORLD_BLUEPRINT_BYTES,
+} from '../../src/core/extras/blueprintPolicy.js'
 import { CHAT_BODY_MAX_LENGTH, chatEnvelope, cutText, sanitizeChatMessage } from '../../src/core/extras/chatPolicy.js'
 import { sanitizeName, sanitizePlayerSelfModify, isEmoteUrl } from '../../src/core/extras/entityModifyPolicy.js'
 import { normalizeSettingValue } from '../../src/core/extras/settingsPolicy.js'
@@ -41,6 +45,8 @@ export function loadClient(file, name, context = {}) {
     createDispatchQueue,
     createUploadQueue,
     writeClientPacket,
+    writePacket,
+    WORLD_BLUEPRINT_BYTES,
     BUILDER_ONLY_PACKETS,
     packetByteLimit,
     packetNodeLimit,

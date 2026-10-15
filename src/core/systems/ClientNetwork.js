@@ -241,7 +241,7 @@ export class ClientNetwork extends System {
   onEntityEvent = event => {
     const [id, version, name, data] = event
     const entity = this.world.entities.get(id)
-    entity?.onEvent(version, name, data)
+    entity?.onEvent(version, name, data, undefined)
   }
 
   onEntityRemoved = id => {

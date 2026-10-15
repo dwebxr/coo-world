@@ -14,6 +14,7 @@ export class Blueprints extends System {
   constructor(world) {
     super(world)
     this.items = new Map()
+    this.authors = new Map()
   }
 
   get(id) {
@@ -30,6 +31,7 @@ export class Blueprints extends System {
       if (!data || !this.world.network.send('blueprintAdded', data)) return false
     }
     this.items.set(data.id, data)
+    this.authors.delete(data.id)
     if (local && !this.world.network.isClient) {
       this.world.network.send('blueprintAdded', data)
     }
@@ -43,7 +45,7 @@ export class Blueprints extends System {
     return result.value
   }
 
-  modify(data, local) {
+  modify(data, local, { authorSocketId = null } = {}) {
     if (local && this.world.network.isClient) {
       data = this.preflight(data)
       if (!data || !this.world.network.send('blueprintModified', data)) return false
@@ -56,6 +58,9 @@ export class Blueprints extends System {
     const changed = !isEqual(blueprint, modified)
     if (!changed) return true
     this.items.set(blueprint.id, modified)
+    if (this.world.network.isServer) {
+      this.authors.set(blueprint.id, { version: modified.version, socketId: authorSocketId })
+    }
     for (const [_, entity] of this.world.entities.items) {
       if (entity.data.blueprint === blueprint.id) {
         entity.data.state = {}
@@ -82,5 +87,6 @@ export class Blueprints extends System {
 
   destroy() {
     this.items.clear()
+    this.authors.clear()
   }
 }

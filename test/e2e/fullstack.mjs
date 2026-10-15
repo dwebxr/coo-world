@@ -853,6 +853,29 @@ async function probes(admin, watcher) {
     }
   )
 
+  await step(
+    "A17 cached rebuild delivers the same builder socket's event sent before its blueprint change",
+    async () => {
+      // A12 already loaded both assets. Each modification rebuilds synchronously from the cache, and the
+      // report's revision proves the event ran in the rebuilt script rather than the previous listener.
+      for (const version of [1, 2]) {
+        const from = watcher.mark()
+        admin.send('entityEvent', ['s-event', version, 'probe', { beforeBlueprint: version }])
+        admin.send('blueprintModified', { id: 's-event-bp', version, props: { revision: version } })
+        const ping = await watcher.waitForReport('P5_PING', { from, timeout: 10000 })
+        eq(ping.data.beforeBlueprint, version, 'the event sent before the blueprint was delivered')
+        eq(ping.revision, version, 'the rebuilt listener delivered the kept event')
+        eq(ping.from, admin.id, 'the event and blueprint have the same author socket')
+        await watcher.waitFor(
+          m => m.method === 'onBlueprintModified' && m.data.id === 's-event-bp' && m.data.version === version,
+          { from }
+        )
+        eq(pingReports(watcher, from).length, 1, 'the kept event was delivered exactly once')
+      }
+      ok(admin.isOpen, 'the builder connection remains open')
+    }
+  )
+
   // the server-phase apps go away before the browser loads the world
   for (const id of [
     's-observer',

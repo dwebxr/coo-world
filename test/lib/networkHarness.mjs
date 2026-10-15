@@ -5,6 +5,7 @@ import { EventEmitter } from 'node:events'
 import { PROTOCOL_VERSION, packetNameById, peekPacketId, writePacket } from '../../src/core/packets.js'
 import { createWriteLedger, PACKET_CAP } from '../../src/core/extras/writeLedger.js'
 import { createInboundGate, createInboundScheduler } from '../../src/core/extras/inboundPolicy.js'
+import { createEventLedger } from '../../src/core/extras/appEventQueue.js'
 import { clientIpKeys } from '../../src/server/uploadLimits.js'
 
 export const serverSource = fs.readFileSync(new URL('../../src/server/index.js', import.meta.url), 'utf8')
@@ -36,6 +37,7 @@ export function makeNetwork(log = () => {}) {
   network.writer = createWriteLedger({ log })
   network.gate = createInboundGate({ log })
   network.scheduler = createInboundScheduler()
+  network.world = { apps: { eventLedger: createEventLedger() } }
   network.onDisconnect = socket => {
     socket.disconnected = true
     network.scheduler.purge(socket)

@@ -13,6 +13,7 @@ import { sanitizeBlueprintAdd, sanitizeBlueprintModify } from '../../src/core/ex
 import { CHAT_BODY_MAX_LENGTH, chatEnvelope, cutText, sanitizeChatMessage } from '../../src/core/extras/chatPolicy.js'
 import { sanitizeName, sanitizePlayerSelfModify, isEmoteUrl } from '../../src/core/extras/entityModifyPolicy.js'
 import { normalizeSettingValue } from '../../src/core/extras/settingsPolicy.js'
+import { createEventLedger } from '../../src/core/extras/appEventQueue.js'
 
 class System extends EventEmitter {
   constructor(world) {
@@ -56,6 +57,7 @@ export function loadClient(file, name, context = {}) {
     sanitizePlayerSelfModify,
     isEmoteUrl,
     normalizeSettingValue,
+    createEventLedger,
     internalEvents: [],
     ...context,
   }

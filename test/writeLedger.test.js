@@ -1,5 +1,6 @@
 import { chatEnvelope } from '../src/core/extras/chatPolicy.js'
 import { sanitizePlayerSelfModify } from '../src/core/extras/entityModifyPolicy.js'
+import { createEventLedger } from '../src/core/extras/appEventQueue.js'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -221,6 +222,7 @@ const loadClass = (file, name, context = {}) => {
     internalEvents: [],
     moment: () => ({ toISOString: () => 'now' }),
     chatEnvelope: msg => chatEnvelope({ ...msg }),
+    createEventLedger,
     ...context,
   })
 }

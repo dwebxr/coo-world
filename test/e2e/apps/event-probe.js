@@ -10,6 +10,9 @@ if (world.isServer) {
     world.chat({ id: uuid(), body: 'P5_SIZE ' + JSON.stringify({ length: data.length, from: networkId }) }, true)
   })
   app.on('probe', (data, networkId) => {
-    world.chat({ id: uuid(), body: 'P5_PING ' + JSON.stringify({ data, from: networkId }) }, true)
+    world.chat(
+      { id: uuid(), body: 'P5_PING ' + JSON.stringify({ data, from: networkId, revision: props.revision || 0 }) },
+      true
+    )
   })
 }

@@ -9,7 +9,7 @@ import { registerAppProxy } from '../nodes/refs'
 import { createScriptTimers } from '../extras/scriptTimers'
 import { createScriptResponse, toHostFetchOptions } from '../extras/scriptFetch'
 import { createEventQueue } from '../extras/appEventQueue'
-import { createLogOnce } from '../extras/logOnce'
+import { briefError, createLogOnce } from '../extras/logOnce'
 
 const hotEventNames = ['fixedUpdate', 'update', 'animate', 'lateUpdate']
 
@@ -37,8 +37,13 @@ export class App extends Entity {
     this.hotEvents = 0
     this.worldListeners = new Map()
     this.listeners = {}
-    this.eventQueue = createEventQueue()
     this.droppedEvents = 0
+    this.eventDrops = new Map()
+    this.eventQueue = createEventQueue({
+      ledger: world.apps.eventLedger,
+      isServer: world.network.isServer,
+      onDrop: reason => this.dropEvent(reason),
+    })
     this.snaps = []
     this.root = createNode('group')
     this.fields = []
@@ -170,15 +175,15 @@ export class App extends Entity {
     this.networkSca = new LerpVector3(root.scale, this.world.networkRate)
     // execute any events we collected while building. a listener that throws is reported and the rest are
     // still delivered, so the build always finishes
-    const drained = this.eventQueue.drain(
+    this.eventQueue.drain(
       this.blueprint.version,
       event => this.emit(event.name, event.data, event.networkId),
-      err => {
-        console.error('script event listener crashed', this)
-        console.error(err)
+      err => this.dropEvent('listener error', err),
+      {
+        latest: this.world.blueprints.get(this.data.blueprint)?.version,
+        author: this.world.blueprints.authors.get(this.data.blueprint),
       }
     )
-    if (drained.dropped) this.dropEvent('future version', drained.dropped)
     // finished!
     this.building = false
   }
@@ -287,6 +292,7 @@ export class App extends Entity {
   modify(data) {
     let rebuild
     if (Object.prototype.hasOwnProperty.call(data, 'blueprint')) {
+      this.eventQueue.clear()
       this.data.blueprint = data.blueprint
       rebuild = true
     }
@@ -350,6 +356,8 @@ export class App extends Entity {
   destroy(local) {
     if (this.destroyed) return
     this.destroyed = true
+    this.n++
+    this.eventQueue.clear()
 
     this.unbuild()
 
@@ -409,26 +417,30 @@ export class App extends Entity {
     this.worldListeners.clear()
   }
 
-  onEvent(version, name, data, networkId) {
-    // an event is stamped with the sender's blueprint version. packets are ordered and a blueprint change is
-    // applied before anything built on it can send, so a version this world has not seen is never legitimate:
-    // queued, it would wait for a version that never comes and hold back the events behind it
+  onEvent(version, name, data, networkId, meta) {
     const latest = this.world.blueprints.get(this.data.blueprint)?.version
-    if (latest !== undefined && version > latest) return this.dropEvent('future version')
+    if (version > latest + 1) return this.dropEvent('future version')
+    // An optimistic upload can run its cached script before announcing the next blueprint version.
+    const keep = version === latest + 1
+    if (keep && !meta?.builder) return this.dropEvent('future version')
     if (this.building || version > this.blueprint.version) {
-      // the queue keeps the newest events while a build is in progress; a rebuild resets script state anyway
-      if (this.eventQueue.push({ version, name, data, networkId })) this.dropEvent('queue full')
+      this.eventQueue.push({ version, name, data, networkId }, meta, { keep, blueprintId: this.data.blueprint })
     } else {
-      this.emit(name, data, networkId)
+      try {
+        this.emit(name, data, networkId)
+      } catch (err) {
+        this.dropEvent('listener error', err)
+      }
     }
   }
 
-  dropEvent(reason, count = 1) {
-    this.droppedEvents += count
+  dropEvent(reason, err) {
+    this.droppedEvents++
+    this.eventDrops.set(reason, (this.eventDrops.get(reason) || 0) + 1)
     logDroppedEvent(
       this,
       reason,
-      `[app] ${this.data.id}: event dropped (${reason}); further drops for this app are counted only`
+      `[app] ${String(this.data.id).slice(0, 64)}: event dropped (${reason}); further drops for this app are counted only${err ? `: ${briefError(err)}` : ''}`
     )
   }
 

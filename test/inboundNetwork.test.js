@@ -12,10 +12,11 @@ import {
 } from '../src/core/extras/inboundPolicy.js'
 import { briefError, createLogOnce } from '../src/core/extras/logOnce.js'
 import { readInboundPacket } from '../src/server/inboundDecode.js'
+import { createEventLedger, createEventQueue } from '../src/core/extras/appEventQueue.js'
 
 // Exercise the real receive/queue/flush methods without booting physics, the database or Solana.
 const source = fs.readFileSync(new URL('../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
-const methods = ['admit', 'enqueue', 'flush', 'onDisconnect']
+const methods = ['admit', 'enqueue', 'flush', 'onDisconnect', 'checkSockets', 'onEntityEvent', 'onBlueprintModified']
   .map(name => {
     const method = source.match(new RegExp(`^  ${name}(?:\\(| = )[^]*?^  }`, 'm'))?.[0]
     assert.ok(method, `${name} method found`)
@@ -31,13 +32,14 @@ const Network = vm.runInNewContext(`(class Network { ${methods} })`, {
   solanaGating: { clearSocket() {} },
   Uint8Array,
   console,
+  internalEvents: ['update'],
 })
 const make = () => {
   const logs = []
   const network = new Network()
   network.scheduler = createInboundScheduler()
   network.sockets = new Map()
-  network.world = { livekit: { clearModifiers() {} } }
+  network.world = { livekit: { clearModifiers() {} }, apps: { eventLedger: createEventLedger() } }
   network.logOnce = createLogOnce(line => logs.push(line))
   network.gate = createInboundGate({ now: () => 1000, log: line => logs.push(line) })
   const ws = new EventEmitter()
@@ -198,4 +200,56 @@ test('flush: synchronous and async handler errors are brief, logged once, and do
   assert.equal(logs.length, 1)
   assert.equal(logs[0], '[network] ping from client test failed: Probe: ' + 'x'.repeat(193))
   assert.equal(socket.inboxCost, 0)
+})
+
+test('onEntityEvent: rejects non-finite versions and passes scheduler metadata to the app', () => {
+  const { network, socket, ws } = make()
+  const seen = []
+  network.world.entities = { get: id => (id === 'app' ? { onEvent: (...args) => seen.push(args) } : undefined) }
+  for (const version of [NaN, Infinity, -Infinity, '1', null, undefined]) {
+    network.onEntityEvent(socket, ['app', version, 'probe', 'bad'], {})
+  }
+  network.onEntityEvent(socket, ['app', 0, 'update', 'internal'], {})
+  assert.equal(seen.length, 0)
+  const packet = writeClientPacket('entityEvent', ['app', 1, 'probe', 'ok'])
+  ws.emit('message', packet)
+  network.flush()
+  assert.equal(seen.length, 1)
+  assert.deepEqual(seen[0].slice(0, 4), [1, 'probe', 'ok', socket.id])
+  assert.deepEqual({ ...seen[0][4] }, { bytes: packet.length, nodes: 7, socketId: socket.id, builder: true })
+})
+
+test('onBlueprintModified: passes the editing socket as author without changing the existing local argument', () => {
+  const { network, socket } = make()
+  const seen = []
+  network.requireBuilder = () => true
+  network.world.blueprints = { get: () => ({ id: 'bp', version: 0 }), modify: (...args) => seen.push(args) }
+  network.send = () => {}
+  network.dirtyBlueprints = new Set()
+  const data = { id: 'bp', version: 1 }
+  network.onBlueprintModified(socket, data)
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0][0], data)
+  assert.equal(seen[0][1], false)
+  assert.deepEqual({ ...seen[0][2] }, { authorSocketId: socket.id })
+})
+
+test('onDisconnect and checkSockets: purge and expire actual queued events, releasing the shared ledger', () => {
+  const { network, socket } = make()
+  const ledger = network.world.apps.eventLedger
+  const queue = createEventQueue({ ledger, isServer: true })
+  const meta = { bytes: 100, nodes: 10, socketId: socket.id, builder: true }
+  queue.push({ version: 1 }, meta, { keep: true, blueprintId: 'bp' })
+  network.onDisconnect(socket)
+  assert.equal(queue.size, 0)
+  assert.equal(ledger.bytes, 0)
+  assert.equal(ledger.keptNodes, 0)
+  const expired = createEventLedger({ now: () => Date.now() - 60000 })
+  network.world.apps.eventLedger = expired
+  const pending = createEventQueue({ ledger: expired, isServer: true })
+  pending.push({ version: 1 }, meta, { keep: true, blueprintId: 'bp' })
+  network.checkSockets()
+  assert.equal(pending.size, 0)
+  assert.equal(expired.bytes, 0)
+  assert.equal(expired.keptNodes, 0)
 })

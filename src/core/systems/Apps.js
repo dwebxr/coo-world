@@ -11,6 +11,7 @@ import { applyCreateOptions, splitCreateOptions } from '../extras/createOptions'
 import { internalEvents } from '../extras/internalEvents'
 import { resolveOpenURL } from '../extras/worldOpenPolicy'
 import { toScriptError } from '../extras/scriptValues'
+import { createEventLedger } from '../extras/appEventQueue'
 
 const isBrowser = typeof window !== 'undefined'
 
@@ -37,6 +38,7 @@ function resolveCreateOption(key, value) {
 export class Apps extends System {
   constructor(world) {
     super(world)
+    this.eventLedger = createEventLedger()
     this.initWorldHooks()
     this.initAppHooks()
   }

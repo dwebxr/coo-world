@@ -130,6 +130,7 @@ export class ServerNetwork extends System {
   }
 
   checkSockets() {
+    this.world.apps.eventLedger.sweepExpired(Date.now())
     // see: https://www.npmjs.com/package/ws#how-to-detect-and-close-broken-connections
     const dead = []
     this.sockets.forEach(socket => {
@@ -680,7 +681,7 @@ export class ServerNetwork extends System {
     if (!blueprint) return console.error('onBlueprintModified: no blueprint found', data)
     // if new version is greater than current version, allow it
     if (data.version > blueprint.version) {
-      this.world.blueprints.modify(data)
+      this.world.blueprints.modify(data, false, { authorSocketId: socket.id })
       this.send('blueprintModified', data, socket.id)
       this.dirtyBlueprints.add(data.id)
     }
@@ -761,7 +762,7 @@ export class ServerNetwork extends System {
     }
   }
 
-  onEntityEvent = (socket, event) => {
+  onEntityEvent = (socket, event, meta) => {
     if (!Array.isArray(event)) return
     const [id, version, name, data] = event
     // engine hooks and world events are never raised from the network
@@ -769,7 +770,7 @@ export class ServerNetwork extends System {
     // NaN compares false to every version and would pass as current; Infinity would be queued for ever
     if (!Number.isFinite(version)) return
     const entity = this.world.entities.get(id)
-    entity?.onEvent(version, name, data, socket.id)
+    entity?.onEvent(version, name, data, socket.id, meta)
   }
 
   onEntityRemoved = (socket, id) => {
@@ -863,6 +864,7 @@ export class ServerNetwork extends System {
   onDisconnect = (socket, code) => {
     socket.disconnected = true
     this.scheduler.purge(socket)
+    this.world.apps.eventLedger.purgeSocket(socket.id)
     this.world.livekit.clearModifiers(socket.id)
     solanaGating.clearSocket(socket.id)
     socket.player.destroy(true)

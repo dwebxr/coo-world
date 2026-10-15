@@ -9,6 +9,8 @@ import { ControlPriorities } from '../extras/ControlPriorities'
 import { warn } from '../extras/warn'
 import { applyCreateOptions, splitCreateOptions } from '../extras/createOptions'
 import { internalEvents } from '../extras/internalEvents'
+import { resolveOpenURL } from '../extras/worldOpenPolicy'
+import { toScriptError } from '../extras/scriptValues'
 
 const isBrowser = typeof window !== 'undefined'
 
@@ -191,11 +193,20 @@ export class Apps extends System {
 
         if (world.network.isClient) {
           try {
-            const resolvedUrl = world.resolveURL(url)
+            // http(s) only, never a file from the assets store; new windows get no opener
+            const resolvedUrl = resolveOpenURL(url, {
+              resolve: value => world.resolveURL(value),
+              base: window.location.href,
+              assetsUrl: world.assetsUrl,
+            })
+            if (!resolvedUrl) {
+              console.error('[world.open] only http(s) URLs outside of /assets/ can be opened')
+              return
+            }
 
             setTimeout(() => {
               if (newWindow) {
-                window.open(resolvedUrl, '_blank')
+                window.open(resolvedUrl, '_blank', 'noopener,noreferrer')
               } else {
                 window.location.href = resolvedUrl
               }
@@ -224,7 +235,7 @@ export class Apps extends System {
               resolve(type === 'avatar' ? root.children[0].getProxy() : root.getProxy())
             } catch (err) {
               if (hook.dead) return
-              reject(err)
+              reject(toScriptError(err))
             }
           })()
         })

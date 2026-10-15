@@ -8,8 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- core: `MONITOR_TICK=1` logs a per-minute summary of server tick times (mean/median/p90/max) and exposes the last window on `/status`
+- ci: an end-to-end Playwright job (`test/e2e/`, Chromium/WebKit/Firefox) runs on pull requests and on demand
 
 ### Changed
+- [BREAKING] apps: scripts now run under real SES hardening. The built-in prototypes (`Object.prototype`, `Array.prototype`, `Math`, ...) are frozen and every endowed global (`Vector3`, `console`, `num`, ...) is read-only: assigning to one throws a `TypeError` inside the offending script. Each script asset runs in its own compartment, so nothing a script puts on its `globalThis` is visible to another app.
+- [BREAKING] apps: `fetch().blob()` returns a script-safe blob (`size`, `type`, `arrayBuffer()`, `text()`, `slice()`) instead of a DOM `Blob`: `stream()`/`bytes()` are gone and `instanceof Blob` is false. `URL.createObjectURL` accepts only these blobs and serves them with an allow-listed media type (images/audio/video/models) or `application/octet-stream`. `fetch()` options are limited to `method`, `headers`, `body`, `mode`, `credentials`, `cache` and `redirect`.
+- [BREAKING] apps: `world.open()` opens `http(s)` URLs only, never `javascript:`/`data:`/`blob:` URLs or files from the world's `/assets/` store (percent-encoded spellings included); a scheme-less `host:port/path` is rejected as well (use `http://host:port/path`); new tabs are opened with `noopener,noreferrer`.
+- apps: errors raised inside `world.*`/`app.*` methods, `world.load()` and response readers reach scripts as fresh built-in errors of the matching class (`instanceof TypeError` etc. still holds) carrying `name`, `message` and `stack` only: no `cause`, no extra properties, no custom-class identity.
+- apps: `Math.random()` has always been available to scripts; the Utils docs now say so.
+- core: a node whose transform update throws (eg a script put a non-number into its own transform) now crashes its app instead of stalling the whole world; non-app nodes are retried up to 10 times, then left alone until written again. Until the shared THREE prototypes are hardened (follow-up), a failure in one app may still be caused by another app's prototype patch.
 
 ### Fixed
 

@@ -1,0 +1,78 @@
+name: E2E
+
+# Browser-driven checks of a built world (see test/e2e/README.md). Separate from ci.yml so lint, build
+# and unit tests stay fast. No secrets: the job runs with dummy env values and an in-harness AI mock.
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'test/e2e/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/e2e.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, webkit, firefox]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@0ad4b8fadaa221de15dcec353f45205ec38ea70b # v4.1.4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install browser
+        run: npx playwright install --with-deps ${{ matrix.engine }}
+
+      # client/viewer/node-client builds each empty build/, so the server build runs last
+      - name: Build (client)
+        run: npm run client:build
+
+      - name: Build (viewer)
+        run: npm run viewer:build
+
+      - name: Build (node-client)
+        run: npm run node-client:build
+
+      - name: Build (server)
+        run: npm run build
+
+      - name: Full-stack
+        run: node test/e2e/fullstack.mjs --engine=${{ matrix.engine }}
+
+      - name: Extras (movement, avatar, uploads, AI mock, agent)
+        run: node test/e2e/gate-extras.mjs --engine=${{ matrix.engine }}
+
+      # a smoke only on shared runners; the performance budgets are enforced on a designated machine
+      - name: Stress (smoke)
+        run: node test/e2e/stress.mjs --engine=${{ matrix.engine }} --frames=600
+
+      - name: Upload logs and screenshots
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-${{ matrix.engine }}
+          path: test/e2e/out/
+          if-no-files-found: ignore

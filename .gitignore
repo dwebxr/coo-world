@@ -8,3 +8,4 @@ localstorage.json
 node_modules/
 build/
 /world*
+test/e2e/out/

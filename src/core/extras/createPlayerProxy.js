@@ -11,6 +11,14 @@ export function createPlayerProxy(entity, player) {
   const quaternion = new THREE.Quaternion()
   let activeEffectConfig = null
   let voiceMod
+  // a client script changes another player only through a server script: on a remote player these calls
+  // do nothing here, said once per method because scripts tend to call them every frame
+  const warned = new Set()
+  const remoteOnClient = method => {
+    if (warned.has(method)) return
+    warned.add(method)
+    console.error(`[player] ${method} on a remote player must be called on the server`)
+  }
   return {
     get networkId() {
       return player.data.owner
@@ -62,8 +70,7 @@ export function createPlayerProxy(entity, player) {
         // if player is local we can set directly
         world.network.enqueue('onPlayerTeleport', { position: position.toArray(), rotationY })
       } else if (world.network.isClient) {
-        // if we're a client we need to notify server
-        world.network.send('playerTeleport', { networkId: player.data.owner, position: position.toArray(), rotationY })
+        remoteOnClient('teleport')
       } else {
         // if we're the server we need to notify the player
         world.network.sendTo(player.data.owner, 'playerTeleport', { position: position.toArray(), rotationY })
@@ -78,8 +85,7 @@ export function createPlayerProxy(entity, player) {
         // if player is local we can set directly
         world.network.enqueue('onPlayerSessionAvatar', { avatar })
       } else if (world.network.isClient) {
-        // if we're a client we need to notify server
-        world.network.send('playerSessionAvatar', { networkId: player.data.owner, avatar })
+        remoteOnClient('setSessionAvatar')
       } else {
         // if we're the server we need to notify the player
         world.network.sendTo(player.data.owner, 'playerSessionAvatar', { avatar })
@@ -145,17 +151,14 @@ export function createPlayerProxy(entity, player) {
       activeEffectConfig?.onEnd()
     },
     push(force) {
-      force = force.toArray()
-      // player.applyForce(force)
       if (player.data.owner === world.network.id) {
         // if player is local we can set directly
-        player.push(force)
+        player.push(force.toArray())
       } else if (world.network.isClient) {
-        // if we're a client we need to notify server
-        world.network.send('playerPush', { networkId: player.data.owner, force })
+        remoteOnClient('push')
       } else {
         // if we're the server we need to notify the player
-        world.network.sendTo(player.data.owner, 'playerPush', { force })
+        world.network.sendTo(player.data.owner, 'playerPush', { force: force.toArray() })
       }
     },
     screenshare(targetId) {

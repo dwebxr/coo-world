@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  isAvatarUrl,
   isBoundedJsonObject,
   sanitizeAppModify,
   sanitizeAppRelease,
@@ -105,6 +106,59 @@ test('isBoundedJsonObject: the budget is the exact utf-8 size of the JSON text, 
   assert.equal(isBoundedJsonObject(root), false) // too deep
 })
 
+// --- isAvatarUrl ---
+
+test('isAvatarUrl: null and undefined are accepted (they clear a session avatar)', () => {
+  assert.equal(isAvatarUrl(undefined), true)
+  assert.equal(isAvatarUrl(null), true)
+})
+
+test('isAvatarUrl: asset .vrm names (built-in or content hash) and http(s) urls are accepted', () => {
+  assert.equal(isAvatarUrl('asset://avatar.vrm'), true)
+  assert.equal(isAvatarUrl(`asset://${'0123456789abcdef'.repeat(4)}.vrm`), true)
+  assert.equal(isAvatarUrl('asset://My_avatar-v2.0.vrm'), true)
+  assert.equal(isAvatarUrl('https://example.com/avatars/a.vrm'), true)
+  assert.equal(isAvatarUrl('http://localhost:3000/a.vrm?v=1#x'), true)
+  assert.equal(isAvatarUrl('HTTPS://EXAMPLE.COM/A.VRM'), true)
+  const longest = `https://example.com/${'a'.repeat(512 - 'https://example.com/'.length)}`
+  assert.equal(longest.length, 512)
+  assert.equal(isAvatarUrl(longest), true)
+})
+
+test('isAvatarUrl: other schemes, non-vrm or nested assets, non-strings and long values are rejected', () => {
+  for (const v of [
+    'data:text/plain,x',
+    'blob:http://localhost/0000',
+    'javascript:1',
+    'file:///a.vrm',
+    'ftp://example.com/a.vrm',
+    'asset://a.glb',
+    'asset://a.VRM',
+    'asset://../a.vrm',
+    'asset://a/b.vrm',
+    'asset://a.vrm?x=1',
+    'asset://a.vrm#x',
+    'asset://.vrm',
+    'asset://',
+    'a.vrm',
+    '/assets/a.vrm',
+    'http://',
+    'https://exa mple.com/a.vrm',
+    '',
+    1,
+    true,
+    {},
+    [],
+    ['asset://avatar.vrm'],
+    Symbol('s'),
+    () => 'asset://avatar.vrm',
+  ]) {
+    assert.equal(isAvatarUrl(v), false, typeof v === 'symbol' ? 'symbol' : String(v))
+  }
+  assert.equal(isAvatarUrl(`https://example.com/${'a'.repeat(513)}`), false)
+  assert.equal(isAvatarUrl(`asset://${'a'.repeat(510)}.vrm`), false)
+})
+
 // --- sanitizePlayerSelfModify ---
 
 test('sanitizePlayerSelfModify: every owner field with a valid value survives, keyed by the socket id', () => {
@@ -190,6 +244,34 @@ test('sanitizePlayerSelfModify: ef accepts null or a bounded json object only', 
 test('sanitizePlayerSelfModify: name is truncated to 64 characters', () => {
   const safe = sanitizePlayerSelfModify({ id: me, name: 'b'.repeat(70) }, me)
   assert.equal(safe.name, 'b'.repeat(64))
+})
+
+test('sanitizePlayerSelfModify: sessionAvatar and avatar follow the avatar url policy', () => {
+  assert.deepEqual(sanitizePlayerSelfModify({ id: me, sessionAvatar: 'asset://avatar.vrm' }, me), {
+    id: me,
+    sessionAvatar: 'asset://avatar.vrm',
+  })
+  assert.deepEqual(sanitizePlayerSelfModify({ id: me, sessionAvatar: 'https://example.com/a.vrm' }, me), {
+    id: me,
+    sessionAvatar: 'https://example.com/a.vrm',
+  })
+  for (const bad of [
+    'data:text/plain,x',
+    'blob:http://localhost/x',
+    'javascript:1',
+    'asset://a.glb',
+    'x'.repeat(513),
+  ]) {
+    assert.equal(sanitizePlayerSelfModify({ id: me, sessionAvatar: bad }, me), null, bad.slice(0, 20))
+    assert.equal(sanitizePlayerSelfModify({ id: me, avatar: bad }, me, { allowAvatar: true }), null, bad.slice(0, 20))
+  }
+  // a rejected url drops only that key
+  assert.deepEqual(sanitizePlayerSelfModify({ id: me, sessionAvatar: 'javascript:1', p: [1, 2, 3] }, me), {
+    id: me,
+    p: [1, 2, 3],
+  })
+  // the equipped avatar is still a string only; null never persists
+  assert.equal(sanitizePlayerSelfModify({ id: me, avatar: null }, me, { allowAvatar: true }), null)
 })
 
 test('sanitizePlayerSelfModify: avatar is included only when allowed, other fields still apply', () => {

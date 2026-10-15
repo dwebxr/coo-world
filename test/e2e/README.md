@@ -21,7 +21,7 @@ The server build must come last: each build empties `build/`.
 
 | script | what it checks |
 | --- | --- |
-| `fullstack.mjs --engine=<e>` | boots a server on a throwaway `world-e2e-*` directory, runs the sandbox probes over the wire protocol (intrinsic/endowment/stash writes, blob facade, object URL types, error shapes, Stage/Physics containment, the retry cap), then loads the world in the browser: frozen intrinsics, the same probes, `world.open` policy, an image from `createObjectURL`, a throwing script, and the Monaco editor (colouring, widgets, edit + save, server confirmation) |
+| `fullstack.mjs --engine=<e>` | boots a server on a throwaway `world-e2e-*` directory, runs the sandbox probes over the wire protocol (intrinsic/endowment/stash writes, blob facade, object URL types, error shapes, Stage/Physics containment, the retry cap) and the player-relay checks (a client-sent `playerTeleport`/`playerPush`/`playerSessionAvatar` is dropped and logged once per socket; a server script's calls still reach the target with well-formed payloads), then loads the world in the browser: frozen intrinsics, the same probes, `world.open` policy, an image from `createObjectURL`, a throwing script, a client script acting on a remote player (no packet, one log per method) and on its local player (teleport, push, session avatar through the URL policy), and the Monaco editor (colouring, widgets, edit + save, server confirmation) |
 | `gate-extras.mjs --engine=<e>` | walk, jump, VRM session avatar, builder uploads (glb/vrm/png), AI create through a mock Anthropic base URL, `agent.mjs` for 60 s |
 | `stress.mjs --engine=<e> [--apps=20 --prims=50 --frames=600] [--monitor]` | 1000 moving nodes; prints per-frame JS mean/median/p90, render commit time and server CPU as JSON and fails on crashes, errors or fewer frames than requested; `--monitor` adds the server tick sampler (`MONITOR_TICK=1`). CI runs it with `--frames=200` as a smoke; the budgets use 600 |
 
@@ -51,5 +51,7 @@ clamps `performance.now()` to 0.1 ms, so compare the means as well as the median
 
 Small scripts installed as app blueprints during a run. `crasher.js`, `stage-crash.js`,
 `physics-crash.js` and `throwing.js` are meant to crash (alone); `retry-probe.js` patches a shared
-prototype on purpose to exercise the host-node retry cap. None of them touches the network except
-`sandbox-probe.js` / `open-probe.js`, which fetch from the server under test.
+prototype on purpose to exercise the host-node retry cap; `relay-probe.js` teleports, pushes and re-skins a
+player from the server and, on a client, from a script acting on a remote and on its local player. None of
+them touches the network except `sandbox-probe.js` / `open-probe.js`, which fetch from the server under
+test.

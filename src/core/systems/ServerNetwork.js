@@ -8,12 +8,14 @@ import { cloneDeep, isNumber } from 'lodash-es'
 import * as THREE from '../extras/three'
 import { Ranks } from '../extras/ranks'
 import {
+  isAvatarUrl,
   sanitizeAppModify,
   sanitizeAppRelease,
   sanitizeEntityAdd,
   sanitizeName,
   sanitizePlayerSelfModify,
 } from '../extras/entityModifyPolicy'
+import { createRelayDrop } from '../extras/playerRelayPolicy'
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../extras/settingsPolicy'
 import { internalEvents } from '../extras/internalEvents'
 import * as solanaGating from '../../server/solana-gating'
@@ -48,6 +50,7 @@ export class ServerNetwork extends System {
     this.dirtyApps = new Set()
     this.isServer = true
     this.queue = createDispatchQueue()
+    this.dropRelay = createRelayDrop()
   }
 
   init({ db }) {
@@ -248,7 +251,7 @@ export class ServerNetwork extends System {
       // check connection params
       let authToken = params.authToken
       let name = sanitizeName(params.name)
-      let avatar = params.avatar
+      const avatar = isAvatarUrl(params.avatar) ? params.avatar : null
 
       // get or create user
       let user
@@ -748,16 +751,18 @@ export class ServerNetwork extends System {
     })
   }
 
-  onPlayerTeleport = (socket, data) => {
-    this.sendTo(data.networkId, 'playerTeleport', data)
+  // these packets travel server -> client only (server scripts use sendTo directly); a client acts on
+  // other players through server scripts, so a copy sent by a client is dropped
+  onPlayerTeleport = socket => {
+    this.dropRelay(socket, 'playerTeleport')
   }
 
-  onPlayerPush = (socket, data) => {
-    this.sendTo(data.networkId, 'playerPush', data)
+  onPlayerPush = socket => {
+    this.dropRelay(socket, 'playerPush')
   }
 
-  onPlayerSessionAvatar = (socket, data) => {
-    this.sendTo(data.networkId, 'playerSessionAvatar', data.avatar)
+  onPlayerSessionAvatar = socket => {
+    this.dropRelay(socket, 'playerSessionAvatar')
   }
 
   onAi = (socket, action) => {

@@ -36,17 +36,19 @@ The players rotation in the world.
 
 ### `.teleport(position, rotationY)`
 
-Teleports the player instantly to the new position. The `rotationY` value is in radians, and if omitted the player will continue facing their current direction.
+Teleports the player instantly to the new position. The `rotationY` value is in radians, and if omitted (or not a number) the player will continue facing their current direction.
+
+On a client, only the local player can be teleported; server scripts can teleport any player.
 
 ### `.push(force)`
 
-Applies a short, impulse-like push to the local player in world-space. Multiple pushes accumulate vectorially and decay over time with high drag.
+Applies a short, impulse-like push to the player in world-space. Multiple pushes accumulate vectorially and decay over time with high drag.
 
 - **force**: A direction/impulse vector. Accepts a `Vector3`.
 
 Behavior:
 - Adds the impulse to the player’s current push; subsequent calls add to the existing push rather than replacing it.
-- Can only be called on a local player.
+- On a client, only the local player can be pushed; server scripts can push any player.
 
 Example:
 ```js
@@ -62,6 +64,14 @@ quat.setFromEuler(euler)
 const dir = FORWARD.clone().applyQuaternion(quat).normalize()
 world.getPlayer().push(dir.multiplyScalar(30)) // short forward burst
 ```
+
+### `.setSessionAvatar(url)`
+
+Changes the avatar the player wears for the rest of their session. It does not change the avatar saved on their profile, and it is gone when they leave.
+
+- **url**: an `asset://<name>.vrm` URL (a built-in avatar or an uploaded one) or an `http(s)://` URL, up to 512 characters. `null` clears the session avatar. Other values are ignored.
+
+On a client, only the local player's session avatar can be set; server scripts can set any player's.
 
 ### `.getBoneTransform(boneName)`: Matrix4
 

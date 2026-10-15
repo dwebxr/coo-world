@@ -20,8 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - apps: errors raised inside `world.*`/`app.*` methods, `world.load()` and response readers reach scripts as fresh built-in errors of the matching class (`instanceof TypeError` etc. still holds) carrying `name`, `message` and `stack` only: no `cause`, no extra properties, no custom-class identity.
 - apps: `Math.random()` has always been available to scripts; the Utils docs now say so.
 - core: a node whose transform update throws (eg a script put a non-number into its own transform) now crashes its app instead of stalling the whole world; non-app nodes are retried up to 10 times, then left alone until written again. Until the shared THREE prototypes are hardened (follow-up), a failure in one app may still be caused by another app's prototype patch.
+- [BREAKING] apps: `player.teleport()`, `player.push()` and `player.setSessionAvatar()` act on another player from server scripts only. A client script calling one of them on a remote player does nothing (logged once per app, player and method), and the server no longer relays these packets between clients; a client that still sends one has it dropped (logged once per connection and packet). Calls on the local player are unchanged.
+- apps/client: an avatar URL set by a client must be an `asset://<name>.vrm` or an `http(s)://` URL of up to 512 characters, whether it is a session avatar (`setSessionAvatar`, the `avatar` connection parameter) or the equipped avatar; other values (`data:`, `blob:`, `javascript:`, ...) are ignored. `null` still clears a session avatar. The client also checks the teleport, push and session-avatar packets it receives from the server before applying them (finite numbers; a `rotationY` that is not a number is ignored).
 
 ### Fixed
+- apps: `player.setSessionAvatar()` called from a client script on a remote player cleared that player's avatar instead of changing it (the relayed packet had the wrong shape); the remote path is now server-only (see Changed).
 
 ## [v0.16.0]
 

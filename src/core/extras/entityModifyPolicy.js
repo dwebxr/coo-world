@@ -6,6 +6,9 @@ const NAME_MAX_LENGTH = 64
 const JSON_MAX_BYTES = 8 * 1024
 const JSON_MAX_DEPTH = 16
 const JSON_MAX_ITEMS = 1024
+const AVATAR_URL_MAX_LENGTH = 512
+// a .vrm in the world's asset store: a built-in name (avatar.vrm) or a content hash
+const AVATAR_ASSET_URL = /^asset:\/\/[A-Za-z0-9._-]+\.vrm$/
 
 const encoder = new TextEncoder()
 
@@ -85,6 +88,21 @@ export function sanitizeName(value) {
   return value.slice(0, NAME_MAX_LENGTH)
 }
 
+// an avatar url a client may set, wherever it arrives from (self-modify, a connection parameter, a
+// server-sent session avatar): null/undefined (clears a session avatar), an asset .vrm, or an http(s) url
+// that parses. anything else, including data:/blob:/javascript: urls, is not applied
+export function isAvatarUrl(value) {
+  if (value === undefined || value === null) return true
+  if (typeof value !== 'string' || value.length > AVATAR_URL_MAX_LENGTH) return false
+  if (AVATAR_ASSET_URL.test(value)) return true
+  try {
+    const { protocol } = new URL(value)
+    return protocol === 'http:' || protocol === 'https:'
+  } catch (err) {
+    return false
+  }
+}
+
 // fields the owning socket may change on its own player.
 // rank, health, owner and userId are server-controlled and never copied.
 export function sanitizePlayerSelfModify(data, socketId, { allowAvatar = false } = {}) {
@@ -102,8 +120,8 @@ export function sanitizePlayerSelfModify(data, socketId, { allowAvatar = false }
     const name = sanitizeName(data.name)
     if (name !== undefined) safe.name = name
   }
-  if (has(data, 'sessionAvatar') && isOptionalString(data.sessionAvatar)) safe.sessionAvatar = data.sessionAvatar
-  if (allowAvatar && typeof data.avatar === 'string') safe.avatar = data.avatar
+  if (has(data, 'sessionAvatar') && isAvatarUrl(data.sessionAvatar)) safe.sessionAvatar = data.sessionAvatar
+  if (allowAvatar && typeof data.avatar === 'string' && isAvatarUrl(data.avatar)) safe.avatar = data.avatar
   return Object.keys(safe).length > 1 ? safe : null
 }
 

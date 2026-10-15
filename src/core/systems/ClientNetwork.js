@@ -8,6 +8,7 @@ import {
   fetchWithRetry,
 } from '../extras/uploadQueue'
 import { readPacket, writePacket } from '../packets'
+import { sanitizePush, sanitizeSessionAvatar, sanitizeTeleport } from '../extras/playerRelayPolicy'
 import { storage } from '../storage'
 import { createDispatchQueue, uuid } from '../utils'
 import { hashFile } from '../utils-client'
@@ -223,16 +224,24 @@ export class ClientNetwork extends System {
     this.world.entities.remove(id)
   }
 
+  // sent by the server when a server script acts on this player (or queued by a local script for its own
+  // player); the payload is checked before it is applied
   onPlayerTeleport = data => {
-    this.world.entities.player?.teleport(data)
+    const safe = sanitizeTeleport(data)
+    if (!safe) return console.error('onPlayerTeleport: invalid payload', data)
+    this.world.entities.player?.teleport(safe)
   }
 
   onPlayerPush = data => {
-    this.world.entities.player?.push(data.force)
+    const safe = sanitizePush(data)
+    if (!safe) return console.error('onPlayerPush: invalid payload', data)
+    this.world.entities.player?.push(safe.force)
   }
 
   onPlayerSessionAvatar = data => {
-    this.world.entities.player?.setSessionAvatar(data.avatar)
+    const safe = sanitizeSessionAvatar(data)
+    if (!safe) return console.error('onPlayerSessionAvatar: invalid payload', data)
+    this.world.entities.player?.setSessionAvatar(safe.avatar)
   }
 
   onLiveKitLevel = data => {

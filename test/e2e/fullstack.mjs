@@ -1,16 +1,21 @@
-// Full-stack e2e: boots the built server against a throwaway world, runs the sandbox probes over the wire
-// protocol (server side) and then in a real browser engine, and exercises the script editor end to end.
+// Full-stack e2e: boots the built server against a throwaway world, runs the sandbox and player-relay probes
+// over the wire protocol (server side) and then in a real browser engine, and exercises the script editor
+// end to end.
 //
 // usage: node test/e2e/fullstack.mjs --engine=chromium|webkit|firefox [--world=<dir>] [--port=3121]
 //   --world: an existing world directory to copy (eg the local 5-app world); without it the server
 //            bootstraps the default world from src/world
 // Requires the four builds (see .github/workflows/e2e.yml). Logs and screenshots go to test/e2e/out/.
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 
-import { APPS_DIR, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
+import { APPS_DIR, REPO_ROOT, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
 import { installAsset, startServer } from './lib/server.mjs'
 import { WireClient, snapshot } from './lib/ws.mjs'
 import { appState, becomeAdmin, installApp, launchBrowser, saveArtifacts } from './lib/browser.mjs'
+
+// the client's payload check, applied here to what the server really put on the wire
+const { sanitizeTeleport } = await import(pathToFileURL(path.join(REPO_ROOT, 'src/core/extras/playerRelayPolicy.js')))
 
 const ENGINE = arg('engine', 'chromium')
 const PORT = Number(arg('port', 3121))
@@ -26,7 +31,10 @@ const PNG =
 
 // console errors the probes produce on purpose
 const EXPECTED_ERROR =
-  /\[world\.open\]|\[stage\]|\[physics\]|script crashed|script destroy\(\) crashed|P1_|crasher|not extensible|readonly property|Cannot add property|does-not-exist|GLTFLoader|createObjectURL expects|Body is unusable|body used already|json/i
+  /\[world\.open\]|\[stage\]|\[physics\]|script crashed|script destroy\(\) crashed|P1_|crasher|not extensible|readonly property|Cannot add property|does-not-exist|GLTFLoader|createObjectURL expects|Body is unusable|body used already|json|on a remote player must be called on the server|onPlayerSessionAvatar: invalid payload/i
+// the server's log line for a relay packet a client sent (once per socket and packet)
+const RELAY_DROP = /\[network\] player\w+ from client \S+ ignored/
+const RELAY_PACKET = m => /^onPlayer(Teleport|Push|SessionAvatar)$/.test(m.method)
 
 let server
 let browser
@@ -34,6 +42,7 @@ let context
 let page
 let base
 let probeProps
+let bystander
 const consoleLines = []
 const pageErrors = []
 try {
@@ -57,6 +66,7 @@ try {
     'open-probe',
     'throwing',
     'console-probe',
+    'relay-probe',
   ]) {
     installAsset(server, path.join(APPS_DIR, `${name}.js`))
   }
@@ -79,6 +89,7 @@ try {
 } finally {
   // the browser log, page errors, page state and a screenshot are saved even when the run aborted
   await saveArtifacts({ page, consoleLines, pageErrors, prefix: path.join(OUT, `fullstack-${ENGINE}`) })
+  bystander?.close()
   await context?.close().catch(() => {})
   await browser?.close().catch(() => {})
   await server?.stop()
@@ -368,7 +379,88 @@ async function probes(admin, watcher) {
     eq(server.lines(/giving up on node/).length, 1, 'no further give-ups after the patch is lifted')
   })
 
-  await step('A8 server log: no unhandled rejections or SES errors', async () => {
+  await step('A8 a client-sent player relay packet is dropped and logged once per socket and packet', async () => {
+    const from = watcher.mark()
+    const fromAdmin = admin.mark()
+    for (let i = 0; i < 3; i++) {
+      admin.send('playerTeleport', { networkId: watcher.id, position: [9, 9, 9], rotationY: 0 })
+      admin.send('playerPush', { networkId: watcher.id, force: [1, 0, 0] })
+      admin.send('playerSessionAvatar', { networkId: watcher.id, avatar: 'asset://avatar.vrm' })
+    }
+    // malformed copies must not reach any property read either
+    admin.send('playerTeleport', null)
+    admin.send('playerPush', 'junk')
+    admin.send('playerSessionAvatar', [])
+    await waitUntil(() => server.lines(RELAY_DROP).length >= 3, { timeout: 10000, message: 'relay drop log' })
+    await sleep(500)
+    const mine = server.lines(new RegExp(`\\[network\\] (\\w+) from client ${admin.id} ignored`))
+    eq(mine.length, 3, `one line per packet name: ${mine.join(' | ')}`)
+    ok(
+      mine.some(l => l.includes(' playerTeleport ')),
+      'teleport logged'
+    )
+    ok(
+      mine.some(l => l.includes(' playerPush ')),
+      'push logged'
+    )
+    ok(
+      mine.some(l => l.includes(' playerSessionAvatar ')),
+      'session avatar logged'
+    )
+    eq(watcher.since(from).filter(RELAY_PACKET).length, 0, 'the target received nothing')
+    eq(admin.since(fromAdmin).filter(RELAY_PACKET).length, 0, 'the sender received nothing')
+    // another socket gets its own single line
+    watcher.send('playerPush', { networkId: admin.id, force: [1, 0, 0] })
+    watcher.send('playerPush', { networkId: admin.id, force: [1, 0, 0] })
+    await waitUntil(() => server.lines(RELAY_DROP).length >= 4, { timeout: 10000, message: 'second socket drop log' })
+    await sleep(300)
+    eq(server.lines(RELAY_DROP).length, 4, 'four lines in total')
+    eq(admin.since(fromAdmin).filter(RELAY_PACKET).length, 0, 'the admin received nothing from the watcher')
+    const status = await fetch(`${base}/status`)
+    eq(status.status, 200, 'server still responsive')
+  })
+
+  await step('A9 server-script teleport, push and session avatar still reach the player, well-formed', async () => {
+    const from = watcher.mark()
+    const fromAdmin = admin.mark()
+    admin.installApp({
+      id: 's-relay',
+      script: 'asset://relay-probe.js',
+      model: 'asset://ai.glb',
+      props: { serverTarget: watcher.id },
+    })
+    const report = await watcher.waitForReport('P4_RELAY', { from, timeout: 15000 })
+    eq(report.found, true, 'the server script found the target player')
+    const got = await waitUntil(
+      () => {
+        const packets = watcher.since(from).filter(RELAY_PACKET)
+        return packets.length >= 5 ? packets : null
+      },
+      { timeout: 10000, message: 'relay packets from the server path' }
+    )
+    eq(
+      got.map(m => m.method).join(','),
+      'onPlayerTeleport,onPlayerTeleport,onPlayerPush,onPlayerSessionAvatar,onPlayerSessionAvatar',
+      'packets in call order'
+    )
+    eq(
+      JSON.stringify(sanitizeTeleport(got[0].data)),
+      JSON.stringify({ position: [1, 2, 3], rotationY: 0.5 }),
+      'teleport'
+    )
+    ok(typeof got[1].data.rotationY !== 'number', 'the quaternion arrives as a non-number')
+    eq(JSON.stringify(sanitizeTeleport(got[1].data)), JSON.stringify({ position: [4, 5, 6] }), 'rotationY ignored')
+    eq(JSON.stringify(got[2].data), JSON.stringify({ force: [0, 0, -30] }), 'push payload')
+    eq(
+      JSON.stringify(got[3].data),
+      JSON.stringify({ avatar: 'asset://avatar.vrm' }),
+      'session avatar carries { avatar }'
+    )
+    eq(JSON.stringify(got[4].data), JSON.stringify({ avatar: null }), 'null clears')
+    eq(admin.since(fromAdmin).filter(RELAY_PACKET).length, 0, 'only the target player received them')
+  })
+
+  await step('A10 server log: no unhandled rejections or SES errors', async () => {
     const bad = server.lines(/SES_UNCAUGHT|SES_UNHANDLED|UnhandledPromiseRejection/)
     eq(bad.length, 0, bad.slice(0, 2).join(' | '))
   })
@@ -385,14 +477,18 @@ async function probes(admin, watcher) {
     's-physics',
     's-physics2',
     's-retry',
+    's-relay',
   ]) {
     admin.send('entityRemoved', id)
   }
   await sleep(500)
   watcher.close()
   admin.close()
+  const relayDropsAfterA = server.lines(RELAY_DROP).length
 
   // ---------- phase B: browser ----------
+  // a second player the browser's scripts can see as remote; it must receive nothing from them
+  bystander = await new WireClient(PORT, 'bystander').connect()
   await openBrowser()
   const appsAtLoad = await loadChecks()
 
@@ -669,6 +765,93 @@ async function probes(admin, watcher) {
     ok(!observer.error, 'observer did not crash')
   })
 
+  // ---------- player relays (client script on a remote player: no effect; on the local player: works) ----------
+  await installApp(page, {
+    id: 'b-relay',
+    script: 'asset://relay-probe.js',
+    model: 'asset://ai.glb',
+    props: { remote: bystander.id },
+    position: [20, 0, -3],
+  })
+  const relayCommand = async cmd => {
+    // the probe replaces app.state when its script starts; a command set before that would be lost
+    await waitUntil(async () => !!(await appState(page, 'b-relay'))?.state?.results, {
+      timeout: 20000,
+      message: 'relay probe ready',
+    })
+    await page.evaluate(cmd => {
+      window.world.entities.get('b-relay').data.state.cmd = cmd
+    }, cmd)
+    return waitUntil(async () => (await appState(page, 'b-relay')).state?.results?.[cmd] ?? null, {
+      timeout: 20000,
+      message: `relay probe ${cmd}`,
+    })
+  }
+  const remoteLogs = () =>
+    consoleLines.filter(l => /\[player\] \w+ on a remote player must be called on the server/.test(l))
+  const playerState = () =>
+    page.evaluate(() => {
+      const p = window.world.entities.player
+      return { position: p.base.position.toArray(), rotationY: p.base.rotation.y, sessionAvatar: p.data.sessionAvatar }
+    })
+  await step('B16 a client script acting on a remote player sends nothing and logs once per method', async () => {
+    const from = bystander.mark()
+    const r = await relayCommand('remote')
+    ok(r.ok, r.error)
+    eq(r.calls, 9, 'three methods over three frames')
+    await sleep(1000)
+    eq(bystander.since(from).filter(RELAY_PACKET).length, 0, 'the remote player received a relay packet')
+    eq(server.lines(RELAY_DROP).length, relayDropsAfterA, 'the browser sent no relay packet')
+    const logs = remoteLogs()
+    eq(logs.length, 3, `one log per method: ${logs.join(' | ')}`)
+    for (const method of ['teleport', 'push', 'setSessionAvatar']) {
+      ok(
+        logs.some(l => l.includes(`[player] ${method} on a remote player`)),
+        `${method} logged`
+      )
+    }
+  })
+  await step('B17 a client script still teleports its local player', async () => {
+    const r = await relayCommand('localTeleport')
+    ok(r.ok, r.error)
+    const state = await waitUntil(
+      async () => {
+        const s = await playerState()
+        return Math.abs(s.position[0] - 3) < 0.5 && Math.abs(s.position[2] - 3) < 0.5 ? s : null
+      },
+      { timeout: 15000, message: 'teleported position' }
+    )
+    ok(Math.abs(state.rotationY - 1) < 0.01, `rotationY ${state.rotationY}`)
+    return `at ${state.position.map(n => n.toFixed(2)).join(', ')}`
+  })
+  await step('B18 a client script still pushes its local player', async () => {
+    const r = await relayCommand('localPush')
+    ok(r.ok, r.error)
+    const moved = await waitUntil(
+      async () => {
+        const s = await playerState()
+        const d = Math.hypot(s.position[0] - r.start[0], s.position[2] - r.start[2])
+        return d > 0.5 ? d : null
+      },
+      { timeout: 20000, message: 'push displacement' }
+    )
+    return `moved ${moved.toFixed(2)} m`
+  })
+  await step('B19 the local session avatar follows the url policy on the client', async () => {
+    const rejected = () => consoleLines.filter(l => l.includes('onPlayerSessionAvatar: invalid payload')).length
+    const before = rejected()
+    ok((await relayCommand('localAvatar')).ok, 'set')
+    await waitUntil(async () => (await playerState()).sessionAvatar === 'asset://avatar.vrm', {
+      message: 'session avatar set',
+    })
+    ok((await relayCommand('localAvatarBad')).ok, 'bad')
+    await waitUntil(() => rejected() === before + 1, { message: 'rejected url log' })
+    eq((await playerState()).sessionAvatar, 'asset://avatar.vrm', 'a rejected url leaves the avatar unchanged')
+    ok((await relayCommand('localAvatarClear')).ok, 'clear')
+    await waitUntil(async () => (await playerState()).sessionAvatar === null, { message: 'session avatar cleared' })
+    eq(bystander.since(0).filter(RELAY_PACKET).length, 0, 'the remote player still received nothing')
+  })
+
   // ---------- script editor (Monaco from cdnjs) ----------
   const target = WORLD_SOURCE ? appsAtLoad.find(a => a.script && a.loaded) : { id: 'b-observer', name: 'b-observer' }
   const bpBefore = await page.evaluate(id => {
@@ -700,7 +883,7 @@ async function probes(admin, watcher) {
   }
   record(
     monacoUp,
-    `B16 script editor opened on "${target.name}" (Monaco from cdnjs)`,
+    `B20 script editor opened on "${target.name}" (Monaco from cdnjs)`,
     monacoUp ? '' : 'cdnjs unreachable: the editor did not render in 3 attempts'
   )
   if (monacoUp) {
@@ -714,7 +897,7 @@ async function probes(admin, watcher) {
         .filter(Boolean)
       return { spans: spans.length, classes: classes.size, tokens }
     })
-    record(colour.classes >= 5 && colour.tokens.length >= 4, 'B17 syntax colouring works', JSON.stringify(colour))
+    record(colour.classes >= 5 && colour.tokens.length >= 4, 'B21 syntax colouring works', JSON.stringify(colour))
     await page.screenshot({ path: path.join(OUT, `fullstack-${ENGINE}-editor.png`) })
     const widgets = await page.evaluate(async () => {
       const ed = window.monaco.editor.getEditors()[0]
@@ -763,7 +946,7 @@ async function probes(admin, watcher) {
     })
     record(
       widgets.suggest && widgets.find && widgets.f1 && widgets.markers > 0,
-      'B18 editor widgets: suggest, find, F1, error markers',
+      'B22 editor widgets: suggest, find, F1, error markers',
       JSON.stringify(widgets)
     )
     await page.click('.monaco-editor .view-lines')
@@ -796,7 +979,7 @@ async function probes(admin, watcher) {
     }
     record(
       saved === 'ran' && rebuilt && !rebuilt.error,
-      'B19 edit + save: version bumped, app rebuilt, no crash',
+      'B23 edit + save: version bumped, app rebuilt, no crash',
       JSON.stringify({ saved, before: bpBefore, after: rebuilt })
     )
     await sleep(1500)
@@ -804,7 +987,7 @@ async function probes(admin, watcher) {
     const bp = snap.blueprints.find(b => b.id === bpBefore.bp)
     record(
       !!bp && bp.version > bpBefore.version && bp.script !== bpBefore.script,
-      'B20 server confirms the saved blueprint (fresh snapshot)',
+      'B24 server confirms the saved blueprint (fresh snapshot)',
       JSON.stringify({ version: bp?.version, script: bp?.script })
     )
   }
@@ -812,10 +995,10 @@ async function probes(admin, watcher) {
   // SES prints a logged error as a marker line, a "Name#n: message" line and stack frames; judge the message lines
   const SES_DETAIL = /^\[error\] (\([A-Za-z]*#\d+\)|\s+at |[\w$.<>[\] ]*@)/
   const unexpected = errorLines().filter(l => !SES_DETAIL.test(l) && !EXPECTED_ERROR.test(l))
-  record(unexpected.length === 0, 'B21 no unexpected console errors', unexpected.slice(0, 3).join(' | '))
-  record(pageErrors.length === 0, 'B22 no uncaught page errors', pageErrors.slice(0, 3).join(' | '))
+  record(unexpected.length === 0, 'B25 no unexpected console errors', unexpected.slice(0, 3).join(' | '))
+  record(pageErrors.length === 0, 'B26 no uncaught page errors', pageErrors.slice(0, 3).join(' | '))
   record(
     server.lines(/SES_UNCAUGHT|SES_UNHANDLED|UnhandledPromiseRejection/).length === 0,
-    'B23 server log: no unhandled rejections or SES errors'
+    'B27 server log: no unhandled rejections or SES errors'
   )
 }

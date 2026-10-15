@@ -1,7 +1,7 @@
 import moment from 'moment'
 import { writePacket } from '../packets'
 import { Socket } from '../Socket'
-import { createDispatchQueue, uuid } from '../utils'
+import { uuid } from '../utils'
 import { System } from './System'
 import { createJWT, readJWT } from '../utils-server'
 import { cloneDeep, isNumber } from 'lodash-es'
@@ -19,6 +19,9 @@ import { createRelayDrop } from '../extras/playerRelayPolicy'
 import { sanitizeChatMessage } from '../extras/chatPolicy'
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../extras/settingsPolicy'
 import { internalEvents } from '../extras/internalEvents'
+import { INBOUND_BYTES_PER_TICK, INBOX_MAX_BYTES, createInboundGate } from '../extras/inboundPolicy'
+import { createLogOnce } from '../extras/logOnce'
+import { readInboundPacket } from '../../server/inboundDecode'
 import * as solanaGating from '../../server/solana-gating'
 import { grantTokenRank, persistRank, revokeTokenRank } from '../../server/rankGrants'
 
@@ -50,7 +53,9 @@ export class ServerNetwork extends System {
     this.dirtyBlueprints = new Set()
     this.dirtyApps = new Set()
     this.isServer = true
-    this.queue = createDispatchQueue()
+    this.inbox = [] // raw packets, as (socket, packet) pairs, decoded at the next flush
+    this.gate = createInboundGate()
+    this.logOnce = createLogOnce()
     this.dropRelay = createRelayDrop()
   }
 
@@ -123,12 +128,57 @@ export class ServerNetwork extends System {
     dead.forEach(socket => socket.disconnect())
   }
 
-  enqueue(socket, method, data) {
-    this.queue.enqueue(socket, method, data)
+  // the pre-decode gate: packet type from the header, raw size and per-socket rate (see inboundPolicy.js)
+  admit(socket, name, bytes) {
+    return this.gate.admit(socket, name, bytes, { builder: socket.player?.isBuilder() === true })
   }
 
+  // raw packets wait here until the next tick; a socket may park at most INBOX_MAX_BYTES of undecoded wire
+  enqueue(socket, packet) {
+    if (socket.inboxBytes + packet.length > INBOX_MAX_BYTES) {
+      this.logOnce(
+        socket,
+        'inbox',
+        `[network] packet from client ${socket.id} dropped: inbox full (further drops are counted)`
+      )
+      return
+    }
+    socket.inboxBytes += packet.length
+    this.inbox.push(socket, packet)
+  }
+
+  // decodes and dispatches in arrival order, at most INBOUND_BYTES_PER_TICK of wire per tick; the rest waits
+  // for the next tick, so a flood delays other clients' packets rather than growing the heap
   flush() {
-    this.queue.flush((socket, method, data) => this[method]?.(socket, data))
+    let budget = INBOUND_BYTES_PER_TICK
+    let i = 0
+    while (i < this.inbox.length && budget > 0) {
+      const socket = this.inbox[i++]
+      const packet = this.inbox[i++]
+      budget -= packet.length
+      socket.inboxBytes -= packet.length
+      let decoded
+      try {
+        decoded = readInboundPacket(packet)
+      } catch (err) {
+        const reason = String(err?.message || err).slice(0, 80)
+        this.logOnce(
+          socket,
+          'undecodable',
+          `[network] packet from client ${socket.id} dropped: undecodable (${reason}) (further drops are counted)`
+        )
+        continue
+      }
+      const [method, data] = decoded
+      try {
+        const result = this[method]?.(socket, data)
+        // async handlers reject later; keep those failures contained too
+        if (typeof result?.then === 'function') result.then(undefined, err => console.error(err))
+      } catch (err) {
+        console.error(err)
+      }
+    }
+    if (i) this.inbox.splice(0, i)
   }
 
   getTime() {
@@ -691,7 +741,8 @@ export class ServerNetwork extends System {
     const [id, version, name, data] = event
     // engine hooks and world events are never raised from the network
     if (typeof name !== 'string' || internalEvents.includes(name)) return
-    if (typeof version !== 'number') return
+    // NaN compares false to every version and would pass as current; Infinity would be queued for ever
+    if (!Number.isFinite(version)) return
     const entity = this.world.entities.get(id)
     entity?.onEvent(version, name, data, socket.id)
   }

@@ -48,8 +48,26 @@ for (const name of names) {
   byId[id] = info
 }
 
+// peekPacketId reads the id from the second byte, which holds as long as every id is a positive fixint
+if (names.length > 128) throw new Error('packets: more than 128 names; peekPacketId relies on fixint ids')
+
 function capitalize(str) {
   return str.charAt(0).toUpperCase() + str.slice(1)
+}
+
+// the id of a packet without decoding it. msgpackr writes `[id, data]` as a 2-element fixarray whose first
+// element is a positive fixint for every id this table can hold; anything else is not a packet of this protocol
+export function peekPacketId(packet) {
+  if (!packet || packet.length < 2 || packet[0] !== 0x92 || packet[1] > 0x7f) return -1
+  return byId[packet[1]] ? packet[1] : -1
+}
+
+export function packetNameById(id) {
+  return byId[id]?.name
+}
+
+export function packetMethodById(id) {
+  return byId[id]?.method
 }
 
 export function writePacket(name, data) {

@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Packr } from 'msgpackr'
 
-import { writePacket, readPacket } from '../src/core/packets.js'
+import { packetMethodById, packetNameById, peekPacketId, readPacket, writePacket } from '../src/core/packets.js'
 
 // Mirrors the `names` array in src/core/packets.js (lines 6-31). This is a
 // frozen snapshot of the wire protocol's name -> id ordering. It is
@@ -70,4 +70,34 @@ test('readPacket: returns an empty array when the wire id is not registered', ()
   const packet = packr.pack([names.length + 1000, { foo: 'bar' }])
   const result = readPacket(packet)
   assert.deepEqual(result, [])
+})
+
+test('peekPacketId: reads the id of every known packet from its header without decoding', () => {
+  for (let expectedId = 0; expectedId < names.length; expectedId++) {
+    const name = names[expectedId]
+    for (const payload of [undefined, null, 1, 'x', [1, 2], { a: { b: [1] } }, 'y'.repeat(70000)]) {
+      const packet = writePacket(name, payload)
+      assert.equal(peekPacketId(packet), expectedId, `${name} with ${typeof payload}`)
+    }
+    assert.equal(packetNameById(expectedId), name)
+    assert.equal(packetMethodById(expectedId), `on${capitalize(name)}`)
+  }
+  // the peek relies on the ids being positive fixints; the module refuses to load past that
+  assert.ok(names.length < 128)
+})
+
+test('peekPacketId: anything that is not a 2-element fixarray with a known fixint id is -1', () => {
+  assert.equal(peekPacketId(new Uint8Array([])), -1)
+  assert.equal(peekPacketId(new Uint8Array([0x92])), -1)
+  assert.equal(peekPacketId(new Uint8Array([0x93, 0x00, 0x00, 0x00])), -1) // 3-element array
+  assert.equal(peekPacketId(new Uint8Array([0x92, 0x80, 0x00])), -1) // not a positive fixint
+  assert.equal(peekPacketId(new Uint8Array([0x92, 0x7f, 0x00])), -1) // unknown id
+  assert.equal(peekPacketId(new Uint8Array([0x92, names.length + 50, 0x00])), -1)
+  assert.equal(peekPacketId(packr.pack([names.length + 1000, {}])), -1)
+  assert.equal(peekPacketId(packr.pack({ id: 0 })), -1)
+  assert.equal(peekPacketId(packr.pack('snapshot')), -1)
+  assert.equal(peekPacketId(null), -1)
+  assert.equal(peekPacketId(undefined), -1)
+  assert.equal(packetNameById(-1), undefined)
+  assert.equal(packetMethodById(999), undefined)
 })

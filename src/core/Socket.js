@@ -1,4 +1,4 @@
-import { readPacket, writePacket } from './packets'
+import { packetNameById, peekPacketId, writePacket } from './packets'
 
 export class Socket {
   constructor({ id, ws, network, player }) {
@@ -11,6 +11,7 @@ export class Socket {
     this.alive = true
     this.closed = false
     this.disconnected = false
+    this.inboxBytes = 0 // undecoded wire waiting for the next flush (see ServerNetwork.enqueue)
 
     this.ws.on('message', this.onMessage)
     this.ws.on('pong', this.onPong)
@@ -42,9 +43,11 @@ export class Socket {
   }
 
   onMessage = packet => {
-    const [method, data] = readPacket(packet)
-    this.network.enqueue(this, method, data)
-    // console.log('<-', method, data)
+    // the type is read from the header; the packet is decoded at the next flush, within its budget
+    const id = peekPacketId(packet)
+    const name = id < 0 ? null : packetNameById(id)
+    if (!this.network.admit(this, name, packet.length)) return
+    this.network.enqueue(this, packet)
   }
 
   onClose = e => {

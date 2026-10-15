@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url'
 
 import { REPO_ROOT } from './common.mjs'
 
-const { readPacket, writePacket } = await import(pathToFileURL(path.join(REPO_ROOT, 'src/core/packets.js')))
+const { readPacket, writeClientPacket } = await import(pathToFileURL(path.join(REPO_ROOT, 'src/core/packets.js')))
 
 export class WireClient {
   constructor(port, label = 'wire') {
@@ -48,7 +48,7 @@ export class WireClient {
   }
 
   send(name, data) {
-    this.ws.send(writePacket(name, data))
+    this.ws.send(writeClientPacket(name, data))
   }
 
   // bytes as they are, for packets the encoder would never produce

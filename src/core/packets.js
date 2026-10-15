@@ -1,6 +1,7 @@
 import { Packr } from 'msgpackr'
 
 const packr = new Packr({ structuredClone: true })
+const clientPackr = new Packr({ useRecords: false, structuredClone: false, moreTypes: false, bundleStrings: false })
 
 // prettier-ignore
 const names = [
@@ -74,6 +75,13 @@ export function writePacket(name, data) {
   const info = byName[name]
   if (!info) throw new Error(`writePacket failed: ${name} (name not found)`)
   const packet = packr.pack([info.id, data])
+  return packet
+}
+
+export function writeClientPacket(name, data) {
+  const info = byName[name]
+  if (!info) throw new Error(`writeClientPacket failed: ${name} (name not found)`)
+  const packet = clientPackr.pack([info.id, data])
   return packet
 }
 

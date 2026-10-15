@@ -7,7 +7,7 @@ import {
   describeAbort,
   fetchWithRetry,
 } from '../extras/uploadQueue'
-import { readPacket, writePacket } from '../packets'
+import { readPacket, writeClientPacket } from '../packets'
 import { sanitizePush, sanitizeSessionAvatar, sanitizeTeleport } from '../extras/playerRelayPolicy'
 import { storage } from '../storage'
 import { createDispatchQueue, uuid } from '../utils'
@@ -55,7 +55,7 @@ export class ClientNetwork extends System {
 
   send(name, data) {
     // console.log('->', name, data)
-    const packet = writePacket(name, data)
+    const packet = writeClientPacket(name, data)
     this.ws.send(packet)
   }
 

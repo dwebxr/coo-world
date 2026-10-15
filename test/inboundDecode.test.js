@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 import { Packr } from 'msgpackr'
 
 import { REFUSED_EXTENSIONS, decodeInbound, readInboundPacket } from '../src/server/inboundDecode.js'
-import { writePacket } from '../src/core/packets.js'
+import { writeClientPacket, writePacket } from '../src/core/packets.js'
 
-// the client's encoder (core/packets.js uses the same options)
+// the old client encoder, still accepted during the transition to plain maps
 const packr = new Packr({ structuredClone: true })
 const ENTITY_EVENT = 8
 // generous: every shape below takes about a millisecond on a laptop; the bound is what a tick can absorb
@@ -29,8 +29,7 @@ const timed = fn => {
 const capitalize = s => s.charAt(0).toUpperCase() + s.slice(1)
 
 // walks a decoded value and fails on anything the inbound decoder must never produce. raw bytes (msgpack bin,
-// a Uint8Array) are allowed: they cost what they weigh on the wire. a raw msgpack map decodes as a Map, as it
-// always has (clients send records, which become plain objects; the handlers' plain-object checks refuse a Map)
+// a Uint8Array) are allowed: they cost what they weigh on the wire. both records and plain maps become objects
 function assertPlain(root) {
   const stack = [root]
   let visited = 0
@@ -54,7 +53,7 @@ function assertPlain(root) {
   }
 }
 
-test('readInboundPacket: decodes what the client encoder produces, records and undefined included', () => {
+test('readInboundPacket: decodes both client encoders, records, plain maps and undefined included', () => {
   const payloads = [
     ['entityModified', { id: 'p1', p: [1.5, -2, 3], q: [0, 0, 0, 1], m: 2, e: undefined }],
     ['entityEvent', ['app-1', 3, 'ping', { n: 1, s: 'x'.repeat(5000), list: [{ a: 1 }, { a: 2 }, { a: 3 }] }]],
@@ -66,17 +65,19 @@ test('readInboundPacket: decodes what the client encoder produces, records and u
     ['ai', { name: 'create', prompt: 'x'.repeat(100_000) }],
     ['requestBuilderByToken', { walletAddress: 'w', signature: 's', nonce: 'n' }],
   ]
-  for (const [name, data] of payloads) {
-    const [method, decoded] = readInboundPacket(writePacket(name, data))
-    assert.equal(method, `on${capitalize(name)}`)
-    assert.deepEqual(decoded, data)
+  for (const encode of [writePacket, writeClientPacket]) {
+    for (const [name, data] of payloads) {
+      const [method, decoded] = readInboundPacket(encode(name, data))
+      assert.equal(method, `on${capitalize(name)}`)
+      assert.deepEqual(decoded, data)
+    }
   }
   // the local player clears its emote with an own property whose value is undefined; it survives the wire
-  const [, withUndefined] = readInboundPacket(writePacket('entityModified', { id: 'p1', e: undefined }))
+  const [, withUndefined] = readInboundPacket(writeClientPacket('entityModified', { id: 'p1', e: undefined }))
   assert.ok(Object.prototype.hasOwnProperty.call(withUndefined, 'e'))
   assert.equal(withUndefined.e, undefined)
   // raw bytes stay raw bytes
-  const [, bin] = readInboundPacket(writePacket('entityEvent', ['a', 1, 'x', Buffer.from([1, 2, 3])]))
+  const [, bin] = readInboundPacket(writeClientPacket('entityEvent', ['a', 1, 'x', Buffer.from([1, 2, 3])]))
   assert.ok(bin[3] instanceof Uint8Array)
   assert.deepEqual([...bin[3]], [1, 2, 3])
   // packets decode independently: a record defined by one is not known to the next, whose record token

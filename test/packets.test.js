@@ -1,8 +1,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Packr } from 'msgpackr'
+import { Packr, Unpackr } from 'msgpackr'
 
-import { packetMethodById, packetNameById, peekPacketId, readPacket, writePacket } from '../src/core/packets.js'
+import {
+  packetMethodById,
+  packetNameById,
+  peekPacketId,
+  readPacket,
+  writeClientPacket,
+  writePacket,
+} from '../src/core/packets.js'
 
 // Mirrors the `names` array in src/core/packets.js (lines 6-31). This is a
 // frozen snapshot of the wire protocol's name -> id ordering. It is
@@ -35,6 +42,8 @@ const names = [
   'pong',
   'requestBuilderByToken',
   'revokeBuilderByToken',
+  'requestBuilderNonce',
+  'builderNonce',
 ]
 
 function capitalize(str) {
@@ -44,6 +53,7 @@ function capitalize(str) {
 // used only to inspect the raw [id, data] tuple packed by writePacket,
 // independently of packets.js's own byId/byName maps.
 const packr = new Packr({ structuredClone: true })
+const plainUnpackr = new Unpackr({ useRecords: false, mapsAsObjects: true, structuredClone: false })
 
 test('writePacket/readPacket: round-trips every known packet name at its expected wire id', () => {
   for (let expectedId = 0; expectedId < names.length; expectedId++) {
@@ -64,6 +74,51 @@ test('writePacket/readPacket: round-trips every known packet name at its expecte
 
 test('writePacket: throws when the packet name is not registered', () => {
   assert.throws(() => writePacket('notARealPacketName', {}), /name not found/)
+})
+
+test('writeClientPacket: preserves every wire id and round-trips plain payloads', () => {
+  for (let id = 0; id < names.length; id++) {
+    const data = { name: names[id], props: { list: [null, true, -1, 1.5, 'héllo 😀'], absent: undefined } }
+    const packet = writeClientPacket(names[id], data)
+    assert.equal(peekPacketId(packet), id)
+    assert.deepEqual(plainUnpackr.unpack(packet), [id, data])
+  }
+  assert.throws(() => writeClientPacket('notARealPacketName', {}), /name not found/)
+})
+
+test('writeClientPacket: writes maps and undefined without record extensions', () => {
+  const packet = writeClientPacket('entityEvent', { a: { b: undefined } })
+  assert.deepEqual([...packet], [0x92, 8, 0xde, 0, 1, 0xa1, 0x61, 0xde, 0, 1, 0xa1, 0x62, 0xd4, 0, 0])
+})
+
+test('writeClientPacket: duplicates shared values while server packets retain references and cycles', () => {
+  const shared = { n: 1 }
+  const [, decoded] = plainUnpackr.unpack(writeClientPacket('entityEvent', [shared, shared]))
+  assert.deepEqual(decoded, [shared, shared])
+  assert.notEqual(decoded[0], decoded[1])
+
+  const cyclic = { shared: [shared, shared] }
+  cyclic.self = cyclic
+  const [, serverData] = readPacket(writePacket('entityEvent', cyclic))
+  assert.equal(serverData.self, serverData)
+  assert.equal(serverData.shared[0], serverData.shared[1])
+})
+
+test('writeClientPacket: uses plain representations for maps, sets, errors and regular expressions', () => {
+  const error = new Error('message', { cause: 'reason' })
+  const data = [new Map([['key', 1]]), new Set([1, 2]), error, /hello/gi, new Uint8Array([1, 2, 3])]
+  const [, decoded] = plainUnpackr.unpack(writeClientPacket('entityEvent', data))
+  assert.deepEqual(decoded.slice(0, 4), [{ key: 1 }, [1, 2], [error.name, error.message, error.cause], ['hello', 'gi']])
+  assert.ok(decoded[4] instanceof Uint8Array)
+  assert.deepEqual([...decoded[4]], [1, 2, 3])
+})
+
+test('writeClientPacket: long strings remain ordinary unbundled strings', () => {
+  const data = ['a'.repeat(2000), 'あ'.repeat(2000)]
+  const packet = writeClientPacket('entityEvent', data)
+  const utf8 = new TextEncoder().encode(data[1])
+  assert.deepEqual([...packet], [0x92, 8, 0x92, 0xda, 7, 0xd0, ...Array(2000).fill(0x61), 0xda, 0x17, 0x70, ...utf8])
+  assert.deepEqual(plainUnpackr.unpack(packet), [8, data])
 })
 
 test('readPacket: returns an empty array when the wire id is not registered', () => {

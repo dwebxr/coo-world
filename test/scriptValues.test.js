@@ -224,3 +224,14 @@ test('escape scan: host rejections reach scripts through toScriptError', () => {
   const proxy = read('src/core/extras/createEntityProxy.js')
   assert.match(proxy, /return method\(entity, \.\.\.args\)[\s\S]*?catch \(err\) \{[\s\S]*?throw toScriptError\(err\)/)
 })
+
+test('escape scan: synchronous physics proxies use guarded calls and inline accessor catches', () => {
+  const values = read('src/core/extras/scriptValues.js')
+  assert.match(values, /return Reflect.apply\(fn, thisArg, args\)[\s\S]*?catch \(err\) \{\s*throw toScriptError\(err\)/)
+  for (const file of ['Node', 'RigidBody', 'Controller']) {
+    const source = read(`src/core/nodes/${file}.js`)
+    assert.match(source, /import \{ callForScript, toScriptError \}/)
+    assert.match(source, /callForScript\(self\./)
+    assert.match(source, /catch \(err\) \{\s*throw toScriptError\(err\)/)
+  }
+})

@@ -7,10 +7,17 @@ import {
   pxToVec3,
   pxToQuat,
   writeVec3,
+  writeQuat,
+  isVector3,
+  isQuaternion,
+  readVec3,
+  readQuat,
+  warnOnce,
   scratchPxVec3,
 } from '../extras/physxConvert.js'
 
 import { Node } from './Node'
+import { callForScript, toScriptError } from '../extras/scriptValues'
 import { isFunction, isNumber, isString } from 'lodash-es'
 
 const _v1 = new THREE.Vector3()
@@ -45,7 +52,9 @@ function getForceMode(mode) {
       velocityChange: PHYSX.PxForceModeEnum.eVELOCITY_CHANGE,
     }
   }
-  return forceModes[mode] || forceModes.force
+  return typeof mode === 'string' && Object.prototype.hasOwnProperty.call(forceModes, mode)
+    ? forceModes[mode]
+    : forceModes.force
 }
 
 export class RigidBody extends Node {
@@ -320,125 +329,172 @@ export class RigidBody extends Node {
   }
 
   addForce(force, mode) {
-    if (!force?.isVector3) throw new Error('[rigidbody] addForce force must be Vector3')
-    mode = getForceMode(mode)
+    if (!readVec3(force, _v1, '[rigidbody] addForce force must be Vector3')) {
+      warnOnce('[rigidbody] addForce ignored a non-finite force')
+      return
+    }
     if (!this.actor) return
+    mode = getForceMode(mode)
     const px = scratchPxVec3()
-    vec3ToPx(force, px)
+    vec3ToPx(_v1, px)
     this.actor.addForce(px, mode, true)
   }
 
   addForceAtPos(force, pos, mode) {
-    if (!force?.isVector3) throw new Error('[rigidbody] addForceAtPos force must be Vector3')
-    if (!pos?.isVector3) throw new Error('[rigidbody] addForceAtPos force must be Vector3')
+    const validForce = readVec3(force, _v1, '[rigidbody] addForceAtPos force must be Vector3')
+    const validPos = readVec3(pos, _v2, '[rigidbody] addForceAtPos pos must be Vector3')
+    if (!validForce || !validPos) {
+      warnOnce('[rigidbody] addForceAtPos ignored a non-finite force or pos')
+      return
+    }
     if (!this.actor) return
     if (!this._pv1) this._pv1 = new PHYSX.PxVec3()
     if (!this._pv2) this._pv2 = new PHYSX.PxVec3()
     mode = getForceMode(mode)
-    vec3ToPx(force, this._pv1)
-    vec3ToPx(pos, this._pv2)
+    vec3ToPx(_v1, this._pv1)
+    vec3ToPx(_v2, this._pv2)
     PHYSX.PxRigidBodyExt.prototype.addForceAtPos(this.actor, this._pv1, this._pv2, mode, true)
   }
 
   addForceAtLocalPos(force, pos, mode) {
-    if (!force?.isVector3) throw new Error('[rigidbody] addForceAtLocalPos force must be Vector3')
-    if (!pos?.isVector3) throw new Error('[rigidbody] addForceAtLocalPos force must be Vector3')
+    const validForce = readVec3(force, _v1, '[rigidbody] addForceAtLocalPos force must be Vector3')
+    const validPos = readVec3(pos, _v2, '[rigidbody] addForceAtLocalPos pos must be Vector3')
+    if (!validForce || !validPos) {
+      warnOnce('[rigidbody] addForceAtLocalPos ignored a non-finite force or pos')
+      return
+    }
     if (!this.actor) return
     if (!this._pv1) this._pv1 = new PHYSX.PxVec3()
     if (!this._pv2) this._pv2 = new PHYSX.PxVec3()
     mode = getForceMode(mode)
-    vec3ToPx(force, this._pv1)
-    vec3ToPx(pos, this._pv2)
+    vec3ToPx(_v1, this._pv1)
+    vec3ToPx(_v2, this._pv2)
     PHYSX.PxRigidBodyExt.prototype.addForceAtLocalPos(this.actor, this._pv1, this._pv2, mode, true)
   }
 
   addTorque(torque, mode) {
-    if (!torque?.isVector3) throw new Error('[rigidbody] addForce torque must be Vector3')
-    mode = getForceMode(mode)
+    if (!readVec3(torque, _v1, '[rigidbody] addTorque torque must be Vector3')) {
+      warnOnce('[rigidbody] addTorque ignored a non-finite torque')
+      return
+    }
     if (!this.actor) return
+    mode = getForceMode(mode)
     const px = scratchPxVec3()
-    vec3ToPx(torque, px)
+    vec3ToPx(_v1, px)
     this.actor.addTorque(px, mode, true)
   }
 
   getPosition(vec3) {
     if (!vec3) vec3 = this.tempVec3
-    if (!this.actor) return vec3.set(0, 0, 0)
+    if (!isVector3(vec3)) throw new Error('[rigidbody] getPosition target must be Vector3')
+    if (!this.actor) return writeVec3(vec3, 0, 0, 0)
     const pose = this.actor.getGlobalPose()
-    pxToVec3(vec3, pose.p)
-    return vec3
+    return pxToVec3(vec3, pose.p)
   }
 
   setPosition(vec3) {
+    if (!readVec3(vec3, _v1, '[rigidbody] setPosition position must be Vector3')) {
+      warnOnce('[rigidbody] setPosition ignored a non-finite position')
+      return
+    }
     if (!this.actor) return
     const pose = this.actor.getGlobalPose()
-    vec3ToPxPos(vec3, pose)
+    vec3ToPxPos(_v1, pose)
     this.actor.setGlobalPose(pose)
-    this.position.copy(vec3)
+    writeVec3(this.position, _v1.x, _v1.y, _v1.z)
   }
 
   getQuaternion(quat) {
     if (!quat) quat = this.tempQuat
-    if (!this.actor) return quat.set(0, 0, 0)
+    if (!isQuaternion(quat)) throw new Error('[rigidbody] getQuaternion target must be Quaternion')
+    if (!this.actor) return writeQuat(quat, 0, 0, 0, 1)
     const pose = this.actor.getGlobalPose()
-    pxToQuat(quat, pose.q)
-    return quat
+    return pxToQuat(quat, pose.q)
   }
 
   setQuaternion(quat) {
+    if (!readQuat(quat, _q1, '[rigidbody] setQuaternion quaternion must be Quaternion')) {
+      warnOnce('[rigidbody] setQuaternion ignored a non-finite quaternion')
+      return
+    }
     if (!this.actor) return
     const pose = this.actor.getGlobalPose()
-    quatToPxRot(quat, pose)
+    quatToPxRot(_q1, pose)
     this.actor.setGlobalPose(pose)
-    this.quaternion.copy(quat)
+    writeQuat(this.quaternion, _q1.x, _q1.y, _q1.z, _q1.w)
   }
 
   getLinearVelocity(vec3) {
     if (!vec3) vec3 = this.tempVec3
-    if (!this.actor) return vec3.set(0, 0, 0)
+    if (!isVector3(vec3)) throw new Error('[rigidbody] getLinearVelocity target must be Vector3')
+    if (!this.actor) return writeVec3(vec3, 0, 0, 0)
     return pxToVec3(vec3, this.actor.getLinearVelocity())
   }
 
   setLinearVelocity(vec3) {
+    if (!readVec3(vec3, _v1, '[rigidbody] setLinearVelocity velocity must be Vector3')) {
+      warnOnce('[rigidbody] setLinearVelocity ignored a non-finite velocity')
+      return
+    }
     if (this.actor?.setLinearVelocity == null) return
     const px = scratchPxVec3()
-    vec3ToPx(vec3, px)
+    vec3ToPx(_v1, px)
     this.actor.setLinearVelocity?.(px)
   }
 
   getAngularVelocity(vec3) {
     if (!vec3) vec3 = this.tempVec3
-    if (!this.actor) return vec3.set(0, 0, 0)
+    if (!isVector3(vec3)) throw new Error('[rigidbody] getAngularVelocity target must be Vector3')
+    if (!this.actor) return writeVec3(vec3, 0, 0, 0)
     return pxToVec3(vec3, this.actor.getAngularVelocity())
   }
 
   setAngularVelocity(vec3) {
+    if (!readVec3(vec3, _v1, '[rigidbody] setAngularVelocity velocity must be Vector3')) {
+      warnOnce('[rigidbody] setAngularVelocity ignored a non-finite velocity')
+      return
+    }
     if (this.actor?.setAngularVelocity == null) return
     const px = scratchPxVec3()
-    vec3ToPx(vec3, px)
+    vec3ToPx(_v1, px)
     this.actor.setAngularVelocity?.(px)
   }
 
   getVelocityAtPos(pos, vec3) {
-    if (!pos?.isVector3) throw new Error('[rigidbody] getVelocityAtPos pos must be Vector3')
-    if (!this.actor) return vec3.set(0, 0, 0)
+    const valid = readVec3(pos, _v1, '[rigidbody] getVelocityAtPos pos must be Vector3')
+    if (!vec3) vec3 = this.tempVec3
+    if (!isVector3(vec3)) throw new Error('[rigidbody] getVelocityAtPos target must be Vector3')
+    if (!valid) {
+      warnOnce('[rigidbody] getVelocityAtPos ignored a non-finite pos')
+      return writeVec3(vec3, 0, 0, 0)
+    }
+    if (!this.actor) return writeVec3(vec3, 0, 0, 0)
     const px = scratchPxVec3()
-    vec3ToPx(pos, px)
+    vec3ToPx(_v1, px)
     return pxToVec3(vec3, PHYSX.PxRigidBodyExt.prototype.getVelocityAtPos(this.actor, px))
   }
 
   getLocalVelocityAtLocalPos(pos, vec3) {
-    if (!pos?.isVector3) throw new Error('[rigidbody] getVelocityAtLocalPos pos must be Vector3')
-    if (!this.actor) return vec3.set(0, 0, 0)
+    const valid = readVec3(pos, _v1, '[rigidbody] getLocalVelocityAtLocalPos pos must be Vector3')
+    if (!vec3) vec3 = this.tempVec3
+    if (!isVector3(vec3)) throw new Error('[rigidbody] getLocalVelocityAtLocalPos target must be Vector3')
+    if (!valid) {
+      warnOnce('[rigidbody] getLocalVelocityAtLocalPos ignored a non-finite pos')
+      return writeVec3(vec3, 0, 0, 0)
+    }
+    if (!this.actor) return writeVec3(vec3, 0, 0, 0)
     const px = scratchPxVec3()
-    vec3ToPx(pos, px)
+    vec3ToPx(_v1, px)
     return pxToVec3(vec3, PHYSX.PxRigidBodyExt.prototype.getLocalVelocityAtLocalPos(this.actor, px))
   }
 
   setCenterOfMass(pos) {
-    if (!pos?.isVector3) throw new Error('[rigidbody] setCenterOfMass pos must be Vector3')
+    if (!readVec3(pos, _v1, '[rigidbody] setCenterOfMass pos must be Vector3')) {
+      warnOnce('[rigidbody] setCenterOfMass ignored a non-finite pos')
+      return
+    }
     this._centerOfMass ??= new THREE.Vector3()
-    writeVec3(this._centerOfMass, pos.x, pos.y, pos.z)
+    writeVec3(this._centerOfMass, _v1.x, _v1.y, _v1.z)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -447,8 +503,14 @@ export class RigidBody extends Node {
     if (this._type !== 'kinematic') {
       throw new Error('[rigidbody] setKinematicTarget failed (not kinematic)')
     }
-    vec3ToPxPos(position, this._tm)
-    quatToPxRot(quaternion, this._tm)
+    const validPosition = readVec3(position, _v1, '[rigidbody] setKinematicTarget position must be Vector3')
+    const validQuaternion = readQuat(quaternion, _q1, '[rigidbody] setKinematicTarget quaternion must be Quaternion')
+    if (!validPosition || !validQuaternion) {
+      warnOnce('[rigidbody] setKinematicTarget ignored a non-finite position or quaternion')
+      return
+    }
+    vec3ToPxPos(_v1, this._tm)
+    quatToPxRot(_q1, this._tm)
     this.actor?.setKinematicTarget(this._tm)
   }
 
@@ -505,55 +567,59 @@ export class RigidBody extends Node {
           self.onTriggerLeave = value
         },
         get sleeping() {
-          return self.sleeping
+          try {
+            return self.sleeping
+          } catch (err) {
+            throw toScriptError(err)
+          }
         },
         addForce(force, mode) {
-          self.addForce(force, mode)
+          return callForScript(self.addForce, self, [force, mode])
         },
-        addForceAtPos(force, pos) {
-          self.addForceAtPos(force, pos)
+        addForceAtPos(force, pos, mode) {
+          return callForScript(self.addForceAtPos, self, [force, pos, mode])
         },
-        addForceAtLocalPos(force, pos) {
-          self.addForceAtLocalPos(force, pos)
+        addForceAtLocalPos(force, pos, mode) {
+          return callForScript(self.addForceAtLocalPos, self, [force, pos, mode])
         },
         addTorque(torque, mode) {
-          self.addTorque(torque, mode)
+          return callForScript(self.addTorque, self, [torque, mode])
         },
         getPosition(vec3) {
-          return self.getPosition(vec3)
+          return callForScript(self.getPosition, self, [vec3])
         },
         setPosition(vec3) {
-          self.setPosition(vec3)
+          return callForScript(self.setPosition, self, [vec3])
         },
         getQuaternion(quat) {
-          return self.getQuaternion(quat)
+          return callForScript(self.getQuaternion, self, [quat])
         },
         setQuaternion(quat) {
-          self.setQuaternion(quat)
+          return callForScript(self.setQuaternion, self, [quat])
         },
         getLinearVelocity(vec3) {
-          return self.getLinearVelocity(vec3)
+          return callForScript(self.getLinearVelocity, self, [vec3])
         },
         setLinearVelocity(vec3) {
-          self.setLinearVelocity(vec3)
+          return callForScript(self.setLinearVelocity, self, [vec3])
         },
         getAngularVelocity(vec3) {
-          self.getAngularVelocity(vec3)
+          return callForScript(self.getAngularVelocity, self, [vec3])
         },
         setAngularVelocity(vec3) {
-          self.setAngularVelocity(vec3)
+          return callForScript(self.setAngularVelocity, self, [vec3])
         },
         getVelocityAtPos(pos, vec3) {
-          return self.getVelocityAtPos(pos, vec3)
+          return callForScript(self.getVelocityAtPos, self, [pos, vec3])
         },
         getLocalVelocityAtLocalPos(pos, vec3) {
-          return self.getLocalVelocityAtLocalPos(pos, vec3)
+          return callForScript(self.getLocalVelocityAtLocalPos, self, [pos, vec3])
         },
         setCenterOfMass(pos) {
-          self.setCenterOfMass(pos)
+          return callForScript(self.setCenterOfMass, self, [pos])
         },
         setKinematicTarget(position, quaternion) {
-          self.setKinematicTarget(position, quaternion)
+          return callForScript(self.setKinematicTarget, self, [position, quaternion])
         },
       }
       proxy = Object.defineProperties(proxy, Object.getOwnPropertyDescriptors(super.getProxy())) // inherit Node properties

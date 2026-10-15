@@ -1,3 +1,4 @@
+import { callForScript, toScriptError } from '../extras/scriptValues'
 import { isBoolean } from 'lodash-es'
 import * as THREE from '../extras/three'
 import { getNodeRef, isRefAllowed, registerNodeRefGetter } from './refs'
@@ -415,7 +416,11 @@ export class Node {
           return self.active
         },
         set active(value) {
-          self.active = value
+          try {
+            self.active = value
+          } catch (err) {
+            throw toScriptError(err)
+          }
         },
         get parent() {
           return self.parent?.getProxy()
@@ -441,7 +446,7 @@ export class Node {
             console.error('[node.add] expected a node')
             return this
           }
-          self.add(node)
+          callForScript(self.add, self, [node])
           return this
         },
         remove(pNode) {
@@ -450,7 +455,7 @@ export class Node {
             console.error('[node.remove] expected a node')
             return this
           }
-          self.remove(node)
+          callForScript(self.remove, self, [node])
           return this
         },
         traverse(callback) {
@@ -462,11 +467,11 @@ export class Node {
         //   self.detach(node)
         // },
         clone(recursive) {
-          const node = self.clone(recursive)
+          const node = callForScript(self.clone, self, [recursive])
           return node.getProxy()
         },
         clean() {
-          self.clean()
+          callForScript(self.clean, self, [])
         },
         get _ref() {
           if (!isRefAllowed()) return null

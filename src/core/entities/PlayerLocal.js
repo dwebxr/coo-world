@@ -14,8 +14,19 @@ import { outranks, isAdmin, isBuilder, isMuted } from '../extras/playerRanks'
 import { createPlayerAura, chatBubble } from '../extras/playerAura'
 import { isEmoteUrl, sanitizeName, sanitizePlayerSelfModify } from '../extras/entityModifyPolicy'
 import { readAnchorPose } from '../extras/anchorPose'
-import { vec3ToPx, vec3ToPxPos, quatToPxRot, pxToVec3, pxToQuat, scratchPxVec3 } from '../extras/physxConvert.js'
+import {
+  readVec3,
+  writeVec3,
+  warnOnce,
+  vec3ToPx,
+  vec3ToPxPos,
+  quatToPxRot,
+  pxToVec3,
+  pxToQuat,
+  scratchPxVec3,
+} from '../extras/physxConvert.js'
 
+const teleportPosition = new THREE.Vector3()
 const anchorPosition = new THREE.Vector3()
 const anchorQuaternion = new THREE.Quaternion()
 
@@ -1140,13 +1151,17 @@ export class PlayerLocal extends Entity {
   }
 
   teleport({ position, rotationY }) {
-    position = position.isVector3 ? position : new THREE.Vector3().fromArray(position)
-    const hasRotation = isNumber(rotationY)
+    if (Array.isArray(position)) position = teleportPosition.fromArray(position)
+    if (!readVec3(position, teleportPosition, '[player] teleport position must be Vector3')) {
+      warnOnce('[player] teleport ignored a non-finite position')
+      return
+    }
+    const hasRotation = Number.isFinite(rotationY)
     // snap to position
     const pose = this.capsule.getGlobalPose()
-    vec3ToPxPos(position, pose)
+    vec3ToPxPos(teleportPosition, pose)
     this.capsuleHandle.snap(pose)
-    this.base.position.copy(position)
+    writeVec3(this.base.position, teleportPosition.x, teleportPosition.y, teleportPosition.z)
     if (hasRotation) this.base.rotation.y = rotationY
     // send network update
     this.world.network.send('entityModified', {

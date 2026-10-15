@@ -1,5 +1,14 @@
+import { callForScript, toScriptError } from '../extras/scriptValues'
 import * as THREE from '../extras/three'
-import { vec3ToPx, pxToVec3, scratchPxVec3, scratchPxExtVec3 } from '../extras/physxConvert.js'
+import {
+  readVec3,
+  writeVec3,
+  warnOnce,
+  vec3ToPx,
+  pxToVec3,
+  scratchPxVec3,
+  scratchPxExtVec3,
+} from '../extras/physxConvert.js'
 import { isNumber, isBoolean, isString, isFunction } from 'lodash-es'
 
 import { DEG2RAD } from '../extras/general'
@@ -8,6 +17,8 @@ import { Node } from './Node'
 import { Layers } from '../extras/Layers'
 
 const layers = ['environment', 'prop', 'player', 'tool']
+
+const _v1 = new THREE.Vector3()
 
 const defaults = {
   radius: 0.4,
@@ -236,30 +247,35 @@ export class Controller extends Node {
   }
 
   get isGrounded() {
+    if (!this.moveFlags) return false
     return this.moveFlags.isSet(PHYSX.PxControllerCollisionFlagEnum.eCOLLISION_DOWN)
   }
 
   get isCeiling() {
+    if (!this.moveFlags) return false
     return this.moveFlags.isSet(PHYSX.PxControllerCollisionFlagEnum.eCOLLISION_UP)
   }
 
   teleport(vec3) {
-    if (!vec3?.isVector3) {
-      throw new Error('[controller] teleport expected Vector3')
+    if (!readVec3(vec3, _v1, '[controller] teleport expected Vector3')) {
+      warnOnce('[controller] teleport ignored a non-finite vector')
+      return
     }
-    this.position.copy(vec3)
+    writeVec3(this.position, _v1.x, _v1.y, _v1.z)
+    if (!this.controller) return
     const px = scratchPxExtVec3()
-    vec3ToPx(vec3, px)
+    vec3ToPx(_v1, px)
     this.controller.setFootPosition(px)
   }
 
   move(vec3) {
-    if (!vec3?.isVector3) {
-      throw new Error('[controller] move expected Vector3')
+    if (!readVec3(vec3, _v1, '[controller] move expected Vector3')) {
+      warnOnce('[controller] move ignored a non-finite vector')
+      return
     }
     if (!this.controller) return
     const px = scratchPxVec3()
-    vec3ToPx(vec3, px)
+    vec3ToPx(_v1, px)
     this.moveFlags = this.controller.move(px, 0, 1 / 60, this.ctx.world.physics.controllerFilters)
     // this.isGrounded = moveFlags.isSet(PHYSX.PxControllerCollisionFlagEnum.eCOLLISION_DOWN) // prettier-ignore
     const pos = this.controller.getFootPosition()
@@ -317,16 +333,24 @@ export class Controller extends Node {
           self.onContactEnd = value
         },
         get isGrounded() {
-          return self.isGrounded
+          try {
+            return self.isGrounded
+          } catch (err) {
+            throw toScriptError(err)
+          }
         },
         get isCeiling() {
-          return self.isCeiling
+          try {
+            return self.isCeiling
+          } catch (err) {
+            throw toScriptError(err)
+          }
         },
         teleport(vec3) {
-          return self.teleport(vec3)
+          return callForScript(self.teleport, self, [vec3])
         },
         move(vec3) {
-          return self.move(vec3)
+          return callForScript(self.move, self, [vec3])
         },
       }
       proxy = Object.defineProperties(proxy, Object.getOwnPropertyDescriptors(super.getProxy())) // inherit Node properties

@@ -1,6 +1,8 @@
 import moment from 'moment'
-import { isArray, isEqual, isFunction, isNumber } from 'lodash-es'
+import { isArray, isEqual, isFunction } from 'lodash-es'
 import * as THREE from '../extras/three'
+
+import { readVec3, isFiniteF32, warnOnce } from '../extras/physxConvert.js'
 
 import { System } from './System'
 import { getNodeRef, resolveValueRef } from '../nodes/Node'
@@ -12,6 +14,10 @@ import { internalEvents } from '../extras/internalEvents'
 import { resolveOpenURL } from '../extras/worldOpenPolicy'
 import { toScriptError } from '../extras/scriptValues'
 import { createEventLedger } from '../extras/appEventQueue'
+
+const _rayOrigin = new THREE.Vector3()
+const _rayDir = new THREE.Vector3()
+const _overlapOrigin = new THREE.Vector3()
 
 const isBrowser = typeof window !== 'undefined'
 
@@ -152,15 +158,21 @@ export class Apps extends System {
         return mask
       },
       raycast(entity, origin, direction, maxDistance, layerMask) {
-        if (!origin?.isVector3) throw new Error('[raycast] origin must be Vector3')
-        if (!direction?.isVector3) throw new Error('[raycast] direction must be Vector3')
-        if (maxDistance !== undefined && maxDistance !== null && !isNumber(maxDistance)) {
+        const validOrigin = readVec3(origin, _rayOrigin, '[raycast] origin must be Vector3')
+        const validDirection = readVec3(direction, _rayDir, '[raycast] direction must be Vector3')
+        maxDistance ??= Infinity
+        if (typeof maxDistance !== 'number' || Number.isNaN(maxDistance) || maxDistance < 0) {
           throw new Error('[raycast] maxDistance must be number')
         }
-        if (layerMask !== undefined && layerMask !== null && !isNumber(layerMask)) {
+        layerMask ??= 0
+        if (!Number.isInteger(layerMask) || layerMask < -2147483648 || layerMask > 4294967295) {
           throw new Error('[raycast] layerMask must be number')
         }
-        const hit = world.physics.raycast(origin, direction, maxDistance, layerMask)
+        if (!validOrigin || !validDirection) {
+          warnOnce('[raycast] ignored a non-finite origin or direction')
+          return null
+        }
+        const hit = world.physics.raycast(_rayOrigin, _rayDir, maxDistance, layerMask >>> 0)
         if (!hit) return null
         if (!self.raycastHit) {
           self.raycastHit = {
@@ -179,7 +191,19 @@ export class Apps extends System {
         return self.raycastHit
       },
       overlapSphere(entity, radius, origin, layerMask) {
-        const hits = world.physics.overlapSphere(radius, origin, layerMask)
+        const validOrigin = readVec3(origin, _overlapOrigin, '[overlapSphere] origin must be Vector3')
+        if (!isFiniteF32(radius) || Math.fround(radius) <= 0) {
+          throw new Error('[overlapSphere] radius must be a positive number')
+        }
+        layerMask ??= 0
+        if (!Number.isInteger(layerMask) || layerMask < -2147483648 || layerMask > 4294967295) {
+          throw new Error('[overlapSphere] layerMask must be number')
+        }
+        if (!validOrigin) {
+          warnOnce('[overlapSphere] ignored a non-finite origin')
+          return []
+        }
+        const hits = world.physics.overlapSphere(radius, _overlapOrigin, layerMask >>> 0)
         return hits.map(hit => {
           return hit.proxy
         })

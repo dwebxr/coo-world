@@ -3,6 +3,9 @@ import { clamp, uuid } from '../utils'
 import * as THREE from './three'
 import { sanitizePlayerSelfModify } from './entityModifyPolicy'
 
+import { readVec3, warnOnce } from './physxConvert.js'
+
+const _v = new THREE.Vector3()
 const HEALTH_MAX = 100
 
 export function createPlayerProxy(entity, player) {
@@ -67,14 +70,22 @@ export function createPlayerProxy(entity, player) {
       return !!player.destroyed
     },
     teleport(position, rotationY) {
+      if (player.data.owner !== world.network.id && world.network.isClient) {
+        remoteOnClient('teleport')
+        return
+      }
+      if (!readVec3(position, _v, '[player] teleport position must be Vector3')) {
+        warnOnce('[player] teleport ignored a non-finite position')
+        return
+      }
+      const payload = { position: [_v.x, _v.y, _v.z] }
+      if (Number.isFinite(rotationY)) payload.rotationY = rotationY
       if (player.data.owner === world.network.id) {
         // if player is local we can set directly
-        world.network.enqueue('onPlayerTeleport', { position: position.toArray(), rotationY })
-      } else if (world.network.isClient) {
-        remoteOnClient('teleport')
+        world.network.enqueue('onPlayerTeleport', payload)
       } else {
         // if we're the server we need to notify the player
-        world.network.sendTo(player.data.owner, 'playerTeleport', { position: position.toArray(), rotationY })
+        world.network.sendTo(player.data.owner, 'playerTeleport', payload)
       }
     },
     getBoneTransform(boneName) {
@@ -154,14 +165,21 @@ export function createPlayerProxy(entity, player) {
       activeEffectConfig?.onEnd()
     },
     push(force) {
+      if (player.data.owner !== world.network.id && world.network.isClient) {
+        remoteOnClient('push')
+        return
+      }
+      if (!readVec3(force, _v, '[player] push force must be Vector3')) {
+        warnOnce('[player] push ignored a non-finite force')
+        return
+      }
+      const values = [_v.x, _v.y, _v.z]
       if (player.data.owner === world.network.id) {
         // if player is local we can set directly
-        player.push(force.toArray())
-      } else if (world.network.isClient) {
-        remoteOnClient('push')
+        player.push(values)
       } else {
         // if we're the server we need to notify the player
-        world.network.sendTo(player.data.owner, 'playerPush', { force: force.toArray() })
+        world.network.sendTo(player.data.owner, 'playerPush', { force: values })
       }
     },
     screenshare(targetId) {

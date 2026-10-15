@@ -55,3 +55,11 @@ export function toScriptError(err) {
   if (stack !== null) define(error, 'stack', stack)
   return error
 }
+
+export function callForScript(fn, thisArg, args) {
+  try {
+    return Reflect.apply(fn, thisArg, args)
+  } catch (err) {
+    throw toScriptError(err)
+  }
+}

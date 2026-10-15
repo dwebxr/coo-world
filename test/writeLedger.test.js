@@ -1,5 +1,6 @@
 import { chatEnvelope } from '../src/core/extras/chatPolicy.js'
 import { sanitizePlayerSelfModify } from '../src/core/extras/entityModifyPolicy.js'
+import { readVec3, warnOnce } from '../src/core/extras/physxConvert.js'
 import { createEventLedger } from '../src/core/extras/appEventQueue.js'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -278,6 +279,8 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
     `${proxySource.replace(/^import .*\n/gm, '').replace('export function', 'function')}\ncreatePlayerProxy`,
     {
       THREE,
+      readVec3,
+      warnOnce,
       console,
       clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v)),
       sanitizePlayerSelfModify: (data, id) => sanitizePlayerSelfModify({ ef: { ...data.ef } }, id),

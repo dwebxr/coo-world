@@ -1,5 +1,5 @@
 import * as THREE from '../extras/three'
-import { vec3ToPxPos, quatToPxRot } from '../extras/physxConvert.js'
+import { vec3ToPxPos, quatToPxRot, warnOnce } from '../extras/physxConvert.js'
 import { isBoolean, isNumber } from 'lodash-es'
 
 import { getRef, Node, resolveValueRef, secureRef } from './Node'
@@ -61,7 +61,9 @@ export class Collider extends Node {
       pmesh = geometryToPxMesh(this.ctx.world, this._geometry, isConvex)
       if (!pmesh) return console.error('failed to generate collider pmesh')
       this.matrixWorld.decompose(_v1, _q1, _v2)
-      const scale = new PHYSX.PxMeshScale(new PHYSX.PxVec3(_v2.x, _v2.y, _v2.z), new PHYSX.PxQuat(0, 0, 0, 1))
+      const scaleVec = new PHYSX.PxVec3(_v2.x, _v2.y, _v2.z)
+      const scaleQuat = new PHYSX.PxQuat(0, 0, 0, 1)
+      const scale = new PHYSX.PxMeshScale(scaleVec, scaleQuat)
       if (isConvex) {
         geometry = new PHYSX.PxConvexMeshGeometry(pmesh.value, scale)
       } else {
@@ -70,6 +72,8 @@ export class Collider extends Node {
         geometry = new PHYSX.PxTriangleMeshGeometry(pmesh.value, scale)
       }
       PHYSX.destroy(scale)
+      PHYSX.destroy(scaleVec)
+      PHYSX.destroy(scaleQuat)
     }
     const material = this.ctx.world.physics.getMaterial(this._staticFriction, this._dynamicFriction, this._restitution)
     const flags = new PHYSX.PxShapeFlags()
@@ -83,25 +87,30 @@ export class Collider extends Node {
     if (!this._trigger) {
       pairFlags |= PHYSX.PxPairFlagEnum.eNOTIFY_CONTACT_POINTS
     }
-    this.pmesh = pmesh
     const filterData = new PHYSX.PxFilterData(layer.group, layer.mask, pairFlags, 0)
+    let shape
     try {
-      this.shape = this.ctx.world.physics.physics.createShape(geometry, material, true, flags)
+      shape = this.ctx.world.physics.physics.createShape(geometry, material, true, flags)
     } catch (err) {
       console.error('[collider] failed to create shape')
       console.error(err)
-      // cleanup
-      if (geometry) {
-        PHYSX.destroy(geometry)
-      }
-      if (this.pmesh) {
-        this.pmesh.release()
-        this.pmesh = null
-      }
+    } finally {
+      PHYSX.destroy(flags)
+    }
+    if (!shape || shape.ptr === 0) {
+      this.shape = null
+      PHYSX.destroy(geometry)
+      PHYSX.destroy(filterData)
+      pmesh?.release()
+      this.pmesh = null
+      warnOnce('[collider] failed to create shape')
       return
     }
+    this.shape = shape
+    this.pmesh = pmesh
     this.shape.setQueryFilterData(filterData)
     this.shape.setSimulationFilterData(filterData)
+    PHYSX.destroy(filterData)
     // const parentWorldScale = _v2
     // this.parent.matrixWorld.decompose(_v1, _q1, parentWorldScale)
     const position = _v1.copy(this.position).multiply(this.parent.scale)
@@ -109,6 +118,7 @@ export class Collider extends Node {
     vec3ToPxPos(position, pose)
     quatToPxRot(this.quaternion, pose)
     this.shape.setLocalPose(pose)
+    PHYSX.destroy(pose)
     this.parent?.addShape?.(this.shape)
     // console.log('geometry', geometry)
     // this._geometry = geometry

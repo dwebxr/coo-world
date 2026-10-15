@@ -1,5 +1,5 @@
 import * as THREE from '../extras/three'
-import { vec3ToPxPos, quatToPxRot } from '../extras/physxConvert.js'
+import { vec3ToPxPos, quatToPxRot, warnOnce } from '../extras/physxConvert.js'
 import { isBoolean, isNumber, isString, isArray, isObject, isFunction, isEqual } from 'lodash-es'
 
 import { Node, secureRef } from './Node'
@@ -361,7 +361,25 @@ export class Prim extends Node {
     }
 
     // Create shape
-    this.shape = this.ctx.world.physics.physics.createShape(pxGeometry, material, true, flags)
+    let shape
+    try {
+      shape = this.ctx.world.physics.physics.createShape(pxGeometry, material, true, flags)
+    } finally {
+      PHYSX.destroy(flags)
+      if (!shape || shape.ptr === 0) {
+        this.shape = null
+        PHYSX.destroy(pxGeometry)
+        this.pmesh?.release()
+        this.pmesh = null
+        this.actor.release()
+        this.actor = null
+        PHYSX.destroy(this._tm)
+        this._tm = null
+        warnOnce('[prim] failed to create shape')
+      }
+    }
+    if (!shape || shape.ptr === 0) return
+    this.shape = shape
 
     // Set filter data
     const layerName = this._layer
@@ -373,6 +391,7 @@ export class Prim extends Node {
     const filterData = new PHYSX.PxFilterData(layer.group, layer.mask, pairFlags, 0)
     this.shape.setQueryFilterData(filterData)
     this.shape.setSimulationFilterData(filterData)
+    PHYSX.destroy(filterData)
 
     // const position = _v1.copy(this.position).multiply(this.parent.scale)
     // const pose = new PHYSX.PxTransform()

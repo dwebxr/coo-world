@@ -52,8 +52,24 @@ Unsubscribes from world events.
 ### `.raycast(origin: Vector3, direction: Vector3, maxDistance: ?Number, layerMask: ?Number)`
 
 Raycasts the physics scene.
-If `maxDistance` is not specified, max distance is infinite.
-If `layerMask` is not specified, it will hit anything.
+Returns the nearest hit (`point`, `normal`, `distance`, `tag`, `playerId`), or `null`.
+If `maxDistance` is omitted or `null`, max distance is infinite. Zero is allowed; negative values,
+NaN and non-numbers throw. `origin` and `direction` accept endowed and stock THREE `Vector3`
+instances; lookalike objects throw. A component that is non-finite or overflows float32 returns
+`null` and logs a warning once, without querying physics.
+
+An omitted or `null` `layerMask` means `0` (unfiltered). Explicit masks must be integers in
+`[-2147483648, 4294967295]` and are converted to unsigned 32-bit masks; invalid masks throw.
+
+### `.overlapSphere(radius: Number, origin: Vector3, layerMask: ?Number)`
+
+Returns an array of overlapping physics hits, each exposing `tag` and `playerId` (which may be
+`null`). No hits returns `[]`.
+
+`radius` must be positive and remain finite and positive after conversion to float32; invalid
+radii throw. `origin` accepts endowed and stock THREE `Vector3` instances; lookalike objects
+throw. Non-finite or float32-overflow origin components return `[]` and log a warning once.
+`layerMask` follows the same rules as `raycast`, including unfiltered `undefined`/`null`.
 
 ### `.createLayerMask(...groups)`
 

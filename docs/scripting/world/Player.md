@@ -38,6 +38,10 @@ The players rotation in the world.
 
 ## Methods
 
+`teleport` and `push` accept endowed and stock THREE `Vector3` instances; lookalike objects
+throw. Non-finite or float32-overflow vector components are ignored, with one warning per method.
+The relay bounds below still apply; direct local pushes have no additional `1e4` cap.
+
 ### `.teleport(position, rotationY)`
 
 Teleports the player instantly to the new position. The `rotationY` value is in radians, and if omitted (or not a number) the player will continue facing their current direction.

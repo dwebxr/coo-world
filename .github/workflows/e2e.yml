@@ -71,6 +71,10 @@ jobs:
         continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/hostile-transforms.mjs --engine=${{ matrix.engine }}
 
+      - name: Physics boundary and native sentinel (local throwaway world)
+        continue-on-error: ${{ matrix.engine == 'firefox' }}
+        run: node test/e2e/physics-boundary.mjs --engine=${{ matrix.engine }}
+
       - name: Extras (movement, avatar, uploads, AI mock, agent)
         continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/gate-extras.mjs --engine=${{ matrix.engine }}

@@ -30,13 +30,16 @@ A function that is called whenever another physics object ends contact with this
 
 ### `.isGrounded`: Boolean
 
-A read-only property describing whether the controller is standing on something.
+A read-only property describing whether the controller is standing on something. Returns `false` before the first move (as does `.isCeiling`).
 
 ### `.{...Node}`
 
 Inherits all [Node](/docs/scripting/nodes/Node.md) properties
 
 ## Methods
+
+`move` and `teleport` accept endowed and stock THREE `Vector3` instances; lookalike objects
+throw. Non-finite or float32-overflow vector components are ignored, with one warning per method.
 
 ### `.move(vec3)`
 
@@ -46,8 +49,4 @@ Note that controllers do not have gravity by default, but you can simulate this 
 
 ### `.teleport(vec3)` 
 
-Teleports the controller to a new position.
-
-
-
-
+Teleports the controller to a new position. Before mounting, this sets the position used at mount without requiring a native controller.

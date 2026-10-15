@@ -201,8 +201,8 @@ async function probes(admin, watcher) {
       () =>
         watcher
           .since(from)
-          .filter(m => m.method === 'onChatAdded' && m.data?.body?.startsWith('P1_SANDBOX '))
-          .map(m => JSON.parse(m.data.body.slice('P1_SANDBOX '.length)))
+          .filter(m => m.method === 'onEntityEvent' && m.data[0] === 's-sandbox' && m.data[2] === 'P1_SANDBOX')
+          .map(m => m.data[3])
           .find(r => r.done || r.failed),
       { timeout: 30000, message: 'sandbox probe report' }
     )
@@ -902,7 +902,12 @@ async function probes(admin, watcher) {
   })
 
   await step('B4c a 60 KiB event from the browser reaches the server with the connection open', async () => {
-    await installApp(page, { id: 'b-event', script: 'asset://event-probe.js', model: 'asset://ai.glb' })
+    await installApp(page, {
+      id: 'b-event',
+      script: 'asset://event-probe.js',
+      model: 'asset://ai.glb',
+      props: { text: 'kept', file: null },
+    })
     await waitUntil(
       async () => {
         const state = await appState(page, 'b-event')
@@ -913,7 +918,9 @@ async function probes(admin, watcher) {
     const from = bystander.mark()
     const id = await page.evaluate(() => {
       const network = window.world.network
-      network.send('entityEvent', ['b-event', 0, 'size', 'x'.repeat(60 * 1024)])
+      if (!network.send('entityEvent', ['b-event', 0, 'size', 'x'.repeat(60 * 1024)])) {
+        throw new Error('60 KiB send refused')
+      }
       return network.id
     })
     const report = await bystander.waitForReport('P5_SIZE', { from, timeout: 10000 })
@@ -923,6 +930,81 @@ async function probes(admin, watcher) {
       await page.evaluate(() => window.world.network.ws.readyState === WebSocket.OPEN),
       'browser connection stays open'
     )
+  })
+
+  await step('B4d a 70 KiB textarea prop is refused before local mutation or send', async () => {
+    await page.evaluate(() => {
+      const w = window.world
+      w.ui.setApp(w.entities.get('b-event'))
+      if (w.ui.state.pane !== 'app') w.ui.togglePane('app')
+      window.limitToasts = []
+      w.on('toast', text => window.limitToasts.push(text))
+      window.limitBefore = JSON.stringify(w.blueprints.get('b-event-bp'))
+    })
+    const field = page.locator('.fieldtextarea').filter({ hasText: 'Limit text' }).locator('textarea')
+    await field.fill('x'.repeat(70 * 1024))
+    await field.blur()
+    await page.waitForFunction(() => window.limitToasts.length === 1)
+    eq(
+      await page.locator('.toast-msg').textContent(),
+      'This change is too large to save (limit 64 KB)',
+      'visible refusal toast'
+    )
+    const local = await page.evaluate(() => ({
+      same: JSON.stringify(window.world.blueprints.get('b-event-bp')) === window.limitBefore,
+      open: window.world.network.ws.readyState === WebSocket.OPEN,
+    }))
+    ok(local.same && local.open, 'local blueprint unchanged and connection open')
+    eq(await field.inputValue(), 'kept', 'textarea restored after refusal')
+    const snap = await snapshot(PORT)
+    const stored = snap.blueprints.find(bp => bp.id === 'b-event-bp')
+    eq(stored.version, 0, 'server version unchanged')
+    eq(stored.props.text, 'kept', 'server textarea unchanged')
+  })
+
+  await step('B4e an oversized file-field record is refused before uploading or local mutation', async () => {
+    let uploads = 0
+    const onRequest = request => {
+      if (/\/api\/upload(?:-check)?(?:\?|$)/.test(request.url())) uploads++
+    }
+    page.on('request', onRequest)
+    const from = bystander.mark()
+    try {
+      const file = page.locator('.fieldfile').filter({ hasText: 'Limit file' }).locator('input[type=file]')
+      await file.setInputFiles({
+        name: 'x'.repeat(70 * 1024) + '.png',
+        mimeType: 'image/png',
+        buffer: Buffer.from(PNG.split(',')[1], 'base64'),
+      })
+      await page.waitForFunction(() => window.limitToasts.length === 2)
+      eq(
+        await page.locator('.toast-msg').textContent(),
+        'This change is too large to save (limit 64 KB)',
+        'file refusal toast'
+      )
+      // A valid event on the same FIFO connection is a barrier for the rejected edit.
+      await page.evaluate(() => window.world.network.send('entityEvent', ['b-event', 0, 'probe', 'after-file-refusal']))
+      await bystander.waitForReport('P5_PING', { from, timeout: 10000 })
+      const local = await page.evaluate(() => ({
+        same: JSON.stringify(window.world.blueprints.get('b-event-bp')) === window.limitBefore,
+        open: window.world.network.ws.readyState === WebSocket.OPEN,
+      }))
+      ok(local.same && local.open, 'file refusal leaves local blueprint unchanged and connection open')
+      eq(uploads, 0, 'neither upload-check nor upload started')
+      eq(
+        await page.locator('.fieldfile').filter({ hasText: 'Limit file' }).locator('.fieldfile-name').count(),
+        0,
+        'no file applied'
+      )
+      const snap = await snapshot(PORT)
+      const stored = snap.blueprints.find(bp => bp.id === 'b-event-bp')
+      eq(stored.version, 0, 'server version unchanged')
+      eq(stored.props.file, null, 'server file unchanged')
+      eq(stored.props.text, 'kept', 'server textarea still unchanged')
+    } finally {
+      page.off('request', onRequest)
+      await page.evaluate(() => window.world.ui.setApp(null))
+    }
   })
 
   // browser-side probes (these also run on the server, under different ids)

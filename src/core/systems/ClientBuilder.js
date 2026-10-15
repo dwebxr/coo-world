@@ -11,6 +11,7 @@ import { ControlPriorities } from '../extras/ControlPriorities'
 import { importApp } from '../extras/appTools'
 import { DEG2RAD, RAD2DEG } from '../extras/general'
 import { createNode } from '../extras/createNode'
+import { preflightPacket } from '../extras/clientPreflight'
 
 const FORWARD = new THREE.Vector3(0, 0, -1)
 const SNAP_DISTANCE = 1
@@ -260,7 +261,6 @@ export class ClientBuilder extends System {
     if (this.control.keyU.pressed && this.beam.active) {
       const entity = this.selected || this.getEntityAtBeam()
       if (entity?.isApp) {
-        this.select(null)
         // duplicate the blueprint
         const blueprint = {
           id: uuid(),
@@ -281,10 +281,13 @@ export class ClientBuilder extends System {
           scene: entity.blueprint.scene,
           disabled: entity.blueprint.disabled,
         }
-        this.world.blueprints.add(blueprint, true)
+        const change = { id: entity.data.id, blueprint: blueprint.id }
+        if (!preflightPacket(this.world, 'entityModified', change)) return
+        if (!this.world.blueprints.add(blueprint, true)) return
         // assign new blueprint
-        entity.modify({ blueprint: blueprint.id })
-        this.world.network.send('entityModified', { id: entity.data.id, blueprint: blueprint.id })
+        if (!this.world.network.send('entityModified', change)) return
+        this.select(null)
+        entity.modify(change)
         // toast
         this.world.emit('toast', 'Unlinked')
       }
@@ -396,7 +399,7 @@ export class ClientBuilder extends System {
             scene: entity.blueprint.scene,
             disabled: entity.blueprint.disabled,
           }
-          this.world.blueprints.add(blueprint, true)
+          if (!this.world.blueprints.add(blueprint, true)) return
           blueprintId = blueprint.id
         }
         const data = {
@@ -412,6 +415,7 @@ export class ClientBuilder extends System {
           state: {},
         }
         const dup = this.world.entities.add(data, true)
+        if (!dup) return
         this.select(dup)
         this.addUndo({
           name: 'remove-entity',
@@ -590,8 +594,26 @@ export class ClientBuilder extends System {
   }
 
   undo() {
-    const undo = this.undos.pop()
+    const undo = this.undos[this.undos.length - 1]
     if (!undo) return
+    let change
+    if (undo.name === 'add-entity') {
+      if (!preflightPacket(this.world, 'entityAdded', undo.data)) return
+    }
+    if (undo.name === 'move-entity') {
+      const entity = this.world.entities.get(undo.entityId)
+      if (entity) {
+        change = {
+          id: undo.entityId,
+          position: undo.position,
+          quaternion: undo.quaternion,
+          scale: entity.data.scale,
+        }
+        if (!preflightPacket(this.world, 'entityModified', change)) return
+      }
+    }
+    if (undo.name === 'remove-entity' && !preflightPacket(this.world, 'entityRemoved', undo.entityId)) return
+    this.undos.pop()
     if (this.selected) this.select(null)
     if (undo.name === 'add-entity') {
       this.world.entities.add(undo.data, true)
@@ -600,14 +622,9 @@ export class ClientBuilder extends System {
     if (undo.name === 'move-entity') {
       const entity = this.world.entities.get(undo.entityId)
       if (!entity) return
+      if (!this.world.network.send('entityModified', change)) return
       entity.data.position = undo.position
       entity.data.quaternion = undo.quaternion
-      this.world.network.send('entityModified', {
-        id: undo.entityId,
-        position: entity.data.position,
-        quaternion: entity.data.quaternion,
-        scale: entity.data.scale,
-      })
       entity.build()
       return
     }
@@ -1063,9 +1080,6 @@ export class ClientBuilder extends System {
 
   async addApp(file, transform) {
     const info = await importApp(file)
-    for (const asset of info.assets) {
-      this.world.loader.insert(asset.type, asset.url, asset.file)
-    }
     // if scene, update existing scene
     if (info.blueprint.scene) {
       const confirmed = await this.world.ui.confirm({
@@ -1077,7 +1091,7 @@ export class ClientBuilder extends System {
       if (!confirmed) return
       // modify blueprint optimistically
       const blueprint = this.world.blueprints.getScene()
-      const change = {
+      const change = this.world.blueprints.preflight({
         id: blueprint.id,
         version: blueprint.version + 1,
         name: info.blueprint.name,
@@ -1095,8 +1109,15 @@ export class ClientBuilder extends System {
         unique: info.blueprint.unique,
         scene: info.blueprint.scene,
         disabled: info.blueprint.disabled,
+      })
+      if (!change) return
+      for (const asset of info.assets) {
+        this.world.loader.insert(asset.type, asset.url, asset.file)
       }
-      this.world.blueprints.modify(change)
+      if (!info.assets.length) {
+        return this.world.blueprints.modify(change, true)
+      }
+      this.world.blueprints.modify(cloneDeep(change))
       const applied = this.world.blueprints.getScene()
       // upload assets as one batch: the first failure cancels the rest before they are sent
       const batch = new AbortController()
@@ -1121,25 +1142,29 @@ export class ClientBuilder extends System {
       return
     }
     // otherwise spawn the app
-    const blueprint = {
-      id: uuid(),
-      version: 0,
-      name: info.blueprint.name,
-      image: info.blueprint.image,
-      author: info.blueprint.author,
-      url: info.blueprint.url,
-      desc: info.blueprint.desc,
-      model: info.blueprint.model,
-      script: info.blueprint.script,
-      props: info.blueprint.props,
-      preload: info.blueprint.preload,
-      public: info.blueprint.public,
-      locked: info.blueprint.locked,
-      frozen: info.blueprint.frozen,
-      unique: info.blueprint.unique,
-      scene: info.blueprint.scene,
-      disabled: info.blueprint.disabled,
-    }
+    const blueprint = this.world.blueprints.preflight(
+      {
+        id: uuid(),
+        version: 0,
+        name: info.blueprint.name,
+        image: info.blueprint.image,
+        author: info.blueprint.author,
+        url: info.blueprint.url,
+        desc: info.blueprint.desc,
+        model: info.blueprint.model,
+        script: info.blueprint.script,
+        props: info.blueprint.props,
+        preload: info.blueprint.preload,
+        public: info.blueprint.public,
+        locked: info.blueprint.locked,
+        frozen: info.blueprint.frozen,
+        unique: info.blueprint.unique,
+        scene: info.blueprint.scene,
+        disabled: info.blueprint.disabled,
+      },
+      true
+    )
+    if (!blueprint) return
     const data = {
       id: uuid(),
       type: 'app',
@@ -1152,20 +1177,30 @@ export class ClientBuilder extends System {
       pinned: false,
       state: {},
     }
-    this.world.blueprints.add(blueprint, true)
-    const app = this.world.entities.add(data, true)
+    if (!preflightPacket(this.world, 'entityAdded', data)) return
+    for (const asset of info.assets) {
+      this.world.loader.insert(asset.type, asset.url, asset.file)
+    }
+    const uploading = info.assets.length > 0
+    if (!this.world.blueprints.add(uploading ? cloneDeep(blueprint) : blueprint, !uploading)) return
+    const app = this.world.entities.add(uploading ? cloneDeep(data) : data, !uploading)
+    if (!app) return
     // upload assets as one batch: the first failure cancels the rest before they are sent
     const batch = new AbortController()
     const promises = info.assets.map(asset => this.world.network.upload(asset.file, { batch }))
     try {
       await Promise.all(promises)
+      if (uploading) {
+        if (!this.world.network.send('blueprintAdded', blueprint)) return
+        if (!this.world.network.send('entityAdded', data)) return
+      }
       app.onUploaded()
     } catch (err) {
       console.error('failed to upload .hyp assets')
       console.error(err)
       this.world.emit('toast', err.message)
-      // the placeholder was already broadcast with `uploader` set; remove it for everyone
-      app.destroy(true)
+      app.destroy(!uploading)
+      if (uploading) this.world.blueprints.items.delete(blueprint.id)
     }
   }
 
@@ -1176,8 +1211,6 @@ export class ClientBuilder extends System {
     const filename = `${hash}.glb`
     // canonical url to this file
     const url = `asset://${filename}`
-    // cache file locally so this client can insta-load it
-    this.world.loader.insert('model', url, file)
     // make blueprint
     const blueprint = {
       id: uuid(),
@@ -1199,7 +1232,9 @@ export class ClientBuilder extends System {
       disabled: false,
     }
     // register blueprint
-    this.world.blueprints.add(blueprint, true)
+    if (!this.world.blueprints.add(blueprint, true)) return
+    // cache file locally so this client can insta-load it
+    this.world.loader.insert('model', url, file)
     // spawn the app moving
     // - mover: follows this clients cursor until placed
     // - uploader: other clients see a loading indicator until its fully uploaded
@@ -1216,6 +1251,7 @@ export class ClientBuilder extends System {
       state: {},
     }
     const app = this.world.entities.add(data, true)
+    if (!app) return
     // upload the glb
     try {
       await this.world.network.upload(file)
@@ -1245,8 +1281,6 @@ export class ClientBuilder extends System {
       hash,
       canPlace,
       onPlace: async () => {
-        // close pane
-        this.world.emit('avatar', null)
         // make blueprint
         const blueprint = {
           id: uuid(),
@@ -1268,7 +1302,8 @@ export class ClientBuilder extends System {
           disabled: false,
         }
         // register blueprint
-        this.world.blueprints.add(blueprint, true)
+        if (!this.world.blueprints.add(blueprint, true)) return
+        this.world.emit('avatar', null)
         // spawn the app moving
         // - mover: follows this clients cursor until placed
         // - uploader: other clients see a loading indicator until its fully uploaded
@@ -1285,6 +1320,7 @@ export class ClientBuilder extends System {
           state: {},
         }
         const app = this.world.entities.add(data, true)
+        if (!app) return
         // upload the vrm
         try {
           await this.world.network.upload(file)

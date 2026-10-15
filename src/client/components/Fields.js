@@ -152,12 +152,11 @@ export function FieldTextarea({ label, hint, placeholder, value, onChange }) {
           onKeyDown={e => {
             if (e.metaKey && e.code === 'Enter') {
               e.preventDefault()
-              onChange(localValue)
               e.target.blur()
             }
           }}
           onBlur={e => {
-            onChange(localValue)
+            if (onChange(localValue) === false) setLocalValue(value)
           }}
         />
       </div>
@@ -445,7 +444,7 @@ export const fileKinds = {
   },
 }
 
-export function FieldFile({ world, label, hint, kind: kindName, value, onChange }) {
+export function FieldFile({ world, label, hint, kind: kindName, value, onChange, preflight }) {
   const hintProps = useHintProps(hint)
   const nRef = useRef(0)
   const update = useUpdate()
@@ -476,6 +475,7 @@ export function FieldFile({ world, label, hint, kind: kindName, value, onChange 
       name: file.name,
       url,
     }
+    if (preflight && !preflight(newValue)) return
     setLoading(newValue)
     // upload file
     try {
@@ -488,6 +488,10 @@ export function FieldFile({ world, label, hint, kind: kindName, value, onChange 
     }
     // ignore if new value/upload
     if (nRef.current !== n) return
+    if (preflight && !preflight(newValue)) {
+      setLoading(null)
+      return
+    }
     // cache file locally so this client can insta-load it
     world.loader.insert(kind.type, url, file)
     // apply!

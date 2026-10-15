@@ -1,10 +1,10 @@
-// e2e probe: what a script can and cannot reach. Runs on the server (reports through chat) and in the
+// e2e probe: what a script can and cannot reach. Runs on the server (reports through app events) and in the
 // browser (reports through app.state). Every write below must fail inside this script only.
 const TAG = 'P1_SANDBOX'
 const base = props.base
 const results = { stash: false }
 const report = () => {
-  if (world.isServer) world.chat({ id: uuid(), body: TAG + ' ' + JSON.stringify(results) }, true)
+  if (world.isServer) app.send(TAG, results)
   else app.state = { [TAG]: results }
 }
 const attempt = (name, fn) => {

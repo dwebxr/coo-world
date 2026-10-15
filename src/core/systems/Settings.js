@@ -1,6 +1,7 @@
 import { isBoolean } from 'lodash-es'
 import { System } from './System'
 import { Ranks } from '../extras/ranks'
+import { normalizeSettingValue } from '../extras/settingsPolicy'
 
 export class Settings extends System {
   constructor(world) {
@@ -80,6 +81,11 @@ export class Settings extends System {
   }
 
   set(key, value, broadcast) {
+    if (this.world.network.isClient) {
+      const result = normalizeSettingValue(key, value)
+      if (!result.ok) return false
+      value = result.value
+    }
     this.modify(key, value)
     if (broadcast) {
       this.world.network.send('settingsModified', { key, value })

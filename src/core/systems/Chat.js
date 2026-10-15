@@ -1,6 +1,6 @@
 import moment from 'moment'
 import { uuid } from '../utils'
-import { sanitizeChatMessage } from '../extras/chatPolicy'
+import { CHAT_BODY_MAX_LENGTH, chatEnvelope, cutText, sanitizeChatMessage } from '../extras/chatPolicy'
 import { System } from './System'
 
 /**
@@ -23,6 +23,8 @@ export class Chat extends System {
   }
 
   add(msg, broadcast) {
+    msg = chatEnvelope(msg)
+    if (!msg) return
     if (!msg.id) msg.id = uuid()
     if (!msg.createdAt) msg.createdAt = moment().toISOString()
     // add to chat messages
@@ -33,9 +35,8 @@ export class Chat extends System {
     for (const callback of this.listeners) {
       callback(this.msgs)
     }
-    // the bubble shows text only; a message made by a script with another kind of body gets no bubble
     const body = msg.body
-    if (msg.fromId && (typeof body === 'string' || typeof body === 'number')) {
+    if (msg.fromId) {
       const player = this.world.entities.getPlayer(msg.fromId)
       player?.chat(body)
     }
@@ -49,6 +50,7 @@ export class Chat extends System {
   }
 
   command(text) {
+    text = cutText(text, CHAT_BODY_MAX_LENGTH)
     if (this.world.network.isServer) return
     const playerId = this.world.network.id
     const cmd = text.slice(1).split(' ')[0] // "/foo bar" -> "foo"

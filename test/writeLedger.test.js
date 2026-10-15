@@ -1,3 +1,5 @@
+import { chatEnvelope } from '../src/core/extras/chatPolicy.js'
+import { sanitizePlayerSelfModify } from '../src/core/extras/entityModifyPolicy.js'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -218,6 +220,7 @@ const loadClass = (file, name, context = {}) => {
     uuid: () => 'id',
     internalEvents: [],
     moment: () => ({ toISOString: () => 'now' }),
+    chatEnvelope: msg => chatEnvelope({ ...msg }),
     ...context,
   })
 }
@@ -244,7 +247,12 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
   const proxySource = fs.readFileSync(new URL('../src/core/extras/createPlayerProxy.js', import.meta.url), 'utf8')
   const createProxy = vm.runInNewContext(
     `${proxySource.replace(/^import .*\n/gm, '').replace('export function', 'function')}\ncreatePlayerProxy`,
-    { THREE, console, clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v)) }
+    {
+      THREE,
+      console,
+      clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v)),
+      sanitizePlayerSelfModify: (data, id) => sanitizePlayerSelfModify({ ef: { ...data.ef } }, id),
+    }
   )
   const proxy = createProxy(entity, player)
   // Exhaust only the unique script bytes; every accidental system write would still go through.

@@ -1,6 +1,7 @@
 import { getRef } from '../nodes/Node'
 import { clamp, uuid } from '../utils'
 import * as THREE from './three'
+import { sanitizePlayerSelfModify } from './entityModifyPolicy'
 
 const HEALTH_MAX = 100
 
@@ -124,8 +125,10 @@ export function createPlayerProxy(entity, player) {
         effect.cancellable = opts.cancellable
         delete effect.freeze // overrides
       }
+      const safe = sanitizePlayerSelfModify({ ef: effect }, player.data.id)
+      if (!safe || !Object.prototype.hasOwnProperty.call(safe, 'ef')) return
       const config = {
-        effect,
+        effect: safe.ef,
         onEnd: () => {
           if (activeEffectConfig !== config) return
           activeEffectConfig = null

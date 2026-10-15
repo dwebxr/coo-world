@@ -46,6 +46,9 @@ const uint8ToBase64 = bytes => {
   return btoa(bin)
 }
 
+const isWalletAddress = value =>
+  typeof value === 'string' && value.length > 0 && value.length <= 64 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(value)
+
 // Solana統合ファイル (named export)
 export function createSolanaIntegration(world) {
   const config = buildConfig()
@@ -64,6 +67,11 @@ export function createSolanaIntegration(world) {
   let tokenBalance = 0
   let hasBuilderAccess = false
   let noncePending = false
+  const refuse = () => {
+    noncePending = false
+    world.emit('toast', 'ウォレットのリクエストを送信できませんでした')
+    return false
+  }
 
   // Solana RPC接続 (残高表示用。権限判定はサーバー側が正)
   let connection = null
@@ -113,14 +121,16 @@ export function createSolanaIntegration(world) {
   // 実際のビルダー権限付与はサーバーが on-chain 残高を検証して行う
   const requestBuilderAccess = () => {
     if (!world.network || !walletAddress || noncePending) return
+    if (!isWalletAddress(walletAddress)) return refuse()
     noncePending = true
-    world.network.send('requestBuilderNonce', { walletAddress })
+    if (!world.network.send('requestBuilderNonce', { walletAddress })) return refuse()
   }
 
   const onBuilderNonce = async nonce => {
     if (!noncePending) return
-    noncePending = false
-    if (!nonce) return
+    if (typeof nonce !== 'string' || !nonce.length || nonce.length > 128) return refuse()
+    if (!isWalletAddress(walletAddress)) return refuse()
+    const address = walletAddress
     try {
       if (typeof window === 'undefined' || !window.solana?.signMessage) {
         world.emit('toast', 'ウォレットがメッセージ署名に対応していません')
@@ -130,11 +140,17 @@ export function createSolanaIntegration(world) {
       const signed = await window.solana.signMessage(message, 'utf8')
       // Phantom等は { signature: Uint8Array } を返す。生の Uint8Array の場合も許容
       const sigBytes = signed?.signature ?? signed
+      if (!(sigBytes instanceof Uint8Array) && !Array.isArray(sigBytes)) return refuse()
+      if (!sigBytes.length || sigBytes.length > 128) return refuse()
+      if (!sigBytes.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) return refuse()
+      if (address !== walletAddress) return refuse()
       const signature = uint8ToBase64(sigBytes instanceof Uint8Array ? sigBytes : Uint8Array.from(sigBytes))
-      world.network.send('requestBuilderByToken', { walletAddress, signature, nonce })
+      if (!world.network.send('requestBuilderByToken', { walletAddress, signature, nonce })) return refuse()
     } catch (error) {
       console.error('[Solana] 署名エラー:', error)
       world.emit('toast', 'ウォレット署名に失敗しました')
+    } finally {
+      noncePending = false
     }
   }
   world.on('solana:builderNonce', onBuilderNonce)
@@ -152,6 +168,10 @@ export function createSolanaIntegration(world) {
         }
         await window.solana.connect()
         const publicKey = window.solana.publicKey.toString()
+        if (!isWalletAddress(publicKey)) {
+          refuse()
+          return null
+        }
         isConnected = true
         walletAddress = publicKey
         console.log('Solanaウォレット接続成功:', publicKey)
@@ -161,6 +181,7 @@ export function createSolanaIntegration(world) {
         requestBuilderAccess()
         return publicKey
       } catch (error) {
+        noncePending = false
         console.error('Solanaウォレット接続エラー:', error)
         world.emit('toast', 'ウォレット接続に失敗しました')
         return null
@@ -174,7 +195,7 @@ export function createSolanaIntegration(world) {
         }
         // サーバーに権限剥奪をリクエスト (自己降格)
         if (world.network) {
-          world.network.send('revokeBuilderByToken', {})
+          if (!world.network.send('revokeBuilderByToken', {})) refuse()
         }
         isConnected = false
         walletAddress = null
@@ -186,7 +207,9 @@ export function createSolanaIntegration(world) {
         world.emit('solana:builderAccessChanged', false, 0)
         return true
       } catch (error) {
+        noncePending = false
         console.error('Solanaウォレット切断エラー:', error)
+        world.emit('toast', 'ウォレット切断に失敗しました')
         return false
       }
     },

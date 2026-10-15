@@ -2,6 +2,7 @@ import { App } from '../entities/App'
 import { PlayerLocal } from '../entities/PlayerLocal'
 import { PlayerRemote } from '../entities/PlayerRemote'
 import { System } from './System'
+import { preflightPacket } from '../extras/clientPreflight'
 
 const Types = {
   app: App,
@@ -35,6 +36,7 @@ export class Entities extends System {
   }
 
   add(data, local) {
+    if (local && this.world.network.isClient && !preflightPacket(this.world, 'entityAdded', data)) return false
     let Entity
     if (data.type === 'player') {
       Entity = Types[data.owner === this.world.network.id ? 'playerLocal' : 'playerRemote']

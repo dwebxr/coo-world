@@ -1,7 +1,6 @@
-// Validation of a chat message a client sends, shared by the server (before storing and broadcasting) and
-// the client (before its local echo). Pure: returns a fresh object holding the text only, or null. The id,
-// the sender identity and the time are stamped by the server, never copied.
-import { isPlainObject } from './entityModifyPolicy.js'
+// Shared chat validation. Client-sent messages use the text-only sanitizer; producer envelopes also keep
+// bounded metadata. The server stamps the id, sender identity and time on messages received from clients.
+import { isPlainObject, sanitizeName } from './entityModifyPolicy.js'
 
 export const CHAT_BODY_MAX_LENGTH = 500
 
@@ -35,4 +34,18 @@ export function sanitizeChatMessage(msg) {
   const text = cutText(body.trim(), CHAT_BODY_MAX_LENGTH).trimEnd()
   if (!text) return null
   return { body: text }
+}
+
+export function chatEnvelope(msg) {
+  if (!isPlainObject(msg)) return null
+  const body = msg.body
+  const safe = sanitizeChatMessage({ body: typeof body === 'number' ? String(body) : body })
+  if (!safe) return null
+  for (const key of ['id', 'fromId', 'createdAt']) {
+    const value = msg[key]
+    if (typeof value === 'string') safe[key] = cutText(value, 64)
+  }
+  const from = sanitizeName(msg.from)
+  if (from !== undefined) safe.from = from
+  return safe
 }

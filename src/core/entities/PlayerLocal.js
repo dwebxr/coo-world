@@ -12,6 +12,7 @@ import { isBoolean, isNumber } from 'lodash-es'
 import { Modes } from '../extras/locomotionModes'
 import { outranks, isAdmin, isBuilder, isMuted } from '../extras/playerRanks'
 import { createPlayerAura, chatBubble } from '../extras/playerAura'
+import { isEmoteUrl, sanitizeName, sanitizePlayerSelfModify } from '../extras/entityModifyPolicy'
 
 const UP = new THREE.Vector3(0, 1, 0)
 const DOWN = new THREE.Vector3(0, -1, 0)
@@ -1050,7 +1051,7 @@ export class PlayerLocal extends Entity {
         hasChanges = true
       }
       if (this.lastState.e !== this.emote) {
-        data.e = this.emote
+        data.e = isEmoteUrl(this.emote) ? this.emote : null
         this.lastState.e = this.emote
         hasChanges = true
       }
@@ -1137,6 +1138,9 @@ export class PlayerLocal extends Entity {
   }
 
   setEffect(effect, onEnd) {
+    const safe = sanitizePlayerSelfModify({ ef: effect }, this.data.id)
+    if (!safe || !Object.prototype.hasOwnProperty.call(safe, 'ef')) return
+    effect = safe.ef
     if (this.data.effect === effect) return
     if (this.data.effect) {
       this.data.effect = null
@@ -1174,6 +1178,8 @@ export class PlayerLocal extends Entity {
   }
 
   setName(name) {
+    name = sanitizeName(name)
+    if (name === undefined) return
     this.modify({ name })
     this.world.network.send('entityModified', { id: this.data.id, name })
   }

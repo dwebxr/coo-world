@@ -13,6 +13,9 @@ import { storage } from '../storage'
 import { createDispatchQueue, uuid } from '../utils'
 import { hashFile } from '../utils-client'
 import { System } from './System'
+import { BUILDER_ONLY_PACKETS, packetByteLimit, packetNodeLimit } from '../extras/inboundPolicy'
+import { strictDecode } from '../extras/strictDecode'
+import { CHANGE_TOO_LARGE } from '../extras/clientPreflight'
 
 /**
  * Client Network System
@@ -32,6 +35,7 @@ export class ClientNetwork extends System {
     this.isClient = true
     this.queue = createDispatchQueue()
     this.uploads = createUploadQueue()
+    this.refusedEvents = new Set()
   }
 
   init({ wsUrl, name, avatar, authToken, onAuthToken }) {
@@ -53,10 +57,30 @@ export class ClientNetwork extends System {
     this.flush()
   }
 
+  fits(name, data) {
+    return this.packetFits(name, writeClientPacket(name, data))
+  }
+
+  packetFits(name, packet) {
+    return (
+      packet.length <= packetByteLimit(name) &&
+      strictDecode(packet, { maxNodes: packetNodeLimit(name), build: false }).ok
+    )
+  }
+
   send(name, data) {
-    // console.log('->', name, data)
     const packet = writeClientPacket(name, data)
+    if (!this.packetFits(name, packet)) {
+      if (BUILDER_ONLY_PACKETS.includes(name)) {
+        this.world.emit('toast', CHANGE_TOO_LARGE)
+      } else if (name === 'entityEvent' && !this.refusedEvents.has(data[2])) {
+        this.refusedEvents.add(data[2])
+        console.error('[network] entityEvent refused: packet does not fit')
+      }
+      return false
+    }
     this.ws.send(packet)
+    return true
   }
 
   // uploads run one at a time per tab: the server admits one transfer per user. callers uploading a batch

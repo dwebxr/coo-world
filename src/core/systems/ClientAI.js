@@ -1,5 +1,7 @@
 import { System } from './System'
 import { uuid } from '../utils'
+import { preflightPacket } from '../extras/clientPreflight'
+import { cutText } from '../extras/chatPolicy'
 
 /**
  * AI System
@@ -57,7 +59,10 @@ export class ClientAI extends System {
       scene: false,
       disabled: false,
     }
-    this.world.blueprints.add(blueprint, true)
+    const appId = uuid()
+    const action = { name: 'create', blueprintId: blueprint.id, appId, prompt }
+    if (!preflightPacket(this.world, 'ai', action)) return
+    if (!this.world.blueprints.add(blueprint, true)) return
     const transform = this.world.builder.getSpawnTransform(true)
     this.world.builder.toggle(true)
     this.world.builder.control.pointer.lock()
@@ -65,7 +70,7 @@ export class ClientAI extends System {
     await new Promise(resolve => setTimeout(resolve, 100))
     // create app
     const appData = {
-      id: uuid(),
+      id: appId,
       type: 'app',
       blueprint: blueprint.id,
       position: transform.position,
@@ -77,15 +82,10 @@ export class ClientAI extends System {
       state: {},
     }
     const app = this.world.entities.add(appData, true)
+    if (!app) return
     // this.world.builder.select(app)
 
     // send to server
-    const action = {
-      name: 'create',
-      blueprintId: blueprint.id,
-      appId: appData.id,
-      prompt,
-    }
     console.log('[ai] creating', action)
     this.world.network.send('ai', action)
   }
@@ -132,6 +132,15 @@ export class ClientAI extends System {
       blueprintId: entity.data.blueprint,
       appId: entity.data.id,
       error: entity.scriptError,
+    }
+    let limit = 16 * 1024
+    while (!this.world.network.fits('ai', action) && limit > 0) {
+      action.error = {}
+      for (const key of ['name', 'message', 'stack']) {
+        const value = entity.scriptError[key]
+        if (typeof value === 'string') action.error[key] = cutText(value, limit)
+      }
+      limit = Math.floor(limit / 2)
     }
     this.world.network.send('ai', action)
     console.log('[ai] fixing', action)

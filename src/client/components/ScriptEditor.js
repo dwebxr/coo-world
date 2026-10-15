@@ -29,11 +29,13 @@ export function ScriptEditor({ app, onHandle }) {
     const filename = `${hash}.js`
     // canonical url to this file
     const url = `asset://${filename}`
+    const version = blueprint.version + 1
+    const change = world.blueprints.preflight({ id: blueprint.id, version, script: url })
+    if (!change) return
     // cache file locally so this client can insta-load it
     world.loader.insert('script', url, file)
     // update blueprint locally (also rebuilds apps)
-    const version = blueprint.version + 1
-    world.blueprints.modify({ id: blueprint.id, version, script: url })
+    world.blueprints.modify(change)
     const applied = world.blueprints.get(blueprint.id)
     // upload script
     try {
@@ -48,7 +50,7 @@ export function ScriptEditor({ app, onHandle }) {
       return
     }
     // broadcast blueprint change to server + other clients
-    world.network.send('blueprintModified', { id: blueprint.id, version, script: url })
+    world.network.send('blueprintModified', change)
   }
   const saveState = () => {
     if (editor) {

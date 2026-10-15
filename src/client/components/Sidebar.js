@@ -898,7 +898,7 @@ function Add({ world, hidden }) {
     blueprint = cloneDeep(blueprint)
     blueprint.id = uuid()
     blueprint.version = 0
-    world.blueprints.add(blueprint, true)
+    if (!world.blueprints.add(blueprint, true)) return
     const transform = world.builder.getSpawnTransform(true)
     world.builder.toggle(true)
     world.builder.control.pointer.lock()
@@ -916,6 +916,7 @@ function Add({ world, hidden }) {
         state: {},
       }
       const app = world.entities.add(data, true)
+      if (!app) return
       world.builder.select(app)
     }, 100)
   }
@@ -1046,12 +1047,14 @@ function App({ world, hidden }) {
     const filename = `${hash}.${ext}`
     // canonical url to this file
     const url = `asset://${filename}`
+    const version = blueprint.version + 1
+    const change = world.blueprints.preflight({ id: blueprint.id, version, model: url })
+    if (!change) return
     // cache file locally so this client can insta-load it
     const type = extToType[ext]
     world.loader.insert(type, url, file)
     // update blueprint locally (also rebuilds apps)
-    const version = blueprint.version + 1
-    world.blueprints.modify({ id: blueprint.id, version, model: url })
+    world.blueprints.modify(change)
     const applied = world.blueprints.get(blueprint.id)
     // upload model
     try {
@@ -1066,14 +1069,13 @@ function App({ world, hidden }) {
       return
     }
     // broadcast blueprint change to server + other clients
-    world.network.send('blueprintModified', { id: blueprint.id, version, model: url })
+    world.network.send('blueprintModified', change)
   }
   const toggleKey = async (key, value) => {
     value = isBoolean(value) ? value : !blueprint[key]
     if (blueprint[key] === value) return
     const version = blueprint.version + 1
-    world.blueprints.modify({ id: blueprint.id, version, [key]: value })
-    world.network.send('blueprintModified', { id: blueprint.id, version, [key]: value })
+    return world.blueprints.modify({ id: blueprint.id, version, [key]: value }, true)
   }
   const togglePinned = () => {
     const pinned = !app.data.pinned
@@ -1336,29 +1338,37 @@ function AppFields({ world, app, blueprint }) {
       app.onFields = null
     }
   }, [])
+  const preflight = nextProps => {
+    const bp = world.blueprints.get(blueprint.id)
+    return !!world.blueprints.preflight({ id: bp.id, version: bp.version + 1, props: nextProps })
+  }
   const modify = (key, value) => {
-    if (props[key] === value) return
+    if (props?.[key] === value) return
     const bp = world.blueprints.get(blueprint.id)
     const newProps = { ...bp.props, [key]: value }
-    // update blueprint locally (also rebuilds apps)
-    const id = bp.id
-    const version = bp.version + 1
-    world.blueprints.modify({ id, version, props: newProps })
-    // broadcast blueprint change to server + other clients
-    world.network.send('blueprintModified', { id, version, props: newProps })
+    return world.blueprints.modify({ id: bp.id, version: bp.version + 1, props: newProps }, true)
   }
   return fields.map(field => (
-    <AppField key={field.key} world={world} props={props} field={field} value={props[field.key]} modify={modify} />
+    <AppField
+      key={field.key}
+      world={world}
+      props={props}
+      field={field}
+      value={props?.[field.key]}
+      modify={modify}
+      preflight={preflight}
+      getProps={() => world.blueprints.get(blueprint.id).props}
+    />
   ))
 }
 
-function AppField({ world, props, field, value, modify }) {
+function AppField({ world, props, field, value, modify, preflight, getProps }) {
   if (field.hidden) {
     return null
   }
   if (field.when && isArray(field.when)) {
     for (const rule of field.when) {
-      if (rule.op === 'eq' && props[rule.key] !== rule.value) {
+      if (rule.op === 'eq' && props?.[rule.key] !== rule.value) {
         return null
       }
     }
@@ -1404,6 +1414,7 @@ function AppField({ world, props, field, value, modify }) {
         hint={field.hint}
         kind={field.kind}
         value={value}
+        preflight={value => preflight({ ...getProps(), [field.key]: value })}
         onChange={value => modify(field.key, value)}
         world={world}
       />
@@ -1631,8 +1642,7 @@ function Meta({ world, hidden }) {
   }, [])
   const set = async (key, value) => {
     const version = blueprint.version + 1
-    world.blueprints.modify({ id: blueprint.id, version, [key]: value })
-    world.network.send('blueprintModified', { id: blueprint.id, version, [key]: value })
+    return world.blueprints.modify({ id: blueprint.id, version, [key]: value }, true)
   }
   return (
     <Pane hidden={hidden}>
@@ -1680,6 +1690,9 @@ function Meta({ world, hidden }) {
             hint='An image/icon for this app'
             kind='texture'
             value={blueprint.image}
+            preflight={value =>
+              !!world.blueprints.preflight({ id: blueprint.id, version: blueprint.version + 1, image: value })
+            }
             onChange={value => set('image', value)}
             world={world}
           />

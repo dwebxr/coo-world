@@ -321,7 +321,7 @@ export class Apps extends System {
         if (world.network.isServer) {
           return world.network.asScript(() => world.network.send('entityEvent', event, ignoreSocketId), entity, name)
         }
-        world.network.send('entityEvent', event, ignoreSocketId)
+        return world.network.send('entityEvent', event, ignoreSocketId)
       },
       sendTo(entity, playerId, name, data) {
         if (internalEvents.includes(name)) {

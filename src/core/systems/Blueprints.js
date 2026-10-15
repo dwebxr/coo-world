@@ -1,5 +1,7 @@
 import { isEqual, merge } from 'lodash-es'
 import { System } from './System'
+import { sanitizeBlueprintAdd, sanitizeBlueprintModify } from '../extras/blueprintPolicy'
+import { preflightPacket } from '../extras/clientPreflight'
 
 /**
  * Blueprints System
@@ -23,20 +25,36 @@ export class Blueprints extends System {
   }
 
   add(data, local) {
+    if (local && this.world.network.isClient) {
+      data = this.preflight(data, true)
+      if (!data || !this.world.network.send('blueprintAdded', data)) return false
+    }
     this.items.set(data.id, data)
-    if (local) {
+    if (local && !this.world.network.isClient) {
       this.world.network.send('blueprintAdded', data)
     }
+    return true
   }
 
-  modify(data) {
+  preflight(data, add = false) {
+    const result = add ? sanitizeBlueprintAdd(data) : sanitizeBlueprintModify(data)
+    if (!result.ok) return false
+    if (!preflightPacket(this.world, add ? 'blueprintAdded' : 'blueprintModified', result.value)) return false
+    return result.value
+  }
+
+  modify(data, local) {
+    if (local && this.world.network.isClient) {
+      data = this.preflight(data)
+      if (!data || !this.world.network.send('blueprintModified', data)) return false
+    }
     const blueprint = this.items.get(data.id)
     const modified = {
       ...blueprint,
       ...data,
     }
     const changed = !isEqual(blueprint, modified)
-    if (!changed) return
+    if (!changed) return true
     this.items.set(blueprint.id, modified)
     for (const [_, entity] of this.world.entities.items) {
       if (entity.data.blueprint === blueprint.id) {
@@ -45,6 +63,7 @@ export class Blueprints extends System {
       }
     }
     this.emit('modify', modified)
+    return true
   }
 
   serialize() {

@@ -8,8 +8,13 @@ import { serializeError } from '../extras/serializeError'
 import { registerAppProxy } from '../nodes/refs'
 import { createScriptTimers } from '../extras/scriptTimers'
 import { createScriptResponse, toHostFetchOptions } from '../extras/scriptFetch'
+import { createEventQueue } from '../extras/appEventQueue'
+import { createLogOnce } from '../extras/logOnce'
 
 const hotEventNames = ['fixedUpdate', 'update', 'animate', 'lateUpdate']
+
+// an app says once per reason that it is dropping events; the count is kept on the app
+const logDroppedEvent = createLogOnce()
 
 const Modes = {
   ACTIVE: 'active',
@@ -32,7 +37,8 @@ export class App extends Entity {
     this.hotEvents = 0
     this.worldListeners = new Map()
     this.listeners = {}
-    this.eventQueue = []
+    this.eventQueue = createEventQueue()
+    this.droppedEvents = 0
     this.snaps = []
     this.root = createNode('group')
     this.fields = []
@@ -63,6 +69,7 @@ export class App extends Entity {
     if (blueprint.disabled) {
       this.unbuild()
       this.blueprint = blueprint
+      this.eventQueue.clear() // a disabled app runs no script; nothing queued can be delivered
       this.building = false
       return
     }
@@ -161,13 +168,17 @@ export class App extends Entity {
     this.networkPos = new LerpVector3(root.position, this.world.networkRate)
     this.networkQuat = new LerpQuaternion(root.quaternion, this.world.networkRate)
     this.networkSca = new LerpVector3(root.scale, this.world.networkRate)
-    // execute any events we collected while building
-    while (this.eventQueue.length) {
-      const event = this.eventQueue[0]
-      if (event.version > this.blueprint.version) break // ignore future versions
-      this.eventQueue.shift()
-      this.emit(event.name, event.data, event.networkId)
-    }
+    // execute any events we collected while building. a listener that throws is reported and the rest are
+    // still delivered, so the build always finishes
+    const drained = this.eventQueue.drain(
+      this.blueprint.version,
+      event => this.emit(event.name, event.data, event.networkId),
+      err => {
+        console.error('script event listener crashed', this)
+        console.error(err)
+      }
+    )
+    if (drained.dropped) this.dropEvent('future version', drained.dropped)
     // finished!
     this.building = false
   }
@@ -399,11 +410,26 @@ export class App extends Entity {
   }
 
   onEvent(version, name, data, networkId) {
+    // an event is stamped with the sender's blueprint version. packets are ordered and a blueprint change is
+    // applied before anything built on it can send, so a version this world has not seen is never legitimate:
+    // queued, it would wait for a version that never comes and hold back the events behind it
+    const latest = this.world.blueprints.get(this.data.blueprint)?.version
+    if (latest !== undefined && version > latest) return this.dropEvent('future version')
     if (this.building || version > this.blueprint.version) {
-      this.eventQueue.push({ version, name, data, networkId })
+      // the queue keeps the newest events while a build is in progress; a rebuild resets script state anyway
+      if (this.eventQueue.push({ version, name, data, networkId })) this.dropEvent('queue full')
     } else {
       this.emit(name, data, networkId)
     }
+  }
+
+  dropEvent(reason, count = 1) {
+    this.droppedEvents += count
+    logDroppedEvent(
+      this,
+      reason,
+      `[app] ${this.data.id}: event dropped (${reason}); further drops for this app are counted only`
+    )
   }
 
   // scripts get a whitelisted request init and a response of plain values (see scriptFetch.js)

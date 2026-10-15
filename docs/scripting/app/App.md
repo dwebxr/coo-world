@@ -45,6 +45,8 @@ Sends an event across the network.
 If the caller is on the client, the event is sent to the server. The third argument `skipNetworkId` is a no-op here.
 If the caller is on the server, the event is sent to all clients, with the `skipNetworkId` argument allowing you to skip sending to one specific client.
 
+Limits: an event sent from a client is at most 64 KiB on the wire (a larger one is dropped by the server and logged once per connection), a connection may send about 1024 packets a second, and while an app is rebuilding it keeps the newest 64 events for delivery afterwards. Send plain data (numbers, strings, booleans, null, arrays and objects): a value that refers to the same object twice, or to itself, is refused by the server.
+
 ### `.emit(name, data)`
 
 Emits a local event to the world that other apps can listen for (using `world.on(name, callback)`).

@@ -9,4 +9,5 @@ world
 *.md
 .eslintrc
 .prettierrc
-.eslintignore 
+.eslintignore
+.claude

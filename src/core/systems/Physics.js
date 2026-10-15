@@ -3,7 +3,6 @@ import { extendThreePhysX } from '../extras/extendThreePhysX'
 import { System } from './System'
 import { Layers } from '../extras/Layers'
 import { loadPhysX } from '../loadPhysX'
-import { serializeError } from '../extras/serializeError'
 
 const _raycastHit = {
   actor: null,
@@ -449,7 +448,6 @@ export class Physics extends System {
 
   preUpdate(alpha) {
     this.world.stage.clean()
-    let failed
     for (const handle of this.active) {
       const lerp = handle.interpolation
       if (lerp.skip) {
@@ -458,44 +456,13 @@ export class Physics extends System {
       }
       lerp.curr.position.lerpVectors(lerp.prev.position, lerp.next.position, alpha)
       lerp.curr.quaternion.slerpQuaternions(lerp.prev.quaternion, lerp.next.quaternion, alpha)
-      try {
-        handle.onInterpolate(lerp.curr.position, lerp.curr.quaternion)
-      } catch (err) {
-        if (!failed) failed = []
-        failed.push({ handle, err })
-      }
+      handle.onInterpolate(lerp.curr.position, lerp.curr.quaternion)
     }
-    if (failed) this.containInterpolateFailures(failed)
     // finalize any physics updates immediately
     // but don't listen to any loopback commits from those actor moves
     this.ignoreSetGlobalPose = true
     this.world.stage.clean()
     this.ignoreSetGlobalPose = false
-  }
-
-  // an interpolation callback that throws (eg a script broke its own node's transform) must not stop the
-  // other actors from updating: app-owned handles crash their app, anything else is logged once per handle
-  containInterpolateFailures(failed) {
-    const crashed = new Set()
-    for (const { handle, err } of failed) {
-      const owner = handle.node?.ctx?.entity
-      try {
-        if (!handle._interpolateFailed) {
-          handle._interpolateFailed = true
-          console.error(
-            `[physics] interpolation failed (node ${handle.node?.id ?? 'none'}, entity ${owner?.data?.id ?? 'none'})`
-          )
-          console.error(err)
-        }
-        if (owner?.isApp && !crashed.has(owner)) owner.scriptError = serializeError(err)
-      } catch {
-        // a hostile error object (eg throwing getters) must not stop the containment itself
-      }
-      if (owner?.isApp && !crashed.has(owner)) {
-        crashed.add(owner)
-        owner.crash()
-      }
-    }
   }
 
   raycast(origin, direction, maxDistance = Infinity, layerMask) {

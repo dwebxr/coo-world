@@ -3,10 +3,8 @@ import { isNumber } from 'lodash-es'
 
 import { System } from './System'
 import { LooseOctree } from '../extras/LooseOctree'
-import { serializeError } from '../extras/serializeError'
 
 const vec2 = new THREE.Vector2()
-const CLEAN_RETRY_CAP = 10
 
 /**
  * Stage System
@@ -61,81 +59,10 @@ export class Stage extends System {
   }
 
   clean() {
-    let failed
     for (const node of this.dirtyNodes) {
-      try {
-        node.clean()
-        if (node._cleanFailures) node._cleanFailures = 0
-      } catch (err) {
-        if (!failed) failed = []
-        failed.push({ node, err })
-      }
+      node.clean()
     }
     this.dirtyNodes.clear()
-    if (failed) this.containCleanFailures(failed)
-  }
-
-  // A node whose update throws (eg a script put a throwing valueOf into its transform) must not stop
-  // every other node from updating. App-owned nodes crash their app, which unbuilds the whole subtree.
-  // Other nodes are retried on the next pass, up to CLEAN_RETRY_CAP consecutive failures; after that the
-  // node is left untracked until a later write tracks it again.
-  // A failed Node.clean() may have consumed transform flags part-way through its subtree, so a retry
-  // re-tracks the top of that traversal with the whole subtree marked transformed (full recompute), and
-  // giving up recomputes what it can before releasing the flags, so later writes find consistent matrices.
-  // NOTE: until the shared THREE prototypes are hardened, the failing code may be another app's patch.
-  containCleanFailures(failed) {
-    const crashed = new Set()
-    for (const { node, err } of failed) {
-      const owner = node.ctx?.entity
-      try {
-        if (!node._cleanFailed) {
-          node._cleanFailed = true
-          console.error(`[stage] node update failed (node ${node.id}, entity ${owner?.data?.id ?? 'none'})`)
-          console.error(err)
-        }
-        if (owner?.isApp && !crashed.has(owner)) owner.scriptError = serializeError(err)
-      } catch {
-        // a hostile error object (eg throwing getters) must not stop the containment itself
-      }
-      if (owner?.isApp) {
-        if (crashed.has(owner)) continue
-        crashed.add(owner)
-        owner.crash()
-        continue
-      }
-      // the traversal that failed started at the top of the dirty chain, like Node.clean()
-      let top = node
-      while (top.parent && top.parent.isDirty) {
-        top = top.parent
-      }
-      node._cleanFailures = (node._cleanFailures || 0) + 1
-      if (node._cleanFailures >= CLEAN_RETRY_CAP) {
-        if (!node._cleanGaveUp) {
-          node._cleanGaveUp = true
-          console.error(
-            `[stage] giving up on node ${node.id} (entity ${owner?.data?.id ?? 'none'}) after ${CLEAN_RETRY_CAP} failures`
-          )
-        }
-        node._cleanFailures = 0
-        top.traverse(child => {
-          try {
-            child.updateTransform()
-          } catch {
-            // stays stale until its next write
-          }
-          child.isDirty = false
-          child.isTransformed = false
-          this.dirtyNodes.delete(child)
-        })
-        continue
-      }
-      top.traverse(child => {
-        child.isTransformed = true
-        child.isDirty = true
-        this.dirtyNodes.delete(child)
-      })
-      this.dirtyNodes.add(top)
-    }
   }
 
   insert(options) {

@@ -1,5 +1,3 @@
-import { toScriptError } from './scriptValues.js'
-
 const has = Object.prototype.hasOwnProperty
 
 // the tables are plain objects, so lookups must be own-property checks:
@@ -17,12 +15,7 @@ export function createEntityProxy(entity, { getters, setters, methods, fallbackG
         if (has.call(methods, prop)) {
           const method = methods[prop]
           return (...args) => {
-            try {
-              return method(entity, ...args)
-            } catch (err) {
-              // a host failure reaches the script as an intrinsic error only
-              throw toScriptError(err)
-            }
+            return method(entity, ...args)
           }
         }
         if (fallbackGet) return fallbackGet(prop)

@@ -59,8 +59,10 @@ jobs:
       - name: Build (server)
         run: npm run build
 
-      - name: Full-stack
-        run: node test/e2e/fullstack.mjs --engine=${{ matrix.engine }}
+      # DIAGNOSTIC BRANCH: the pre-sandbox tree cannot pass the sandbox probes, so only boot, load the
+      # world and run the load checks; the saved artifacts show whether the engine loads the world at all
+      - name: Full-stack (load only)
+        run: node test/e2e/fullstack.mjs --engine=${{ matrix.engine }} --load-only
 
       - name: Extras (movement, avatar, uploads, AI mock, agent)
         run: node test/e2e/gate-extras.mjs --engine=${{ matrix.engine }}

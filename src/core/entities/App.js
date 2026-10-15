@@ -7,7 +7,6 @@ import { createEntityProxy } from '../extras/createEntityProxy'
 import { serializeError } from '../extras/serializeError'
 import { registerAppProxy } from '../nodes/refs'
 import { createScriptTimers } from '../extras/scriptTimers'
-import { createScriptResponse, toHostFetchOptions } from '../extras/scriptFetch'
 
 const hotEventNames = ['fixedUpdate', 'update', 'animate', 'lateUpdate']
 
@@ -173,13 +172,8 @@ export class App extends Entity {
   }
 
   unbuild() {
-    // notify any running script; a throwing listener must not skip the teardown below
-    try {
-      this.emit('destroy')
-    } catch (err) {
-      console.error('script destroy() crashed', this)
-      console.error(err)
-    }
+    // notify any running script
+    this.emit('destroy')
     // cancel any control
     this.control?.release()
     this.control = null
@@ -324,16 +318,7 @@ export class App extends Entity {
   }
 
   crash() {
-    // the rebuild runs unobserved by callers; a failure must not surface as an unhandled rejection
-    // or leave the app stuck in the building state (which would queue events forever)
-    const promise = this.build(true)
-    const n = this.n
-    promise.catch(err => {
-      console.error('crash rebuild failed', this)
-      console.error(err)
-      // only this build may clear the flag; a newer build owns it otherwise
-      if (this.n === n) this.building = false
-    })
+    this.build(true)
   }
 
   destroy(local) {
@@ -406,14 +391,23 @@ export class App extends Entity {
     }
   }
 
-  // scripts get a whitelisted request init and a response of plain values (see scriptFetch.js)
   fetch = async (url, options = {}) => {
     try {
       const resp = await fetch(url, {
-        ...toHostFetchOptions(options),
+        ...options,
         signal: this.abortController.signal,
       })
-      return createScriptResponse(resp)
+      const secureResp = {
+        ok: resp.ok,
+        status: resp.status,
+        statusText: resp.statusText,
+        headers: Object.fromEntries(resp.headers.entries()),
+        json: async () => await resp.json(),
+        text: async () => await resp.text(),
+        blob: async () => await resp.blob(),
+        arrayBuffer: async () => await resp.arrayBuffer(),
+      }
+      return secureResp
     } catch (err) {
       console.error(err)
       // this.crash()

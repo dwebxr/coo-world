@@ -63,6 +63,4 @@ Sets a query parameter in the browsers url
 
 ### `.open(url: string, newTab: ?Boolean)`
 
-Opens a link in the current window, or in a new tab when `newTab` is true (client only).
-
-Only `http(s)` URLs can be opened: relative paths resolve against the world's own origin and a bare host (`example.com/page`) gets `https://`, while scheme URLs such as `javascript:`, `data:` or `blob:` and anything served from the world's `/assets/` store (including `asset://` URLs and percent-encoded spellings of it) are rejected with a console error. A `host:port/path` without a scheme is rejected too (it parses as a scheme); write `http://host:port/path`. New tabs are opened with `noopener,noreferrer`, so the opened page cannot reach the world.
+Opens a link, defaults to new tab.

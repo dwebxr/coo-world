@@ -4,12 +4,14 @@ import assert from 'node:assert/strict'
 import {
   isAvatarUrl,
   isBoundedJsonObject,
+  isEmoteUrl,
   sanitizeAppModify,
   sanitizeAppRelease,
   sanitizeEntityAdd,
   sanitizeName,
   sanitizePlayerSelfModify,
 } from '../src/core/extras/entityModifyPolicy.js'
+import { emoteUrls } from '../src/core/extras/playerEmotes.js'
 
 const me = 'socket-me'
 const other = 'socket-other'
@@ -108,9 +110,10 @@ test('isBoundedJsonObject: the budget is the exact utf-8 size of the JSON text, 
 
 // --- isAvatarUrl ---
 
-test('isAvatarUrl: null and undefined are accepted (they clear a session avatar)', () => {
+test('isAvatarUrl: null, undefined and the empty string are accepted (they clear a session avatar)', () => {
   assert.equal(isAvatarUrl(undefined), true)
   assert.equal(isAvatarUrl(null), true)
+  assert.equal(isAvatarUrl(''), true)
 })
 
 test('isAvatarUrl: asset .vrm names (built-in or content hash) and http(s) urls are accepted', () => {
@@ -144,7 +147,6 @@ test('isAvatarUrl: other schemes, non-vrm or nested assets, non-strings and long
     '/assets/a.vrm',
     'http://',
     'https://exa mple.com/a.vrm',
-    '',
     1,
     true,
     {},
@@ -179,6 +181,71 @@ test('isAvatarUrl: only the literal http:// or https:// prefix counts, as the lo
 })
 
 // --- sanitizePlayerSelfModify ---
+
+// --- isEmoteUrl ---
+
+test('isEmoteUrl: undefined and null clear; built-in emotes, hashed .glb assets with a playback query and http(s) urls pass', () => {
+  assert.equal(isEmoteUrl(undefined), true)
+  assert.equal(isEmoteUrl(null), true)
+  for (const url of emoteUrls) assert.equal(isEmoteUrl(url), true, url)
+  assert.equal(isEmoteUrl(`asset://${'0123456789abcdef'.repeat(4)}.glb`), true)
+  assert.equal(isEmoteUrl('asset://x.glb?s=1.5&l=0&g=1'), true)
+  assert.equal(isEmoteUrl('asset://x.glb?'), true)
+  assert.equal(isEmoteUrl('https://cdn.example/a.glb?x=1'), true)
+  assert.equal(isEmoteUrl('http://localhost:3000/a.glb'), true)
+  assert.equal(isEmoteUrl(`https://cdn.example/${'a'.repeat(512 - 'https://cdn.example/'.length)}`), true)
+})
+
+test('isEmoteUrl: other schemes, non-glb or nested assets, junk queries, non-strings and long values are rejected', () => {
+  for (const v of [
+    'data:model/gltf-binary;base64,AAAA',
+    'blob:http://localhost/0000',
+    'javascript:1',
+    'file:///a.glb',
+    'asset://x.vrm',
+    'asset://x.GLB',
+    'asset://../x.glb',
+    'asset://a/b.glb',
+    'asset://x.glb?s=1 5',
+    'asset://x.glb?s=<script>',
+    'asset://x.glb#x',
+    'asset://.glb',
+    'cdn.example/a.glb',
+    '/assets/a.glb',
+    'https:host/a.glb',
+    '',
+    1,
+    true,
+    {},
+    ['asset://emote-float.glb'],
+    Symbol('s'),
+    () => 'asset://emote-float.glb',
+  ]) {
+    assert.equal(isEmoteUrl(v), false, typeof v === 'symbol' ? 'symbol' : String(v))
+  }
+  assert.equal(isEmoteUrl(`https://cdn.example/${'a'.repeat(513)}`), false)
+})
+
+test('sanitizePlayerSelfModify: e keeps a valid emote url, undefined and null, and turns anything else into null', () => {
+  const url = 'asset://emote-flip.glb?s=1.1'
+  assert.equal(sanitizePlayerSelfModify({ id: me, e: url }, me).e, url)
+  for (const e of [
+    'data:x',
+    'blob:http://a/b',
+    'javascript:1',
+    'asset://x.vrm',
+    'x'.repeat(600),
+    '',
+    1,
+    {},
+    [],
+    true,
+  ]) {
+    const safe = sanitizePlayerSelfModify({ id: me, e }, me)
+    assert.ok(Object.prototype.hasOwnProperty.call(safe, 'e'), String(e))
+    assert.equal(safe.e, null, String(e))
+  }
+})
 
 test('sanitizePlayerSelfModify: every owner field with a valid value survives, keyed by the socket id', () => {
   const data = {
@@ -227,7 +294,6 @@ test('sanitizePlayerSelfModify: a bad value drops only that key', () => {
       g: [0, Infinity, 0],
       m: '1',
       name: 42,
-      e: 1,
       ef: 'x',
       sessionAvatar: {},
       t: 'yes',

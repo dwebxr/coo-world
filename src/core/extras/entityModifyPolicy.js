@@ -9,6 +9,9 @@ const JSON_MAX_ITEMS = 1024
 const AVATAR_URL_MAX_LENGTH = 512
 // a .vrm in the world's asset store: a built-in name (avatar.vrm) or a content hash
 const AVATAR_ASSET_URL = /^asset:\/\/[A-Za-z0-9._-]+\.vrm$/
+const EMOTE_URL_MAX_LENGTH = 512
+// a .glb in the asset store, with an optional playback query (the static route ignores the query)
+const EMOTE_ASSET_URL = /^asset:\/\/[A-Za-z0-9._-]+\.glb(\?[A-Za-z0-9=&._-]*)?$/
 
 const encoder = new TextEncoder()
 
@@ -26,10 +29,6 @@ function isFiniteArray(value, length) {
     if (!Number.isFinite(value[i])) return false
   }
   return true
-}
-
-function isOptionalString(value) {
-  return value === undefined || value === null || typeof value === 'string'
 }
 
 // structural check of a tree made only of plain objects with string keys, arrays, strings,
@@ -89,12 +88,26 @@ export function sanitizeName(value) {
 }
 
 // an avatar url a client may set, wherever it arrives from (self-modify, a connection parameter, a
-// server-sent session avatar): null/undefined (clears a session avatar), an asset .vrm, or an http(s) url
-// that parses. anything else, including data:/blob:/javascript: urls, is not applied
+// server-sent session avatar): null/undefined/'' (each clears a session avatar, as '' always has), an asset
+// .vrm, or an http(s) url that parses. anything else, including data:/blob:/javascript: urls, is not applied
 export function isAvatarUrl(value) {
-  if (value === undefined || value === null) return true
+  if (value === undefined || value === null || value === '') return true
   if (typeof value !== 'string' || value.length > AVATAR_URL_MAX_LENGTH) return false
   if (AVATAR_ASSET_URL.test(value)) return true
+  return isHttpUrl(value)
+}
+
+// an emote animation other players will load for this player: a .glb in the asset store (a built-in such as
+// emote-float.glb or a content hash), optionally with the playback query the avatar reads (?s=1.5, ?l=0,
+// ?g=1), or an http(s) url. undefined/null clear. the local player's own emote is not checked here
+export function isEmoteUrl(value) {
+  if (value === undefined || value === null) return true
+  if (typeof value !== 'string' || value.length > EMOTE_URL_MAX_LENGTH) return false
+  if (EMOTE_ASSET_URL.test(value)) return true
+  return isHttpUrl(value)
+}
+
+function isHttpUrl(value) {
   // the literal prefix the loader passes through unchanged (World.resolveURL); spellings such as
   // `http:/x` or `https:host/a.vrm` parse but would be rewritten before loading, so they are refused
   if (!/^https?:\/\//i.test(value)) return false
@@ -116,7 +129,9 @@ export function sanitizePlayerSelfModify(data, socketId, { allowAvatar = false }
   if (Number.isFinite(data.m)) safe.m = data.m
   if (isFiniteArray(data.a, 3)) safe.a = data.a
   if (isFiniteArray(data.g, 3)) safe.g = data.g
-  if (has(data, 'e') && isOptionalString(data.e)) safe.e = data.e // undefined clears the emote
+  // undefined clears the emote; a value other players must not load is turned into null, not dropped, so
+  // they do not stay frozen on the previous emote
+  if (has(data, 'e')) safe.e = isEmoteUrl(data.e) ? data.e : null
   if (has(data, 'ef') && (data.ef === null || isBoundedJsonObject(data.ef))) safe.ef = data.ef
   if (data.t === true) safe.t = true
   if (has(data, 'name')) {

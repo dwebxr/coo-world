@@ -395,9 +395,15 @@ export class ServerNetwork extends System {
     // the stored and broadcast message is built here from the allowed fields only; the sender identity
     // and the time come from the server, not the packet
     const safe = sanitizeChatMessage(msg)
-    if (!safe) return console.error('onChatAdded: invalid message')
+    if (!safe) {
+      return this.logOnce(
+        socket,
+        'chat-invalid',
+        `onChatAdded: invalid message from ${socket.id} (further ones from this connection are not logged)`
+      )
+    }
     const message = {
-      id: safe.id || uuid(),
+      id: uuid(),
       from: socket.player.data.name,
       fromId: socket.player.data.id,
       body: safe.body,
@@ -479,7 +485,8 @@ export class ServerNetwork extends System {
     }
     if (cmd === 'server') {
       const op = arg1
-      if (op === 'stats') {
+      // process figures are for builders; a visitor's /server stats is ignored like any other unknown command
+      if (op === 'stats' && socket.player.isBuilder()) {
         const send = body => {
           socket.send('chatAdded', {
             id: uuid(),

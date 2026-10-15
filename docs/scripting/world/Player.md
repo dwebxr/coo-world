@@ -95,7 +95,7 @@ All options are optional.
 
 **anchor**: an [Anchor](/docs/scripting/nodes/types/Anchor.md) to attach the player to
 
-**emote**: a url to an emote to play while this effect is active
+**emote**: a url to an emote to play while this effect is active. Other players load it only when it is an `asset://<name>.glb` (optionally with the playback query, eg `?s=1.5`) or an `http(s)://` url of up to 512 characters; for any other value they see the player's locomotion instead
 
 **snare**: a multiplier from 0 to 1 that reduces movement speed, where zero means no snaring and one means entirely snared. when snared, players can still turn and attempt to move.
 

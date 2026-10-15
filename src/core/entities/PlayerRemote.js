@@ -5,6 +5,7 @@ import { outranks, isAdmin, isBuilder, isMuted } from '../extras/playerRanks'
 import { createPlayerAura, chatBubble } from '../extras/playerAura'
 import { BufferedLerpVector3 } from '../extras/BufferedLerpVector3'
 import { BufferedLerpQuaternion } from '../extras/BufferedLerpQuaternion'
+import { isEmoteUrl } from '../extras/entityModifyPolicy'
 
 let capsuleGeometry
 {
@@ -24,6 +25,9 @@ export class PlayerRemote extends Entity {
   }
 
   async init() {
+    // the emote url is checked when it arrives (here from a snapshot, in modify from a packet), which keeps
+    // the per-frame setEmote call as it is
+    if (!isEmoteUrl(this.data.emote)) this.data.emote = null
     this.base = createNode('group')
     this.base.position.fromArray(this.data.position)
     this.base.quaternion.fromArray(this.data.quaternion)
@@ -179,7 +183,7 @@ export class PlayerRemote extends Entity {
       this.gaze.fromArray(data.g)
     }
     if (Object.prototype.hasOwnProperty.call(data, 'e')) {
-      this.data.emote = data.e
+      this.data.emote = isEmoteUrl(data.e) ? data.e : null
     }
     if (Object.prototype.hasOwnProperty.call(data, 'ef')) {
       this.setEffect(data.ef)

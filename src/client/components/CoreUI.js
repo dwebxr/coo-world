@@ -580,6 +580,7 @@ function LoadingOverlay({ world }) {
 const kickMessages = {
   duplicate_user: 'Player already active on another device or window.',
   player_limit: 'Player limit reached.',
+  connection_limit: 'Too many connections from your network. Try again in a minute.',
   unknown: 'You were kicked.',
 }
 function KickedOverlay({ code }) {

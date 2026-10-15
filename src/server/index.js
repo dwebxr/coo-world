@@ -11,6 +11,7 @@ import compress from '@fastify/compress'
 import statics from '@fastify/static'
 
 import { createServerWorld } from '../core/createServerWorld'
+import { writePacket } from '../core/packets'
 import { readJWT } from '../core/utils-server'
 import { getDB } from './db'
 import { Storage } from './Storage'
@@ -19,7 +20,8 @@ import { collections } from './collections'
 import { cleaner } from './cleaner'
 import { escapeHtml } from './escapeHtml'
 import { walletOf } from './solana-gating'
-import { createUploadLimits, readUploadLimitsEnv } from './uploadLimits'
+import { clientIpKey, createUploadLimits, readUploadLimitsEnv } from './uploadLimits'
+import { createConnectionLimits, readConnectionLimitsEnv } from './connectionLimits'
 import { assetRoutes, uploadRoutes } from './uploadRoutes'
 
 const rootDir = path.join(__dirname, '../')
@@ -50,6 +52,10 @@ if (!(maxUploadSize > 0)) {
   throw new Error('[envs] PUBLIC_MAX_UPLOAD_SIZE must be a positive number of megabytes')
 }
 const uploadLimitsConfig = readUploadLimitsEnv(process.env) // UPLOAD_*; throws on a bad value
+const connectionLimitsConfig = readConnectionLimitsEnv(process.env) // WS_CONNECT_*; throws on a bad value
+// a client frame above this closes the connection (1009) before it is buffered. legitimate client packets
+// are a few KB; the per-type caps below this live in core/extras/inboundPolicy.js
+const WS_MAX_PAYLOAD = 1024 * 1024
 if (!process.env.PUBLIC_WS_URL) {
   throw new Error('[envs] PUBLIC_WS_URL not set')
 }
@@ -129,7 +135,9 @@ fastify.register(statics, {
 if (world.assetsDir) {
   fastify.register(assetRoutes, { root: world.assetsDir })
 }
-fastify.register(ws)
+fastify.register(ws, { options: { maxPayload: WS_MAX_PAYLOAD } })
+// per-address connection limits, checked before a connection touches the database (see connectionLimits.js)
+const connectionLimits = createConnectionLimits(connectionLimitsConfig)
 fastify.register(worldNetwork)
 
 const publicEnvs = {}
@@ -225,6 +233,16 @@ try {
 
 async function worldNetwork(fastify) {
   fastify.get('/ws', { websocket: true }, (ws, req) => {
+    // the address bucket is the one the upload limits use; a refused connection is told why and closed with
+    // 1013 (try again later) before anything is looked up or serialised for it
+    const header = uploadLimitsConfig.clientIpHeader
+    const verdict = connectionLimits.admit(clientIpKey(header ? req.headers[header] : undefined, req.ip))
+    if (!verdict.ok) {
+      ws.send(writePacket('kick', 'connection_limit'))
+      ws.close(1013, verdict.reason)
+      return
+    }
+    ws.on('close', verdict.release)
     world.network.onConnection(ws, req.query)
   })
 }

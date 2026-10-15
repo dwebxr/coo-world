@@ -282,7 +282,7 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
 
 test('ServerNetwork: oversized snapshot closes with 1011 and never writes the snapshot', async () => {
   const logs = []
-  const network = makeNetwork()
+  const network = makeNetwork(line => logs.push(line))
   network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
   network.connecting = new Set()
   const user = { id: 'player', rank: 0 }
@@ -314,7 +314,7 @@ test('ServerNetwork: oversized snapshot closes with 1011 and never writes the sn
   }
   await method.call(network, ws, { authToken: 'valid' })
   assert.equal(ws.closeCode, 1011)
-  assert.deepEqual(logs, ['snapshot too large'])
+  assert.deepEqual(logs, ['onConnection: snapshot too large'])
   assert.equal(ws.packets.length, 0)
   assert.equal(network.sockets.size, 0)
 })

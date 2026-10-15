@@ -199,7 +199,11 @@ export class ServerNetwork extends System {
 
   requireBuilder(socket, action) {
     if (socket.player.isBuilder()) return true
-    console.error(`player attempted to ${action} without builder permission`)
+    this.logOnce(
+      socket,
+      `builder:${action}`,
+      `player attempted to ${action} without builder permission: ${String(socket.id).slice(0, 64)}`
+    )
     return false
   }
 
@@ -300,7 +304,10 @@ export class ServerNetwork extends System {
   }
 
   async onConnection(ws, params) {
+    let cancelled = false
+    ws.once('close', () => (cancelled = true))
     let reserved = null
+    let socket = null
     try {
       // check player limit
       const playerLimit = this.world.settings.playerLimit
@@ -319,11 +326,11 @@ export class ServerNetwork extends System {
       // get or create user
       let user
       if (authToken) {
-        try {
-          const { userId } = await readJWT(authToken)
-          user = await this.db('users').where('id', userId).first()
-        } catch (err) {
-          console.error('failed to read authToken:', err?.message || err)
+        const auth = await readJWT(authToken)
+        if (cancelled) return
+        if (auth) {
+          user = await this.db('users').where('id', auth.userId).first()
+          if (cancelled) return
         }
       }
       if (!user) {
@@ -335,7 +342,9 @@ export class ServerNetwork extends System {
           createdAt: moment().toISOString(),
         }
         await this.db('users').insert(user)
+        if (cancelled) return
         authToken = await createJWT({ userId: user.id })
+        if (cancelled) return
       }
 
       // disconnect if user already in this world, or still connecting (the id is reserved before the next await)
@@ -350,9 +359,10 @@ export class ServerNetwork extends System {
 
       // livekit options
       const livekit = await this.world.livekit.serialize(user.id)
+      if (cancelled) return
 
       // create socket
-      const socket = new Socket({ id: user.id, ws, network: this })
+      socket = new Socket({ id: user.id, ws, network: this })
 
       // spawn player
       socket.player = this.world.entities.add(
@@ -391,12 +401,8 @@ export class ServerNetwork extends System {
         hasAdminCode: !!process.env.ADMIN_CODE,
       })
 
-      if (snapshot.length > PACKET_CAP) {
-        console.error('snapshot too large')
-        ws.close(1011)
-        return
-      }
-      this.write(ws, snapshot, { name: 'snapshot' })
+      if (snapshot.length > PACKET_CAP) throw new Error('snapshot too large')
+      if (!this.write(ws, snapshot, { name: 'snapshot' })) throw new Error('snapshot write failed')
 
       this.sockets.set(socket.id, socket)
 
@@ -404,7 +410,19 @@ export class ServerNetwork extends System {
       // on the client these are sent during PlayerRemote.js entity instantiation!
       this.world.events.emit('enter', { playerId: socket.player.data.id })
     } catch (err) {
-      console.error(err)
+      this.logOnce(ws, 'connection', `onConnection: ${briefError(err)}`)
+      try {
+        if (socket && !socket.disconnected) {
+          // add() can throw from a listener after registering the entity.
+          socket.player ||= this.world.entities.get(socket.id)
+          this.onDisconnect(socket)
+        }
+      } catch (err) {
+        this.logOnce(ws, 'connection-cleanup', `onConnection cleanup: ${briefError(err)}`)
+      } finally {
+        if (socket && this.sockets.get(socket.id) === socket) this.sockets.delete(socket.id)
+        ws.close(1011)
+      }
     } finally {
       if (reserved) this.connecting.delete(reserved)
     }
@@ -464,8 +482,11 @@ export class ServerNetwork extends System {
         try {
           await persistRank({ db: this.db, player, rank, wallets: solanaGating })
         } catch (err) {
-          console.error(`error saving user rank for ${userId}; the session keeps its previous grant state`)
-          console.error(err)
+          this.logOnce(
+            socket,
+            'user-rank-save',
+            `error saving user rank for ${String(userId).slice(0, 64)}; the session keeps its previous grant state: ${briefError(err)}`
+          )
         }
       }
     }
@@ -487,8 +508,7 @@ export class ServerNetwork extends System {
         try {
           await this.db('users').where('id', userId).update({ name })
         } catch (err) {
-          console.error('error saving user name')
-          console.error(err)
+          this.logOnce(socket, 'user-name-save', `error saving user name: ${briefError(err)}`)
         }
       }
     }
@@ -542,8 +562,11 @@ export class ServerNetwork extends System {
     try {
       await persistRank({ db: this.db, player, rank, wallets: solanaGating })
     } catch (err) {
-      console.error(`error saving user rank for ${playerId}; the session keeps its previous grant state`)
-      console.error(err)
+      this.logOnce(
+        socket,
+        'user-rank-save',
+        `error saving user rank for ${String(playerId).slice(0, 64)}; the session keeps its previous grant state: ${briefError(err)}`
+      )
     }
   }
 
@@ -590,7 +613,11 @@ export class ServerNetwork extends System {
 
     const { walletAddress, signature, nonce } = data || {}
     if (!walletAddress || !signature || !nonce) {
-      return console.error('Invalid builder token request (missing walletAddress/signature/nonce)')
+      return this.logOnce(
+        socket,
+        'builder-token-invalid',
+        'Invalid builder token request (missing walletAddress/signature/nonce)'
+      )
     }
 
     const player = socket.player
@@ -678,7 +705,13 @@ export class ServerNetwork extends System {
   onBlueprintModified = (socket, data) => {
     if (!this.requireBuilder(socket, 'modify blueprint')) return
     const blueprint = this.world.blueprints.get(data.id)
-    if (!blueprint) return console.error('onBlueprintModified: no blueprint found', data)
+    if (!blueprint) {
+      return this.logOnce(
+        socket,
+        'blueprint-missing',
+        `onBlueprintModified: no blueprint found: ${String(data.id).slice(0, 64)}`
+      )
+    }
     // if new version is greater than current version, allow it
     if (data.version > blueprint.version) {
       this.world.blueprints.modify(data, false, { authorSocketId: socket.id })
@@ -698,22 +731,38 @@ export class ServerNetwork extends System {
       blueprintExists: id => !!this.world.blueprints.get(id),
       entityExists: id => !!this.world.entities.get(id),
     })
-    if (!safe) return console.error('onEntityAdded: invalid entity', data?.id)
+    if (!safe) {
+      return this.logOnce(socket, 'entity-invalid', `onEntityAdded: invalid entity: ${String(data?.id).slice(0, 64)}`)
+    }
     const entity = this.world.entities.add(safe)
     this.send('entityAdded', safe, socket.id)
     this.dirtyApps.add(entity.data.id)
   }
 
   onEntityModified = async (socket, data) => {
-    if (!isObject(data)) return console.error('onEntityModified: invalid packet')
+    if (!isObject(data)) return this.logOnce(socket, 'entity-packet-invalid', 'onEntityModified: invalid packet')
     const entity = this.world.entities.get(data.id)
-    if (!entity) return console.error('onEntityModified: no entity found', data)
+    if (!entity) {
+      return this.logOnce(
+        socket,
+        'entity-missing',
+        `onEntityModified: no entity found: ${String(data.id).slice(0, 64)}`
+      )
+    }
     if (entity.isPlayer) {
       // a socket may only modify its own player, and only the client-owned fields
-      if (entity !== socket.player) return console.error('player attempted to modify another player')
+      if (entity !== socket.player) {
+        return this.logOnce(socket, 'player-modify-other', 'player attempted to modify another player')
+      }
       const allowAvatar = socket.player.isBuilder() || !!this.world.settings.customAvatars
       const safe = sanitizePlayerSelfModify(data, socket.id, { allowAvatar })
-      if (!safe) return console.error('onEntityModified: no permitted fields', data.id)
+      if (!safe) {
+        return this.logOnce(
+          socket,
+          'entity-fields',
+          `onEntityModified: no permitted fields: ${String(data.id).slice(0, 64)}`
+        )
+      }
       entity.modify(safe)
       this.send('entityModified', safe, socket.id)
       // the sender applied its name locally before sending; correct it if it was truncated
@@ -735,8 +784,7 @@ export class ServerNetwork extends System {
         try {
           await this.db('users').where('id', entity.data.userId).update(changes)
         } catch (err) {
-          console.error('error saving user changes')
-          console.error(err)
+          this.logOnce(socket, 'user-changes-save', `error saving user changes: ${briefError(err)}`)
         }
       }
       return
@@ -750,11 +798,18 @@ export class ServerNetwork extends System {
         const mover = entity.data.mover === socket.id
         const uploader = entity.data.uploader === socket.id
         if (!mover && !uploader) {
-          return console.error('player attempted to modify entity without builder permission')
+          this.requireBuilder(socket, 'modify entity')
+          return
         }
         safe = sanitizeAppRelease(data, { mover, uploader })
       }
-      if (!safe) return console.error('onEntityModified: no permitted fields', data.id)
+      if (!safe) {
+        return this.logOnce(
+          socket,
+          'entity-fields',
+          `onEntityModified: no permitted fields: ${String(data.id).slice(0, 64)}`
+        )
+      }
       entity.modify(safe)
       this.send('entityModified', safe, socket.id)
       // mark for saving
@@ -777,7 +832,9 @@ export class ServerNetwork extends System {
     if (typeof id !== 'string') return
     const entity = this.world.entities.get(id)
     if (!entity) return
-    if (!entity.isApp) return console.error('player attempted to remove a non-app entity')
+    if (!entity.isApp) {
+      return this.logOnce(socket, 'entity-remove-player', 'player attempted to remove a non-app entity')
+    }
     // a sender that lost builder may still cancel its own pending upload (see onEntityModified)
     const uploader = entity.data.uploader === socket.id
     if (!uploader && !this.requireBuilder(socket, 'remove entity')) return
@@ -790,12 +847,20 @@ export class ServerNetwork extends System {
     if (!this.requireBuilder(socket, 'modify settings')) return
     if (!isObject(data)) return
     const { key, value } = data
-    if (!isKnownSettingKey(key)) return console.error('onSettingsModified: unknown setting', key)
+    if (!isKnownSettingKey(key)) {
+      return this.logOnce(socket, 'setting-unknown', `onSettingsModified: unknown setting: ${String(key).slice(0, 64)}`)
+    }
     if (isAdminOnlySettingKey(key) && !socket.player.isAdmin()) {
-      return console.error('player attempted to modify setting without admin permission')
+      return this.logOnce(socket, 'setting-admin', 'player attempted to modify setting without admin permission')
     }
     const result = normalizeSettingValue(key, value)
-    if (!result.ok) return console.error('onSettingsModified: invalid value for', key)
+    if (!result.ok) {
+      return this.logOnce(
+        socket,
+        'setting-invalid',
+        `onSettingsModified: invalid value for ${String(key).slice(0, 64)}`
+      )
+    }
     this.world.settings.set(key, result.value)
     this.send('settingsModified', { key, value: result.value }, socket.id)
     // the sender applied its value locally before sending; correct it if it was adjusted
@@ -824,8 +889,7 @@ export class ServerNetwork extends System {
           value: data,
         })
     } catch (err) {
-      console.error('error saving spawn')
-      console.error(err)
+      this.logOnce(socket, 'spawn-save', `error saving spawn: ${briefError(err)}`)
     }
     socket.send('chatAdded', {
       id: uuid(),
@@ -851,9 +915,7 @@ export class ServerNetwork extends System {
   }
 
   onAi = (socket, action) => {
-    if (!socket.player.isBuilder()) {
-      return console.error('player attempted to use ai but they are not a builder')
-    }
+    if (!this.requireBuilder(socket, 'use ai')) return
     this.world.ai.onAction(action)
   }
 
@@ -867,7 +929,7 @@ export class ServerNetwork extends System {
     this.world.apps.eventLedger.purgeSocket(socket.id)
     this.world.livekit.clearModifiers(socket.id)
     solanaGating.clearSocket(socket.id)
-    socket.player.destroy(true)
+    socket.player?.destroy(true)
     // only drop the entry that still refers to this socket
     if (this.sockets.get(socket.id) === socket) this.sockets.delete(socket.id)
   }

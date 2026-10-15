@@ -6,6 +6,7 @@ import { PROTOCOL_VERSION, packetNameById, peekPacketId, writePacket } from '../
 import { createWriteLedger, PACKET_CAP } from '../../src/core/extras/writeLedger.js'
 import { createInboundGate, createInboundScheduler } from '../../src/core/extras/inboundPolicy.js'
 import { createEventLedger } from '../../src/core/extras/appEventQueue.js'
+import { briefError, createLogOnce } from '../../src/core/extras/logOnce.js'
 import { clientIpKeys } from '../../src/server/uploadLimits.js'
 
 export const serverSource = fs.readFileSync(new URL('../../src/server/index.js', import.meta.url), 'utf8')
@@ -34,6 +35,7 @@ export function makeNetwork(log = () => {}) {
   network.isServer = true
   network.id = 0
   network.sockets = new Map()
+  network.logOnce = createLogOnce(log)
   network.writer = createWriteLedger({ log })
   network.gate = createInboundGate({ log })
   network.scheduler = createInboundScheduler()
@@ -101,6 +103,7 @@ export function connectionMethod(context) {
     writePacket,
     PACKET_CAP,
     Socket,
+    briefError,
     ...context,
   })
 }

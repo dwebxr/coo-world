@@ -9,7 +9,7 @@ import path from 'node:path'
 
 import { APPS_DIR, arg, ensureOut, sleep } from './lib/common.mjs'
 import { installAsset, startServer } from './lib/server.mjs'
-import { becomeAdmin, launchBrowser, openWorld } from './lib/browser.mjs'
+import { becomeAdmin, launchBrowser, openWorld, saveArtifacts } from './lib/browser.mjs'
 
 const ENGINE = arg('engine', 'chromium')
 const PORT = Number(arg('port', 3125))
@@ -36,6 +36,7 @@ const cpuPercent = async (pid, ms) => {
 const out = { engine: ENGINE, apps: N, prims: K, nodes: N * K, monitor: MONITOR }
 let server
 let browser
+let handles = {}
 try {
   server = await startServer({
     port: PORT,
@@ -49,6 +50,7 @@ try {
   const { page, errorLines, pageErrors } = await openWorld(browser, server.url, {
     viewport: { width: 480, height: 320 },
     settle: 5000,
+    onPage: h => (handles = h),
   })
   out.serverCpuIdle = await cpuPercent(server.child.pid, 10000)
   await becomeAdmin(page)
@@ -181,6 +183,7 @@ try {
 } catch (err) {
   out.error = err?.stack || String(err)
 } finally {
+  await saveArtifacts({ ...handles, prefix: path.join(OUT, `stress-${ENGINE}`) })
   await browser?.close().catch(() => {})
   await server?.stop()
   console.log(JSON.stringify(out))

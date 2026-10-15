@@ -10,7 +10,7 @@ import path from 'node:path'
 
 import { BUILD_ROOT, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
 import { startServer, worldAssetsDir } from './lib/server.mjs'
-import { becomeAdmin, launchBrowser, openWorld } from './lib/browser.mjs'
+import { becomeAdmin, launchBrowser, openWorld, saveArtifacts } from './lib/browser.mjs'
 
 const ENGINE = arg('engine', 'chromium')
 const PORT = Number(arg('port', 3123))
@@ -45,6 +45,7 @@ await new Promise(resolve => mock.listen(0, '127.0.0.1', resolve))
 let server
 let browser
 let agent
+let handles = {}
 try {
   server = await startServer({
     port: PORT,
@@ -55,6 +56,7 @@ try {
   browser = await launchBrowser(ENGINE)
   const { page, pageErrors, errorLines } = await openWorld(browser, server.url, {
     viewport: { width: 800, height: 600 },
+    onPage: h => (handles = h),
   })
   await becomeAdmin(page)
   record(true, `${ENGINE}: server up, browser player is admin`)
@@ -291,6 +293,7 @@ try {
   } catch {
     // already gone
   }
+  await saveArtifacts({ ...handles, prefix: path.join(OUT, `extras-${ENGINE}`) })
   await browser?.close().catch(() => {})
   await server?.stop()
   mock.close()

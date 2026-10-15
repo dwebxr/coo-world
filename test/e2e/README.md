@@ -26,7 +26,12 @@ The server build must come last: each build empties `build/`.
 | `stress.mjs --engine=<e> [--apps=20 --prims=50 --frames=600] [--monitor]` | 1000 moving nodes; prints per-frame JS mean/median/p90, render commit time and server CPU as JSON; `--monitor` adds the server tick sampler (`MONITOR_TICK=1`) |
 
 Options: `--port=<n>` picks the server port, `--world=<dir>` copies an existing world (eg the local
-multi-app `world/`) instead of the default world that the server bootstraps from `src/world`.
+multi-app `world/`) instead of the default world that the server bootstraps from `src/world`;
+`fullstack.mjs --load-only` boots, loads the world in the browser and runs only the load checks (a
+diagnostic mode for an engine that fails to load). Every run saves `<name>-<engine>-console.log`,
+`-page-errors.log` (when any), `-final.png` and the server log under the output directory, also when it
+aborts; the console log ends with a `[harness] page state at exit` line (sidebar, world active, WebGL
+renderer, harden state).
 `E2E_BUILD_ROOT=<dir>` runs another checkout's `build/` (A/B comparisons), `E2E_OUT_DIR=<dir>` moves
 the logs and screenshots away from `test/e2e/out/`, and `E2E_<ENGINE>_EXECUTABLE=<path>` pairs the
 harness with a specific browser build.

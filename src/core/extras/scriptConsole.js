@@ -8,7 +8,9 @@
 // primitives. Browsers format lazily in devtools without calling into page code, so there the
 // arguments pass through unchanged.
 
-const INSPECT_OPTIONS = { customInspect: false, depth: 4, breakLength: 120 }
+// one line per call: log drains are line-oriented and a multi-line object dump would interleave with other
+// lines; depth, array and string limits still bound the size
+const INSPECT_OPTIONS = { customInspect: false, depth: 4, breakLength: Infinity, compact: true }
 
 function isPrimitive(value) {
   return value === null || (typeof value !== 'object' && typeof value !== 'function')

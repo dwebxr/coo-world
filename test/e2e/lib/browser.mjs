@@ -1,5 +1,6 @@
 // Playwright helpers: launch an engine (chromium | webkit | firefox) headless with software GL, open the
 // world, collect console/page errors, and promote the browser player to admin through the chat command.
+import fs from 'node:fs'
 import * as playwright from 'playwright'
 
 import { sleep } from './common.mjs'
@@ -24,18 +25,60 @@ export async function launchBrowser(engine) {
   return playwright[engine].launch(options)
 }
 
-export async function openWorld(browser, url, { viewport = { width: 1280, height: 800 }, settle = 6000 } = {}) {
+// `onPage` receives the page and its collectors before the world is awaited, so a run that aborts while
+// loading can still save them (see saveArtifacts)
+export async function openWorld(browser, url, { viewport = { width: 1280, height: 800 }, settle = 6000, onPage } = {}) {
   const page = await browser.newPage({ viewport })
   const consoleLines = []
   const pageErrors = []
   page.on('console', m => consoleLines.push(`[${m.type()}] ${m.text()}`))
   page.on('pageerror', e => pageErrors.push(String(e)))
+  const errorLines = () => consoleLines.filter(l => l.startsWith('[error]') && !NOISE.test(l))
+  onPage?.({ page, consoleLines, pageErrors, errorLines })
   await page.goto(url, { waitUntil: 'domcontentloaded' })
   await page.waitForSelector('.sidebar', { timeout: 180000 })
   await page.waitForFunction(() => window.world?.ui?.state?.active === true, null, { timeout: 60000 })
   await sleep(settle)
-  const errorLines = () => consoleLines.filter(l => l.startsWith('[error]') && !NOISE.test(l))
   return { page, consoleLines, pageErrors, errorLines }
+}
+
+// writes <prefix>-console.log, <prefix>-page-errors.log and <prefix>-final.png; safe to call after an abort
+export async function saveArtifacts({ page, consoleLines = [], pageErrors = [], prefix }) {
+  try {
+    fs.writeFileSync(`${prefix}-console.log`, consoleLines.join('\n'))
+    if (pageErrors.length) fs.writeFileSync(`${prefix}-page-errors.log`, pageErrors.join('\n'))
+  } catch {
+    // nothing to save
+  }
+  if (!page || page.isClosed()) return
+  try {
+    const state = await page.evaluate(() => ({
+      url: location.href,
+      readyState: document.readyState,
+      title: document.title,
+      bodyText: document.body?.innerText?.slice(0, 500) ?? null,
+      hasSidebar: !!document.querySelector('.sidebar'),
+      worldActive: !!window.world?.ui?.state?.active,
+      hardenReal: typeof globalThis.harden === 'function' && !globalThis.harden.isFake,
+      webgl: (() => {
+        try {
+          const canvas = document.createElement('canvas')
+          const gl = canvas.getContext('webgl2') || canvas.getContext('webgl')
+          return gl ? String(gl.getParameter(gl.RENDERER)) : false
+        } catch (err) {
+          return `error: ${err?.message}`
+        }
+      })(),
+    }))
+    fs.appendFileSync(`${prefix}-console.log`, `\n[harness] page state at exit: ${JSON.stringify(state)}\n`)
+  } catch (err) {
+    fs.appendFileSync(`${prefix}-console.log`, `\n[harness] page state unavailable: ${err?.message}\n`)
+  }
+  try {
+    await page.screenshot({ path: `${prefix}-final.png`, timeout: 15000 })
+  } catch {
+    // the page may be unresponsive
+  }
 }
 
 export async function becomeAdmin(page, code = 'e2e') {

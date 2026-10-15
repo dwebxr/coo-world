@@ -6,6 +6,10 @@ import { createPlayerAura, chatBubble } from '../extras/playerAura'
 import { BufferedLerpVector3 } from '../extras/BufferedLerpVector3'
 import { BufferedLerpQuaternion } from '../extras/BufferedLerpQuaternion'
 import { isEmoteUrl } from '../extras/entityModifyPolicy'
+import { readAnchorPose } from '../extras/anchorPose'
+
+const anchorPosition = new THREE.Vector3()
+const anchorQuaternion = new THREE.Quaternion()
 
 let capsuleGeometry
 {
@@ -123,11 +127,11 @@ export class PlayerRemote extends Entity {
 
   lateUpdate(delta) {
     const anchor = this.getAnchorMatrix()
-    if (anchor) {
+    if (anchor && readAnchorPose(anchor, anchorPosition, anchorQuaternion)) {
       this.position.snap()
       this.quaternion.snap()
-      this.base.position.setFromMatrixPosition(anchor)
-      this.base.quaternion.setFromRotationMatrix(anchor)
+      this.base.position.copy(anchorPosition)
+      this.base.quaternion.copy(anchorQuaternion)
       this.base.clean()
     }
     if (this.avatar) {

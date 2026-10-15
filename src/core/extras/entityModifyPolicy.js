@@ -3,6 +3,8 @@
 // (plus `id`), or null when nothing usable remains.
 
 const NAME_MAX_LENGTH = 64
+export const TRANSFORM_LIMIT = 1e6
+export const QUATERNION_NORM_TOLERANCE = 0.1
 const JSON_MAX_BYTES = 8 * 1024
 const JSON_MAX_DEPTH = 16
 const JSON_MAX_ITEMS = 1024
@@ -23,12 +25,45 @@ export function isPlainObject(value) {
   return proto === Object.prototype || proto === null
 }
 
-function isFiniteArray(value, length) {
-  if (!Array.isArray(value) || value.length !== length) return false
+export function boundedArray(value, length, limit) {
+  if (!Array.isArray(value) || value.length !== length) return null
+  const result = []
   for (let i = 0; i < length; i++) {
-    if (!Number.isFinite(value[i])) return false
+    const v = value[i]
+    if (typeof v !== 'number' || !Number.isFinite(v) || Math.abs(v) > limit) return null
+    result.push(v)
   }
-  return true
+  return result
+}
+
+export function unitQuaternion(value) {
+  const q = boundedArray(value, 4, Infinity)
+  if (!q) return null
+  const n = Math.hypot(...q)
+  if (!Number.isFinite(n) || Math.abs(n - 1) > QUATERNION_NORM_TOLERANCE) return null
+  return q.map(v => v / n)
+}
+
+function appScale(value) {
+  if (!Array.isArray(value) || value.length !== 3) return null
+  const result = []
+  for (let i = 0; i < 3; i++) {
+    const v = value[i]
+    if (typeof v !== 'number') return null
+    // keep the original scale, but reject values that vanish or overflow in native floats
+    const f = Math.fround(v)
+    if (!Number.isFinite(f) || f === 0) return null
+    result.push(v)
+  }
+  return result
+}
+
+export function sanitizeSpawn(data) {
+  if (!isPlainObject(data)) return null
+  const position = boundedArray(data.position, 3, TRANSFORM_LIMIT)
+  const quaternion = unitQuaternion(data.quaternion)
+  if (!position || !quaternion) return null
+  return { position, quaternion }
 }
 
 // structural check of a tree made only of plain objects with string keys, arrays, strings,
@@ -124,15 +159,31 @@ function isHttpUrl(value) {
 export function sanitizePlayerSelfModify(data, socketId, { allowAvatar = false } = {}) {
   if (!isPlainObject(data)) return null
   const safe = { id: socketId }
-  if (isFiniteArray(data.p, 3)) safe.p = data.p
-  if (isFiniteArray(data.q, 4)) safe.q = data.q
-  if (Number.isFinite(data.m)) safe.m = data.m
-  if (isFiniteArray(data.a, 3)) safe.a = data.a
-  if (isFiniteArray(data.g, 3)) safe.g = data.g
+  const p = boundedArray(data.p, 3, TRANSFORM_LIMIT)
+  const q = unitQuaternion(data.q)
+  const m = data.m
+  const a = boundedArray(data.a, 3, TRANSFORM_LIMIT)
+  const g = boundedArray(data.g, 3, TRANSFORM_LIMIT)
+  if (p) safe.p = p
+  if (q) safe.q = q
+  if (Number.isFinite(m)) safe.m = m
+  if (a) safe.a = a
+  if (g) safe.g = g
   // undefined clears the emote; a value other players must not load is turned into null, not dropped, so
   // they do not stay frozen on the previous emote
-  if (has(data, 'e')) safe.e = isEmoteUrl(data.e) ? data.e : null
-  if (has(data, 'ef') && (data.ef === null || isBoundedJsonObject(data.ef))) safe.ef = data.ef
+  if (has(data, 'e')) {
+    const e = data.e
+    safe.e = isEmoteUrl(e) ? e : null
+  }
+  if (has(data, 'ef')) {
+    let ef = data.ef
+    if (isPlainObject(ef) && has(ef, 'anchorId')) {
+      // retain the checked anchor id, even when a host caller supplies a getter
+      ef = { ...ef }
+      if (typeof ef.anchorId !== 'string' || ef.anchorId.length > 128) ef = undefined
+    }
+    if (ef === null || isBoundedJsonObject(ef)) safe.ef = ef
+  }
   if (data.t === true) safe.t = true
   if (has(data, 'name')) {
     const name = sanitizeName(data.name)
@@ -155,33 +206,35 @@ export function sanitizeAppModify(data, socketId, { blueprintExists } = {}) {
   if (!isPlainObject(data)) return null
   const safe = { id: data.id }
   const isOwnerOrNull = value => value === null || value === socketId
-  if (typeof data.blueprint === 'string' && data.blueprint) {
-    if (!blueprintExists || blueprintExists(data.blueprint)) safe.blueprint = data.blueprint
+  const blueprint = data.blueprint
+  if (typeof blueprint === 'string' && blueprint) {
+    if (!blueprintExists || blueprintExists(blueprint)) safe.blueprint = blueprint
   }
   // `uploader` is claimed only when the app is added; a modify may only clear it
   if (data.uploader === null) safe.uploader = null
-  if (isOwnerOrNull(data.mover)) safe.mover = data.mover
-  if (isFiniteArray(data.position, 3)) safe.position = data.position
-  if (isFiniteArray(data.quaternion, 4)) safe.quaternion = data.quaternion
-  if (isFiniteArray(data.scale, 3)) safe.scale = data.scale
-  if (typeof data.pinned === 'boolean') safe.pinned = data.pinned
-  if (has(data, 'state') && (data.state === null || isBoundedJsonObject(data.state))) safe.state = data.state
+  const mover = data.mover
+  if (isOwnerOrNull(mover)) safe.mover = mover
+  const position = boundedArray(data.position, 3, TRANSFORM_LIMIT)
+  const quaternion = unitQuaternion(data.quaternion)
+  const scale = appScale(data.scale)
+  if (position) safe.position = position
+  if (quaternion) safe.quaternion = quaternion
+  if (scale) safe.scale = scale
+  const pinned = data.pinned
+  if (typeof pinned === 'boolean') safe.pinned = pinned
+  if (has(data, 'state')) {
+    const state = data.state
+    if (state === null || isBoundedJsonObject(state)) safe.state = state
+  }
   return Object.keys(safe).length > 1 ? safe : null
 }
 
 // a sender that is no longer a builder may only finish or cancel its own move and/or upload:
-// `mover`/`uploader` may be cleared, transforms still apply while it is the mover, and state is
-// reset (only together with mover: null). both releases combine when the sender holds both.
+// only `mover`/`uploader` may be cleared. both releases combine when the sender holds both.
 export function sanitizeAppRelease(data, { mover = false, uploader = false } = {}) {
   if (!isPlainObject(data)) return null
   const safe = { id: data.id }
-  if (mover) {
-    if (data.mover === null) safe.mover = null
-    if (isFiniteArray(data.position, 3)) safe.position = data.position
-    if (isFiniteArray(data.quaternion, 4)) safe.quaternion = data.quaternion
-    if (isFiniteArray(data.scale, 3)) safe.scale = data.scale
-    if (has(data, 'state') && safe.mover === null) safe.state = {}
-  }
+  if (mover && data.mover === null) safe.mover = null
   if (uploader && data.uploader === null) safe.uploader = null
   return Object.keys(safe).length > 1 ? safe : null
 }
@@ -191,22 +244,28 @@ export function sanitizeAppRelease(data, { mover = false, uploader = false } = {
 export function sanitizeEntityAdd(data, socketId, { blueprintExists, entityExists } = {}) {
   if (!isPlainObject(data)) return null
   if (data.type !== 'app') return null
-  if (typeof data.id !== 'string' || !data.id || (entityExists && entityExists(data.id))) return null
-  if (typeof data.blueprint !== 'string' || (blueprintExists && !blueprintExists(data.blueprint))) return null
-  if (!isFiniteArray(data.position, 3) || !isFiniteArray(data.quaternion, 4) || !isFiniteArray(data.scale, 3)) {
-    return null
-  }
+  const id = data.id
+  const blueprint = data.blueprint
+  if (typeof id !== 'string' || !id || (entityExists && entityExists(id))) return null
+  if (typeof blueprint !== 'string' || (blueprintExists && !blueprintExists(blueprint))) return null
+  const position = boundedArray(data.position, 3, TRANSFORM_LIMIT)
+  const quaternion = unitQuaternion(data.quaternion)
+  const scale = appScale(data.scale)
+  if (!position || !quaternion || !scale) return null
   const isOwnerOrNull = value => value === null || value === socketId
+  const mover = data.mover
+  const uploader = data.uploader
+  const state = data.state
   return {
-    id: data.id,
+    id,
     type: 'app',
-    blueprint: data.blueprint,
-    position: data.position,
-    quaternion: data.quaternion,
-    scale: data.scale,
-    mover: isOwnerOrNull(data.mover) ? data.mover : null,
-    uploader: isOwnerOrNull(data.uploader) ? data.uploader : null,
+    blueprint,
+    position,
+    quaternion,
+    scale,
+    mover: isOwnerOrNull(mover) ? mover : null,
+    uploader: isOwnerOrNull(uploader) ? uploader : null,
     pinned: data.pinned === true,
-    state: isBoundedJsonObject(data.state) ? data.state : {},
+    state: isBoundedJsonObject(state) ? state : {},
   }
 }

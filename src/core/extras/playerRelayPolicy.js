@@ -3,21 +3,24 @@
 // the same packets when a client sends them. The client-originated relays of these packets to other
 // players were removed; the names stay registered for the server -> client direction.
 // Every property is read once, so the value checked is the value kept.
-import { isAvatarUrl, isPlainObject } from './entityModifyPolicy.js'
+import { isAvatarUrl, isPlainObject, TRANSFORM_LIMIT } from './entityModifyPolicy.js'
 
-// three finite numbers, read once, returned as a new array
-function finiteTriple(value) {
+export const PUSH_LIMIT = 1e4
+
+// three finite numbers within the relay bound, read once, returned as a new array
+function finiteTriple(value, limit) {
   if (!Array.isArray(value) || value.length !== 3) return null
   const x = value[0]
   const y = value[1]
   const z = value[2]
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null
+  if (Math.abs(x) > limit || Math.abs(y) > limit || Math.abs(z) > limit) return null
   return [x, y, z]
 }
 
 export function sanitizeTeleport(data) {
   if (!isPlainObject(data)) return null
-  const position = finiteTriple(data.position)
+  const position = finiteTriple(data.position, TRANSFORM_LIMIT)
   if (!position) return null
   const safe = { position }
   // a rotationY that is not a finite number is left out, not rejected: respawn hooks pass a quaternion here
@@ -28,7 +31,7 @@ export function sanitizeTeleport(data) {
 
 export function sanitizePush(data) {
   if (!isPlainObject(data)) return null
-  const force = finiteTriple(data.force)
+  const force = finiteTriple(data.force, PUSH_LIMIT)
   if (!force) return null
   return { force }
 }

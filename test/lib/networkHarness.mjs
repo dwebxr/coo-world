@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import vm from 'node:vm'
 import { EventEmitter } from 'node:events'
+import moment from 'moment'
+import { uuid } from '../../src/core/utils.js'
 import { PROTOCOL_VERSION, packetNameById, peekPacketId, writePacket } from '../../src/core/packets.js'
 import { createWriteLedger, SNAPSHOT_CAP } from '../../src/core/extras/writeLedger.js'
 import { createInboundGate, createInboundScheduler, packetNodeLimit } from '../../src/core/extras/inboundPolicy.js'
@@ -17,6 +19,7 @@ import {
   sanitizeAppRelease,
   sanitizeEntityAdd,
   sanitizePlayerSelfModify,
+  sanitizeSpawn,
 } from '../../src/core/extras/entityModifyPolicy.js'
 import { readInboundPacket } from '../../src/server/inboundDecode.js'
 import { clientIpKeys } from '../../src/server/uploadLimits.js'
@@ -40,6 +43,7 @@ const names = [
   'revertBlueprint',
   'onEntityAdded',
   'onEntityModified',
+  'onSpawnModified',
 ]
 const methods = names
   .map(name => {
@@ -54,6 +58,9 @@ const Network = vm.runInNewContext(`(class Network { ${methods} })`, {
   peekPacketId,
   Uint8Array,
   Date,
+  JSON,
+  moment,
+  uuid,
   packetNodeLimit,
   readInboundPacket,
   briefError,
@@ -68,6 +75,7 @@ const Network = vm.runInNewContext(`(class Network { ${methods} })`, {
   sanitizeAppRelease,
   sanitizeEntityAdd,
   sanitizePlayerSelfModify,
+  sanitizeSpawn,
   isObject: value => value !== null && typeof value === 'object',
 })
 const socketSource = fs.readFileSync(new URL('../../src/core/Socket.js', import.meta.url), 'utf8')

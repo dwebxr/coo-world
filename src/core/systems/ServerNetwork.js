@@ -14,6 +14,7 @@ import {
   sanitizeEntityAdd,
   sanitizeName,
   sanitizePlayerSelfModify,
+  sanitizeSpawn,
 } from '../extras/entityModifyPolicy'
 import { createRelayDrop } from '../extras/playerRelayPolicy'
 import { sanitizeChatMessage } from '../extras/chatPolicy'
@@ -69,7 +70,16 @@ export class ServerNetwork extends System {
   async start() {
     // get spawn
     const spawnRow = await this.db('config').where('key', 'spawn').first()
-    this.spawn = JSON.parse(spawnRow?.value || defaultSpawn)
+    this.spawn = null
+    try {
+      this.spawn = sanitizeSpawn(JSON.parse(spawnRow ? spawnRow.value : defaultSpawn))
+    } catch (err) {
+      // invalid stored JSON uses the same fallback as an invalid pose
+    }
+    if (!this.spawn) {
+      this.spawn = JSON.parse(defaultSpawn)
+      this.logOnce(this, 'spawn-invalid', '[network] invalid stored spawn; using default spawn')
+    }
     // hydrate blueprints
     const blueprints = await this.db('blueprints')
     for (const blueprint of blueprints) {
@@ -926,7 +936,18 @@ export class ServerNetwork extends System {
     if (!this.requireBuilder(socket, 'modify spawn')) return
     const player = socket.player
     if (op === 'set') {
-      this.spawn = { position: player.data.position.slice(), quaternion: player.data.quaternion.slice() }
+      const spawn = sanitizeSpawn(player.data)
+      if (!spawn) {
+        socket.send('chatAdded', {
+          id: uuid(),
+          from: null,
+          fromId: null,
+          body: 'Spawn not updated: invalid player transform',
+          createdAt: moment().toISOString(),
+        })
+        return
+      }
+      this.spawn = spawn
     } else if (op === 'clear') {
       this.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
     } else {

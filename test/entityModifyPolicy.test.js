@@ -10,6 +10,9 @@ import {
   sanitizeEntityAdd,
   sanitizeName,
   sanitizePlayerSelfModify,
+  sanitizeSpawn,
+  TRANSFORM_LIMIT,
+  QUATERNION_NORM_TOLERANCE,
 } from '../src/core/extras/entityModifyPolicy.js'
 import { emoteUrls } from '../src/core/extras/playerEmotes.js'
 
@@ -467,26 +470,18 @@ test('sanitizeAppModify: blueprint can be required to exist', () => {
 
 // --- sanitizeAppRelease (sender lost builder) ---
 
-test('sanitizeAppRelease (mover): transforms pass, mover only as null, state only with mover: null', () => {
+test('sanitizeAppRelease (mover): only mover: null survives, including when transforms and state are sent', () => {
   const opts = { mover: true }
-  // transforms while still the mover
-  assert.deepEqual(sanitizeAppRelease({ id: appId, ...transform, pinned: true, blueprint: 'bp' }, opts), {
-    id: appId,
-    ...transform,
-  })
+  assert.equal(sanitizeAppRelease({ id: appId, ...transform, pinned: true, blueprint: 'bp' }, opts), null)
   // mover may not be re-claimed, uploader is not held
   assert.equal(sanitizeAppRelease({ id: appId, mover: me }, opts), null)
   assert.equal(sanitizeAppRelease({ id: appId, mover: other }, opts), null)
   assert.equal(sanitizeAppRelease({ id: appId, uploader: null }, opts), null)
-  // state alone, or with transforms but without mover: null, is dropped
   assert.equal(sanitizeAppRelease({ id: appId, state: { x: 1 } }, opts), null)
-  assert.deepEqual(sanitizeAppRelease({ id: appId, state: { x: 1 }, ...transform }, opts), { id: appId, ...transform })
-  // the release packet: state is reset
+  assert.equal(sanitizeAppRelease({ id: appId, state: { x: 1 }, ...transform }, opts), null)
   assert.deepEqual(sanitizeAppRelease({ id: appId, mover: null, state: { x: 1 }, ...transform }, opts), {
     id: appId,
     mover: null,
-    state: {},
-    ...transform,
   })
 })
 
@@ -507,13 +502,10 @@ test('sanitizeAppRelease (mover and uploader): both releases combine; neither ma
   assert.deepEqual(sanitizeAppRelease({ id: appId, mover: null, ...transform, state: {} }, opts), {
     id: appId,
     mover: null,
-    ...transform,
-    state: {},
   })
   assert.deepEqual(sanitizeAppRelease({ id: appId, mover: null, uploader: null, state: { x: 1 } }, opts), {
     id: appId,
     mover: null,
-    state: {},
     uploader: null,
   })
   assert.equal(sanitizeAppRelease({ id: appId, mover: me, uploader: me }, opts), null)
@@ -576,4 +568,216 @@ test('sanitizeEntityAdd: stale fields from an undo re-add are coerced, not rejec
   assert.deepEqual(sanitizeEntityAdd({ ...addBase, state: 'x' }, me, checks).state, {})
   assert.deepEqual(sanitizeEntityAdd({ ...addBase, state: { m: new Map() } }, me, checks).state, {})
   assert.deepEqual(sanitizeEntityAdd({ ...addBase, state: { s: '漢'.repeat(3000) } }, me, checks).state, {})
+})
+
+// --- transform bounds and read-once copies ---
+
+const badQuaternions = [
+  [1e200, 0, 0, 1],
+  [0, 0, 0, 0],
+  [0, 0, 0, 1.5],
+  [NaN, 0, 0, 1],
+  [Infinity, 0, 0, 1],
+  ['0', 0, 0, 1],
+  [0, 0, 0],
+  new Float32Array([0, 0, 0, 1]),
+  {},
+  null,
+]
+
+for (const key of ['p', 'a', 'g']) {
+  test(`sanitizePlayerSelfModify: ${key} bounds every component and keeps other valid fields`, () => {
+    assert.equal(TRANSFORM_LIMIT, 1e6)
+    const value = [-TRANSFORM_LIMIT, TRANSFORM_LIMIT, 0]
+    const safe = sanitizePlayerSelfModify({ [key]: value }, me)
+    assert.deepEqual(safe, { id: me, [key]: value })
+    assert.notEqual(safe[key], value)
+    for (const bad of [TRANSFORM_LIMIT + 1, -TRANSFORM_LIMIT - 1, 1e300, Infinity, -Infinity, NaN, '1', null]) {
+      for (let i = 0; i < 3; i++) {
+        const vector = [0, 0, 0]
+        vector[i] = bad
+        assert.deepEqual(sanitizePlayerSelfModify({ [key]: vector, t: true }, me), { id: me, t: true })
+      }
+    }
+    for (const bad of [[], [1, 2], [1, 2, 3, 4], new Float32Array(3), {}, null]) {
+      assert.equal(sanitizePlayerSelfModify({ [key]: bad }, me), null)
+    }
+  })
+}
+
+test('sanitizePlayerSelfModify: invalid quaternions are dropped and accepted drift is normalized into a copy', () => {
+  assert.equal(QUATERNION_NORM_TOLERANCE, 0.1)
+  for (const q of badQuaternions) {
+    assert.deepEqual(sanitizePlayerSelfModify({ q, p: [1, 2, 3], t: true }, me), {
+      id: me,
+      p: [1, 2, 3],
+      t: true,
+    })
+  }
+  for (const n of [0.91, 1 + 1e-7, 1.09]) {
+    const q = [0, 0.6 * n, 0, 0.8 * n]
+    const safe = sanitizePlayerSelfModify({ q }, me)
+    assert.ok(Math.abs(Math.hypot(...safe.q) - 1) < 1e-15)
+    assert.notEqual(safe.q, q)
+    assert.deepEqual(q, [0, 0.6 * n, 0, 0.8 * n])
+  }
+  assert.equal(sanitizePlayerSelfModify({ q: [0, 0, 0, 0.89] }, me), null)
+  assert.equal(sanitizePlayerSelfModify({ q: [0, 0, 0, 1.11] }, me), null)
+})
+
+test('sanitizePlayerSelfModify: anchorId is an optional string of at most 128 characters', () => {
+  for (const anchorId of ['', 'anchor', 'a'.repeat(128)]) {
+    const ef = { anchorId, duration: 4 }
+    assert.deepEqual(sanitizePlayerSelfModify({ ef }, me), { id: me, ef })
+  }
+  for (const anchorId of [undefined, null, 1, false, [], {}, 'a'.repeat(129)]) {
+    assert.deepEqual(sanitizePlayerSelfModify({ ef: { anchorId }, t: true }, me), { id: me, t: true })
+  }
+  assert.equal(sanitizePlayerSelfModify({ ef: { anchorId: 'ok', text: 'x'.repeat(9000) } }, me), null)
+  assert.equal(sanitizePlayerSelfModify({ ef: { anchorId: 'ok', nested: new Map() } }, me), null)
+})
+
+for (const operation of ['modify', 'add']) {
+  const sanitize = data =>
+    operation === 'modify'
+      ? sanitizeAppModify({ id: appId, ...data }, me)
+      : sanitizeEntityAdd({ ...addBase, ...data }, me, checks)
+
+  test(`app ${operation}: bounded position and normalized quaternion`, () => {
+    const position = [-1e6, 0, 1e6]
+    const quaternion = [0, 0, 0, 1.0000001]
+    const safe = sanitize({ position, quaternion })
+    assert.deepEqual(safe.position, position)
+    assert.notEqual(safe.position, position)
+    assert.deepEqual(safe.quaternion, [0, 0, 0, 1])
+    assert.notEqual(safe.quaternion, quaternion)
+    for (const data of [
+      ...[1e6 + 1, -1e6 - 1, 1e300, Infinity, NaN].map(x => ({ position: [x, 0, 0] })),
+      ...badQuaternions.map(quaternion => ({ quaternion })),
+    ]) {
+      if (operation === 'add') assert.equal(sanitize(data), null)
+      else assert.deepEqual(sanitize({ ...data, pinned: true }), { id: appId, pinned: true })
+    }
+  })
+
+  test(`app ${operation}: scale preserves primitive values that remain finite and nonzero in f32`, () => {
+    for (const x of [1e-9, -1e-9, 1e-7, 1e6 + 1, 1e30, -1e30, 2 ** -149, 3.4028234663852886e38]) {
+      const scale = [x, -x, 1]
+      const safe = sanitize({ scale })
+      assert.deepEqual(safe.scale, scale)
+      assert.notEqual(safe.scale, scale)
+    }
+    for (const x of [0, -0, 1e-50, -1e-50, 1e39, -1e39, Infinity, NaN, '1', true, null, new Number(1)]) {
+      for (let i = 0; i < 3; i++) {
+        const scale = [1, 1, 1]
+        scale[i] = x
+        if (operation === 'add') assert.equal(sanitize({ scale }), null)
+        else assert.deepEqual(sanitize({ scale, pinned: true }), { id: appId, pinned: true })
+      }
+    }
+    for (const scale of [[], [1, 1], [1, 1, 1, 1], new Float32Array([1, 1, 1]), {}]) {
+      assert.equal(sanitize({ scale }), null)
+    }
+  })
+}
+
+function countingProperties(target, values, counts, prefix = '') {
+  for (const [key, value] of Object.entries(values)) {
+    const label = prefix + key
+    counts[label] = 0
+    Object.defineProperty(target, key, {
+      enumerable: true,
+      get() {
+        assert.equal(++counts[label], 1, `${label} read once`)
+        return value
+      },
+    })
+  }
+  return target
+}
+
+function countingArray(values, counts, prefix) {
+  return countingProperties(new Array(values.length), values, counts, prefix)
+}
+
+test('sanitizePlayerSelfModify: properties, transform elements and anchorId are read once on plain inputs', () => {
+  const counts = {}
+  const values = {
+    p: countingArray([1, 2, 3], counts, 'p.'),
+    q: countingArray([0, 0, 0, 1.0000001], counts, 'q.'),
+    a: countingArray([0, 0, 1], counts, 'a.'),
+    g: countingArray([0, 1, 0], counts, 'g.'),
+    m: 2,
+    t: true,
+    e: null,
+    name: 'Alice',
+    ef: countingProperties({}, { anchorId: 'anchor', duration: 2 }, counts, 'ef.'),
+  }
+  const data = countingProperties({}, values, counts)
+  assert.deepEqual(sanitizePlayerSelfModify(data, me), {
+    id: me,
+    p: [1, 2, 3],
+    q: [0, 0, 0, 1],
+    a: [0, 0, 1],
+    g: [0, 1, 0],
+    m: 2,
+    t: true,
+    e: null,
+    name: 'Alice',
+    ef: { anchorId: 'anchor', duration: 2 },
+  })
+  assert.ok(Object.values(counts).every(n => n === 1))
+})
+
+for (const operation of ['modify', 'add', 'spawn']) {
+  test(`${operation}: transform properties and elements are read once on plain inputs`, () => {
+    const counts = {}
+    const values = {
+      position: countingArray([1, 2, 3], counts, 'position.'),
+      quaternion: countingArray([0, 0, 0, 1.0000001], counts, 'quaternion.'),
+    }
+    if (operation !== 'spawn') values.scale = countingArray([1e-9, 2, 3], counts, 'scale.')
+    const data = countingProperties(operation === 'add' ? { ...addBase } : { id: appId }, values, counts)
+    const safe =
+      operation === 'add'
+        ? sanitizeEntityAdd(data, me, checks)
+        : operation === 'modify'
+          ? sanitizeAppModify(data, me)
+          : sanitizeSpawn(data)
+    assert.deepEqual(safe.position, [1, 2, 3])
+    assert.deepEqual(safe.quaternion, [0, 0, 0, 1])
+    if (operation !== 'spawn') assert.deepEqual(safe.scale, [1e-9, 2, 3])
+    assert.ok(Object.values(counts).every(n => n === 1))
+  })
+}
+
+test('sanitizeAppRelease: demoted movers do not read transforms, state or other non-release fields', () => {
+  const counts = {}
+  const data = countingProperties({ id: appId }, { mover: null, uploader: null }, counts)
+  for (const key of ['position', 'quaternion', 'scale', 'state', 'blueprint', 'pinned']) {
+    Object.defineProperty(data, key, { get: () => assert.fail(`${key} must be dropped without reading`) })
+  }
+  assert.deepEqual(sanitizeAppRelease(data, { mover: true, uploader: true }), {
+    id: appId,
+    mover: null,
+    uploader: null,
+  })
+  assert.ok(Object.values(counts).every(n => n === 1))
+})
+
+test('sanitizeSpawn: only a complete bounded pose is accepted, copied and normalized', () => {
+  const data = { position: [-1e6, 0, 1e6], quaternion: [0, 0, 0, 1.0000001], extra: true }
+  const safe = sanitizeSpawn(data)
+  assert.deepEqual(safe, { position: [-1e6, 0, 1e6], quaternion: [0, 0, 0, 1] })
+  assert.notEqual(safe.position, data.position)
+  assert.notEqual(safe.quaternion, data.quaternion)
+  for (const bad of [
+    null,
+    [],
+    {},
+    { ...data, position: [1e6 + 1, 0, 0] },
+    ...badQuaternions.map(quaternion => ({ ...data, quaternion })),
+  ]) {
+    assert.equal(sanitizeSpawn(bad), null)
+  }
 })

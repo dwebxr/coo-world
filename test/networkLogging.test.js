@@ -10,6 +10,7 @@ import {
   sanitizeEntityAdd,
   sanitizeName,
   sanitizePlayerSelfModify,
+  sanitizeSpawn,
 } from '../src/core/extras/entityModifyPolicy.js'
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../src/core/extras/settingsPolicy.js'
 import { briefError, createLogOnce } from '../src/core/extras/logOnce.js'
@@ -63,6 +64,7 @@ function fixture() {
     sanitizeEntityAdd,
     sanitizeName,
     sanitizePlayerSelfModify,
+    sanitizeSpawn,
     sanitizeBlueprintModify,
     isAdminOnlySettingKey,
     isKnownSettingKey,

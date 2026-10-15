@@ -13,6 +13,10 @@ import { Modes } from '../extras/locomotionModes'
 import { outranks, isAdmin, isBuilder, isMuted } from '../extras/playerRanks'
 import { createPlayerAura, chatBubble } from '../extras/playerAura'
 import { isEmoteUrl, sanitizeName, sanitizePlayerSelfModify } from '../extras/entityModifyPolicy'
+import { readAnchorPose } from '../extras/anchorPose'
+
+const anchorPosition = new THREE.Vector3()
+const anchorQuaternion = new THREE.Quaternion()
 
 const UP = new THREE.Vector3(0, 1, 0)
 const DOWN = new THREE.Vector3(0, -1, 0)
@@ -1078,9 +1082,9 @@ export class PlayerLocal extends Entity {
     // console.log('lateUpdate')
 
     // if we're anchored, force into that pose
-    if (anchor) {
-      this.base.position.setFromMatrixPosition(anchor)
-      this.base.quaternion.setFromRotationMatrix(anchor)
+    if (anchor && readAnchorPose(anchor, anchorPosition, anchorQuaternion)) {
+      this.base.position.copy(anchorPosition)
+      this.base.quaternion.copy(anchorQuaternion)
       const pose = this.capsule.getGlobalPose()
       this.base.position.toPxTransform(pose)
       this.capsuleHandle.snap(pose)

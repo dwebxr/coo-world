@@ -243,3 +243,45 @@ test('createRelayDrop: warns once per socket and packet name, never forwards', (
   // the handlers take no payload: nothing is read from the packet
   assert.equal(drop(a, 'playerTeleport'), undefined)
 })
+
+for (const [sanitize, key, limit] of [
+  [sanitizeTeleport, 'position', 1e6],
+  [sanitizePush, 'force', 1e4],
+]) {
+  test(`${key}: relay bound is inclusive, per component, with no minimum magnitude`, () => {
+    for (const values of [
+      [-limit, limit, 0],
+      [Number.MIN_VALUE, -Number.MIN_VALUE, 1e-50],
+    ]) {
+      const safe = sanitize({ [key]: values })
+      assert.deepEqual(safe, { [key]: values })
+      assert.notEqual(safe[key], values)
+    }
+    for (const bad of [limit + 1, -limit - 1, 1e300, Infinity, -Infinity, NaN, '1', null, new Number(1)]) {
+      for (let i = 0; i < 3; i++) {
+        const values = [0, 0, 0]
+        values[i] = bad
+        assert.equal(sanitize({ [key]: values }), null)
+      }
+    }
+  })
+
+  test(`${key}: plain packet property and all array elements are read exactly once`, () => {
+    const reads = [0, 0, 0]
+    const values = [-limit, 0, limit]
+    const array = values.map((_, i) => i)
+    for (let i = 0; i < 3; i++) {
+      Object.defineProperty(array, i, { get: () => (++reads[i] === 1 ? values[i] : Infinity) })
+    }
+    let propertyReads = 0
+    const data = Object.defineProperty({}, key, { get: () => (++propertyReads === 1 ? array : null) })
+    assert.deepEqual(sanitize(data), { [key]: values })
+    assert.equal(propertyReads, 1)
+    assert.deepEqual(reads, [1, 1, 1])
+  })
+}
+
+test('relay bounds: a force above the push bound is still a valid teleport position', () => {
+  assert.equal(sanitizePush({ force: [10001, 0, 0] }), null)
+  assert.deepEqual(sanitizeTeleport({ position: [10001, 0, 0] }), { position: [10001, 0, 0] })
+})

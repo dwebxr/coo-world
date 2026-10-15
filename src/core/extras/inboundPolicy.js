@@ -42,6 +42,12 @@ export function packetCost(bytes) {
   return 1 + Math.floor(bytes / INBOUND_UNIT_BYTES)
 }
 
+/**
+ * Inbound Gate
+ * - admit(socket, packet, { builder }) checks the header, byte cap and strict node scan before enqueueing.
+ * - each refusal is counted per socket and the first of each kind is logged without packet content;
+ *   the gate never closes the socket for a refused packet.
+ */
 export function createInboundGate({ now = Date.now, log = console.warn, scan = strictDecode } = {}) {
   const states = new WeakMap()
   const logOnce = createLogOnce(log)

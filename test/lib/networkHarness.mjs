@@ -4,7 +4,7 @@ import vm from 'node:vm'
 import { EventEmitter } from 'node:events'
 import { PROTOCOL_VERSION, packetNameById, peekPacketId, writePacket } from '../../src/core/packets.js'
 import { createWriteLedger, PACKET_CAP } from '../../src/core/extras/writeLedger.js'
-import { createInboundGate, INBOX_MAX_BYTES } from '../../src/core/extras/inboundPolicy.js'
+import { createInboundGate, createInboundScheduler } from '../../src/core/extras/inboundPolicy.js'
 import { clientIpKeys } from '../../src/server/uploadLimits.js'
 
 export const serverSource = fs.readFileSync(new URL('../../src/server/index.js', import.meta.url), 'utf8')
@@ -22,7 +22,6 @@ const Network = vm.runInNewContext(`(class Network { ${methods} })`, {
   packetNameById,
   peekPacketId,
   Uint8Array,
-  INBOX_MAX_BYTES,
 })
 const socketSource = fs.readFileSync(new URL('../../src/core/Socket.js', import.meta.url), 'utf8')
 export const Socket = vm.runInNewContext(`(${socketSource.slice(socketSource.indexOf('class Socket'))})`, {
@@ -36,8 +35,12 @@ export function makeNetwork(log = () => {}) {
   network.sockets = new Map()
   network.writer = createWriteLedger({ log })
   network.gate = createInboundGate({ log })
-  network.inbox = []
-  network.onDisconnect = socket => network.sockets.delete(socket.id)
+  network.scheduler = createInboundScheduler()
+  network.onDisconnect = socket => {
+    socket.disconnected = true
+    network.scheduler.purge(socket)
+    network.sockets.delete(socket.id)
+  }
   return network
 }
 

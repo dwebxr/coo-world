@@ -19,9 +19,9 @@ import { createRelayDrop } from '../extras/playerRelayPolicy'
 import { sanitizeChatMessage } from '../extras/chatPolicy'
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../extras/settingsPolicy'
 import { internalEvents } from '../extras/internalEvents'
-import { INBOUND_BYTES_PER_TICK, INBOX_MAX_BYTES, createInboundGate, packetNodeLimit } from '../extras/inboundPolicy'
+import { createInboundGate, createInboundScheduler, packetNodeLimit } from '../extras/inboundPolicy'
 import { PACKET_CAP, createWriteLedger } from '../extras/writeLedger'
-import { createLogOnce } from '../extras/logOnce'
+import { briefError, createLogOnce } from '../extras/logOnce'
 import { readInboundPacket } from '../../server/inboundDecode'
 import * as solanaGating from '../../server/solana-gating'
 import { grantTokenRank, persistRank, revokeTokenRank } from '../../server/rankGrants'
@@ -54,7 +54,7 @@ export class ServerNetwork extends System {
     this.dirtyBlueprints = new Set()
     this.dirtyApps = new Set()
     this.isServer = true
-    this.inbox = [] // raw packets, as (socket, entry) pairs, decoded at the next flush
+    this.scheduler = createInboundScheduler()
     this.gate = createInboundGate()
     this.logOnce = createLogOnce()
     this.dropRelay = createRelayDrop()
@@ -147,27 +147,24 @@ export class ServerNetwork extends System {
     return this.gate.admit(socket, packet, { builder: socket.player?.isBuilder() === true })
   }
 
-  // raw packets wait here until the next tick; a socket may park at most INBOX_MAX_BYTES of undecoded wire
+  // Capacity is reserved before copying, including arrivals deferred during dispatch.
   enqueue(socket, packet, entry) {
-    if (socket.inboxBytes + packet.length > INBOX_MAX_BYTES) {
+    if (!this.scheduler.reserve(socket, entry)) {
       return this.gate.refuse(socket, 'inbox', entry.name, 'inbox full')
     }
-    const copy = Uint8Array.prototype.slice.call(packet)
-    socket.inboxBytes += entry.bytes
-    this.inbox.push(socket, { ...entry, copy })
+    try {
+      entry.copy = Uint8Array.prototype.slice.call(packet)
+    } catch (err) {
+      this.scheduler.release(socket, entry)
+      throw err
+    }
+    this.scheduler.enqueue(socket, entry)
   }
 
-  // decodes and dispatches in arrival order, at most INBOUND_BYTES_PER_TICK of wire per tick; the rest waits
-  // for the next tick, so a flood delays other clients' packets rather than growing the heap
+  // The scheduler releases inbox credit before decoding and bounds each tick's work.
   flush() {
-    let budget = INBOUND_BYTES_PER_TICK
-    let i = 0
-    while (i < this.inbox.length && budget > 0) {
-      const socket = this.inbox[i++]
-      const entry = this.inbox[i++]
+    this.scheduler.flush((socket, entry) => {
       const { copy, bytes, nodes, name, builder } = entry
-      budget -= bytes
-      socket.inboxBytes -= bytes
       let decoded
       try {
         decoded = readInboundPacket(copy, { maxNodes: packetNodeLimit(name) })
@@ -178,19 +175,21 @@ export class ServerNetwork extends System {
           name,
           `decoder bug (${err.message} at pos ${err.pos}, nodes ${err.nodes})`
         )
-        continue
+        return
       }
       const [method, data] = decoded
+      const failed = err => {
+        this.logOnce(socket, `${name}:handler`, `[network] ${name} from client ${socket.id} failed: ${briefError(err)}`)
+      }
       try {
         const meta = { bytes, nodes, socketId: socket.id, builder }
         const result = this[method]?.(socket, data, meta)
         // async handlers reject later; keep those failures contained too
-        if (typeof result?.then === 'function') result.then(undefined, err => console.error(err))
+        if (typeof result?.then === 'function') result.then(undefined, failed)
       } catch (err) {
-        console.error(err)
+        failed(err)
       }
-    }
-    if (i) this.inbox.splice(0, i)
+    })
   }
 
   getTime() {
@@ -862,6 +861,8 @@ export class ServerNetwork extends System {
   }
 
   onDisconnect = (socket, code) => {
+    socket.disconnected = true
+    this.scheduler.purge(socket)
     this.world.livekit.clearModifiers(socket.id)
     solanaGating.clearSocket(socket.id)
     socket.player.destroy(true)

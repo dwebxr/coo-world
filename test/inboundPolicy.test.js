@@ -3,11 +3,15 @@ import assert from 'node:assert/strict'
 import {
   BUILDER_ONLY_PACKETS,
   INBOUND_BURST,
-  INBOUND_BYTES_PER_TICK,
+  INBOUND_WORK_PER_TICK,
+  INBOUND_QUANTUM,
   INBOUND_DEFAULT_BYTE_LIMIT,
   INBOUND_DEFAULT_NODE_LIMIT,
   INBOUND_RATE_PER_SECOND,
-  INBOX_MAX_BYTES,
+  INBOX_ENTRY_OVERHEAD,
+  INBOX_RESERVE,
+  INBOX_SOCKET_CAP,
+  INBOX_POOL_CAP,
   createInboundGate,
   packetByteLimit,
   packetCost,
@@ -58,7 +62,7 @@ const dense = (name, nodes, invalid = false) => {
   return packet
 }
 
-test('constants: exact byte caps, node caps, builder types and transitional flat inbox budgets', () => {
+test('constants: exact byte caps, node caps, builder types and scheduler and inbox budgets', () => {
   for (const name of ['entityEvent', 'blueprintAdded', 'blueprintModified', 'ai']) {
     assert.equal(packetByteLimit(name), 64 * KiB)
     assert.equal(packetNodeLimit(name), name === 'ai' ? 1024 : 8192)
@@ -72,8 +76,12 @@ test('constants: exact byte caps, node caps, builder types and transitional flat
   assert.deepEqual([...BUILDER_ONLY_PACKETS], ['blueprintAdded', 'blueprintModified', 'ai'])
   assert.equal(INBOUND_RATE_PER_SECOND, 1024)
   assert.equal(INBOUND_BURST, 2048)
-  assert.equal(INBOUND_BYTES_PER_TICK, 256 * KiB)
-  assert.equal(INBOX_MAX_BYTES, 1024 * KiB)
+  assert.equal(INBOUND_WORK_PER_TICK, 9216)
+  assert.equal(INBOUND_QUANTUM, 512)
+  assert.equal(INBOX_ENTRY_OVERHEAD, 160)
+  assert.equal(INBOX_RESERVE, 160 * KiB)
+  assert.equal(INBOX_SOCKET_CAP, 1024 * KiB)
+  assert.equal(INBOX_POOL_CAP, 16 * 1024 * KiB)
 })
 
 test('packetCost: one unit plus floor(bytes / 2048)', () => {

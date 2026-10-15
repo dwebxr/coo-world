@@ -23,9 +23,12 @@ export const INBOUND_RATE_PER_SECOND = 1024
 export const INBOUND_BURST = 2048
 export const INBOUND_UNIT_BYTES = 2048
 
-// The flat inbox and its wire budget stay in place until the scheduler lands.
-export const INBOUND_BYTES_PER_TICK = 256 * 1024
-export const INBOX_MAX_BYTES = 1024 * 1024
+export const INBOUND_WORK_PER_TICK = 9216
+export const INBOUND_QUANTUM = 512
+export const INBOX_ENTRY_OVERHEAD = 160
+export const INBOX_RESERVE = 160 * 1024
+export const INBOX_SOCKET_CAP = 1024 * 1024
+export const INBOX_POOL_CAP = 16 * 1024 * 1024
 
 export function packetByteLimit(name) {
   return INBOUND_BYTE_LIMITS[name] ?? INBOUND_DEFAULT_BYTE_LIMIT
@@ -87,4 +90,112 @@ export function createInboundGate({ now = Date.now, log = console.warn, scan = s
   }
 
   return { admit, refuse, dropped }
+}
+
+export function createInboundScheduler() {
+  const queue = []
+  const deferred = []
+  let flushing = false
+  let pool = 0
+
+  // Reserve before copying. Deferred arrivals hold the same credit as inbox entries.
+  function reserve(socket, entry) {
+    if (socket.disconnected) return false
+    const cost = entry.bytes + INBOX_ENTRY_OVERHEAD
+    const before = socket.inboxCost
+    const after = before + cost
+    const over = Math.max(0, after - INBOX_RESERVE) - Math.max(0, before - INBOX_RESERVE)
+    if (after > INBOX_RESERVE && (after > INBOX_SOCKET_CAP || pool + over > INBOX_POOL_CAP)) return false
+    socket.inboxCost = after
+    pool += over
+    entry.cost = cost
+    entry.work = entry.nodes + Math.floor(entry.bytes / 128)
+    entry.released = false
+    return true
+  }
+
+  function release(socket, entry) {
+    if (entry.released) return
+    entry.released = true
+    const before = socket.inboxCost
+    socket.inboxCost -= entry.cost
+    pool -= Math.max(0, before - INBOX_RESERVE) - Math.max(0, socket.inboxCost - INBOX_RESERVE)
+  }
+
+  function enqueue(socket, entry) {
+    if (flushing) {
+      deferred.push([socket, entry])
+      return
+    }
+    socket.inbox.push(entry)
+    if (!socket.inQueue) {
+      socket.inQueue = true
+      queue.push(socket)
+    }
+  }
+
+  function purge(socket) {
+    if (!socket.disconnected) return
+    for (const entry of socket.inbox.splice(0)) release(socket, entry)
+    for (let i = deferred.length - 1; i >= 0; i--) {
+      if (deferred[i][0] !== socket) continue
+      release(socket, deferred[i][1])
+      deferred.splice(i, 1)
+    }
+  }
+
+  function flush(dispatch) {
+    flushing = true
+    let workLeft = INBOUND_WORK_PER_TICK
+    try {
+      while (queue.length) {
+        const socket = queue[0]
+        if (socket.disconnected) {
+          queue.shift()
+          socket.inQueue = false
+          purge(socket)
+          continue
+        }
+        if (socket.inbox.length === 0) {
+          queue.shift()
+          socket.inQueue = false
+          continue
+        }
+        if (socket.inbox[0].work > workLeft) break
+        queue.shift()
+        let used = 0
+        do {
+          const entry = socket.inbox.shift()
+          release(socket, entry)
+          used += entry.work
+          workLeft -= entry.work
+          dispatch(socket, entry)
+        } while (
+          !socket.disconnected &&
+          socket.inbox.length &&
+          used + socket.inbox[0].work <= INBOUND_QUANTUM &&
+          socket.inbox[0].work <= workLeft
+        )
+        if (!socket.disconnected && socket.inbox.length) queue.push(socket)
+        else {
+          socket.inQueue = false
+          if (socket.disconnected) purge(socket)
+        }
+      }
+    } finally {
+      flushing = false
+      for (const [socket, entry] of deferred.splice(0)) enqueue(socket, entry)
+    }
+  }
+
+  return {
+    reserve,
+    release,
+    enqueue,
+    purge,
+    flush,
+    get pool() {
+      return pool
+    },
+  }
 }

@@ -12,3 +12,19 @@ export function createLogOnce(log = console.warn) {
     return true
   }
 }
+
+export function briefError(err) {
+  try {
+    const name = Object.getOwnPropertyDescriptor(err, 'name')?.value
+    const message = Object.getOwnPropertyDescriptor(err, 'message')?.value
+    return (
+      [name, message]
+        .filter(value => typeof value === 'string')
+        .map(value => value.slice(0, 200))
+        .join(': ')
+        .slice(0, 200) || 'error'
+    )
+  } catch {
+    return 'error'
+  }
+}

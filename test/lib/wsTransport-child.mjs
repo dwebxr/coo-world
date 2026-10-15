@@ -196,18 +196,18 @@ try {
       const before = process.memoryUsage().arrayBuffers
       for (let i = 0; i < count; i++) {
         socket.write(wire)
-        await until(() => network.inbox.length / 2 === i + 1)
+        await until(() => connections[0].inbox.length === i + 1)
       }
       await delay(20)
       global.gc()
       global.gc()
       const growth = process.memoryUsage().arrayBuffers - before
       let accounted = 0
-      for (let i = 1; i < network.inbox.length; i += 2) {
-        const entry = network.inbox[i]
+      for (const entry of connections[0].inbox) {
         assert.equal(entry.copy.buffer.byteLength, entry.bytes)
-        accounted += entry.bytes + 160
+        accounted += entry.cost
       }
+      assert.equal(accounted, connections[0].inboxCost)
       assert.ok(growth <= 2 * accounted + 1024 * 1024, `arrayBuffers growth ${growth}, accounted ${accounted}`)
       assert.equal(pongs, 0, 'autoPong is disabled')
     } else {
@@ -245,7 +245,8 @@ try {
         assert.equal(closeCode, 1008)
         assert.ok(growth < 2 * 1024 * 1024, `heap growth ${growth}`)
       }
-      assert.equal(network.inbox.length, 0)
+      assert.equal(connections[0].inbox.length, 0)
+      assert.equal(connections[0].inboxCost, 0)
     }
   }
   process.stdout.write(JSON.stringify({ ok: true, name }))

@@ -11,7 +11,9 @@ export class Socket {
     this.alive = true
     this.closed = false
     this.disconnected = false
-    this.inboxBytes = 0 // undecoded wire waiting for the next flush (see ServerNetwork.enqueue)
+    this.inbox = []
+    this.inboxCost = 0
+    this.inQueue = false
 
     this.ws.on('message', this.onMessage)
     this.ws.on('pong', this.onPong)

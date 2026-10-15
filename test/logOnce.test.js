@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { createLogOnce } from '../src/core/extras/logOnce.js'
+import { briefError, createLogOnce } from '../src/core/extras/logOnce.js'
 
 test('createLogOnce: logs once per subject and key, and says whether it did', () => {
   const lines = []
@@ -27,4 +27,43 @@ test('createLogOnce: defaults to console.warn', () => {
   } finally {
     console.warn = warn
   }
+})
+
+test('briefError: only own strings, bounded and safe against accessors and hostile thrown values', () => {
+  assert.equal(briefError(new Error('message')), 'message')
+  assert.equal(briefError({ name: 'TypeError', message: 'bad' }), 'TypeError: bad')
+  assert.equal(briefError({ message: 'x'.repeat(1000) }), 'x'.repeat(200))
+  assert.equal(briefError(Object.create({ message: 'inherited' })), 'error')
+  assert.equal(
+    briefError({
+      get message() {
+        throw new Error('getter')
+      },
+    }),
+    'error'
+  )
+  assert.equal(
+    briefError({
+      message: {
+        toString() {
+          throw new Error('coercion')
+        },
+      },
+    }),
+    'error'
+  )
+  assert.equal(
+    briefError(
+      new Proxy(
+        {},
+        {
+          getOwnPropertyDescriptor() {
+            throw new Error('proxy')
+          },
+        }
+      )
+    ),
+    'error'
+  )
+  for (const value of [null, undefined, 123, 'string']) assert.equal(briefError(value), 'error')
 })

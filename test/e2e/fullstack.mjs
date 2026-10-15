@@ -626,6 +626,38 @@ async function probes(admin, watcher) {
     }
   )
 
+  await step('A12b per-socket inboxes drain 15 large packets each in FIFO order', async () => {
+    const clients = await Promise.all(['inbox-a', 'inbox-b'].map(name => new WireClient(PORT, name).connect()))
+    try {
+      const from = watcher.mark()
+      // Each burst exceeds the former 256 KiB wire budget but fits its socket's 1 MiB charged inbox.
+      // The scheduler budgets nodes + floor(bytes / 128), with FIFO preserved separately for each socket.
+      for (let i = 0; i < 15; i++) {
+        for (const client of clients) client.send('entityEvent', ['s-event', 0, 'size', 's'.repeat(60000 + i)])
+      }
+      const reports = () =>
+        watcher
+          .since(from)
+          .filter(m => m.method === 'onChatAdded' && String(m.data?.body).startsWith('P5_SIZE '))
+          .map(m => JSON.parse(m.data.body.slice('P5_SIZE '.length)))
+      await waitUntil(() => reports().length === 30, { timeout: 15000, message: 'both large inbox bursts to drain' })
+      for (const client of clients) {
+        const lengths = reports()
+          .filter(report => report.from === client.id)
+          .map(report => report.length)
+        eq(JSON.stringify(lengths), JSON.stringify(Array.from({ length: 15 }, (_, i) => 60000 + i)), 'per-socket FIFO')
+        ok(client.isOpen, 'the connection remains open after draining')
+        eq(
+          server.lines(new RegExp(`\\[network\\] entityEvent from client ${client.id} dropped`)).length,
+          0,
+          'no inbox eviction or drop'
+        )
+      }
+    } finally {
+      for (const client of clients) client.close()
+    }
+  })
+
   await step(
     'A13 decode bombs (pointer DAG + trailing byte, BigInt, Error) are refused without stalling the server',
     async () => {

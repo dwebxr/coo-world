@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { Euler, Matrix4, Quaternion, Vector3, Object3D } from 'three'
 import { readAnchorPose } from '../src/core/extras/anchorPose.js'
 import { loadClient } from './lib/clientHarness.mjs'
+import * as physxConvert from '../src/core/extras/physxConvert.js'
 
 const rotation = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), Math.PI / 2)
 const scaledAnchor = () => new Matrix4().compose(new Vector3(1, 2, 3), rotation, new Vector3(2, 2, 2))
@@ -85,6 +86,7 @@ test('readAnchorPose: rejects oversized positions and decomposition overflow wit
 for (const kind of ['Local', 'Remote']) {
   test(`Player${kind}: invalid anchors preserve pose and do not snap; valid anchors recover and clear at unit scale`, () => {
     const Player = loadClient(`core/entities/Player${kind}.js`, `Player${kind}`, {
+      ...physxConvert,
       readAnchorPose,
       simpleCamLerp() {},
     })
@@ -99,10 +101,7 @@ for (const kind of ['Local', 'Remote']) {
     base.clean = () => {
       cleans++
     }
-    base.position.toPxTransform = pose => {
-      pose.p = base.position.toArray()
-    }
-    const pose = { p: [4, 5, 6] }
+    const pose = { p: { x: 4, y: 5, z: 6 }, q: { x: 0, y: 0, z: 0, w: 1 } }
     const player = Object.assign(Object.create(Player.prototype), {
       base,
       data: { id: 'player', effect: { anchorId: 'anchor' } },
@@ -156,7 +155,7 @@ for (const kind of ['Local', 'Remote']) {
     assert.equal(quaternionSnaps, kind === 'Remote' ? 1 : 0)
     assert.equal(capsuleReads, kind === 'Local' ? 1 : 0)
     assert.equal(cleans, kind === 'Remote' ? 1 : 0)
-    if (kind === 'Local') assert.deepEqual(pose.p, [1, 2, 3])
+    if (kind === 'Local') assert.deepEqual(pose.p, { x: 1, y: 2, z: 3 })
     player.setEffect(null)
     assert.equal(player.data.effect, null)
     if (kind === 'Remote') assert.equal(player.body.active, true)

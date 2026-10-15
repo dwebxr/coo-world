@@ -14,6 +14,7 @@ import { outranks, isAdmin, isBuilder, isMuted } from '../extras/playerRanks'
 import { createPlayerAura, chatBubble } from '../extras/playerAura'
 import { isEmoteUrl, sanitizeName, sanitizePlayerSelfModify } from '../extras/entityModifyPolicy'
 import { readAnchorPose } from '../extras/anchorPose'
+import { vec3ToPx, vec3ToPxPos, quatToPxRot, pxToVec3, pxToQuat, scratchPxVec3 } from '../extras/physxConvert.js'
 
 const anchorPosition = new THREE.Vector3()
 const anchorQuaternion = new THREE.Quaternion()
@@ -200,10 +201,10 @@ export class PlayerLocal extends Entity {
     const localPose = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
     // rotate to stand up
     q1.set(0, 0, 0).setFromAxisAngle(BACKWARD, Math.PI / 2)
-    q1.toPxTransform(localPose)
+    quatToPxRot(q1, localPose)
     // move capsule up so its base is at 0,0,0
     v1.set(0, halfHeight + radius, 0)
-    v1.toPxTransform(localPose)
+    vec3ToPxPos(v1, localPose)
     shape.setLocalPose(localPose)
     const filterData = new PHYSX.PxFilterData(
       Layers.player.group,
@@ -221,8 +222,8 @@ export class PlayerLocal extends Entity {
     shape.setQueryFilterData(filterData)
     shape.setSimulationFilterData(filterData)
     const transform = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
-    v1.copy(this.base.position).toPxTransform(transform)
-    q1.set(0, 0, 0, 1).toPxTransform(transform)
+    vec3ToPxPos(v1.copy(this.base.position), transform)
+    quatToPxRot(q1.set(0, 0, 0, 1), transform)
     this.capsule = this.world.physics.physics.createRigidDynamic(transform)
     this.capsule.setMass(this.mass)
     // this.capsule.setRigidBodyFlag(PHYSX.PxRigidBodyFlagEnum.eKINEMATIC, false)
@@ -244,7 +245,7 @@ export class PlayerLocal extends Entity {
       // shape2.setQueryFilterData(filterData)
       // shape2.setSimulationFilterData(filterData)
       // const pose = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
-      // v1.set(0, halfHeight + radius, 0).toPxTransform(pose)
+      // vec3ToPxPos(v1.set(0, halfHeight + radius, 0), pose)
       // shape2.setLocalPose(pose)
       // this.capsule.attachShape(shape2)
     }
@@ -416,7 +417,7 @@ export class PlayerLocal extends Entity {
       if (this.grounded) {
         // find any potentially moving platform
         const pose = this.capsule.getGlobalPose()
-        const origin = v1.copy(pose.p)
+        const origin = pxToVec3(v1, pose.p)
         origin.y += 0.2
         const hitMask = Layers.environment.group | Layers.prop.group
         const hit = this.world.physics.raycast(origin, DOWN, 2, hitMask)
@@ -426,8 +427,8 @@ export class PlayerLocal extends Entity {
           this.platform.actor = actor
           if (actor) {
             const platformPose = this.platform.actor.getGlobalPose()
-            v1.copy(platformPose.p)
-            q1.copy(platformPose.q)
+            pxToVec3(v1, platformPose.p)
+            pxToQuat(q1, platformPose.q)
             this.platform.prevTransform.compose(v1, q1, SCALE_IDENTITY)
           }
         }
@@ -436,8 +437,8 @@ export class PlayerLocal extends Entity {
           // get current platform transform
           const currTransform = m1
           const platformPose = this.platform.actor.getGlobalPose()
-          v1.copy(platformPose.p)
-          q1.copy(platformPose.q)
+          pxToVec3(v1, platformPose.p)
+          pxToQuat(q1, platformPose.q)
           currTransform.compose(v1, q1, SCALE_IDENTITY)
           // get delta transform
           const deltaTransform = m2.multiplyMatrices(currTransform, this.platform.prevTransform.clone().invert())
@@ -448,8 +449,8 @@ export class PlayerLocal extends Entity {
           deltaTransform.decompose(deltaPosition, deltaQuaternion, deltaScale)
           // apply delta to player
           const playerPose = this.capsule.getGlobalPose()
-          v4.copy(playerPose.p)
-          q3.copy(playerPose.q)
+          pxToVec3(v4, playerPose.p)
+          pxToQuat(q3, playerPose.q)
           const playerTransform = m3
           playerTransform.compose(v4, q3, SCALE_IDENTITY)
           playerTransform.premultiply(deltaTransform)
@@ -457,9 +458,10 @@ export class PlayerLocal extends Entity {
           const newQuaternion = q4
           playerTransform.decompose(newPosition, newQuaternion, v6)
           const newPose = this.capsule.getGlobalPose()
-          newPosition.toPxTransform(newPose)
-          // newQuaternion.toPxTransform(newPose) // capsule doesn't rotate
-          this.capsule.setGlobalPose(newPose)
+          // capsule doesn't rotate
+          if (vec3ToPxPos(newPosition, newPose)) {
+            this.capsule.setGlobalPose(newPose)
+          }
           // rotate ghost by Y only
           e1.setFromQuaternion(deltaQuaternion).reorder('YXZ')
           e1.x = 0
@@ -479,7 +481,7 @@ export class PlayerLocal extends Entity {
       {
         const geometry = this.groundSweepGeometry
         const pose = this.capsule.getGlobalPose()
-        const origin = v1.copy(pose.p /*this.ghost.position*/)
+        const origin = pxToVec3(v1, pose.p)
         origin.y += this.groundSweepRadius + 0.12 // move up inside player + a bit
         const direction = DOWN
         const maxDistance = 0.12 + 0.1 // outside player + a bit more
@@ -584,22 +586,28 @@ export class PlayerLocal extends Entity {
             // this feels like the right amount of force but no idea why 0.2
             const amount = -9.81 * 0.2
             const force = v1.set(0, amount, 0)
-            PHYSX.PxRigidBodyExt.prototype.addForceAtPos(
-              this.platform.actor,
-              force.toPxVec3(),
-              this.capsule.getGlobalPose().p,
-              PHYSX.PxForceModeEnum.eFORCE,
-              true
-            )
+            const px = scratchPxVec3()
+            if (vec3ToPx(force, px)) {
+              PHYSX.PxRigidBodyExt.prototype.addForceAtPos(
+                this.platform.actor,
+                px,
+                this.capsule.getGlobalPose().p,
+                PHYSX.PxForceModeEnum.eFORCE,
+                true
+              )
+            }
           }
         }
       } else {
         const force = v1.set(0, -this.effectiveGravity, 0)
-        this.capsule.addForce(force.toPxVec3(), PHYSX.PxForceModeEnum.eFORCE, true)
+        const px = scratchPxVec3()
+        if (vec3ToPx(force, px)) {
+          this.capsule.addForce(px, PHYSX.PxForceModeEnum.eFORCE, true)
+        }
       }
 
       // update velocity
-      const velocity = v1.copy(this.capsule.getLinearVelocity())
+      const velocity = pxToVec3(v1, this.capsule.getLinearVelocity())
       // apply drag, orientated to ground normal
       // this prevents ice-skating & yeeting us upward when going up ramps
       const dragCoeff = 10 * delta
@@ -652,7 +660,8 @@ export class PlayerLocal extends Entity {
         }
       }
 
-      this.capsule.setLinearVelocity(velocity.toPxVec3())
+      const px = scratchPxVec3()
+      if (vec3ToPx(velocity, px)) this.capsule.setLinearVelocity(px)
 
       // apply move force, projected onto ground normal
       if (this.moving) {
@@ -660,12 +669,15 @@ export class PlayerLocal extends Entity {
         moveSpeed *= 1 - snare
         const slopeRotation = q1.setFromUnitVectors(UP, this.groundNormal)
         const moveForce = v1.copy(this.moveDir).multiplyScalar(moveSpeed * 10).applyQuaternion(slopeRotation) // prettier-ignore
-        this.capsule.addForce(moveForce.toPxVec3(), PHYSX.PxForceModeEnum.eFORCE, true)
+        const px = scratchPxVec3()
+        if (vec3ToPx(moveForce, px)) {
+          this.capsule.addForce(px, PHYSX.PxForceModeEnum.eFORCE, true)
+        }
         // alternative (slightly different projection)
         // let moveSpeed = 10
         // const slopeMoveDir = v1.copy(this.moveDir).projectOnPlane(this.groundNormal).normalize()
         // const moveForce = v2.copy(slopeMoveDir).multiplyScalar(moveSpeed * 10)
-        // this.capsule.addForce(moveForce.toPxVec3(), PHYSX.PxForceModeEnum.eFORCE, true)
+        // if (vec3ToPx(moveForce, px)) this.capsule.addForce(px, PHYSX.PxForceModeEnum.eFORCE, true)
       }
 
       // ground/air jump
@@ -711,17 +723,23 @@ export class PlayerLocal extends Entity {
         } else if (this.control.keyC.down) {
           force.y = -flySpeed
         }
-        this.capsule.addForce(force.toPxVec3(), PHYSX.PxForceModeEnum.eFORCE, true)
+        const px = scratchPxVec3()
+        if (vec3ToPx(force, px)) {
+          this.capsule.addForce(px, PHYSX.PxForceModeEnum.eFORCE, true)
+        }
       }
 
       // add drag to prevent excessive speeds
-      const velocity = v2.copy(this.capsule.getLinearVelocity())
+      const velocity = pxToVec3(v2, this.capsule.getLinearVelocity())
       const dragForce = v3.copy(velocity).multiplyScalar(-this.flyDrag * delta)
-      this.capsule.addForce(dragForce.toPxVec3(), PHYSX.PxForceModeEnum.eFORCE, true)
+      const px = scratchPxVec3()
+      if (vec3ToPx(dragForce, px)) {
+        this.capsule.addForce(px, PHYSX.PxForceModeEnum.eFORCE, true)
+      }
 
       // zero out any rotational velocity
       const zeroAngular = v4.set(0, 0, 0)
-      this.capsule.setAngularVelocity(zeroAngular.toPxVec3())
+      if (vec3ToPx(zeroAngular, px)) this.capsule.setAngularVelocity(px)
 
       // if non-xr and not in build mode, cancel flying
       if (!this.world.builder?.enabled && !this.isXR) {
@@ -763,9 +781,8 @@ export class PlayerLocal extends Entity {
       this.hmdLast.copy(v3)
       // apply physical movement delta to capsule so physics stays with us if we wander
       const pose = this.capsule.getGlobalPose()
-      v2.copy(pose.p).add(this.hmdDelta)
-      v2.toPxVec3(pose.p)
-      this.capsule.setGlobalPose(pose)
+      pxToVec3(v2, pose.p).add(this.hmdDelta)
+      if (vec3ToPxPos(v2, pose)) this.capsule.setGlobalPose(pose)
     }
 
     // update cam look direction
@@ -1092,8 +1109,7 @@ export class PlayerLocal extends Entity {
       this.base.position.copy(anchorPosition)
       this.base.quaternion.copy(anchorQuaternion)
       const pose = this.capsule.getGlobalPose()
-      this.base.position.toPxTransform(pose)
-      this.capsuleHandle.snap(pose)
+      if (vec3ToPxPos(this.base.position, pose)) this.capsuleHandle.snap(pose)
     }
     // make camera follow our position horizontally
     this.cam.position.copy(this.base.position)
@@ -1128,7 +1144,7 @@ export class PlayerLocal extends Entity {
     const hasRotation = isNumber(rotationY)
     // snap to position
     const pose = this.capsule.getGlobalPose()
-    position.toPxTransform(pose)
+    vec3ToPxPos(position, pose)
     this.capsuleHandle.snap(pose)
     this.base.position.copy(position)
     if (hasRotation) this.base.rotation.y = rotationY

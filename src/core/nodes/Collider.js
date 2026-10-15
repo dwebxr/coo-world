@@ -1,4 +1,5 @@
 import * as THREE from '../extras/three'
+import { vec3ToPxPos, quatToPxRot } from '../extras/physxConvert.js'
 import { isBoolean, isNumber } from 'lodash-es'
 
 import { getRef, Node, resolveValueRef, secureRef } from './Node'
@@ -105,8 +106,8 @@ export class Collider extends Node {
     // this.parent.matrixWorld.decompose(_v1, _q1, parentWorldScale)
     const position = _v1.copy(this.position).multiply(this.parent.scale)
     const pose = new PHYSX.PxTransform()
-    position.toPxTransform(pose)
-    this.quaternion.toPxTransform(pose)
+    vec3ToPxPos(position, pose)
+    quatToPxRot(this.quaternion, pose)
     this.shape.setLocalPose(pose)
     this.parent?.addShape?.(this.shape)
     // console.log('geometry', geometry)

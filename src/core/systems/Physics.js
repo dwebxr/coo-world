@@ -1,5 +1,5 @@
 import * as THREE from '../extras/three'
-import { extendThreePhysX } from '../extras/extendThreePhysX'
+import { matrixToPxTransform, vec3ToPx, pxToVec3, pxToQuat } from '../extras/physxConvert.js'
 import { System } from './System'
 import { Layers } from '../extras/Layers'
 import { loadPhysX } from '../loadPhysX'
@@ -51,8 +51,6 @@ export class Physics extends System {
     this.errorCb = info.errorCb
     this.foundation = info.foundation
 
-    extendThreePhysX()
-
     this.tolerances = new PHYSX.PxTolerancesScale()
     this.cookingParams = new PHYSX.PxCookingParams(this.tolerances)
     this.physics = PHYSX.CreatePhysics(this.version, this.foundation, this.tolerances)
@@ -87,9 +85,9 @@ export class Physics extends System {
             }
           }
           const contact = contactPool[idx]
-          contact.position.copy(position)
-          contact.normal.copy(normal)
-          contact.impulse.copy(impulse)
+          pxToVec3(contact.position, position)
+          pxToVec3(contact.normal, normal)
+          pxToVec3(contact.impulse, impulse)
           contacts.push(contact)
           idx++
         },
@@ -343,12 +341,12 @@ export class Physics extends System {
         },
       }
       const pose = actor.getGlobalPose()
-      handle.interpolation.prev.position.copy(pose.p)
-      handle.interpolation.prev.quaternion.copy(pose.q)
-      handle.interpolation.next.position.copy(pose.p)
-      handle.interpolation.next.quaternion.copy(pose.q)
-      handle.interpolation.curr.position.copy(pose.p)
-      handle.interpolation.curr.quaternion.copy(pose.q)
+      pxToVec3(handle.interpolation.prev.position, pose.p)
+      pxToQuat(handle.interpolation.prev.quaternion, pose.q)
+      pxToVec3(handle.interpolation.next.position, pose.p)
+      pxToQuat(handle.interpolation.next.quaternion, pose.q)
+      pxToVec3(handle.interpolation.curr.position, pose.p)
+      pxToQuat(handle.interpolation.curr.quaternion, pose.q)
     }
     this.handles.set(actor.ptr, handle)
     if (!handle.controller) {
@@ -359,7 +357,7 @@ export class Physics extends System {
         if (this.ignoreSetGlobalPose) {
           return
         }
-        matrix.toPxTransform(this.transform)
+        if (!matrixToPxTransform(matrix, this.transform)) return
         // const isKinematic = actor.getRigidBodyFlags?.().isSet(PHYSX.PxRigidBodyFlagEnum.eKINEMATIC)
         // if (isKinematic) {
         //   actor.setKinematicTarget(this.transform)
@@ -370,12 +368,12 @@ export class Physics extends System {
       },
       snap: pose => {
         actor.setGlobalPose(pose)
-        handle.interpolation.prev.position.copy(pose.p)
-        handle.interpolation.prev.quaternion.copy(pose.q)
-        handle.interpolation.next.position.copy(pose.p)
-        handle.interpolation.next.quaternion.copy(pose.q)
-        handle.interpolation.curr.position.copy(pose.p)
-        handle.interpolation.curr.quaternion.copy(pose.q)
+        pxToVec3(handle.interpolation.prev.position, pose.p)
+        pxToQuat(handle.interpolation.prev.quaternion, pose.q)
+        pxToVec3(handle.interpolation.next.position, pose.p)
+        pxToQuat(handle.interpolation.next.quaternion, pose.q)
+        pxToVec3(handle.interpolation.curr.position, pose.p)
+        pxToQuat(handle.interpolation.curr.quaternion, pose.q)
         handle.interpolation.skip = true
       },
       destroy: () => {
@@ -441,8 +439,8 @@ export class Physics extends System {
       lerp.prev.position.copy(lerp.next.position)
       lerp.prev.quaternion.copy(lerp.next.quaternion)
       const pose = handle.actor.getGlobalPose()
-      lerp.next.position.copy(pose.p)
-      lerp.next.quaternion.copy(pose.q)
+      pxToVec3(lerp.next.position, pose.p)
+      pxToQuat(lerp.next.quaternion, pose.q)
       this.active.add(handle)
     }
   }
@@ -499,14 +497,13 @@ export class Physics extends System {
   }
 
   raycast(origin, direction, maxDistance = Infinity, layerMask) {
-    origin = origin.toPxVec3(this._pv1)
-    direction = direction.toPxVec3(this._pv2)
+    if (!vec3ToPx(origin, this._pv1) || !vec3ToPx(direction, this._pv2)) return null
     // this.queryFilterData.flags |= PHYSX.PxQueryFlagEnum.ePREFILTER | PHYSX.PxQueryFlagEnum.ePOSTFILTER // prettier-ignore
     this.queryFilterData.data.word0 = layerMask // what to hit, eg Layers.player.group | Layers.environment.group
     this.queryFilterData.data.word1 = 0
     const didHit = this.scene.raycast(
-      origin,
-      direction,
+      this._pv1,
+      this._pv2,
       maxDistance,
       this.raycastResult,
       PHYSX.PxHitFlagEnum.eNORMAL,
@@ -522,8 +519,8 @@ export class Physics extends System {
         }
       }
       _raycastHit.handle = this.handles.get(hit.actor.ptr)
-      _raycastHit.point.set(hit.position.x, hit.position.y, hit.position.z)
-      _raycastHit.normal.set(hit.normal.x, hit.normal.y, hit.normal.z)
+      pxToVec3(_raycastHit.point, hit.position)
+      pxToVec3(_raycastHit.normal, hit.normal)
       _raycastHit.distance = hit.distance
       return _raycastHit
     }
@@ -531,14 +528,13 @@ export class Physics extends System {
   }
 
   sweep(geometry, origin, direction, maxDistance, layerMask) {
-    origin.toPxVec3(this.sweepPose.p)
-    direction = direction.toPxVec3(this._pv2)
+    if (!vec3ToPx(origin, this.sweepPose.p) || !vec3ToPx(direction, this._pv2)) return null
     this.queryFilterData.data.word0 = layerMask
     this.queryFilterData.data.word1 = 0
     const didHit = this.scene.sweep(
       geometry,
       this.sweepPose,
-      direction,
+      this._pv2,
       maxDistance,
       this.sweepResult,
       PHYSX.PxHitFlagEnum.eDEFAULT,
@@ -554,8 +550,8 @@ export class Physics extends System {
         }
       }
       _sweepHit.actor = hit.actor
-      _sweepHit.point.set(hit.position.x, hit.position.y, hit.position.z)
-      _sweepHit.normal.set(hit.normal.x, hit.normal.y, hit.normal.z)
+      pxToVec3(_sweepHit.point, hit.position)
+      pxToVec3(_sweepHit.normal, hit.normal)
       _sweepHit.distance = hit.distance
       return _sweepHit
     }
@@ -563,7 +559,7 @@ export class Physics extends System {
   }
 
   // overlap(geometry, origin, layerMask) {
-  //   origin.toPxVec3(this.overlapPose.p)
+  //   if (!vec3ToPx(origin, this.overlapPose.p)) return []
   //   this.queryFilterData.data.word0 = layerMask
   //   this.queryFilterData.data.word1 = 0
   //   const didHit = this.scene.overlap(geometry, this.overlapPose, this.overlapResult, this.queryFilterData)
@@ -576,7 +572,7 @@ export class Physics extends System {
   // }
 
   overlapSphere(radius, origin, layerMask) {
-    origin.toPxVec3(this.overlapPose.p)
+    if (!vec3ToPx(origin, this.overlapPose.p)) return []
     const geometry = getSphereGeometry(radius)
     this.queryFilterData.data.word0 = layerMask // what to hit, eg Layers.player.group | Layers.environment.group
     this.queryFilterData.data.word1 = 0

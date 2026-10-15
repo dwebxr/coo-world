@@ -1,4 +1,5 @@
 import * as THREE from '../extras/three'
+import { vec3ToPxPos, quatToPxRot } from '../extras/physxConvert.js'
 import { isBoolean, isNumber, isString, isArray, isObject, isFunction, isEqual } from 'lodash-es'
 
 import { Node, secureRef } from './Node'
@@ -293,8 +294,8 @@ export class Prim extends Node {
     // Create transform
     this.matrixWorldOffset.decompose(_v1, _q1, _v2)
     if (!this._tm) this._tm = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
-    _v1.toPxTransform(this._tm)
-    _q1.toPxTransform(this._tm)
+    vec3ToPxPos(_v1, this._tm)
+    quatToPxRot(_q1, this._tm)
 
     // Create actor
     if (type === 'static') {
@@ -375,8 +376,8 @@ export class Prim extends Node {
 
     // const position = _v1.copy(this.position).multiply(this.parent.scale)
     // const pose = new PHYSX.PxTransform()
-    // position.toPxTransform(pose)
-    // this.quaternion.toPxTransform(pose)
+    // vec3ToPxPos(position, pose)
+    // quatToPxRot(this.quaternion, pose)
     // this.shape.setLocalPose(pose)
 
     // Attach shape to actor

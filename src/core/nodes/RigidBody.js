@@ -1,4 +1,14 @@
 import * as THREE from '../extras/three'
+import {
+  decomposeMatrix,
+  vec3ToPx,
+  vec3ToPxPos,
+  quatToPxRot,
+  pxToVec3,
+  pxToQuat,
+  writeVec3,
+  scratchPxVec3,
+} from '../extras/physxConvert.js'
 
 import { Node } from './Node'
 import { isFunction, isNumber, isString } from 'lodash-es'
@@ -64,10 +74,10 @@ export class RigidBody extends Node {
   mount() {
     this.needsRebuild = false
     if (this.ctx.moving) return // physics ignored when moving apps around
-    this.matrixWorld.decompose(_v1, _q1, _v2)
+    decomposeMatrix(this.matrixWorld, _v1, _q1, _v2)
     this.transform = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
-    _v1.toPxTransform(this.transform)
-    _q1.toPxTransform(this.transform)
+    vec3ToPxPos(_v1, this.transform)
+    quatToPxRot(_q1, this.transform)
     if (this._type === 'static') {
       this.actor = this.ctx.world.physics.physics.createRigidStatic(this.transform)
     } else if (this._type === 'kinematic') {
@@ -83,7 +93,7 @@ export class RigidBody extends Node {
       // this.untrack = this.ctx.world.physics.track(this.actor, this.onPhysicsMovement)
       if (this._centerOfMass) {
         const pose = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
-        this._centerOfMass.toPxTransform(pose)
+        vec3ToPxPos(this._centerOfMass, pose)
         this.actor.setCMassLocalPose(pose)
       }
       this.actor.setLinearDamping(this._linearDamping)
@@ -311,9 +321,11 @@ export class RigidBody extends Node {
 
   addForce(force, mode) {
     if (!force?.isVector3) throw new Error('[rigidbody] addForce force must be Vector3')
-    if (!force.toPxExtVec3) force = _v1.copy(force)
     mode = getForceMode(mode)
-    this.actor?.addForce(force.toPxVec3(), mode, true)
+    if (!this.actor) return
+    const px = scratchPxVec3()
+    vec3ToPx(force, px)
+    this.actor.addForce(px, mode, true)
   }
 
   addForceAtPos(force, pos, mode) {
@@ -322,16 +334,10 @@ export class RigidBody extends Node {
     if (!this.actor) return
     if (!this._pv1) this._pv1 = new PHYSX.PxVec3()
     if (!this._pv2) this._pv2 = new PHYSX.PxVec3()
-    if (!force.toPxExtVec3) force = _v1.copy(force)
-    if (!pos.toPxExtVec3) pos = _v2.copy(pos)
     mode = getForceMode(mode)
-    PHYSX.PxRigidBodyExt.prototype.addForceAtPos(
-      this.actor,
-      force.toPxExtVec3(this._pv1),
-      pos.toPxExtVec3(this._pv2),
-      mode,
-      true
-    )
+    vec3ToPx(force, this._pv1)
+    vec3ToPx(pos, this._pv2)
+    PHYSX.PxRigidBodyExt.prototype.addForceAtPos(this.actor, this._pv1, this._pv2, mode, true)
   }
 
   addForceAtLocalPos(force, pos, mode) {
@@ -340,37 +346,33 @@ export class RigidBody extends Node {
     if (!this.actor) return
     if (!this._pv1) this._pv1 = new PHYSX.PxVec3()
     if (!this._pv2) this._pv2 = new PHYSX.PxVec3()
-    if (!force.toPxExtVec3) force = _v1.copy(force)
-    if (!pos.toPxExtVec3) pos = _v2.copy(pos)
     mode = getForceMode(mode)
-    PHYSX.PxRigidBodyExt.prototype.addForceAtLocalPos(
-      this.actor,
-      force.toPxExtVec3(this._pv1),
-      pos.toPxExtVec3(this._pv2),
-      mode,
-      true
-    )
+    vec3ToPx(force, this._pv1)
+    vec3ToPx(pos, this._pv2)
+    PHYSX.PxRigidBodyExt.prototype.addForceAtLocalPos(this.actor, this._pv1, this._pv2, mode, true)
   }
 
   addTorque(torque, mode) {
     if (!torque?.isVector3) throw new Error('[rigidbody] addForce torque must be Vector3')
-    if (!torque.toPxVec3) torque = _v1.copy(torque)
     mode = getForceMode(mode)
-    this.actor?.addTorque(torque.toPxVec3(), mode, true)
+    if (!this.actor) return
+    const px = scratchPxVec3()
+    vec3ToPx(torque, px)
+    this.actor.addTorque(px, mode, true)
   }
 
   getPosition(vec3) {
     if (!vec3) vec3 = this.tempVec3
     if (!this.actor) return vec3.set(0, 0, 0)
     const pose = this.actor.getGlobalPose()
-    vec3.copy(pose.p)
+    pxToVec3(vec3, pose.p)
     return vec3
   }
 
   setPosition(vec3) {
     if (!this.actor) return
     const pose = this.actor.getGlobalPose()
-    vec3.toPxTransform(pose)
+    vec3ToPxPos(vec3, pose)
     this.actor.setGlobalPose(pose)
     this.position.copy(vec3)
   }
@@ -379,14 +381,14 @@ export class RigidBody extends Node {
     if (!quat) quat = this.tempQuat
     if (!this.actor) return quat.set(0, 0, 0)
     const pose = this.actor.getGlobalPose()
-    quat.copy(pose.q)
+    pxToQuat(quat, pose.q)
     return quat
   }
 
   setQuaternion(quat) {
     if (!this.actor) return
     const pose = this.actor.getGlobalPose()
-    quat.toPxTransform(pose)
+    quatToPxRot(quat, pose)
     this.actor.setGlobalPose(pose)
     this.quaternion.copy(quat)
   }
@@ -394,38 +396,49 @@ export class RigidBody extends Node {
   getLinearVelocity(vec3) {
     if (!vec3) vec3 = this.tempVec3
     if (!this.actor) return vec3.set(0, 0, 0)
-    return vec3.fromPxVec3(this.actor.getLinearVelocity())
+    return pxToVec3(vec3, this.actor.getLinearVelocity())
   }
 
   setLinearVelocity(vec3) {
-    this.actor?.setLinearVelocity?.(vec3.toPxVec3())
+    if (this.actor?.setLinearVelocity == null) return
+    const px = scratchPxVec3()
+    vec3ToPx(vec3, px)
+    this.actor.setLinearVelocity?.(px)
   }
 
   getAngularVelocity(vec3) {
     if (!vec3) vec3 = this.tempVec3
     if (!this.actor) return vec3.set(0, 0, 0)
-    return vec3.fromPxVec3(this.actor.getAngularVelocity())
+    return pxToVec3(vec3, this.actor.getAngularVelocity())
   }
 
   setAngularVelocity(vec3) {
-    this.actor?.setAngularVelocity?.(vec3.toPxVec3())
+    if (this.actor?.setAngularVelocity == null) return
+    const px = scratchPxVec3()
+    vec3ToPx(vec3, px)
+    this.actor.setAngularVelocity?.(px)
   }
 
   getVelocityAtPos(pos, vec3) {
     if (!pos?.isVector3) throw new Error('[rigidbody] getVelocityAtPos pos must be Vector3')
     if (!this.actor) return vec3.set(0, 0, 0)
-    return vec3.copy(PHYSX.PxRigidBodyExt.prototype.getVelocityAtPos(this.actor, pos.toPxVec3()))
+    const px = scratchPxVec3()
+    vec3ToPx(pos, px)
+    return pxToVec3(vec3, PHYSX.PxRigidBodyExt.prototype.getVelocityAtPos(this.actor, px))
   }
 
   getLocalVelocityAtLocalPos(pos, vec3) {
     if (!pos?.isVector3) throw new Error('[rigidbody] getVelocityAtLocalPos pos must be Vector3')
     if (!this.actor) return vec3.set(0, 0, 0)
-    return vec3.copy(PHYSX.PxRigidBodyExt.prototype.getLocalVelocityAtLocalPos(this.actor, pos.toPxVec3()))
+    const px = scratchPxVec3()
+    vec3ToPx(pos, px)
+    return pxToVec3(vec3, PHYSX.PxRigidBodyExt.prototype.getLocalVelocityAtLocalPos(this.actor, px))
   }
 
   setCenterOfMass(pos) {
     if (!pos?.isVector3) throw new Error('[rigidbody] setCenterOfMass pos must be Vector3')
-    this._centerOfMass = pos.clone()
+    this._centerOfMass ??= new THREE.Vector3()
+    writeVec3(this._centerOfMass, pos.x, pos.y, pos.z)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -434,8 +447,8 @@ export class RigidBody extends Node {
     if (this._type !== 'kinematic') {
       throw new Error('[rigidbody] setKinematicTarget failed (not kinematic)')
     }
-    position.toPxTransform(this._tm)
-    quaternion.toPxTransform(this._tm)
+    vec3ToPxPos(position, this._tm)
+    quatToPxRot(quaternion, this._tm)
     this.actor?.setKinematicTarget(this._tm)
   }
 

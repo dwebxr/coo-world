@@ -1,26 +1,39 @@
-import { mock, test } from 'node:test'
+import { after, before, mock, test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import * as THREE from 'three'
 import { loadClient } from './lib/clientHarness.mjs'
 import { Modes } from '../src/core/extras/locomotionModes.js'
 import { isEmoteUrl } from '../src/core/extras/entityModifyPolicy.js'
+import * as physxConvert from '../src/core/extras/physxConvert.js'
 
 const validateEmote = mock.fn(isEmoteUrl)
 
-const Player = loadClient('core/entities/PlayerLocal.js', 'PlayerLocal', {
-  THREE: {
-    ...THREE,
-    Vector3: class extends THREE.Vector3 {
-      toPxVec3() {
-        return { x: this.x, y: this.y, z: this.z }
-      }
-    },
+const physics = {
+  PxForceModeEnum: { eFORCE: 1 },
+  PxVec3: class {
+    constructor() {
+      this.x = 0
+      this.y = 0
+      this.z = 0
+    }
   },
+}
+const previousPhysX = Object.getOwnPropertyDescriptor(globalThis, 'PHYSX')
+before(() => {
+  globalThis.PHYSX = physics
+})
+after(() => {
+  if (previousPhysX) Object.defineProperty(globalThis, 'PHYSX', previousPhysX)
+  else delete globalThis.PHYSX
+})
+
+const Player = loadClient('core/entities/PlayerLocal.js', 'PlayerLocal', {
+  ...physxConvert,
   Modes,
   clamp: THREE.MathUtils.clamp,
   Layers: { environment: { group: 1 }, prop: { group: 2 } },
-  PHYSX: { PxForceModeEnum: { eFORCE: 1 } },
+  PHYSX: physics,
   isEmoteUrl: validateEmote,
 })
 
@@ -176,9 +189,9 @@ test('PlayerLocal: typed snare controls finite movement forces and jump inhibiti
         getGlobalPose: () => ({ p: { x: 0, y: 0, z: 0 } }),
         getLinearVelocity: () => ({ ...velocity }),
         setLinearVelocity: value => {
-          velocity = value
+          velocity = { ...value }
         },
-        addForce: value => forces.push(value),
+        addForce: value => forces.push({ ...value }),
       },
     })
     player.moveDir.set(1, 0, 0)

@@ -1,4 +1,5 @@
 import * as THREE from '../extras/three'
+import { vec3ToPx, pxToVec3, scratchPxVec3, scratchPxExtVec3 } from '../extras/physxConvert.js'
 import { isNumber, isBoolean, isString, isFunction } from 'lodash-es'
 
 import { DEG2RAD } from '../extras/general'
@@ -60,7 +61,9 @@ export class Controller extends Node {
     this.controller = this.ctx.world.physics.controllerManager.createController(desc) // prettier-ignore
     PHYSX.destroy(desc)
     const worldPosition = this.getWorldPosition()
-    this.controller.setFootPosition(worldPosition.toPxExtVec3())
+    const px = scratchPxExtVec3()
+    vec3ToPx(worldPosition, px)
+    this.controller.setFootPosition(px)
 
     const actor = this.controller.getActor()
     const nbShapes = actor.getNbShapes()
@@ -112,7 +115,9 @@ export class Controller extends Node {
     // if (this.didMove) {
     //   console.log('character position change without move() ????')
     //   const worldPosition = this.getWorldPosition()
-    //   this.controller.setFootPosition(worldPosition.toPxExtVec3())
+    //   const px = scratchPxExtVec3()
+    //   vec3ToPx(worldPosition, px)
+    //   this.controller.setFootPosition(px)
     //   this.didMove = false
     // }
   }
@@ -243,7 +248,9 @@ export class Controller extends Node {
       throw new Error('[controller] teleport expected Vector3')
     }
     this.position.copy(vec3)
-    this.controller.setFootPosition(vec3.toPxExtVec3())
+    const px = scratchPxExtVec3()
+    vec3ToPx(vec3, px)
+    this.controller.setFootPosition(px)
   }
 
   move(vec3) {
@@ -251,10 +258,12 @@ export class Controller extends Node {
       throw new Error('[controller] move expected Vector3')
     }
     if (!this.controller) return
-    this.moveFlags = this.controller.move(vec3.toPxVec3(), 0, 1 / 60, this.ctx.world.physics.controllerFilters)
+    const px = scratchPxVec3()
+    vec3ToPx(vec3, px)
+    this.moveFlags = this.controller.move(px, 0, 1 / 60, this.ctx.world.physics.controllerFilters)
     // this.isGrounded = moveFlags.isSet(PHYSX.PxControllerCollisionFlagEnum.eCOLLISION_DOWN) // prettier-ignore
     const pos = this.controller.getFootPosition()
-    this.position.copy(pos)
+    pxToVec3(this.position, pos)
     this.didMove = true
   }
 

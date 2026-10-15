@@ -19,7 +19,7 @@ export function createPlayerProxy(entity, player) {
     warned.add(method)
     console.error(`[player] ${method} on a remote player must be called on the server`)
   }
-  return {
+  const proxy = {
     get networkId() {
       return player.data.owner
     },
@@ -197,4 +197,21 @@ export function createPlayerProxy(entity, player) {
       }
     },
   }
+  if (world.network.isServer) {
+    for (const name of [
+      'teleport',
+      'setSessionAvatar',
+      'damage',
+      'heal',
+      'applyEffect',
+      'cancelEffect',
+      'push',
+      'setVoiceLevel',
+      '$cleanup',
+    ]) {
+      const method = proxy[name]
+      proxy[name] = (...args) => world.network.asScript(() => method(...args), entity, name)
+    }
+  }
+  return proxy
 }

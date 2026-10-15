@@ -20,7 +20,7 @@ import { collections } from './collections'
 import { cleaner } from './cleaner'
 import { escapeHtml } from './escapeHtml'
 import { walletOf } from './solana-gating'
-import { clientIpKey, createUploadLimits, readUploadLimitsEnv } from './uploadLimits'
+import { clientIpKeys, createUploadLimits, readUploadLimitsEnv } from './uploadLimits'
 import { createConnectionLimits, readConnectionLimitsEnv } from './connectionLimits'
 import { assetRoutes, uploadRoutes } from './uploadRoutes'
 
@@ -53,9 +53,6 @@ if (!(maxUploadSize > 0)) {
 }
 const uploadLimitsConfig = readUploadLimitsEnv(process.env) // UPLOAD_*; throws on a bad value
 const connectionLimitsConfig = readConnectionLimitsEnv(process.env) // WS_CONNECT_*; throws on a bad value
-// a client frame above this closes the connection (1009) before it is buffered. legitimate client packets
-// are a few KB; the per-type caps below this live in core/extras/inboundPolicy.js
-const WS_MAX_PAYLOAD = 1024 * 1024
 if (!process.env.PUBLIC_WS_URL) {
   throw new Error('[envs] PUBLIC_WS_URL not set')
 }
@@ -135,9 +132,19 @@ fastify.register(statics, {
 if (world.assetsDir) {
   fastify.register(assetRoutes, { root: world.assetsDir })
 }
-fastify.register(ws, { options: { maxPayload: WS_MAX_PAYLOAD } })
+fastify.register(ws, {
+  options: {
+    maxPayload: 65536,
+    maxFragments: 8,
+    maxBufferedChunks: 1024,
+    autoPong: false,
+    perMessageDeflate: false,
+    closeTimeout: 2000,
+  },
+})
 // per-address connection limits, checked before a connection touches the database (see connectionLimits.js)
 const connectionLimits = createConnectionLimits(connectionLimitsConfig)
+const kLease = Symbol('wsLease')
 fastify.register(worldNetwork)
 
 const publicEnvs = {}
@@ -231,20 +238,25 @@ try {
   process.exit(1)
 }
 
+function admitConnection(request, reply, done) {
+  if (request.ws !== true) return done()
+  const transport = request.raw.socket
+  if (transport[kLease]) return reply.code(503).header('Retry-After', '10').send()
+  const header = uploadLimitsConfig.clientIpHeader
+  const lease = connectionLimits.admit(clientIpKeys(header ? request.headers[header] : undefined, request.ip))
+  if (!lease.ok) return reply.code(503).header('Retry-After', '10').send()
+  transport[kLease] = lease
+  transport.once('close', lease.release)
+  // An abort before ws takes over must not become an unhandled transport error.
+  transport.once('error', () => transport.destroy())
+  if (transport.destroyed) lease.release()
+  done()
+}
+
 async function worldNetwork(fastify) {
-  fastify.get('/ws', { websocket: true }, (ws, req) => {
-    // the address bucket is the one the upload limits use; a refused connection is told why and closed with
-    // 1013 (try again later) before anything is looked up or serialised for it
-    const header = uploadLimitsConfig.clientIpHeader
-    const verdict = connectionLimits.admit(clientIpKey(header ? req.headers[header] : undefined, req.ip))
-    if (!verdict.ok) {
-      ws.send(writePacket('kick', 'connection_limit'))
-      ws.close(1013, verdict.reason)
-      return
-    }
-    ws.on('close', verdict.release)
+  fastify.get('/ws', { websocket: true, preValidation: admitConnection }, (ws, req) => {
     if (req.query.v !== String(PROTOCOL_VERSION)) {
-      ws.send(writePacket('kick', 'outdated'))
+      world.network.write(ws, writePacket('kick', 'outdated'), { name: 'kick' })
       ws.close(1008, 'outdated')
       return
     }

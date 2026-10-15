@@ -72,27 +72,34 @@ export function readUploadLimitsEnv(env) {
   }
 }
 
-// the bucket an address counts in: IPv4 as is, IPv6 by its /64, anything unparseable falls back
+// IPv4 uses one address; IPv6 also carries its /56 and /48 concurrency buckets.
+export function clientIpKeys(raw, fallback = '') {
+  return parseIp(raw) || parseIp(fallback) || { key: 'unknown', parents: [] }
+}
+
 export function clientIpKey(raw, fallback = '') {
-  const parsed = parseIp(raw)
-  if (parsed) return parsed
-  return parseIp(fallback) || 'unknown'
+  return clientIpKeys(raw, fallback).key
 }
 
 function parseIp(value) {
   if (typeof value !== 'string') return null
-  let ip = value.trim()
-  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip)
-  if (mapped) ip = mapped[1]
+  const ip = value.trim()
   const kind = net.isIP(ip)
-  if (kind === 4) return ip
+  if (kind === 4) return { key: ip, parents: [] }
   if (kind !== 6) return null
   const groups = expandIpv6(ip)
   if (!groups) return null
-  return `${groups
-    .slice(0, 4)
+  if (groups.slice(0, 5).every(n => n === 0) && groups[5] === 0xffff) {
+    return { key: [groups[6] >> 8, groups[6] & 255, groups[7] >> 8, groups[7] & 255].join('.'), parents: [] }
+  }
+  const prefix = groups
+    .slice(0, 3)
     .map(n => n.toString(16))
-    .join(':')}::/64`
+    .join(':')
+  return {
+    key: `${prefix}:${groups[3].toString(16)}::/64`,
+    parents: [`${prefix}:${(groups[3] & 0xff00).toString(16)}::/56`, `${prefix}::/48`],
+  }
 }
 
 // all eight hextets of a syntactically valid IPv6 address: `::` is widened to the missing zero groups

@@ -8,6 +8,9 @@ const ENV_DEFAULTS = {
   WS_CONNECT_RATE_PER_MIN: 10,
   WS_CONNECT_BURST: 20,
   WS_CONNECT_CONCURRENT_PER_IP: 8,
+  WS_CONNECT_CONCURRENT_PER_56: 16,
+  WS_CONNECT_CONCURRENT_PER_48: 32,
+  WS_MAX_SOCKETS: 64,
   WS_CONNECT_MAX_TRACKED: 40_000,
 }
 
@@ -31,6 +34,9 @@ export function readConnectionLimitsEnv(env) {
     ratePerMin,
     burst,
     concurrentPerIp: read('WS_CONNECT_CONCURRENT_PER_IP'),
+    concurrentPer56: read('WS_CONNECT_CONCURRENT_PER_56'),
+    concurrentPer48: read('WS_CONNECT_CONCURRENT_PER_48'),
+    maxSockets: read('WS_MAX_SOCKETS'),
     maxEntries: read('WS_CONNECT_MAX_TRACKED'),
   }
 }
@@ -38,7 +44,7 @@ export function readConnectionLimitsEnv(env) {
 /**
  * Connection Limits
  *
- * - admit(key) answers { ok: true, release } for a connection that may proceed, or { ok: false, reason }.
+ * - admit({ key, parents }) answers { ok: true, release } for a connection that may proceed, or { ok: false, reason }.
  *   release() gives the concurrency slot back; it is safe to call more than once
  * - per address: a token bucket of `burst` connections refilled at `ratePerMin`, and at most `concurrentPerIp`
  *   open connections. Several tabs or agents on one address fit inside the burst and the concurrency cap; a
@@ -48,8 +54,10 @@ export function readConnectionLimitsEnv(env) {
  *
  */
 export function createConnectionLimits(config, { now = Date.now } = {}) {
-  const { ratePerMin, burst, concurrentPerIp, maxEntries } = config
+  const { ratePerMin, burst, concurrentPerIp, concurrentPer56, concurrentPer48, maxSockets, maxEntries } = config
   const entries = new Map()
+  const parentCounts = new Map()
+  let active = 0
   let lastSweep = 0
 
   const refill = (entry, t) => {
@@ -73,9 +81,14 @@ export function createConnectionLimits(config, { now = Date.now } = {}) {
   }
   const refuse = reason => ({ ok: false, reason })
 
-  function admit(key) {
+  function admit({ key, parents = [] }) {
     const t = now()
     sweep(t)
+    if (maxSockets > 0 && active >= maxSockets) return refuse('too many connections')
+    for (const parent of parents) {
+      const cap = parent.endsWith('/56') ? concurrentPer56 : concurrentPer48
+      if (cap > 0 && (parentCounts.get(parent) || 0) >= cap) return refuse('too many connections')
+    }
     let entry = entries.get(key)
     if (!entry) {
       if (maxEntries > 0 && entries.size >= maxEntries) {
@@ -92,18 +105,24 @@ export function createConnectionLimits(config, { now = Date.now } = {}) {
       entry.tokens -= 1
     }
     entry.active++
+    active++
+    for (const parent of parents) parentCounts.set(parent, (parentCounts.get(parent) || 0) + 1)
     let released = false
     const release = () => {
       if (released) return
       released = true
       entry.active--
+      active--
+      for (const parent of parents) {
+        const count = parentCounts.get(parent) - 1
+        if (count) parentCounts.set(parent, count)
+        else parentCounts.delete(parent)
+      }
     }
     return { ok: true, release }
   }
 
   function stats() {
-    let active = 0
-    for (const entry of entries.values()) active += entry.active
     return { tracked: entries.size, active }
   }
 

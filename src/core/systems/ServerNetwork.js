@@ -1,5 +1,5 @@
 import moment from 'moment'
-import { writePacket } from '../packets'
+import { packetNameById, peekPacketId, writePacket } from '../packets'
 import { Socket } from '../Socket'
 import { uuid } from '../utils'
 import { System } from './System'
@@ -20,6 +20,7 @@ import { sanitizeChatMessage } from '../extras/chatPolicy'
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../extras/settingsPolicy'
 import { internalEvents } from '../extras/internalEvents'
 import { INBOUND_BYTES_PER_TICK, INBOX_MAX_BYTES, createInboundGate, packetNodeLimit } from '../extras/inboundPolicy'
+import { PACKET_CAP, createWriteLedger } from '../extras/writeLedger'
 import { createLogOnce } from '../extras/logOnce'
 import { readInboundPacket } from '../../server/inboundDecode'
 import * as solanaGating from '../../server/solana-gating'
@@ -57,6 +58,7 @@ export class ServerNetwork extends System {
     this.gate = createInboundGate()
     this.logOnce = createLogOnce()
     this.dropRelay = createRelayDrop()
+    this.writer = createWriteLedger({ log: line => console.error(line) })
   }
 
   init({ db }) {
@@ -98,28 +100,40 @@ export class ServerNetwork extends System {
   }
 
   preFixedUpdate() {
+    this.writer.resetTick()
     this.flush()
   }
 
+  asScript(fn, source, name) {
+    return this.writer.asScript(fn, source, name)
+  }
+
+  write(ws, packet, options = {}) {
+    const name = packet === null ? 'ping' : packetNameById(peekPacketId(packet)) || 'packet'
+    return this.writer.write(ws, packet, { name, ...options })
+  }
+
   send(name, data, ignoreSocketId) {
-    // console.log('->>>', name, data)
-    const packet = writePacket(name, data)
+    const packet = this.writer.prepare(writePacket(name, data), { name })
+    if (packet === false) return false
+    let delivered = true
     this.sockets.forEach(socket => {
       if (socket.id === ignoreSocketId) return
-      socket.sendPacket(packet)
+      if (!this.write(socket.ws, packet, { name, prepared: true })) delivered = false
     })
+    return delivered
   }
 
   sendTo(socketId, name, data) {
     const socket = this.sockets.get(socketId)
-    socket?.send(name, data)
+    return socket ? socket.send(name, data) : false
   }
 
   checkSockets() {
     // see: https://www.npmjs.com/package/ws#how-to-detect-and-close-broken-connections
     const dead = []
     this.sockets.forEach(socket => {
-      if (!socket.alive) {
+      if (socket.pingPending || !socket.alive) {
         dead.push(socket)
       } else {
         socket.ping()
@@ -292,7 +306,7 @@ export class ServerNetwork extends System {
       const playerLimit = this.world.settings.playerLimit
       if (isNumber(playerLimit) && playerLimit > 0 && this.sockets.size >= playerLimit) {
         const packet = writePacket('kick', 'player_limit')
-        ws.send(packet)
+        this.write(ws, packet, { name: 'kick' })
         ws.close()
         return
       }
@@ -327,7 +341,7 @@ export class ServerNetwork extends System {
       // disconnect if user already in this world, or still connecting (the id is reserved before the next await)
       if (this.sockets.has(user.id) || this.connecting.has(user.id)) {
         const packet = writePacket('kick', 'duplicate_user')
-        ws.send(packet)
+        this.write(ws, packet, { name: 'kick' })
         ws.close()
         return
       }
@@ -360,7 +374,7 @@ export class ServerNetwork extends System {
       )
 
       // send snapshot
-      socket.send('snapshot', {
+      const snapshot = writePacket('snapshot', {
         id: socket.id,
         serverTime: performance.now(),
         assetsUrl: process.env.ASSETS_BASE_URL,
@@ -376,6 +390,13 @@ export class ServerNetwork extends System {
         authToken,
         hasAdminCode: !!process.env.ADMIN_CODE,
       })
+
+      if (snapshot.length > PACKET_CAP) {
+        console.error('snapshot too large')
+        ws.close(1011)
+        return
+      }
+      this.write(ws, snapshot, { name: 'snapshot' })
 
       this.sockets.set(socket.id, socket)
 

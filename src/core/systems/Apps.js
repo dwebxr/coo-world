@@ -125,6 +125,9 @@ export class Apps extends System {
       },
       chat(entity, msg, broadcast) {
         if (!msg) return
+        if (world.network.isServer) {
+          return world.network.asScript(() => world.chat.add(msg, broadcast), entity, 'chat')
+        }
         world.chat.add(msg, broadcast)
       },
       getPlayer(entity, playerId) {
@@ -315,6 +318,9 @@ export class Apps extends System {
         }
         // NOTE: on the client ignoreSocketId is a no-op because it can only send events to the server
         const event = [entity.data.id, entity.blueprint.version, name, data]
+        if (world.network.isServer) {
+          return world.network.asScript(() => world.network.send('entityEvent', event, ignoreSocketId), entity, name)
+        }
         world.network.send('entityEvent', event, ignoreSocketId)
       },
       sendTo(entity, playerId, name, data) {
@@ -327,7 +333,7 @@ export class Apps extends System {
         const player = world.entities.get(playerId)
         if (!player) return
         const event = [entity.data.id, entity.blueprint.version, name, data]
-        world.network.sendTo(playerId, 'entityEvent', event)
+        return world.network.asScript(() => world.network.sendTo(playerId, 'entityEvent', event), entity, name)
       },
       emit(entity, name, data) {
         if (internalEvents.includes(name)) {

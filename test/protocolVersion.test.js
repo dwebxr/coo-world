@@ -1,18 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import fs from 'node:fs'
-import vm from 'node:vm'
 
-import { PROTOCOL_VERSION, readPacket, writePacket } from '../src/core/packets.js'
+import { PROTOCOL_VERSION, readPacket } from '../src/core/packets.js'
 import { createConnectionLimits, readConnectionLimitsEnv } from '../src/server/connectionLimits.js'
-import { clientIpKey } from '../src/server/uploadLimits.js'
+import { fakeWs, loadRoute, makeNetwork } from './lib/networkHarness.mjs'
 import { WireClient } from './e2e/lib/ws.mjs'
-
-// Exercise the route itself without booting the world, database and physics runtime in index.js.
-const source = fs.readFileSync(new URL('../src/server/index.js', import.meta.url), 'utf8')
-const routeSource = source.match(/^async function worldNetwork\(fastify\) \{[\s\S]*?^\}/m)?.[0]
-assert.ok(routeSource, 'worldNetwork route found')
 
 async function makeRoute() {
   const limits = createConnectionLimits({
@@ -21,14 +14,9 @@ async function makeRoute() {
     concurrentPerIp: 1,
   })
   const connections = []
-  const register = vm.runInNewContext(`(${routeSource})`, {
-    PROTOCOL_VERSION,
-    writePacket,
-    clientIpKey,
-    uploadLimitsConfig: { clientIpHeader: '' },
-    connectionLimits: limits,
-    world: { network: { onConnection: (ws, params) => connections.push({ ws, params }) } },
-  })
+  const network = makeNetwork()
+  network.onConnection = (ws, params) => connections.push({ ws, params })
+  const { register, preValidation } = loadRoute(limits, network)
   let handler
   await register({
     get(url, options, fn) {
@@ -41,14 +29,30 @@ async function makeRoute() {
     limits,
     connections,
     connect(query = {}) {
-      const ws = new EventEmitter()
-      ws.packets = []
-      ws.send = packet => ws.packets.push(readPacket(packet))
+      const ws = fakeWs()
+      const transport = new EventEmitter()
+      ws.transport = transport
+      ws.send = (packet, cb) => {
+        ws.packets.push(readPacket(packet))
+        cb()
+      }
       ws.close = (code, reason) => {
         ws.closeCode = code
         ws.closeReason = reason
       }
-      handler(ws, { headers: {}, ip: '127.0.0.1', query })
+      const request = { ws: true, raw: { socket: transport }, headers: {}, ip: '127.0.0.1', query }
+      const reply = {
+        code(status) {
+          ws.status = status
+          return this
+        },
+        header(name, value) {
+          ws[name] = value
+          return this
+        },
+        send() {},
+      }
+      preValidation(request, reply, () => handler(ws, request))
       return ws
     },
   }
@@ -62,7 +66,7 @@ test('protocol version: missing or mismatched versions are kicked before world a
     assert.equal(ws.closeCode, 1008)
     assert.equal(ws.closeReason, 'outdated')
     assert.equal(route.connections.length, 0)
-    ws.emit('close')
+    ws.transport.emit('close')
   }
 })
 
@@ -74,7 +78,7 @@ test('protocol version: v=2 reaches the world with the original connection param
   assert.deepEqual(ws.packets, [])
   assert.equal(ws.closeCode, undefined)
   assert.deepEqual(route.connections, [{ ws, params }])
-  ws.emit('close')
+  ws.transport.emit('close')
 })
 
 test('protocol version: address admission runs first and an outdated socket holds its slot until close', async () => {
@@ -82,14 +86,15 @@ test('protocol version: address admission runs first and an outdated socket hold
   const outdated = route.connect()
   assert.equal(route.limits.stats().active, 1)
   const refused = route.connect()
-  assert.deepEqual(refused.packets, [['onKick', 'connection_limit']])
-  assert.equal(refused.closeCode, 1013)
+  assert.deepEqual(refused.packets, [])
+  assert.equal(refused.status, 503)
+  assert.equal(refused['Retry-After'], '10')
   assert.equal(route.connections.length, 0)
-  outdated.emit('close')
+  outdated.transport.emit('close')
   assert.equal(route.limits.stats().active, 0)
   const current = route.connect({ v: '2' })
   assert.equal(route.connections.length, 1)
-  current.emit('close')
+  current.transport.emit('close')
   assert.equal(route.limits.stats().active, 0)
 })
 

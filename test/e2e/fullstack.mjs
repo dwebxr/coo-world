@@ -10,6 +10,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import Database from 'better-sqlite3'
 import { Packr } from 'msgpackr'
+import WebSocket from 'ws'
 
 import { APPS_DIR, REPO_ROOT, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
 import { installAsset, startServer } from './lib/server.mjs'
@@ -19,7 +20,7 @@ import { appState, becomeAdmin, installApp, launchBrowser, saveArtifacts } from 
 // the client's payload check, applied here to what the server really put on the wire
 const { sanitizeTeleport } = await import(pathToFileURL(path.join(REPO_ROOT, 'src/core/extras/playerRelayPolicy.js')))
 // the server's old encoder, for the hostile reference-extension probe
-const { writePacket } = await import(pathToFileURL(path.join(REPO_ROOT, 'src/core/packets.js')))
+const { writePacket, readPacket } = await import(pathToFileURL(path.join(REPO_ROOT, 'src/core/packets.js')))
 
 const ENGINE = arg('engine', 'chromium')
 const PORT = Number(arg('port', 3121))
@@ -557,37 +558,37 @@ async function probes(admin, watcher) {
   const pingReports = (client, from) =>
     client.since(from).filter(m => m.method === 'onChatAdded' && String(m.data?.body).startsWith('P5_PING '))
   await step(
-    'A12 entityEvent floods are bounded: oversize frames close, oversize events drop, memory stays flat',
+    'A12 entityEvent floods are bounded: oversize frames close, oversize packets drop, memory stays flat',
     async () => {
       admin.installApp({ id: 's-event', script: 'asset://event-probe.js', model: 'asset://ai.glb' })
       await sleep(500)
       const baseline = (await admin.serverStats()).rss
-      // (a) 20 connections each send one frame above the 1 MiB ceiling: each is closed with 1009, the server stays up
-      const giant = 'x'.repeat(1_100_000)
+      // (a) 20 connections each send one message above the 64 KiB ceiling: each is closed with 1009, the server stays up
+      const giant = 'x'.repeat(70 * 1024)
       const giants = await Promise.all(
         Array.from({ length: 20 }, (_, i) => new WireClient(PORT, `giant-${i}`).connect())
       )
       for (const g of giants) g.send('entityEvent', ['s-event', 0, 'probe', giant])
       const codes = await Promise.all(giants.map(g => Promise.race([g.closed, sleep(15000).then(() => 'open')])))
       eq(codes.filter(c => c === 1009).length, 20, `close codes: ${codes.join(',')}`)
-      // (b) one socket sends 200 events of 200 KiB: under the frame ceiling, over the 64 KiB cap. they are dropped
-      // before decoding and logged once; the socket stays open and nothing reaches the app
+      // (b) 40 KiB chat packets fit the transport but exceed their 32 KiB packet cap. They are dropped
+      // before decoding and logged once; the socket stays open and nothing is broadcast
       const dropper = await new WireClient(PORT, 'dropper').connect()
       const fromDrop = watcher.mark()
-      const oversize = 'y'.repeat(200 * 1024)
-      for (let i = 0; i < 200; i++) dropper.send('entityEvent', ['s-event', 0, 'probe', oversize])
+      const oversize = 'y'.repeat(40 * 1024)
+      for (let i = 0; i < 200; i++) dropper.send('chatAdded', { body: oversize })
       const dropLine = new RegExp(
-        `\\[network\\] entityEvent from client ${dropper.id} dropped: \\d+ bytes over the 65536 byte limit`
+        `\\[network\\] chatAdded from client ${dropper.id} dropped: \\d+ bytes over the 32768 byte limit`
       )
-      await waitUntil(() => server.lines(dropLine).length >= 1, { timeout: 15000, message: 'oversize event log' })
+      await waitUntil(() => server.lines(dropLine).length >= 1, { timeout: 15000, message: 'oversize packet log' })
       await sleep(1000)
-      eq(
-        server.lines(new RegExp(`\\[network\\] entityEvent from client ${dropper.id} dropped`)).length,
-        1,
-        'logged once'
-      )
+      eq(server.lines(new RegExp(`\\[network\\] chatAdded from client ${dropper.id} dropped`)).length, 1, 'logged once')
       ok(dropper.isOpen, 'the socket stays open')
-      eq(pingReports(watcher, fromDrop).length, 0, 'nothing reached the app')
+      eq(
+        watcher.since(fromDrop).filter(m => m.method === 'onChatAdded' && m.data?.body?.startsWith('yyyy')).length,
+        0,
+        'oversize chat was not broadcast'
+      )
       // (c) 2000 events of 60 KB stamped with a far-future blueprint version: the rate limit drops most of them
       // before decoding, the app refuses the rest without queueing them, and an event with the current version
       // from the same socket is delivered afterwards
@@ -693,6 +694,7 @@ async function probes(admin, watcher) {
       env: { WS_CONNECT_RATE_PER_MIN: '', WS_CONNECT_BURST: '', WS_CONNECT_CONCURRENT_PER_IP: '' },
     })
     try {
+      const started = performance.now()
       // six tabs at once all get in
       const tabs = await Promise.all(Array.from({ length: 6 }, (_, i) => new WireClient(port, `tab-${i}`).connect()))
       ok(
@@ -701,32 +703,66 @@ async function probes(admin, watcher) {
       )
       for (const t of tabs) t.close()
       await Promise.all(tabs.map(t => t.closed))
-      // 200 quick open/close cycles: the rest of the burst gets in, everything after is told why and closed with 1013
+      // Refusals happen before upgrade, so use ws's HTTP response hook for these attempts.
       let admitted = 0
       let refused = 0
-      const kicks = new Set()
-      const codes = new Set()
       for (let i = 0; i < 200; i++) {
-        const c = await new WireClient(port, `churn-${i}`).open()
-        const outcome = await Promise.race([
-          c.closed,
-          c.waitFor(m => m.method === 'onSnapshot', { timeout: 5000 }).then(() => 'snapshot'),
-        ])
-        if (outcome === 'snapshot') {
-          admitted++
-          c.close()
-          await c.closed
-        } else {
+        const outcome = await new Promise((resolve, reject) => {
+          const ws = new WebSocket(`ws://localhost:${port}/ws?v=2&name=churn-${i}`)
+          let result
+          let upgraded = false
+          const timer = setTimeout(() => {
+            ws.terminate()
+            reject(new Error('churn attempt timed out'))
+          }, 5000)
+          const finish = value => {
+            clearTimeout(timer)
+            resolve(value)
+          }
+          ws.on('open', () => {
+            upgraded = true
+          })
+          ws.on('unexpected-response', (req, res) => {
+            result = { status: res.statusCode, retryAfter: res.headers['retry-after'], upgraded }
+            res.resume()
+            req.destroy()
+            finish(result)
+          })
+          ws.on('message', packet => {
+            const [method] = readPacket(packet)
+            if (method === 'onSnapshot') {
+              result = { admitted: true }
+              ws.close()
+            }
+          })
+          ws.on('close', () => {
+            if (result) finish(result)
+            else {
+              clearTimeout(timer)
+              reject(new Error('admitted connection closed before snapshot'))
+            }
+          })
+          ws.on('error', err => {
+            if (!result) {
+              clearTimeout(timer)
+              reject(err)
+            }
+          })
+        })
+        if (outcome.admitted) admitted++
+        else {
+          eq(outcome.status, 503, 'refused attempt gets HTTP 503')
+          eq(outcome.retryAfter, '10', 'refusal includes Retry-After')
+          eq(outcome.upgraded, false, 'refusal never upgrades')
           refused++
-          codes.add(outcome)
-          const kick = c.inbox.find(m => m.method === 'onKick')
-          if (kick) kicks.add(kick.data)
         }
       }
-      ok(admitted >= 14 && admitted <= 18, `${admitted} admitted after six tabs (burst 20, refilling 10 a minute)`)
-      ok(refused >= 182, `${refused} refused`)
-      eq([...codes].join(','), '1013', 'refusals close with 1013')
-      eq([...kicks].join(','), 'connection_limit', 'refusals carry the kick reason')
+      const elapsed = performance.now() - started
+      // Six tabs spent six tokens; allow one boundary token for time spent opening those tabs.
+      const maxAdmitted = 15 + Math.ceil(elapsed / 6000)
+      ok(admitted >= 14 && admitted <= maxAdmitted, `${admitted} admitted over ${Math.ceil(elapsed)} ms`)
+      eq(admitted + refused, 200, 'every upgrade attempt accounted for')
+      ok(refused > 0, `${refused} refused before upgrade`)
       eq(limited.lines(/SqliteError|UnhandledPromiseRejection|SES_UNHANDLED/).length, 0, 'no errors in the log')
       await sleep(500)
       const status = await fetch(`http://localhost:${port}/status`)
@@ -863,6 +899,30 @@ async function probes(admin, watcher) {
     const snap = await snapshot(PORT)
     const stored = snap.chat.find(m => m.body === 'P4_ECHO')
     ok(stored && stored.id !== echoed.id, 'stored under a server-minted id')
+  })
+
+  await step('B4c a 60 KiB event from the browser reaches the server with the connection open', async () => {
+    await installApp(page, { id: 'b-event', script: 'asset://event-probe.js', model: 'asset://ai.glb' })
+    await waitUntil(
+      async () => {
+        const state = await appState(page, 'b-event')
+        return state?.script && !state.building
+      },
+      { message: 'browser event probe built' }
+    )
+    const from = bystander.mark()
+    const id = await page.evaluate(() => {
+      const network = window.world.network
+      network.send('entityEvent', ['b-event', 0, 'size', 'x'.repeat(60 * 1024)])
+      return network.id
+    })
+    const report = await bystander.waitForReport('P5_SIZE', { from, timeout: 10000 })
+    eq(report.length, 60 * 1024, 'server received the complete 60 KiB payload')
+    eq(report.from, id, 'event came from the browser')
+    ok(
+      await page.evaluate(() => window.world.network.ws.readyState === WebSocket.OPEN),
+      'browser connection stays open'
+    )
   })
 
   // browser-side probes (these also run on the server, under different ids)

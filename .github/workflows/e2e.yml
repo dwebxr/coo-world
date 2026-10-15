@@ -24,9 +24,6 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # headless Firefox on the hosted runner exposes no WebGL, so the world cannot start there; keep the
-    # job for its logs but do not let it fail the run (Firefox is checked by hand until that changes)
-    continue-on-error: ${{ matrix.engine == 'firefox' }}
     strategy:
       fail-fast: false
       matrix:
@@ -62,15 +59,22 @@ jobs:
       - name: Build (server)
         run: npm run build
 
+      - name: WebSocket frames (${{ matrix.engine }})
+        run: node test/e2e/ws-frames.mjs --engine=${{ matrix.engine }}
+
+      # Firefox has no WebGL on this runner. The raw frame probe above is still required for every engine.
       - name: Full-stack
+        continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/fullstack.mjs --engine=${{ matrix.engine }}
 
       - name: Extras (movement, avatar, uploads, AI mock, agent)
+        continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/gate-extras.mjs --engine=${{ matrix.engine }}
 
       # a smoke only on shared runners (failures and errors, not throughput): 200 frames fit a slow
       # software-rendered run; the performance budgets (600 frames) are enforced on a designated machine
       - name: Stress (smoke)
+        continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/stress.mjs --engine=${{ matrix.engine }} --frames=200
 
       - name: Upload logs and screenshots

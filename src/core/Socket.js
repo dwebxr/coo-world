@@ -21,16 +21,20 @@ export class Socket {
   send(name, data) {
     // console.log('->', name, data)
     const packet = writePacket(name, data)
-    this.ws.send(packet)
+    return this.network.write(this.ws, packet, { name })
   }
 
   sendPacket(packet) {
-    this.ws.send(packet)
+    return this.network.write(this.ws, packet)
+  }
+
+  get pingPending() {
+    return this.network.writer.state(this.ws).pingPending
   }
 
   ping() {
     this.alive = false
-    this.ws.ping()
+    return this.network.write(this.ws, null)
   }
 
   // end(code) {

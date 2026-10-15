@@ -24,6 +24,9 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # headless Firefox on the hosted runner exposes no WebGL, so the world cannot start there; keep the
+    # job for its logs but do not let it fail the run (Firefox is checked by hand until that changes)
+    continue-on-error: ${{ matrix.engine == 'firefox' }}
     strategy:
       fail-fast: false
       matrix:

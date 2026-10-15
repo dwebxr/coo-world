@@ -962,8 +962,12 @@ export class PlayerLocal extends Entity {
     }
 
     // apply emote
-    let emote = this.data.effect?.emote
-    if (typeof emote !== 'string' || !isEmoteUrl(emote)) emote = undefined
+    const rawEmote = this.data.effect?.emote
+    if (!Object.is(this.effectEmoteRaw, rawEmote)) {
+      this.effectEmoteRaw = rawEmote
+      this.effectEmoteValid = typeof rawEmote === 'string' && isEmoteUrl(rawEmote)
+    }
+    const emote = this.effectEmoteValid ? rawEmote : undefined
     if (this.emote !== emote) {
       this.emote = emote
     }
@@ -1066,10 +1070,11 @@ export class PlayerLocal extends Entity {
 
     // effect duration
     const duration = this.data.effect?.duration
-    // zero (like any falsy value) means no duration, as before
-    if (Number.isFinite(duration) && duration > 0) {
-      this.data.effect.duration = duration - delta
-      if (this.data.effect.duration <= 0) {
+    if (duration) {
+      const remaining = Number(duration) - delta
+      if (remaining > 0) {
+        this.data.effect.duration = remaining
+      } else {
         this.setEffect(null)
       }
     }

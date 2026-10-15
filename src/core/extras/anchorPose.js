@@ -14,8 +14,14 @@ export function readAnchorPose(value, outPosition, outQuaternion) {
     if (!Number.isFinite(v)) return false
     matrix.elements[i] = v
   }
+  const e = matrix.elements
+  const sx = Math.hypot(e[0], e[1], e[2])
+  const sy = Math.hypot(e[4], e[5], e[6])
+  const sz = Math.hypot(e[8], e[9], e[10])
+  if (!Number.isFinite(sx) || sx <= 0 || !Number.isFinite(sy) || sy <= 0 || !Number.isFinite(sz) || sz <= 0)
+    return false
   const determinant = matrix.determinant()
-  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) return false
+  if (!Number.isFinite(determinant) || Math.abs(determinant) / (sx * sy * sz) < 1e-6) return false
   matrix.decompose(position, quaternion, scale)
   if (
     !Number.isFinite(position.x) ||

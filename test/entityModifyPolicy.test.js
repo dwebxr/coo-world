@@ -625,13 +625,15 @@ test('sanitizePlayerSelfModify: invalid quaternions are dropped and accepted dri
   assert.equal(sanitizePlayerSelfModify({ q: [0, 0, 0, 1.11] }, me), null)
 })
 
-test('sanitizePlayerSelfModify: anchorId is an optional string of at most 128 characters', () => {
+test('sanitizePlayerSelfModify: an invalid anchorId drops the whole effect; strings up to 128 characters are accepted', () => {
   for (const anchorId of ['', 'anchor', 'a'.repeat(128)]) {
     const ef = { anchorId, duration: 4 }
     assert.deepEqual(sanitizePlayerSelfModify({ ef }, me), { id: me, ef })
   }
   for (const anchorId of [undefined, null, 1, false, [], {}, 'a'.repeat(129)]) {
-    assert.deepEqual(sanitizePlayerSelfModify({ ef: { anchorId }, t: true }, me), { id: me, t: true })
+    const ef = { anchorId, duration: 4, snare: 0.5, emote: 'asset://wave.glb' }
+    assert.deepEqual(sanitizePlayerSelfModify({ ef, t: true }, me), { id: me, t: true })
+    assert.equal(sanitizePlayerSelfModify({ ef }, me), null)
   }
   assert.equal(sanitizePlayerSelfModify({ ef: { anchorId: 'ok', text: 'x'.repeat(9000) } }, me), null)
   assert.equal(sanitizePlayerSelfModify({ ef: { anchorId: 'ok', nested: new Map() } }, me), null)

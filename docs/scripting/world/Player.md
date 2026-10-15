@@ -105,9 +105,10 @@ handle has a `cancel()` method; `player.cancelEffect()` also ends the effect app
 All options are optional.
 
 **anchor**: an [Anchor](/docs/scripting/nodes/types/Anchor.md) to attach the player to. Its network
-`anchorId` must be a string of at most 128 characters. Scale is removed when deriving the player's
-rotation, which is normalised. A non-finite, singular or out-of-range anchor pose is ignored for
-that frame, preserving the previous pose.
+`anchorId` must be a string of at most 128 characters. A longer or non-string `anchorId` drops the
+whole effect sent to other players, including its emote, snare and duration. Scale is removed when
+deriving the player's rotation, which is normalised. A non-finite, singular or out-of-range anchor
+pose is ignored for that frame, preserving the previous pose.
 
 **emote**: a string URL to an emote to play while this effect is active: `asset://<name>.glb`
 (optionally with a playback query, eg `?s=1.5`) or an `http(s)://` URL, up to 512 characters. Invalid
@@ -120,8 +121,11 @@ number in `[0.01, 100]`, otherwise it defaults to 1. The `l`/`g` string flags ar
 
 **turn**: a boolean. Only `true` makes the player continually face the direction the camera is looking in.
 
-**duration**: a finite non-negative number of seconds. A positive value expires as local simulation
-time advances; 0 or an omitted value means no expiry. Invalid values are ignored.
+**duration**: seconds until the effect ends as local simulation time advances. A falsy value
+(`0`, `''`, `null`, `undefined`, `NaN` or `false`) means no expiry. Other values count down as
+`Number(duration) - delta`: positive remaining time is stored, otherwise the effect ends. Negative
+values and non-numeric truthy values end on the next frame; numeric strings such as `'2'` expire
+after that many seconds. `Infinity` never expires.
 
 **cancellable**: whether any movement keys will cancel the effect. if enabled, freeze is ignored.
 

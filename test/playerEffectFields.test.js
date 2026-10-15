@@ -1,9 +1,12 @@
-import { test } from 'node:test'
+import { mock, test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import * as THREE from 'three'
 import { loadClient } from './lib/clientHarness.mjs'
 import { Modes } from '../src/core/extras/locomotionModes.js'
+import { isEmoteUrl } from '../src/core/extras/entityModifyPolicy.js'
+
+const validateEmote = mock.fn(isEmoteUrl)
 
 const Player = loadClient('core/entities/PlayerLocal.js', 'PlayerLocal', {
   THREE: {
@@ -18,6 +21,7 @@ const Player = loadClient('core/entities/PlayerLocal.js', 'PlayerLocal', {
   clamp: THREE.MathUtils.clamp,
   Layers: { environment: { group: 1 }, prop: { group: 2 } },
   PHYSX: { PxForceModeEnum: { eFORCE: 1 } },
+  isEmoteUrl: validateEmote,
 })
 
 function makePlayer(effect) {
@@ -101,19 +105,56 @@ test('PlayerLocal: turn requires boolean true', () => {
   assert.ok(player.base.quaternion.angleTo(new THREE.Quaternion()) > 0)
 })
 
-test('PlayerLocal: duration requires a finite positive number; zero keeps the effect without a duration', () => {
-  for (const duration of [NaN, Infinity, -Infinity, -1, '1', {}, null, undefined, 0]) {
+test('PlayerLocal: emote validation is cached until the raw value changes', () => {
+  validateEmote.mock.resetCalls()
+  const player = makePlayer({ emote: 'https://example.com/wave.glb' })
+  player.control.keyW = { down: true }
+  for (const [emote, valid, calls] of [
+    ['https://example.com/wave.glb', true, 1],
+    ['https://example.com/dance.glb', true, 2],
+    ['javascript:alert(1)', false, 3],
+    ['asset://bad.txt', false, 4],
+    ['https://example.com/wave.glb', true, 5],
+    [undefined, false, 5],
+    ['https://example.com/wave.glb', true, 6],
+  ]) {
+    player.data.effect.emote = emote
+    for (let frame = 0; frame < 4; frame++) {
+      player.update(0.1)
+      assert.equal(validateEmote.mock.callCount(), calls)
+      assert.equal(player.avatar.emote, valid ? emote : undefined)
+      assert.equal(player.avatar.instance.mode, valid ? Modes.IDLE : Modes.WALK)
+    }
+  }
+})
+
+test('PlayerLocal: falsy duration has no expiry; truthy duration counts down numerically or ends the effect', () => {
+  for (const duration of [0, '', null, undefined, NaN, false, Infinity]) {
     const effect = { duration }
     const player = makePlayer(effect)
+    for (let frame = 0; frame < 4; frame++) {
+      player.update(0.1)
+      assert.equal(player.data.effect, effect)
+      assert.equal(player.data.effect.duration, duration)
+    }
+  }
+  for (const duration of [-1, -Infinity, 'not a number', {}, [], '0', ' ', '-1']) {
+    const player = makePlayer({ duration })
     player.update(0.1)
-    assert.equal(player.data.effect, effect)
-    assert.equal(player.data.effect.duration, duration)
+    assert.equal(player.data.effect, null)
   }
   const player = makePlayer({ duration: 0.2 })
   player.update(0.1)
   assert.equal(player.data.effect.duration, 0.1)
   player.update(0.1)
   assert.equal(player.data.effect, null)
+  const numericString = makePlayer({ duration: '2' })
+  numericString.update(0.5)
+  assert.equal(numericString.data.effect.duration, 1.5)
+  numericString.update(1)
+  assert.equal(numericString.data.effect.duration, 0.5)
+  numericString.update(0.5)
+  assert.equal(numericString.data.effect, null)
 })
 
 test('PlayerLocal: typed snare controls finite movement forces and jump inhibition', () => {

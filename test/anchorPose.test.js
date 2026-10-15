@@ -23,7 +23,7 @@ function assertRejected(matrix) {
 }
 
 test('readAnchorPose: scaled and rotated anchors yield bounded position and unit rotation without changing input', () => {
-  for (const scale of [new Vector3(2, 2, 2), new Vector3(2, 3, 4), new Vector3(-2, 3, 4)]) {
+  for (const scale of [new Vector3(2, 2, 2), new Vector3(2, 3, 4), new Vector3(-2, 3, 4), new Vector3(1e-13, 1, 1)]) {
     const matrix = new Matrix4().compose(new Vector3(-1e6, 0, 1e6), rotation, scale)
     const before = matrix.toArray()
     const position = new Vector3()
@@ -33,6 +33,19 @@ test('readAnchorPose: scaled and rotated anchors yield bounded position and unit
     assertRotation(quaternion)
     assert.deepEqual(matrix.toArray(), before)
   }
+})
+
+test('readAnchorPose: uniform world scale 1e-5 yields the anchor position and a unit rotation', () => {
+  const anchor = new Object3D()
+  anchor.position.set(1, 2, 3)
+  anchor.quaternion.copy(rotation)
+  anchor.scale.setScalar(1e-5)
+  anchor.updateMatrixWorld()
+  const position = new Vector3()
+  const quaternion = new Quaternion()
+  assert.equal(readAnchorPose(anchor.matrixWorld, position, quaternion), true)
+  assert.deepEqual(position.toArray(), [1, 2, 3])
+  assertRotation(quaternion)
 })
 
 test('readAnchorPose: element and determinant checks reject before decomposition', t => {
@@ -47,7 +60,6 @@ test('readAnchorPose: element and determinant checks reject before decomposition
   for (const matrix of [
     new Matrix4().makeScale(0, 1, 1),
     composedSingular(),
-    new Matrix4().makeScale(1e-13, 1, 1),
     new Matrix4().makeScale(1e200, 1e200, 1e200),
   ])
     assertRejected(matrix)

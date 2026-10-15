@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - core: `MONITOR_TICK=1` logs a per-minute summary of server tick times (mean/median/p90/max) and exposes the last window on `/status`
 - ci: an end-to-end Playwright job (`test/e2e/`, Chromium/WebKit/Firefox) runs on pull requests and on demand
+- server: upload rate limits and quotas (`UPLOAD_*` envs): per-user and global concurrency, per-minute rates and daily byte quotas per user and per address, a shared daily budget for users without a stored or wallet-verified builder rank (wallet-granted builders are limited per wallet, and a slot of the total is kept for stored-rank users), a transfer deadline per admitted upload, and a free-space floor for local assets. Refusals answer `429`/`503`/`507` with `Retry-After`. Compressed upload bodies are refused (`415`); overlapping uploads of the same content are stored and charged once.
+- client: uploads run one at a time per tab, retry once on a short `Retry-After`, time out, and a failed `.hyp` import cancels its remaining uploads.
 
 ### Changed
 - [BREAKING] apps: scripts now run under real SES hardening. The built-in prototypes (`Object.prototype`, `Array.prototype`, `Math`, ...) are frozen and every endowed global (`Vector3`, `console`, `num`, ...) is read-only: assigning to one throws a `TypeError` inside the offending script. Each script asset runs in its own compartment, so nothing a script puts on its `globalThis` is visible to another app.

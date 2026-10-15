@@ -8,6 +8,7 @@ import {
 import fs from 'fs-extra'
 import path from 'path'
 import { computeAssetFilename, isUploadedAssetFilename } from './assetFilename'
+import { createOnce } from './coalesce'
 
 const contentTypes = {
   // Images
@@ -49,6 +50,7 @@ export class AssetsS3 {
     const config = this.parseURI(uri)
     this.bucketName = config.bucket
     this.prefix = config.prefix || 'assets/'
+    this.writes = new Map() // content filename -> the put in flight for it
 
     // Initialize S3 client
     this.client = new S3Client({
@@ -174,14 +176,18 @@ export class AssetsS3 {
     }
   }
 
+  // resolves true when the object was written, false when the same content was already stored.
+  // uploads of the same content that overlap put it once; the others are told it was already there
   async upload(file) {
     const { filename, buffer } = await computeAssetFilename(file)
+    return createOnce(this.writes, filename, async () => {
+      // Check if file already exists
+      const exists = await this.exists(filename)
+      if (exists) return false
 
-    // Check if file already exists
-    const exists = await this.exists(filename)
-    if (exists) return
-
-    await this.uploadBuffer(buffer, filename)
+      await this.uploadBuffer(buffer, filename)
+      return true
+    })
   }
 
   async uploadBuffer(buffer, filename) {

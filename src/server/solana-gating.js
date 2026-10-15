@@ -57,10 +57,22 @@ export const issueNonce = (socketId, walletAddress) => {
   return nonce
 }
 
+// socketId -> the wallet that earned this session its builder rank. server-side only: it keys the upload
+// limits of token-granted builders and is never written to player data, which is broadcast
+const wallets = new Map()
+export const recordWallet = (socketId, walletAddress) => {
+  wallets.set(socketId, walletAddress)
+}
+export const walletOf = socketId => wallets.get(socketId) || null
+export const clearWallet = socketId => {
+  wallets.delete(socketId)
+}
+
 // 切断時のクリーンアップ
 export const clearSocket = socketId => {
   nonces.delete(socketId)
   lastRequest.delete(socketId)
+  wallets.delete(socketId)
 }
 
 const toBytes = sig => {

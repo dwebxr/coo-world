@@ -9,6 +9,25 @@ import Fastify from 'fastify'
 process.env.JWT_SECRET = 'upload-routes-test-secret'
 const { createJWT, readJWT } = await import('../src/core/utils-server.js')
 const { assetRoutes, uploadRoutes } = await import('../src/server/uploadRoutes.js')
+const { createUploadLimits, readUploadLimitsEnv } = await import('../src/server/uploadLimits.js')
+
+// this file makes dozens of builder posts in one process: every limit is off (see uploadLimitsRoutes.test.js)
+const unlimited = readUploadLimitsEnv(
+  Object.fromEntries(
+    [
+      'UPLOAD_CONCURRENT_TOTAL',
+      'UPLOAD_CONCURRENT_VISITORS',
+      'UPLOAD_RATE_VISITOR_PER_MIN',
+      'UPLOAD_RATE_BUILDER_PER_MIN',
+      'UPLOAD_CHECK_RATE_PER_MIN',
+      'UPLOAD_QUOTA_VISITOR_MB',
+      'UPLOAD_QUOTA_BUILDER_MB',
+      'UPLOAD_QUOTA_VISITORS_TOTAL_MB',
+      'UPLOAD_SLOT_TIMEOUT_S',
+      'UPLOAD_MIN_FREE_MB',
+    ].map(key => [key, '0'])
+  )
+)
 
 const MAX_MB = 1
 const GLB = Buffer.concat([Buffer.from('glTF', 'latin1'), Buffer.from([2, 0, 0, 0, 1, 2, 3, 4])])
@@ -100,7 +119,14 @@ const check = async (token, filename) => {
 
 before(async () => {
   app = Fastify()
-  app.register(uploadRoutes, { readJWT, getSocket, assets, getSettings: () => settings, maxUploadSize: MAX_MB })
+  app.register(uploadRoutes, {
+    readJWT,
+    getSocket,
+    assets,
+    getSettings: () => settings,
+    maxUploadSize: MAX_MB,
+    limits: createUploadLimits(unlimited),
+  })
   await app.ready()
   connect('visitor', 0)
   connect('builder', 1)

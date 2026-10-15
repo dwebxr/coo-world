@@ -17,6 +17,7 @@ import {
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../extras/settingsPolicy'
 import { internalEvents } from '../extras/internalEvents'
 import * as solanaGating from '../../server/solana-gating'
+import { grantTokenRank, persistRank, revokeTokenRank } from '../../server/rankGrants'
 
 const SAVE_INTERVAL = parseInt(process.env.SAVE_INTERVAL || '60') // seconds
 const PING_RATE = 10 // seconds
@@ -375,9 +376,9 @@ export class ServerNetwork extends System {
           createdAt: moment().toISOString(),
         })
         try {
-          await this.db('users').where('id', userId).update({ rank })
+          await persistRank({ db: this.db, player, rank, wallets: solanaGating })
         } catch (err) {
-          console.error('error saving user rank')
+          console.error(`error saving user rank for ${userId}; the session keeps its previous grant state`)
           console.error(err)
         }
       }
@@ -450,10 +451,11 @@ export class ServerNetwork extends System {
     if (!player || !player.isPlayer) return
     player.modify({ rank })
     this.send('entityModified', { id: playerId, rank })
+    // once the rank is in the database any session-only token grant is over
     try {
-      await this.db('users').where('id', playerId).update({ rank })
+      await persistRank({ db: this.db, player, rank, wallets: solanaGating })
     } catch (err) {
-      console.error('error saving user rank')
+      console.error(`error saving user rank for ${playerId}; the session keeps its previous grant state`)
       console.error(err)
     }
   }
@@ -530,9 +532,11 @@ export class ServerNetwork extends System {
     }
 
     // ビルダー権限を付与（セッション限定、DBには保存しない）
+    // the verified wallet keys this session's upload limits; kept server-side, never in the broadcast data.
+    // the session may have ended while the chain was consulted: then there is nothing to grant
+    if (!grantTokenRank({ socket, player, walletAddress, wallets: solanaGating })) return
     const rank = Ranks.BUILDER
     player.modify({ rank })
-    player.data.tokenGrantedRank = true // トークンで付与されたことを記録
     this.send('entityModified', { id: player.data.id, rank })
 
     socket.send('chatAdded', {
@@ -564,7 +568,7 @@ export class ServerNetwork extends System {
     if (player.data.rank === Ranks.BUILDER && player.data.tokenGrantedRank) {
       const rank = Ranks.VISITOR
       player.modify({ rank })
-      player.data.tokenGrantedRank = false
+      revokeTokenRank({ socket, player, wallets: solanaGating })
       this.send('entityModified', { id: player.data.id, rank })
 
       socket.send('chatAdded', {

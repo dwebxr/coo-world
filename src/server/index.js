@@ -18,6 +18,8 @@ import { assets } from './assets'
 import { collections } from './collections'
 import { cleaner } from './cleaner'
 import { escapeHtml } from './escapeHtml'
+import { walletOf } from './solana-gating'
+import { createUploadLimits, readUploadLimitsEnv } from './uploadLimits'
 import { assetRoutes, uploadRoutes } from './uploadRoutes'
 
 const rootDir = path.join(__dirname, '../')
@@ -47,6 +49,7 @@ const maxUploadSize = Number(process.env.PUBLIC_MAX_UPLOAD_SIZE) // MB, the same
 if (!(maxUploadSize > 0)) {
   throw new Error('[envs] PUBLIC_MAX_UPLOAD_SIZE must be a positive number of megabytes')
 }
+const uploadLimitsConfig = readUploadLimitsEnv(process.env) // UPLOAD_*; throws on a bad value
 if (!process.env.PUBLIC_WS_URL) {
   throw new Error('[envs] PUBLIC_WS_URL not set')
 }
@@ -146,12 +149,19 @@ fastify.get('/env.js', async (req, reply) => {
 
 // uploads are accepted from a connected session only: the bearer token names the user,
 // the live socket carries the rank. headers are never logged.
+const uploadLimits = createUploadLimits(uploadLimitsConfig)
 fastify.register(uploadRoutes, {
   readJWT,
   getSocket: userId => world.network.sockets.get(userId),
+  getWallet: walletOf,
   assets,
   getSettings: () => world.settings,
   maxUploadSize,
+  limits: uploadLimits,
+  clientIpHeader: uploadLimitsConfig.clientIpHeader,
+  slotTimeoutMs: uploadLimitsConfig.slotTimeoutMs,
+  minFreeBytes: uploadLimitsConfig.minFreeBytes,
+  logClientIp: uploadLimitsConfig.logClientIp,
 })
 
 fastify.get('/health', async (request, reply) => {
@@ -180,6 +190,7 @@ fastify.get('/status', async (request, reply) => {
       protected: process.env.ADMIN_CODE !== undefined ? true : false,
       connectedUsers: [],
       commitHash: process.env.COMMIT_HASH,
+      uploads: uploadLimits.stats(),
     }
     for (const socket of world.network.sockets.values()) {
       status.connectedUsers.push({

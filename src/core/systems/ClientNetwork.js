@@ -1,5 +1,12 @@
 import moment from 'moment'
 import { emoteUrls } from '../extras/playerEmotes'
+import {
+  CHECK_TIMEOUT_MS,
+  UPLOAD_TIMEOUT_MS,
+  createUploadQueue,
+  describeAbort,
+  fetchWithRetry,
+} from '../extras/uploadQueue'
 import { readPacket, writePacket } from '../packets'
 import { storage } from '../storage'
 import { createDispatchQueue, uuid } from '../utils'
@@ -23,6 +30,7 @@ export class ClientNetwork extends System {
     this.id = null
     this.isClient = true
     this.queue = createDispatchQueue()
+    this.uploads = createUploadQueue()
   }
 
   init({ wsUrl, name, avatar, authToken, onAuthToken }) {
@@ -50,37 +58,50 @@ export class ClientNetwork extends System {
     this.ws.send(packet)
   }
 
-  async upload(file) {
+  // uploads run one at a time per tab: the server admits one transfer per user. callers uploading a batch
+  // (the assets of one .hyp) pass one AbortController for all of them: the queue aborts it when one fails,
+  // so the rest of the batch is dropped before it is sent
+  upload(file, { batch } = {}) {
     // the server enforces the same cap; refusing here spares a doomed transfer and keeps the reason readable
     const maxBytes = this.maxUploadSize * 1024 * 1024
     if (maxBytes > 0 && file.size > maxBytes) {
       const err = new Error(`Upload failed: file exceeds ${this.maxUploadSize}MB`)
       err.status = 413
-      throw err
+      batch?.abort()
+      return Promise.reject(err)
     }
+    return this.uploads.enqueue(signal => this.uploadNow(file, signal), { batch })
+  }
+
+  async uploadNow(file, signal) {
     // the server only accepts uploads from a connected session; the token says which one
     const headers = { Authorization: `Bearer ${this.authToken}` }
-    {
-      // first check if we even need to upload it
-      const hash = await hashFile(file)
-      const ext = file.name.split('.').pop().toLowerCase()
-      const filename = `${hash}.${ext}`
-      const url = `${this.apiUrl}/upload-check?filename=${filename}`
-      const resp = await fetch(url, { headers })
+    try {
+      {
+        // first check if we even need to upload it
+        const hash = await hashFile(file)
+        const ext = file.name.split('.').pop().toLowerCase()
+        const filename = `${hash}.${ext}`
+        // the size lets the server say now whether the upload itself would be refused
+        const url = `${this.apiUrl}/upload-check?filename=${filename}&size=${file.size}`
+        const resp = await fetchWithRetry(url, { headers }, { timeoutMs: CHECK_TIMEOUT_MS, signal })
+        if (!resp.ok) throw await uploadError(resp)
+        const data = await resp.json()
+        if (data.exists) return // console.log('already uploaded:', filename)
+      }
+      // then upload it
+      const form = new FormData()
+      form.append('file', file)
+      const url = `${this.apiUrl}/upload`
+      const resp = await fetchWithRetry(
+        url,
+        { method: 'POST', body: form, headers },
+        { timeoutMs: UPLOAD_TIMEOUT_MS, signal }
+      )
       if (!resp.ok) throw await uploadError(resp)
-      const data = await resp.json()
-      if (data.exists) return // console.log('already uploaded:', filename)
+    } catch (err) {
+      throw describeAbort(err)
     }
-    // then upload it
-    const form = new FormData()
-    form.append('file', file)
-    const url = `${this.apiUrl}/upload`
-    const resp = await fetch(url, {
-      method: 'POST',
-      body: form,
-      headers,
-    })
-    if (!resp.ok) throw await uploadError(resp)
   }
 
   enqueue(method, data) {

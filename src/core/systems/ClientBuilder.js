@@ -1098,10 +1098,9 @@ export class ClientBuilder extends System {
       }
       this.world.blueprints.modify(change)
       const applied = this.world.blueprints.getScene()
-      // upload assets
-      const promises = info.assets.map(asset => {
-        return this.world.network.upload(asset.file)
-      })
+      // upload assets as one batch: the first failure cancels the rest before they are sent
+      const batch = new AbortController()
+      const promises = info.assets.map(asset => this.world.network.upload(asset.file, { batch }))
       try {
         await Promise.all(promises)
       } catch (err) {
@@ -1155,9 +1154,9 @@ export class ClientBuilder extends System {
     }
     this.world.blueprints.add(blueprint, true)
     const app = this.world.entities.add(data, true)
-    const promises = info.assets.map(asset => {
-      return this.world.network.upload(asset.file)
-    })
+    // upload assets as one batch: the first failure cancels the rest before they are sent
+    const batch = new AbortController()
+    const promises = info.assets.map(asset => this.world.network.upload(asset.file, { batch }))
     try {
       await Promise.all(promises)
       app.onUploaded()

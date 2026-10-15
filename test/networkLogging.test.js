@@ -14,11 +14,13 @@ import {
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../src/core/extras/settingsPolicy.js'
 import { briefError, createLogOnce } from '../src/core/extras/logOnce.js'
 import { Ranks } from '../src/core/extras/ranks.js'
+import { sanitizeBlueprintModify } from '../src/core/extras/blueprintPolicy.js'
 
 const source = fs.readFileSync(new URL('../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
 const methods = [
   'requireBuilder',
   'onBlueprintModified',
+  'revertBlueprint',
   'onEntityModified',
   'onEntityAdded',
   'onEntityRemoved',
@@ -61,6 +63,7 @@ function fixture() {
     sanitizeEntityAdd,
     sanitizeName,
     sanitizePlayerSelfModify,
+    sanitizeBlueprintModify,
     isAdminOnlySettingKey,
     isKnownSettingKey,
     normalizeSettingValue,
@@ -151,7 +154,8 @@ const refusals = [
     'blueprint-missing',
     'onBlueprintModified: no blueprint found',
     (f, s, id) => {
-      return f.network.onBlueprintModified(s, packet({ id }))
+      // Blueprint ids now pass through the policy before lookup (at most 64 characters).
+      return f.network.onBlueprintModified(s, { id: id.slice(0, 64) })
     },
   ],
   [

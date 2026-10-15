@@ -6,6 +6,7 @@ app.configure([
 ])
 
 if (world.isServer) {
+  if (props.announceInit) app.send('init', { revision: props.revision })
   app.on('size', (data, networkId) => {
     world.chat({ id: uuid(), body: 'P5_SIZE ' + JSON.stringify({ length: data.length, from: networkId }) }, true)
   })

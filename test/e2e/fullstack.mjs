@@ -876,6 +876,41 @@ async function probes(admin, watcher) {
     }
   )
 
+  await step('A18 watcher receives the blueprint announcement before synchronous cached rebuild events', async () => {
+    // A12 and A17 warmed the model and script caches. The script sends init during each rebuild,
+    // so moving the server broadcast after modify would put the new-version event first on the wire.
+    for (const version of [3, 4]) {
+      const from = watcher.mark()
+      admin.send('blueprintModified', {
+        id: 's-event-bp',
+        version,
+        props: { revision: version, announceInit: true },
+      })
+      await watcher.waitFor(
+        m => m.method === 'onEntityEvent' && m.data[0] === 's-event' && m.data[1] === version && m.data[2] === 'init',
+        { from }
+      )
+      await watcher.waitFor(
+        m => m.method === 'onBlueprintModified' && m.data.id === 's-event-bp' && m.data.version === version,
+        { from }
+      )
+      const messages = watcher.since(from)
+      const announced = messages.findIndex(
+        m => m.method === 'onBlueprintModified' && m.data.id === 's-event-bp' && m.data.version === version
+      )
+      const events = messages.filter(
+        m => m.method === 'onEntityEvent' && m.data[0] === 's-event' && m.data[1] === version
+      )
+      eq(events.length, 1, 'the cached script sends exactly one init event')
+      eq(events[0].data[3].revision, version, 'init used the new blueprint props')
+      ok(
+        announced >= 0 && events.every(event => messages.indexOf(event) > announced),
+        'announcement precedes every new-version event'
+      )
+    }
+    ok(admin.isOpen && watcher.isOpen, 'both connections remain open')
+  })
+
   // the server-phase apps go away before the browser loads the world
   for (const id of [
     's-observer',

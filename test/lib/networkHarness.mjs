@@ -4,17 +4,41 @@ import vm from 'node:vm'
 import { EventEmitter } from 'node:events'
 import { PROTOCOL_VERSION, packetNameById, peekPacketId, writePacket } from '../../src/core/packets.js'
 import { createWriteLedger, PACKET_CAP } from '../../src/core/extras/writeLedger.js'
-import { createInboundGate, createInboundScheduler } from '../../src/core/extras/inboundPolicy.js'
+import { createInboundGate, createInboundScheduler, packetNodeLimit } from '../../src/core/extras/inboundPolicy.js'
 import { createEventLedger } from '../../src/core/extras/appEventQueue.js'
 import { briefError, createLogOnce } from '../../src/core/extras/logOnce.js'
+import { sanitizeBlueprintAdd, sanitizeBlueprintModify } from '../../src/core/extras/blueprintPolicy.js'
+import {
+  sanitizeAppModify,
+  sanitizeAppRelease,
+  sanitizeEntityAdd,
+  sanitizePlayerSelfModify,
+} from '../../src/core/extras/entityModifyPolicy.js'
+import { readInboundPacket } from '../../src/server/inboundDecode.js'
 import { clientIpKeys } from '../../src/server/uploadLimits.js'
 
 export const serverSource = fs.readFileSync(new URL('../../src/server/index.js', import.meta.url), 'utf8')
 const source = fs.readFileSync(new URL('../../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
-const names = ['preFixedUpdate', 'asScript', 'write', 'send', 'sendTo', 'checkSockets', 'admit', 'enqueue']
+const names = [
+  'preFixedUpdate',
+  'asScript',
+  'write',
+  'send',
+  'sendTo',
+  'checkSockets',
+  'admit',
+  'enqueue',
+  'flush',
+  'requireBuilder',
+  'onBlueprintAdded',
+  'onBlueprintModified',
+  'revertBlueprint',
+  'onEntityAdded',
+  'onEntityModified',
+]
 const methods = names
   .map(name => {
-    const method = source.match(new RegExp(`^  ${name}\\([^]*?^  }`, 'm'))?.[0]
+    const method = source.match(new RegExp(`^  ${name}(?:\\(| = )[^]*?^  }`, 'm'))?.[0]
     assert.ok(method, `${name} method found`)
     return method
   })
@@ -24,6 +48,17 @@ const Network = vm.runInNewContext(`(class Network { ${methods} })`, {
   packetNameById,
   peekPacketId,
   Uint8Array,
+  Date,
+  packetNodeLimit,
+  readInboundPacket,
+  briefError,
+  sanitizeBlueprintAdd,
+  sanitizeBlueprintModify,
+  sanitizeAppModify,
+  sanitizeAppRelease,
+  sanitizeEntityAdd,
+  sanitizePlayerSelfModify,
+  isObject: value => value !== null && typeof value === 'object',
 })
 const socketSource = fs.readFileSync(new URL('../../src/core/Socket.js', import.meta.url), 'utf8')
 export const Socket = vm.runInNewContext(`(${socketSource.slice(socketSource.indexOf('class Socket'))})`, {
@@ -35,6 +70,8 @@ export function makeNetwork(log = () => {}) {
   network.isServer = true
   network.id = 0
   network.sockets = new Map()
+  network.dirtyBlueprints = new Set()
+  network.dirtyApps = new Set()
   network.logOnce = createLogOnce(log)
   network.writer = createWriteLedger({ log })
   network.gate = createInboundGate({ log })

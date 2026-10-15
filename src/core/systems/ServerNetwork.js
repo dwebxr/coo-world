@@ -17,6 +17,7 @@ import {
 } from '../extras/entityModifyPolicy'
 import { createRelayDrop } from '../extras/playerRelayPolicy'
 import { sanitizeChatMessage } from '../extras/chatPolicy'
+import { sanitizeBlueprintAdd, sanitizeBlueprintModify } from '../extras/blueprintPolicy'
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../extras/settingsPolicy'
 import { internalEvents } from '../extras/internalEvents'
 import { createInboundGate, createInboundScheduler, packetNodeLimit } from '../extras/inboundPolicy'
@@ -697,35 +698,76 @@ export class ServerNetwork extends System {
 
   onBlueprintAdded = (socket, blueprint) => {
     if (!this.requireBuilder(socket, 'add blueprint')) return
-    this.world.blueprints.add(blueprint)
-    this.send('blueprintAdded', blueprint, socket.id)
-    this.dirtyBlueprints.add(blueprint.id)
+    const { ok, value: safe } = sanitizeBlueprintAdd(blueprint, {
+      onUnknownKey: key => this.logOnce(socket, 'blueprint-unknown', `blueprint: unknown key ${key}`),
+    })
+    if (!ok) {
+      // Clients announce the blueprint immediately before the entity that uses it.
+      if (typeof blueprint?.id === 'string') {
+        socket.refusedBlueprint = { id: blueprint.id, expiresAt: Date.now() + 10000 }
+      }
+      return this.logOnce(socket, 'blueprint-add-invalid', 'onBlueprintAdded: invalid blueprint')
+    }
+    if (socket.refusedBlueprint?.id === safe.id) socket.refusedBlueprint = null
+    this.world.blueprints.add(safe)
+    this.send('blueprintAdded', safe, socket.id)
+    this.dirtyBlueprints.add(safe.id)
   }
 
   onBlueprintModified = (socket, data) => {
     if (!this.requireBuilder(socket, 'modify blueprint')) return
-    const blueprint = this.world.blueprints.get(data.id)
+    const { ok, value: safe } = sanitizeBlueprintModify(data, {
+      onUnknownKey: key => this.logOnce(socket, 'blueprint-unknown', `blueprint: unknown key ${key}`),
+    })
+    if (!ok) {
+      this.logOnce(socket, 'blueprint-modify-invalid', 'onBlueprintModified: invalid blueprint')
+      if (typeof data?.id === 'string') this.revertBlueprint(socket, this.world.blueprints.get(data.id))
+      return
+    }
+    const blueprint = this.world.blueprints.get(safe.id)
     if (!blueprint) {
       return this.logOnce(
         socket,
         'blueprint-missing',
-        `onBlueprintModified: no blueprint found: ${String(data.id).slice(0, 64)}`
+        `onBlueprintModified: no blueprint found: ${String(safe.id).slice(0, 64)}`
       )
     }
     // if new version is greater than current version, allow it
-    if (data.version > blueprint.version) {
-      this.world.blueprints.modify(data, false, { authorSocketId: socket.id })
-      this.send('blueprintModified', data, socket.id)
-      this.dirtyBlueprints.add(data.id)
+    if (safe.version > blueprint.version) {
+      this.send('blueprintModified', safe, socket.id)
+      this.world.blueprints.modify(safe, false, { authorSocketId: socket.id })
+      this.dirtyBlueprints.add(safe.id)
     }
     // otherwise, send a revert back to client, because someone else modified before them
     else {
-      socket.send('blueprintModified', blueprint)
+      this.revertBlueprint(socket, blueprint)
     }
+  }
+
+  revertBlueprint(socket, blueprint) {
+    if (!blueprint) return
+    const now = Date.now()
+    const reverts = (socket.blueprintReverts ||= new Map())
+    for (const [id, expiresAt] of reverts) {
+      if (expiresAt <= now) reverts.delete(id)
+    }
+    if (reverts.has(blueprint.id)) return
+    reverts.set(blueprint.id, now + 1000)
+    socket.send('blueprintModified', blueprint)
   }
 
   onEntityAdded = (socket, data) => {
     if (!this.requireBuilder(socket, 'add entity')) return
+    const refused = socket.refusedBlueprint
+    if (refused) {
+      if (refused.expiresAt <= Date.now()) {
+        socket.refusedBlueprint = null
+      } else if (data?.blueprint === refused.id) {
+        socket.refusedBlueprint = null
+        if (typeof data.id === 'string') socket.send('entityRemoved', data.id)
+        return
+      }
+    }
     // clients may only add apps, with a fresh id and an existing blueprint
     const safe = sanitizeEntityAdd(data, socket.id, {
       blueprintExists: id => !!this.world.blueprints.get(id),
@@ -734,8 +776,8 @@ export class ServerNetwork extends System {
     if (!safe) {
       return this.logOnce(socket, 'entity-invalid', `onEntityAdded: invalid entity: ${String(data?.id).slice(0, 64)}`)
     }
-    const entity = this.world.entities.add(safe)
     this.send('entityAdded', safe, socket.id)
+    const entity = this.world.entities.add(safe)
     this.dirtyApps.add(entity.data.id)
   }
 
@@ -810,8 +852,8 @@ export class ServerNetwork extends System {
           `onEntityModified: no permitted fields: ${String(data.id).slice(0, 64)}`
         )
       }
-      entity.modify(safe)
       this.send('entityModified', safe, socket.id)
+      entity.modify(safe)
       // mark for saving
       this.dirtyApps.add(entity.data.id)
     }

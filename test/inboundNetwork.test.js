@@ -13,10 +13,20 @@ import {
 import { briefError, createLogOnce } from '../src/core/extras/logOnce.js'
 import { readInboundPacket } from '../src/server/inboundDecode.js'
 import { createEventLedger, createEventQueue } from '../src/core/extras/appEventQueue.js'
+import { sanitizeBlueprintModify } from '../src/core/extras/blueprintPolicy.js'
 
 // Exercise the real receive/queue/flush methods without booting physics, the database or Solana.
 const source = fs.readFileSync(new URL('../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
-const methods = ['admit', 'enqueue', 'flush', 'onDisconnect', 'checkSockets', 'onEntityEvent', 'onBlueprintModified']
+const methods = [
+  'admit',
+  'enqueue',
+  'flush',
+  'onDisconnect',
+  'checkSockets',
+  'onEntityEvent',
+  'onBlueprintModified',
+  'revertBlueprint',
+]
   .map(name => {
     const method = source.match(new RegExp(`^  ${name}(?:\\(| = )[^]*?^  }`, 'm'))?.[0]
     assert.ok(method, `${name} method found`)
@@ -33,6 +43,7 @@ const Network = vm.runInNewContext(`(class Network { ${methods} })`, {
   Uint8Array,
   console,
   internalEvents: ['update'],
+  sanitizeBlueprintModify,
 })
 const make = () => {
   const logs = []
@@ -229,7 +240,8 @@ test('onBlueprintModified: passes the editing socket as author without changing 
   const data = { id: 'bp', version: 1 }
   network.onBlueprintModified(socket, data)
   assert.equal(seen.length, 1)
-  assert.equal(seen[0][0], data)
+  assert.deepEqual(seen[0][0], data)
+  assert.notEqual(seen[0][0], data)
   assert.equal(seen[0][1], false)
   assert.deepEqual({ ...seen[0][2] }, { authorSocketId: socket.id })
 })

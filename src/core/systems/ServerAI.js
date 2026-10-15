@@ -90,13 +90,12 @@ export class ServerAI extends System {
     const url = `asset://${filename}`
     // upload new script asset
     await this.assets.upload(file)
-    // modify blueprint locally
+    // announce before rebuilding locally
     const blueprint = this.world.blueprints.get(blueprintId)
     const version = blueprint.version + 1
     const change = { id: blueprint.id, version, script: url }
-    this.world.blueprints.modify(change)
-    // send blueprint update to all clients
     this.world.network.send('blueprintModified', change)
+    this.world.blueprints.modify(change)
     this.world.network.dirtyBlueprints.add(change.id)
   }
 
@@ -126,13 +125,12 @@ export class ServerAI extends System {
     const url = `asset://${filename}`
     // upload new script asset
     await this.assets.upload(file)
-    // modify blueprint locally
+    // announce before rebuilding locally
     blueprint = this.world.blueprints.get(blueprintId)
     const version = blueprint.version + 1
     const change = { id: blueprint.id, version, script: url }
-    this.world.blueprints.modify(change)
-    // send blueprint update to all clients
     this.world.network.send('blueprintModified', change)
+    this.world.blueprints.modify(change)
     this.world.network.dirtyBlueprints.add(change.id)
   }
 
@@ -161,13 +159,12 @@ export class ServerAI extends System {
     const url = `asset://${filename}`
     // upload new script asset
     await this.assets.upload(file)
-    // modify blueprint locally
+    // announce before rebuilding locally
     blueprint = this.world.blueprints.get(blueprintId)
     const version = blueprint.version + 1
     const change = { id: blueprint.id, version, script: url }
-    this.world.blueprints.modify(change)
-    // send blueprint update to all clients
     this.world.network.send('blueprintModified', change)
+    this.world.blueprints.modify(change)
     this.world.network.dirtyBlueprints.add(change.id)
   }
 
@@ -178,9 +175,8 @@ export class ServerAI extends System {
     const blueprint = this.world.blueprints.get(blueprintId)
     const version = blueprint.version + 1
     const change = { id: blueprint.id, version, name }
-    this.world.blueprints.modify(change)
-    // send blueprint update to all clients
     this.world.network.send('blueprintModified', change)
+    this.world.blueprints.modify(change)
     this.world.network.dirtyBlueprints.add(change.id)
   }
 }

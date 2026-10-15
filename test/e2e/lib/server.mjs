@@ -41,6 +41,11 @@ export function serverEnv(port, world, extra = {}) {
     PUBLIC_TOKEN_DECIMALS: '6',
     SOLANA_WATCH_ADDRESS: '',
     SOLANA_PKEY_ARRAY: '',
+    // the harness opens dozens of connections from one address; the churn probe boots its own server with
+    // the defaults (pass '' to get them back)
+    WS_CONNECT_RATE_PER_MIN: '0',
+    WS_CONNECT_BURST: '0',
+    WS_CONNECT_CONCURRENT_PER_IP: '0',
     ...extra,
   }
 }

@@ -16,10 +16,13 @@ export class WireClient {
     this.waiters = []
   }
 
-  async connect(name = this.label) {
+  // opens the socket without waiting for a snapshot (a refused connection never gets one); `closed` resolves
+  // with the close code
+  async open(name = this.label) {
     const ws = new WebSocket(`ws://localhost:${this.port}/ws?authToken=&name=${encodeURIComponent(name)}`)
     ws.binaryType = 'arraybuffer'
     this.ws = ws
+    this.closed = new Promise(resolve => ws.addEventListener('close', e => resolve(e.code)))
     ws.addEventListener('message', event => {
       const [method, data] = readPacket(new Uint8Array(event.data))
       if (!method) return
@@ -28,6 +31,11 @@ export class WireClient {
     })
     ws.addEventListener('error', () => {})
     await once(ws, 'open')
+    return this
+  }
+
+  async connect(name = this.label) {
+    await this.open(name)
     const snap = await this.waitFor(m => m.method === 'onSnapshot', { timeout: 20000 })
     this.id = snap.data.id
     this.snapshot = snap.data
@@ -35,8 +43,28 @@ export class WireClient {
     return this
   }
 
+  get isOpen() {
+    return this.ws?.readyState === WebSocket.OPEN
+  }
+
   send(name, data) {
     this.ws.send(writePacket(name, data))
+  }
+
+  // bytes as they are, for packets the encoder would never produce
+  sendRaw(bytes) {
+    this.ws.send(bytes)
+  }
+
+  // the server's RSS in MB, as `/server stats` reports it (builders only)
+  async serverStats({ timeout = 10000 } = {}) {
+    const from = this.mark()
+    this.send('command', { cmd: 'server', value: 'stats', args: ['server', 'stats'] })
+    const m = await this.waitFor(m => m.method === 'onChatAdded' && /^Memory: \d+ \//.test(String(m.data?.body)), {
+      from,
+      timeout,
+    })
+    return { rss: Number(/^Memory: (\d+) \//.exec(m.data.body)[1]) }
   }
 
   mark() {

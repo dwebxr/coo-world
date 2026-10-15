@@ -16,6 +16,8 @@ import { appState, becomeAdmin, installApp, launchBrowser, saveArtifacts } from 
 
 // the client's payload check, applied here to what the server really put on the wire
 const { sanitizeTeleport } = await import(pathToFileURL(path.join(REPO_ROOT, 'src/core/extras/playerRelayPolicy.js')))
+// the client's encoder, for packets the harness alters after encoding
+const { writePacket } = await import(pathToFileURL(path.join(REPO_ROOT, 'src/core/packets.js')))
 
 const ENGINE = arg('engine', 'chromium')
 const PORT = Number(arg('port', 3121))
@@ -67,6 +69,7 @@ try {
     'throwing',
     'console-probe',
     'relay-probe',
+    'event-probe',
   ]) {
     installAsset(server, path.join(APPS_DIR, `${name}.js`))
   }
@@ -463,13 +466,13 @@ async function probes(admin, watcher) {
   await step('A10 a malformed chat message is refused; a valid one is rebuilt by the server', async () => {
     const from = watcher.mark()
     const before = server.count('onChatAdded: invalid message')
-    // refused: a non-text body, a blank body, a packet that is not a plain object
+    // refused: a non-text body, a blank body, a packet that is not a plain object; logged once per connection
     admin.send('chatAdded', { id: 'p4-bad-object', body: { bad: true } })
     admin.send('chatAdded', { id: 'p4-bad-array', body: ['x'] })
     admin.send('chatAdded', { id: 'p4-bad-blank', body: '   ' })
     admin.send('chatAdded', 'just a string')
     admin.send('chatAdded', null)
-    // accepted: the body is kept, the sender and time are stamped by the server, the rest is dropped
+    // accepted: the body is kept; the id, sender and time are stamped by the server; the rest is dropped
     admin.send('chatAdded', {
       id: 'p4-chat',
       body: '  P4_CHAT_OK  ',
@@ -480,44 +483,62 @@ async function probes(admin, watcher) {
     })
     admin.send('chatAdded', { id: 'p4-long', body: 'L'.repeat(5000) })
     admin.send('chatAdded', { id: {}, body: 'P4_CHAT_ID' })
+    // the cut never splits a grapheme: 501 units ending in an emoji keep 499, 502 units keep the 500 letters
+    admin.send('chatAdded', { body: 'P4_CHAT_E1' + 'a'.repeat(489) + '😀' })
+    admin.send('chatAdded', { body: 'P4_CHAT_E2' + 'a'.repeat(490) + '😀' })
     const got = await waitUntil(
       () => {
         const packets = watcher
           .since(from)
           .filter(m => m.method === 'onChatAdded' && /^(P4_CHAT|L{10})/.test(String(m.data?.body)))
-        return packets.length >= 3 ? packets : null
+        return packets.length >= 5 ? packets : null
       },
       { timeout: 10000, message: 'rebuilt chat messages' }
     )
     await sleep(500)
-    eq(server.count('onChatAdded: invalid message') - before, 5, 'one refusal per malformed packet')
-    eq(got.length, 3, 'exactly the accepted messages arrive')
-    const [accepted, long, minted] = got.map(m => m.data)
+    eq(server.count('onChatAdded: invalid message') - before, 1, 'the refusals are logged once per connection')
+    ok(server.out.includes(`onChatAdded: invalid message from ${admin.id}`), 'the line names the connection')
+    eq(got.length, 5, 'exactly the accepted messages arrive')
+    const [accepted, long, minted, emoji1, emoji2] = got.map(m => m.data)
     eq(
       JSON.stringify(Object.keys(accepted).sort()),
       JSON.stringify(['body', 'createdAt', 'from', 'fromId', 'id']),
       'fields'
     )
-    eq(accepted.id, 'p4-chat', 'a short string id is kept')
+    ok(
+      typeof accepted.id === 'string' && accepted.id.length > 0 && accepted.id !== 'p4-chat',
+      `the id is minted by the server (${accepted.id})`
+    )
     eq(accepted.body, 'P4_CHAT_OK', 'body trimmed')
     eq(accepted.from, 'admin', 'sender name from the socket')
     eq(accepted.fromId, admin.id, 'sender id from the socket')
     ok(!Number.isNaN(Date.parse(accepted.createdAt)) && accepted.createdAt !== 'bogus', 'server time')
     eq(long.body.length, 500, 'body capped at 500 characters')
-    eq(typeof minted.id, 'string', 'an invalid id is replaced')
-    ok(minted.id !== '[object Object]' && minted.id.length > 0, minted.id)
-    // the history that later clients receive holds only the accepted messages, as text
+    ok(typeof minted.id === 'string' && minted.id !== '[object Object]' && minted.id.length > 0, minted.id)
+    eq(emoji1.body.length, 499, 'an emoji crossing the cap is cut off whole')
+    ok(emoji1.body.endsWith('a'), 'no lone surrogate at the end')
+    eq(emoji2.body.length, 500, 'a full window of letters is kept')
+    // a second connection's refusals get their own single line
+    watcher.send('chatAdded', { body: 42 })
+    watcher.send('chatAdded', { body: 42 })
+    await waitUntil(() => server.count('onChatAdded: invalid message') - before === 2, {
+      timeout: 5000,
+      message: 'second socket chat log',
+    })
+    await sleep(300)
+    eq(server.count('onChatAdded: invalid message') - before, 2, 'two lines in total')
+    // the history that later clients receive holds only the accepted messages, as text, under server ids
     const snap = await snapshot(PORT)
     ok(
       snap.chat.every(m => typeof m.body === 'string'),
       'every stored body is a string'
     )
-    eq(snap.chat.filter(m => /^p4-bad/.test(m.id)).length, 0, 'no refused message was stored')
+    eq(snap.chat.filter(m => /^p4-/.test(m.id)).length, 0, 'no client-chosen id was stored')
     ok(
-      snap.chat.some(m => m.id === 'p4-chat' && m.body === 'P4_CHAT_OK' && m.from === 'admin'),
+      snap.chat.some(m => m.body === 'P4_CHAT_OK' && m.from === 'admin'),
       'the valid one is stored'
     )
-    eq(snap.chat.find(m => m.id === 'p4-long')?.body.length, 500, 'the long one is stored capped')
+    eq(snap.chat.find(m => m.body.startsWith('LLLLLLLLLL'))?.body.length, 500, 'the long one is stored capped')
     eq(
       watcher.since(from).filter(m => m.method === 'onChatAdded' && typeof m.data?.body !== 'string').length,
       0,
@@ -528,6 +549,191 @@ async function probes(admin, watcher) {
   await step('A11 server log: no unhandled rejections or SES errors', async () => {
     const bad = server.lines(/SES_UNCAUGHT|SES_UNHANDLED|UnhandledPromiseRejection/)
     eq(bad.length, 0, bad.slice(0, 2).join(' | '))
+  })
+
+  // ---------- inbound limits: oversize frames, oversize events, floods, decode bombs, connection churn ----------
+  const pingReports = (client, from) =>
+    client.since(from).filter(m => m.method === 'onChatAdded' && String(m.data?.body).startsWith('P5_PING '))
+  await step(
+    'A12 entityEvent floods are bounded: oversize frames close, oversize events drop, memory stays flat',
+    async () => {
+      admin.installApp({ id: 's-event', script: 'asset://event-probe.js', model: 'asset://ai.glb' })
+      await sleep(500)
+      const baseline = (await admin.serverStats()).rss
+      // (a) 20 connections each send one frame above the 1 MiB ceiling: each is closed with 1009, the server stays up
+      const giant = 'x'.repeat(1_100_000)
+      const giants = await Promise.all(
+        Array.from({ length: 20 }, (_, i) => new WireClient(PORT, `giant-${i}`).connect())
+      )
+      for (const g of giants) g.send('entityEvent', ['s-event', 0, 'probe', giant])
+      const codes = await Promise.all(giants.map(g => Promise.race([g.closed, sleep(15000).then(() => 'open')])))
+      eq(codes.filter(c => c === 1009).length, 20, `close codes: ${codes.join(',')}`)
+      // (b) one socket sends 200 events of 200 KiB: under the frame ceiling, over the 64 KiB cap. they are dropped
+      // before decoding and logged once; the socket stays open and nothing reaches the app
+      const dropper = await new WireClient(PORT, 'dropper').connect()
+      const fromDrop = watcher.mark()
+      const oversize = 'y'.repeat(200 * 1024)
+      for (let i = 0; i < 200; i++) dropper.send('entityEvent', ['s-event', 0, 'probe', oversize])
+      const dropLine = new RegExp(
+        `\\[network\\] entityEvent from client ${dropper.id} dropped: \\d+ bytes over the 65536 byte limit`
+      )
+      await waitUntil(() => server.lines(dropLine).length >= 1, { timeout: 15000, message: 'oversize event log' })
+      await sleep(1000)
+      eq(
+        server.lines(new RegExp(`\\[network\\] entityEvent from client ${dropper.id} dropped`)).length,
+        1,
+        'logged once'
+      )
+      ok(dropper.isOpen, 'the socket stays open')
+      eq(pingReports(watcher, fromDrop).length, 0, 'nothing reached the app')
+      // (c) 2000 events of 60 KB stamped with a far-future blueprint version: the rate limit drops most of them
+      // before decoding, the app refuses the rest without queueing them, and an event with the current version
+      // from the same socket is delivered afterwards
+      const flood = await new WireClient(PORT, 'flood').connect()
+      const chunk = 'z'.repeat(60 * 1000)
+      for (let i = 0; i < 2000; i++) flood.send('entityEvent', ['s-event', 1e12, 'probe', chunk])
+      const futureLine = /\[app\] s-event: event dropped \(future version\)/
+      const rateLine = new RegExp(`\\[network\\] entityEvent from client ${flood.id} dropped: rate limit`)
+      await waitUntil(() => server.lines(futureLine).length >= 1, { timeout: 20000, message: 'future version log' })
+      await waitUntil(() => server.lines(rateLine).length >= 1, { timeout: 20000, message: 'rate limit log' })
+      await sleep(2500)
+      eq(server.lines(futureLine).length, 1, 'future version logged once')
+      eq(server.lines(rateLine).length, 1, 'rate limit logged once')
+      ok(flood.isOpen, 'the flooding socket is not disconnected')
+      const fromPing = watcher.mark()
+      flood.send('entityEvent', ['s-event', 0, 'probe', { n: 1 }])
+      const ping = await watcher.waitForReport('P5_PING', { from: fromPing, timeout: 10000 })
+      eq(ping.data.n, 1, 'a current-version event is delivered after the flood')
+      eq(ping.from, flood.id, 'from the flooding socket')
+      // (d) what the floods left behind. the frames above are garbage awaiting collection, and how much of it
+      // is still resident a few seconds later varies by Node version (about 40 MB on 23, about 80 MB on 22);
+      // the unfixed server keeps the events themselves, 160 MB and more, for ever
+      const after = await waitUntil(
+        async () => {
+          const rss = (await admin.serverStats()).rss
+          return rss - baseline < 128 ? rss : null
+        },
+        { timeout: 20000, interval: 1000, message: `rss to settle within 128 MB of the ${baseline} MB baseline` }
+      )
+      const status = await fetch(`${base}/status`)
+      eq(status.status, 200, 'server still responsive')
+      dropper.close()
+      flood.close()
+      return `rss ${baseline} -> ${after} MB`
+    }
+  )
+
+  await step(
+    'A13 decode bombs (pointer DAG + trailing byte, BigInt, Error) are refused without stalling the server',
+    async () => {
+      const bomber = await new WireClient(PORT, 'bomber').connect()
+      const u32 = n => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]
+      const dag = (depth, width) => {
+        let o = { x: 1 }
+        for (let i = 0; i < depth; i++) {
+          const n = {}
+          for (let j = 0; j < width; j++) n[`k${j}`] = o
+          o = n
+        }
+        return o
+      }
+      const errorItem = Buffer.from([0xd4, 0x65, 0x00, 0x93, 0xa5, 0x45, 0x72, 0x72, 0x6f, 0x72, 0xa1, 0x78, 0xc0])
+      const errorCount = Math.floor(60_000 / errorItem.length)
+      const bombs = {
+        dag: Buffer.concat([
+          Buffer.from(writePacket('entityEvent', ['s-event', 0, 'probe', dag(16, 4)])),
+          Buffer.from([0xc0]),
+        ]),
+        bigint: Buffer.concat([Buffer.from([0x92, 0x08, 0xc9, ...u32(60_000), 0x42]), Buffer.alloc(60_000, 0x7f)]),
+        error: Buffer.concat([
+          Buffer.from([0x92, 0x08, 0xdd, ...u32(errorCount)]),
+          ...Array(errorCount).fill(errorItem),
+        ]),
+      }
+      const latency = async () => {
+        const t0 = performance.now()
+        const r = await fetch(`${base}/status`)
+        eq(r.status, 200, '/status')
+        return Math.round(performance.now() - t0)
+      }
+      const before = (await admin.serverStats()).rss
+      const results = {}
+      for (const [name, bytes] of Object.entries(bombs)) {
+        ok(bytes.length <= 65536, `${name} fits the entityEvent cap (${bytes.length} bytes)`)
+        for (let i = 0; i < 10; i++) bomber.sendRaw(bytes)
+        await sleep(300)
+        results[name] = { bytes: bytes.length, statusMs: await latency() }
+        ok(results[name].statusMs < 2000, `${name}: /status answered in ${results[name].statusMs} ms`)
+      }
+      const undecodable = new RegExp(`packet from client ${bomber.id} dropped: undecodable`)
+      await waitUntil(() => server.lines(undecodable).length >= 1, { timeout: 5000, message: 'undecodable log' })
+      eq(server.lines(undecodable).length, 1, 'logged once per connection')
+      ok(!/Data read, but end of buffer not reached/.test(server.out), 'no rendered view of a bomb in the log')
+      ok(bomber.isOpen, 'the socket stays open')
+      const fromPing = watcher.mark()
+      bomber.send('entityEvent', ['s-event', 0, 'probe', { after: 'bombs' }])
+      const ping = await watcher.waitForReport('P5_PING', { from: fromPing, timeout: 10000 })
+      eq(ping.data.after, 'bombs', 'a well-formed event from the same socket is delivered')
+      const after = (await admin.serverStats()).rss
+      ok(after - before < 32, `rss ${before} -> ${after} MB`)
+      bomber.close()
+      return JSON.stringify({ ...results, rss: [before, after] })
+    }
+  )
+
+  await step('A14 connection churn from one address is limited while a handful of tabs still connect', async () => {
+    // a second server with the default connection limits (the main one runs with them disabled)
+    const port = PORT + 1
+    const limited = await startServer({
+      port,
+      worldSource: WORLD_SOURCE,
+      logPath: path.join(OUT, `fullstack-${ENGINE}-limited-server.log`),
+      env: { WS_CONNECT_RATE_PER_MIN: '', WS_CONNECT_BURST: '', WS_CONNECT_CONCURRENT_PER_IP: '' },
+    })
+    try {
+      // six tabs at once all get in
+      const tabs = await Promise.all(Array.from({ length: 6 }, (_, i) => new WireClient(port, `tab-${i}`).connect()))
+      ok(
+        tabs.every(t => t.id),
+        'six concurrent connections from one address are admitted'
+      )
+      for (const t of tabs) t.close()
+      await Promise.all(tabs.map(t => t.closed))
+      // 200 quick open/close cycles: the rest of the burst gets in, everything after is told why and closed with 1013
+      let admitted = 0
+      let refused = 0
+      const kicks = new Set()
+      const codes = new Set()
+      for (let i = 0; i < 200; i++) {
+        const c = await new WireClient(port, `churn-${i}`).open()
+        const outcome = await Promise.race([
+          c.closed,
+          c.waitFor(m => m.method === 'onSnapshot', { timeout: 5000 }).then(() => 'snapshot'),
+        ])
+        if (outcome === 'snapshot') {
+          admitted++
+          c.close()
+          await c.closed
+        } else {
+          refused++
+          codes.add(outcome)
+          const kick = c.inbox.find(m => m.method === 'onKick')
+          if (kick) kicks.add(kick.data)
+        }
+      }
+      ok(admitted >= 14 && admitted <= 18, `${admitted} admitted after six tabs (burst 20, refilling 10 a minute)`)
+      ok(refused >= 182, `${refused} refused`)
+      eq([...codes].join(','), '1013', 'refusals close with 1013')
+      eq([...kicks].join(','), 'connection_limit', 'refusals carry the kick reason')
+      eq(limited.lines(/SqliteError|UnhandledPromiseRejection|SES_UNHANDLED/).length, 0, 'no errors in the log')
+      await sleep(500)
+      const status = await fetch(`http://localhost:${port}/status`)
+      eq(status.status, 200, 'limited server still responsive')
+      eq((await status.json()).connectedUsers.length, 0, 'no sockets left behind')
+      return `${admitted} admitted, ${refused} refused`
+    } finally {
+      await limited.stop()
+    }
   })
 
   // the server-phase apps go away before the browser loads the world
@@ -543,6 +749,7 @@ async function probes(admin, watcher) {
     's-physics2',
     's-retry',
     's-relay',
+    's-event',
   ]) {
     admin.send('entityRemoved', id)
   }
@@ -570,6 +777,44 @@ async function probes(admin, watcher) {
 
   await becomeAdmin(page)
   record(true, 'B4 browser player is admin')
+
+  await step('B4b the local chat echo is trimmed like the stored copy; a blank message sends nothing', async () => {
+    const typeMessage = async text => {
+      await page.evaluate(() => document.activeElement?.blur?.())
+      await page.keyboard.press('Enter')
+      await page.waitForFunction(() => document.activeElement?.classList.contains('side-chatbox-input'), null, {
+        timeout: 8000,
+      })
+      await page.keyboard.type(text)
+      await page.keyboard.press('Enter')
+    }
+    const mine = () =>
+      page.evaluate(() => {
+        const me = window.world.network.id
+        return window.world.chat.msgs.filter(m => m.fromId === me).map(m => ({ id: m.id, body: m.body }))
+      })
+    const before = (await mine()).length
+    await typeMessage('   P4_ECHO   ')
+    const echoed = await waitUntil(
+      async () => {
+        const list = await mine()
+        return list.length === before + 1 ? list[list.length - 1] : null
+      },
+      { message: 'local echo' }
+    )
+    eq(echoed.body, 'P4_ECHO', 'the echo is trimmed')
+    const rendered = await page.evaluate(() =>
+      [...document.querySelectorAll('.mainchat-msgs .message-body')].map(e => e.textContent)
+    )
+    ok(rendered.includes('P4_ECHO'), 'rendered trimmed')
+    await typeMessage('     ')
+    await sleep(800)
+    eq((await mine()).length, before + 1, 'a blank message is not echoed')
+    // the server stored the trimmed copy under an id of its own
+    const snap = await snapshot(PORT)
+    const stored = snap.chat.find(m => m.body === 'P4_ECHO')
+    ok(stored && stored.id !== echoed.id, 'stored under a server-minted id')
+  })
 
   // browser-side probes (these also run on the server, under different ids)
   await installApp(page, {

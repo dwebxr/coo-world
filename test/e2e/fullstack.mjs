@@ -9,6 +9,7 @@
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import Database from 'better-sqlite3'
+import { Packr } from 'msgpackr'
 
 import { APPS_DIR, REPO_ROOT, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
 import { installAsset, startServer } from './lib/server.mjs'
@@ -17,7 +18,7 @@ import { appState, becomeAdmin, installApp, launchBrowser, saveArtifacts } from 
 
 // the client's payload check, applied here to what the server really put on the wire
 const { sanitizeTeleport } = await import(pathToFileURL(path.join(REPO_ROOT, 'src/core/extras/playerRelayPolicy.js')))
-// the client's encoder, for packets the harness alters after encoding
+// the server's old encoder, for the hostile reference-extension probe
 const { writePacket } = await import(pathToFileURL(path.join(REPO_ROOT, 'src/core/packets.js')))
 
 const ENGINE = arg('engine', 'chromium')
@@ -594,7 +595,7 @@ async function probes(admin, watcher) {
       const chunk = 'z'.repeat(60 * 1000)
       for (let i = 0; i < 2000; i++) flood.send('entityEvent', ['s-event', 1e12, 'probe', chunk])
       const futureLine = /\[app\] s-event: event dropped \(future version\)/
-      const rateLine = new RegExp(`\\[network\\] entityEvent from client ${flood.id} dropped: rate limit`)
+      const rateLine = new RegExp(`\\[network\\] packet from client ${flood.id} dropped: rate limit`)
       await waitUntil(() => server.lines(futureLine).length >= 1, { timeout: 20000, message: 'future version log' })
       await waitUntil(() => server.lines(rateLine).length >= 1, { timeout: 20000, message: 'rate limit log' })
       await sleep(2500)
@@ -666,7 +667,7 @@ async function probes(admin, watcher) {
         results[name] = { bytes: bytes.length, statusMs: await latency() }
         ok(results[name].statusMs < 2000, `${name}: /status answered in ${results[name].statusMs} ms`)
       }
-      const undecodable = new RegExp(`packet from client ${bomber.id} dropped: undecodable`)
+      const undecodable = new RegExp(`entityEvent from client ${bomber.id} dropped: undecodable`)
       await waitUntil(() => server.lines(undecodable).length >= 1, { timeout: 5000, message: 'undecodable log' })
       eq(server.lines(undecodable).length, 1, 'logged once per connection')
       ok(!/Data read, but end of buffer not reached/.test(server.out), 'no rendered view of a bomb in the log')
@@ -757,6 +758,32 @@ async function probes(admin, watcher) {
       db.close()
     }
   })
+
+  await step(
+    'A16 old-encoder records are refused once, while plain packets from the same socket still work',
+    async () => {
+      const legacy = await new WireClient(PORT, 'old-encoder').connect()
+      try {
+        const oldPackr = new Packr({ structuredClone: true })
+        const packet = oldPackr.pack([8, ['s-event', 0, 'probe', { oldEncoder: true }]])
+        const from = watcher.mark()
+        for (let i = 0; i < 3; i++) legacy.sendRaw(packet)
+        const refused = new RegExp(`entityEvent from client ${legacy.id} dropped: undecodable`)
+        await waitUntil(() => server.lines(refused).length >= 1, { timeout: 5000, message: 'old encoder refusal' })
+        await sleep(200)
+        eq(server.lines(refused).length, 1, 'old encoding logged once per socket')
+        eq(pingReports(watcher, from).length, 0, 'old encoding never reached the handler')
+        legacy.send('entityEvent', ['s-event', 0, 'probe', { plainEncoder: true }])
+        const ping = await watcher.waitForReport('P5_PING', { from, timeout: 10000 })
+        eq(ping.data.plainEncoder, true, 'plain event works after the refusal')
+        eq(ping.from, legacy.id, 'plain event came from the same socket')
+        ok(legacy.isOpen, 'refused encoding did not close the connection')
+        eq(server.lines(refused).length, 1, 'plain packet adds no decode refusal')
+      } finally {
+        legacy.close()
+      }
+    }
+  )
 
   // the server-phase apps go away before the browser loads the world
   for (const id of [

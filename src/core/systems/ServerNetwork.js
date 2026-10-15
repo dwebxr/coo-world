@@ -19,7 +19,7 @@ import { createRelayDrop } from '../extras/playerRelayPolicy'
 import { sanitizeChatMessage } from '../extras/chatPolicy'
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../extras/settingsPolicy'
 import { internalEvents } from '../extras/internalEvents'
-import { INBOUND_BYTES_PER_TICK, INBOX_MAX_BYTES, createInboundGate } from '../extras/inboundPolicy'
+import { INBOUND_BYTES_PER_TICK, INBOX_MAX_BYTES, createInboundGate, packetNodeLimit } from '../extras/inboundPolicy'
 import { createLogOnce } from '../extras/logOnce'
 import { readInboundPacket } from '../../server/inboundDecode'
 import * as solanaGating from '../../server/solana-gating'
@@ -53,7 +53,7 @@ export class ServerNetwork extends System {
     this.dirtyBlueprints = new Set()
     this.dirtyApps = new Set()
     this.isServer = true
-    this.inbox = [] // raw packets, as (socket, packet) pairs, decoded at the next flush
+    this.inbox = [] // raw packets, as (socket, entry) pairs, decoded at the next flush
     this.gate = createInboundGate()
     this.logOnce = createLogOnce()
     this.dropRelay = createRelayDrop()
@@ -128,23 +128,19 @@ export class ServerNetwork extends System {
     dead.forEach(socket => socket.disconnect())
   }
 
-  // the pre-decode gate: packet type from the header, raw size and per-socket rate (see inboundPolicy.js)
-  admit(socket, name, bytes) {
-    return this.gate.admit(socket, name, bytes, { builder: socket.player?.isBuilder() === true })
+  // Admission charges the bytes and nodes before the inbox retains a copy.
+  admit(socket, packet) {
+    return this.gate.admit(socket, packet, { builder: socket.player?.isBuilder() === true })
   }
 
   // raw packets wait here until the next tick; a socket may park at most INBOX_MAX_BYTES of undecoded wire
-  enqueue(socket, packet) {
+  enqueue(socket, packet, entry) {
     if (socket.inboxBytes + packet.length > INBOX_MAX_BYTES) {
-      this.logOnce(
-        socket,
-        'inbox',
-        `[network] packet from client ${socket.id} dropped: inbox full (further drops are counted)`
-      )
-      return
+      return this.gate.refuse(socket, 'inbox', entry.name, 'inbox full')
     }
-    socket.inboxBytes += packet.length
-    this.inbox.push(socket, packet)
+    const copy = Uint8Array.prototype.slice.call(packet)
+    socket.inboxBytes += entry.bytes
+    this.inbox.push(socket, { ...entry, copy })
   }
 
   // decodes and dispatches in arrival order, at most INBOUND_BYTES_PER_TICK of wire per tick; the rest waits
@@ -154,24 +150,26 @@ export class ServerNetwork extends System {
     let i = 0
     while (i < this.inbox.length && budget > 0) {
       const socket = this.inbox[i++]
-      const packet = this.inbox[i++]
-      budget -= packet.length
-      socket.inboxBytes -= packet.length
+      const entry = this.inbox[i++]
+      const { copy, bytes, nodes, name, builder } = entry
+      budget -= bytes
+      socket.inboxBytes -= bytes
       let decoded
       try {
-        decoded = readInboundPacket(packet)
+        decoded = readInboundPacket(copy, { maxNodes: packetNodeLimit(name) })
       } catch (err) {
-        const reason = String(err?.message || err).slice(0, 80)
-        this.logOnce(
+        this.gate.refuse(
           socket,
-          'undecodable',
-          `[network] packet from client ${socket.id} dropped: undecodable (${reason}) (further drops are counted)`
+          'decoder-bug',
+          name,
+          `decoder bug (${err.message} at pos ${err.pos}, nodes ${err.nodes})`
         )
         continue
       }
       const [method, data] = decoded
       try {
-        const result = this[method]?.(socket, data)
+        const meta = { bytes, nodes, socketId: socket.id, builder }
+        const result = this[method]?.(socket, data, meta)
         // async handlers reject later; keep those failures contained too
         if (typeof result?.then === 'function') result.then(undefined, err => console.error(err))
       } catch (err) {

@@ -1,4 +1,4 @@
-import { packetNameById, peekPacketId, writePacket } from './packets'
+import { writePacket } from './packets'
 
 export class Socket {
   constructor({ id, ws, network, player }) {
@@ -43,11 +43,9 @@ export class Socket {
   }
 
   onMessage = packet => {
-    // the type is read from the header; the packet is decoded at the next flush, within its budget
-    const id = peekPacketId(packet)
-    const name = id < 0 ? null : packetNameById(id)
-    if (!this.network.admit(this, name, packet.length)) return
-    this.network.enqueue(this, packet)
+    const entry = this.network.admit(this, packet)
+    if (!entry) return
+    this.network.enqueue(this, packet, entry)
   }
 
   onClose = e => {

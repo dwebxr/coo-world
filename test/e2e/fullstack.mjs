@@ -460,7 +460,72 @@ async function probes(admin, watcher) {
     eq(admin.since(fromAdmin).filter(RELAY_PACKET).length, 0, 'only the target player received them')
   })
 
-  await step('A10 server log: no unhandled rejections or SES errors', async () => {
+  await step('A10 a malformed chat message is refused; a valid one is rebuilt by the server', async () => {
+    const from = watcher.mark()
+    const before = server.count('onChatAdded: invalid message')
+    // refused: a non-text body, a blank body, a packet that is not a plain object
+    admin.send('chatAdded', { id: 'p4-bad-object', body: { bad: true } })
+    admin.send('chatAdded', { id: 'p4-bad-array', body: ['x'] })
+    admin.send('chatAdded', { id: 'p4-bad-blank', body: '   ' })
+    admin.send('chatAdded', 'just a string')
+    admin.send('chatAdded', null)
+    // accepted: the body is kept, the sender and time are stamped by the server, the rest is dropped
+    admin.send('chatAdded', {
+      id: 'p4-chat',
+      body: '  P4_CHAT_OK  ',
+      from: 'spoof',
+      fromId: 'spoof',
+      createdAt: 'bogus',
+      extra: 1,
+    })
+    admin.send('chatAdded', { id: 'p4-long', body: 'L'.repeat(5000) })
+    admin.send('chatAdded', { id: {}, body: 'P4_CHAT_ID' })
+    const got = await waitUntil(
+      () => {
+        const packets = watcher
+          .since(from)
+          .filter(m => m.method === 'onChatAdded' && /^(P4_CHAT|L{10})/.test(String(m.data?.body)))
+        return packets.length >= 3 ? packets : null
+      },
+      { timeout: 10000, message: 'rebuilt chat messages' }
+    )
+    await sleep(500)
+    eq(server.count('onChatAdded: invalid message') - before, 5, 'one refusal per malformed packet')
+    eq(got.length, 3, 'exactly the accepted messages arrive')
+    const [accepted, long, minted] = got.map(m => m.data)
+    eq(
+      JSON.stringify(Object.keys(accepted).sort()),
+      JSON.stringify(['body', 'createdAt', 'from', 'fromId', 'id']),
+      'fields'
+    )
+    eq(accepted.id, 'p4-chat', 'a short string id is kept')
+    eq(accepted.body, 'P4_CHAT_OK', 'body trimmed')
+    eq(accepted.from, 'admin', 'sender name from the socket')
+    eq(accepted.fromId, admin.id, 'sender id from the socket')
+    ok(!Number.isNaN(Date.parse(accepted.createdAt)) && accepted.createdAt !== 'bogus', 'server time')
+    eq(long.body.length, 500, 'body capped at 500 characters')
+    eq(typeof minted.id, 'string', 'an invalid id is replaced')
+    ok(minted.id !== '[object Object]' && minted.id.length > 0, minted.id)
+    // the history that later clients receive holds only the accepted messages, as text
+    const snap = await snapshot(PORT)
+    ok(
+      snap.chat.every(m => typeof m.body === 'string'),
+      'every stored body is a string'
+    )
+    eq(snap.chat.filter(m => /^p4-bad/.test(m.id)).length, 0, 'no refused message was stored')
+    ok(
+      snap.chat.some(m => m.id === 'p4-chat' && m.body === 'P4_CHAT_OK' && m.from === 'admin'),
+      'the valid one is stored'
+    )
+    eq(snap.chat.find(m => m.id === 'p4-long')?.body.length, 500, 'the long one is stored capped')
+    eq(
+      watcher.since(from).filter(m => m.method === 'onChatAdded' && typeof m.data?.body !== 'string').length,
+      0,
+      'nothing non-text was relayed'
+    )
+  })
+
+  await step('A11 server log: no unhandled rejections or SES errors', async () => {
     const bad = server.lines(/SES_UNCAUGHT|SES_UNHANDLED|UnhandledPromiseRejection/)
     eq(bad.length, 0, bad.slice(0, 2).join(' | '))
   })
@@ -491,6 +556,17 @@ async function probes(admin, watcher) {
   bystander = await new WireClient(PORT, 'bystander').connect()
   await openBrowser()
   const appsAtLoad = await loadChecks()
+  await step('B3b the chat history received at join renders as text after the malformed attempts', async () => {
+    const chat = await page.evaluate(() => ({
+      stored: window.world.chat.msgs.map(m => typeof m.body),
+      rendered: [...document.querySelectorAll('.mainchat-msgs .message-body')].map(e => e.textContent),
+    }))
+    ok(chat.stored.length > 0 && chat.stored.every(t => t === 'string'), `bodies: ${chat.stored.join(',')}`)
+    ok(chat.rendered.includes('P4_CHAT_OK'), 'the valid message is rendered')
+    ok(!chat.rendered.some(t => t.includes('[object Object]')), 'no object rendered as text')
+    eq(errorLines().length + pageErrors.length, 0, 'no errors while rendering the chat')
+    return `${chat.rendered.length} messages rendered`
+  })
 
   await becomeAdmin(page)
   record(true, 'B4 browser player is admin')

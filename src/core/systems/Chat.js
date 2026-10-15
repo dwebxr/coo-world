@@ -32,9 +32,11 @@ export class Chat extends System {
     for (const callback of this.listeners) {
       callback(this.msgs)
     }
-    if (msg.fromId) {
+    // the bubble shows text only; a message made by a script with another kind of body gets no bubble
+    const body = msg.body
+    if (msg.fromId && (typeof body === 'string' || typeof body === 'number')) {
       const player = this.world.entities.getPlayer(msg.fromId)
-      player?.chat(msg.body)
+      player?.chat(body)
     }
     // emit chat event
     const readOnly = Object.freeze({ ...msg })

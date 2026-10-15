@@ -16,6 +16,7 @@ import {
   sanitizePlayerSelfModify,
 } from '../extras/entityModifyPolicy'
 import { createRelayDrop } from '../extras/playerRelayPolicy'
+import { sanitizeChatMessage } from '../extras/chatPolicy'
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../extras/settingsPolicy'
 import { internalEvents } from '../extras/internalEvents'
 import * as solanaGating from '../../server/solana-gating'
@@ -341,12 +342,19 @@ export class ServerNetwork extends System {
   }
 
   onChatAdded = async (socket, msg) => {
-    if (!isObject(msg)) return
-    // the sender identity comes from the socket, not the packet
-    msg.from = socket.player.data.name
-    msg.fromId = socket.player.data.id
-    this.world.chat.add(msg, false)
-    this.send('chatAdded', msg, socket.id)
+    // the stored and broadcast message is built here from the allowed fields only; the sender identity
+    // and the time come from the server, not the packet
+    const safe = sanitizeChatMessage(msg)
+    if (!safe) return console.error('onChatAdded: invalid message')
+    const message = {
+      id: safe.id || uuid(),
+      from: socket.player.data.name,
+      fromId: socket.player.data.id,
+      body: safe.body,
+      createdAt: moment().toISOString(),
+    }
+    this.world.chat.add(message, false)
+    this.send('chatAdded', message, socket.id)
   }
 
   onCommand = async (socket, data) => {

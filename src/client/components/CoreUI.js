@@ -386,6 +386,8 @@ function Messages({ world, active }) {
 }
 
 function Message({ msg, now }) {
+  // a body that is not text (a script-made message) shows as nothing instead of breaking the list
+  const body = typeof msg.body === 'object' ? null : msg.body
   // const timeAgo = useMemo(() => {
   //   const createdAt = moment(msg.createdAt)
   //   const age = now.diff(createdAt, 'seconds')
@@ -418,7 +420,7 @@ function Message({ msg, now }) {
       `}
     >
       {msg.from && <span className='message-from'>[{msg.from}]</span>}
-      <span className='message-body'>{msg.body}</span>
+      <span className='message-body'>{body}</span>
       {/* <span>{timeAgo}</span> */}
     </div>
   )

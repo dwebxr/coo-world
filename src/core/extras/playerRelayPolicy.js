@@ -2,9 +2,8 @@
 // Pure: the client checks a payload before it reaches physics or the avatar loader, and the server drops
 // the same packets when a client sends them. The client-originated relays of these packets to other
 // players were removed; the names stay registered for the server -> client direction.
-import { isAvatarUrl } from './entityModifyPolicy.js'
-
-const isObject = value => value !== null && typeof value === 'object'
+// Every property is read once, so the value checked is the value kept.
+import { isAvatarUrl, isPlainObject } from './entityModifyPolicy.js'
 
 // three finite numbers, read once, returned as a new array
 function finiteTriple(value) {
@@ -17,26 +16,30 @@ function finiteTriple(value) {
 }
 
 export function sanitizeTeleport(data) {
-  if (!isObject(data)) return null
+  if (!isPlainObject(data)) return null
   const position = finiteTriple(data.position)
   if (!position) return null
   const safe = { position }
   // a rotationY that is not a finite number is left out, not rejected: respawn hooks pass a quaternion here
-  if (Number.isFinite(data.rotationY)) safe.rotationY = data.rotationY
+  const rotationY = data.rotationY
+  if (Number.isFinite(rotationY)) safe.rotationY = rotationY
   return safe
 }
 
 export function sanitizePush(data) {
-  if (!isObject(data)) return null
+  if (!isPlainObject(data)) return null
   const force = finiteTriple(data.force)
   if (!force) return null
   return { force }
 }
 
-// `{ avatar }`, where null/undefined clears the session avatar
+// `{ avatar }`, where null/undefined clears the session avatar. only a plain object counts as that shape:
+// a decoded array, Map or typed array has no avatar and must not clear anything
 export function sanitizeSessionAvatar(data) {
-  if (!isObject(data) || !isAvatarUrl(data.avatar)) return null
-  return { avatar: data.avatar }
+  if (!isPlainObject(data)) return null
+  const avatar = data.avatar
+  if (!isAvatarUrl(avatar)) return null
+  return { avatar }
 }
 
 // the server's handling of a relay packet a client sent: ignore it and say so once per socket and packet

@@ -14,7 +14,7 @@ const encoder = new TextEncoder()
 
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key)
 
-function isPlainObject(value) {
+export function isPlainObject(value) {
   if (value === null || typeof value !== 'object') return false
   const proto = Object.getPrototypeOf(value)
   return proto === Object.prototype || proto === null
@@ -95,6 +95,9 @@ export function isAvatarUrl(value) {
   if (value === undefined || value === null) return true
   if (typeof value !== 'string' || value.length > AVATAR_URL_MAX_LENGTH) return false
   if (AVATAR_ASSET_URL.test(value)) return true
+  // the literal prefix the loader passes through unchanged (World.resolveURL); spellings such as
+  // `http:/x` or `https:host/a.vrm` parse but would be rewritten before loading, so they are refused
+  if (!/^https?:\/\//i.test(value)) return false
   try {
     const { protocol } = new URL(value)
     return protocol === 'http:' || protocol === 'https:'
@@ -120,8 +123,15 @@ export function sanitizePlayerSelfModify(data, socketId, { allowAvatar = false }
     const name = sanitizeName(data.name)
     if (name !== undefined) safe.name = name
   }
-  if (has(data, 'sessionAvatar') && isAvatarUrl(data.sessionAvatar)) safe.sessionAvatar = data.sessionAvatar
-  if (allowAvatar && typeof data.avatar === 'string' && isAvatarUrl(data.avatar)) safe.avatar = data.avatar
+  // each url is read once, so the value checked is the value kept
+  if (has(data, 'sessionAvatar')) {
+    const sessionAvatar = data.sessionAvatar
+    if (isAvatarUrl(sessionAvatar)) safe.sessionAvatar = sessionAvatar
+  }
+  if (allowAvatar) {
+    const avatar = data.avatar
+    if (typeof avatar === 'string' && isAvatarUrl(avatar)) safe.avatar = avatar
+  }
   return Object.keys(safe).length > 1 ? safe : null
 }
 

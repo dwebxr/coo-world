@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - apps: `player.setSessionAvatar()` called from a client script on a remote player cleared that player's avatar instead of changing it (the relayed packet had the wrong shape); the remote path is now server-only (see Changed).
+- server: a chat message from a client is rebuilt from its text only (trimmed, up to 500 characters; sender and time stamped by the server). A message whose body was not text used to stay in the history and break the chat list of every client that joined afterwards; it is now refused. The client also skips a non-text body when rendering or showing a bubble.
 
 ## [v0.16.0]
 

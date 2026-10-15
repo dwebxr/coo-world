@@ -159,6 +159,25 @@ test('isAvatarUrl: other schemes, non-vrm or nested assets, non-strings and long
   assert.equal(isAvatarUrl(`asset://${'a'.repeat(510)}.vrm`), false)
 })
 
+test('isAvatarUrl: only the literal http:// or https:// prefix counts, as the loader passes it through', () => {
+  // these parse with new URL but World.resolveURL would prefix them with https:// before loading
+  for (const v of [
+    'http:/x/a.vrm',
+    'http:x/a.vrm',
+    'https:example.com/a.vrm',
+    'https:/example.com/a.vrm',
+    'http:\\\\example.com/a.vrm',
+    ' https://example.com/a.vrm',
+    '//example.com/a.vrm',
+  ]) {
+    assert.equal(isAvatarUrl(v), false, v)
+  }
+  // the prefix is matched case-insensitively, like the loader does
+  assert.equal(isAvatarUrl('HTTP://example.com/a.vrm'), true)
+  assert.equal(isAvatarUrl('Https://example.com/a.vrm'), true)
+  assert.equal(isAvatarUrl('https://user:pw@example.com:8443/a.vrm'), true)
+})
+
 // --- sanitizePlayerSelfModify ---
 
 test('sanitizePlayerSelfModify: every owner field with a valid value survives, keyed by the socket id', () => {
@@ -272,6 +291,41 @@ test('sanitizePlayerSelfModify: sessionAvatar and avatar follow the avatar url p
   })
   // the equipped avatar is still a string only; null never persists
   assert.equal(sanitizePlayerSelfModify({ id: me, avatar: null }, me, { allowAvatar: true }), null)
+})
+
+test('sanitizePlayerSelfModify: sessionAvatar and avatar are read once (alternating getters and proxy traps)', () => {
+  const reads = { sessionAvatar: 0, avatar: 0 }
+  const data = { id: me }
+  for (const key of ['sessionAvatar', 'avatar']) {
+    Object.defineProperty(data, key, {
+      enumerable: true,
+      get() {
+        return reads[key]++ === 0 ? 'asset://avatar.vrm' : 'javascript:1'
+      },
+    })
+  }
+  assert.deepEqual(sanitizePlayerSelfModify(data, me, { allowAvatar: true }), {
+    id: me,
+    sessionAvatar: 'asset://avatar.vrm',
+    avatar: 'asset://avatar.vrm',
+  })
+  assert.deepEqual(reads, { sessionAvatar: 1, avatar: 1 })
+
+  let traps = 0
+  const proxied = new Proxy(
+    { id: me, sessionAvatar: 'asset://avatar.vrm', avatar: 'asset://avatar.vrm' },
+    {
+      get(target, key) {
+        if (key === 'sessionAvatar' || key === 'avatar')
+          return traps++ % 2 === 0 ? 'asset://avatar.vrm' : 'javascript:1'
+        return target[key]
+      },
+    }
+  )
+  const safe = sanitizePlayerSelfModify(proxied, me, { allowAvatar: true })
+  // one read each: the first value is accepted, the second rejected, and nothing unchecked is kept
+  assert.deepEqual(safe, { id: me, sessionAvatar: 'asset://avatar.vrm' })
+  assert.equal(traps, 2)
 })
 
 test('sanitizePlayerSelfModify: avatar is included only when allowed, other fields still apply', () => {

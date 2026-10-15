@@ -33,26 +33,35 @@ export function runProbe(bundle, probe, args) {
     import { parentPort, workerData } from 'node:worker_threads'
     globalThis.self = { postMessage() {} }
     if (workerData.args?.browser) globalThis.window = {}
-    const module = await import(workerData.url)
-    await (${probe.toString()})(module, workerData.args)
-    parentPort.postMessage('done')
+    // no top-level await: terminating a worker while its entry module settles aborts V8 (Node 22)
+    import(workerData.url)
+      .then(module => (${probe.toString()})(module, workerData.args))
+      .then(() => parentPort.postMessage('done'))
   `
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL(`data:text/javascript,${encodeURIComponent(source)}`), {
       workerData: { url: bundle.url, args },
     })
     let settled = false
-    const finish = async error => {
+    let done = false
+    let grace
+    const finish = async (error, exited = false) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      await worker.terminate()
+      clearTimeout(grace)
+      if (!exited) await worker.terminate()
       if (error) reject(error)
       else resolve()
     }
     const timer = setTimeout(() => finish(new Error('worker probe exceeded 2 s deadline')), 2000)
-    worker.once('message', () => finish())
-    worker.once('error', finish)
-    worker.once('exit', code => finish(new Error(`worker exited before completing probe (${code})`)))
+    // a finished probe exits on its own; terminate only if it lingers
+    worker.once('message', () => {
+      done = true
+      clearTimeout(timer)
+      grace = setTimeout(() => finish(), 1000)
+    })
+    worker.once('error', err => finish(err))
+    worker.once('exit', code => finish(done ? null : new Error(`worker exited before completing probe (${code})`), true))
   })
 }

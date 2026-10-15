@@ -469,7 +469,13 @@ async function runSuite() {
           active: window.world?.ui?.state?.active,
         }))
         fs.appendFileSync(`${PREFIX}-console.log`, `\n[harness] page state at exit: ${JSON.stringify(state)}\n`)
-        await bounded(page.screenshot({ path: `${PREFIX}-final.png`, timeout: 5000 * TIMEOUT_SCALE }), 'screenshot')
+        // the screenshot is a failure artifact only; software-rendered CI browsers can take longer than the
+        // watchdog allows for it, and a frozen page has already failed through the frame checks
+        if (results.some(r => !r.ok)) {
+          await page.screenshot({ path: `${PREFIX}-final.png`, timeout: 5000 * TIMEOUT_SCALE }).catch(err => {
+            fs.appendFileSync(`${PREFIX}-console.log`, `[harness] screenshot unavailable: ${err.message}\n`)
+          })
+        }
       }
     } catch (err) {
       record(false, 'artifact capture', err.message)

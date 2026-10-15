@@ -26,6 +26,10 @@ The local euler rotation of the node. Updating this automatically updates the `q
 
 The local scale of the node.
 
+For app root transforms sent over the network, position, quaternion and scale validation follows the
+[app transform rules](/docs/scripting/app/App.md). Local node assignments and composed child
+transforms are not constrained by that network boundary.
+
 ### `.matrixWorld`: Matrix4
 
 The world matrix of this node in global space.

@@ -67,6 +67,10 @@ jobs:
         continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/fullstack.mjs --engine=${{ matrix.engine }}
 
+      - name: Hostile player transforms (local throwaway world)
+        continue-on-error: ${{ matrix.engine == 'firefox' }}
+        run: node test/e2e/hostile-transforms.mjs --engine=${{ matrix.engine }}
+
       - name: Extras (movement, avatar, uploads, AI mock, agent)
         continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/gate-extras.mjs --engine=${{ matrix.engine }}

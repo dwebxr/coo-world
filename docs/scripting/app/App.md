@@ -23,6 +23,18 @@ The servers state object is sent to all new clients that connect in their initia
 
 Inherits all [Node](/docs/scripting/nodes/Node.md) properties
 
+When app transforms cross the network (creation or builder edits), position components must be finite
+and within `[-1e6, 1e6]` metres. Quaternions with a norm within 0.1 of 1 are normalised; other rotations
+are refused. Each scale component must convert to a finite, non-zero f32 value; negative scales and
+`1e-9` are allowed, and scale has no `1e6` magnitude cap. Invalid modify fields retain their previous
+values; invalid transforms reject a new app. A mover who loses builder rank can only release its own
+move/upload, retaining the last accepted transform even if the release packet includes new ones.
+
+These checks apply to network entity transforms, not arbitrary script assignments, composed node
+hierarchies or persisted builder records on load. Octrees park non-finite/out-of-budget items: they
+can still render but cannot be picked through the octree until a valid move reinserts them. See
+[shared world extent](/docs/scripting/world/World.md#shared-world-extent).
+
 ## Methods
 
 ### `.on(name, callback)`

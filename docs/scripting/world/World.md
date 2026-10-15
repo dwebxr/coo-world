@@ -2,6 +2,21 @@
 
 The global `world` variable is always available within the app scripting runtime.
 
+## Shared world extent
+
+Networked player positions, app positions and spawn positions support `[-1e6, 1e6]` metres on each
+axis (`TRANSFORM_LIMIT = 1e6`, inclusive). Values must be finite. Invalid movement components are
+dropped as a whole position field, so observers retain the previous accepted position. Local flying
+or script-driven movement is not clamped by this network rule; moving outside the extent can make
+the local and shared positions diverge. Teleports also enforce this bound, and server-to-client
+pushes have a separate `1e4` per-component bound; see [Player](/docs/scripting/world/Player.md).
+
+Network quaternions must have a finite norm within 0.1 of 1 and are normalised before use. Invalid
+spawn records fall back to the default spawn; invalid spawn changes are refused. Existing persisted
+builder app transforms and arbitrary composed script transforms are not validated by this boundary.
+
+## API
+
 ### `.networkId`: String
 
 A unique ID for the current server or client.

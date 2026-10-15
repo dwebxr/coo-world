@@ -23,12 +23,14 @@ The server build must come last: each build empties `build/`.
 | --- | --- |
 | `fullstack.mjs --engine=<e>` | boots a server on a throwaway `world-e2e-*` directory, runs the sandbox probes over the wire protocol (intrinsic/endowment/stash writes, blob facade, object URL types, error shapes, Stage/Physics containment, the retry cap), then loads the world in the browser: frozen intrinsics, the same probes, `world.open` policy, an image from `createObjectURL`, a throwing script, and the Monaco editor (colouring, widgets, edit + save, server confirmation) |
 | `gate-extras.mjs --engine=<e>` | walk, jump, VRM session avatar, builder uploads (glb/vrm/png), AI create through a mock Anthropic base URL, `agent.mjs` for 60 s |
-| `stress.mjs --engine=<e> [--apps=20 --prims=50 --frames=600] [--monitor]` | 1000 moving nodes; prints per-frame JS mean/median/p90, render commit time and server CPU as JSON; `--monitor` adds the server tick sampler (`MONITOR_TICK=1`) |
+| `stress.mjs --engine=<e> [--apps=20 --prims=50 --frames=600] [--monitor]` | 1000 moving nodes; prints per-frame JS mean/median/p90, render commit time and server CPU as JSON and fails on crashes, errors or fewer frames than requested; `--monitor` adds the server tick sampler (`MONITOR_TICK=1`). CI runs it with `--frames=200` as a smoke; the budgets use 600 |
 
 Options: `--port=<n>` picks the server port, `--world=<dir>` copies an existing world (eg the local
 multi-app `world/`) instead of the default world that the server bootstraps from `src/world`;
 `fullstack.mjs --load-only` boots, loads the world in the browser and runs only the load checks (a
-diagnostic mode for an engine that fails to load). Every run saves `<name>-<engine>-console.log`,
+diagnostic mode for an engine that fails to load). Harness waits are multiplied by `E2E_TIMEOUT_SCALE`
+(default 3 when `CI` is set, else 1) so slow software-rendered runners do not turn a late event into a
+failure. Every run saves `<name>-<engine>-console.log`,
 `-page-errors.log` (when any), `-final.png` and the server log under the output directory, also when it
 aborts; the console log ends with a `[harness] page state at exit` line (sidebar, world active, WebGL
 renderer, harden state).

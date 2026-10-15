@@ -17,7 +17,16 @@ export async function launchBrowser(engine) {
     options.args = ['--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--ignore-gpu-blocklist']
   }
   if (engine === 'firefox') {
-    options.firefoxUserPrefs = { 'webgl.force-enabled': true }
+    // headless Firefox on a Linux runner has no GPU: force WebGL on top of software WebRender
+    options.firefoxUserPrefs = {
+      'webgl.disabled': false,
+      'webgl.force-enabled': true,
+      'webgl.disable-fail-if-major-performance-caveat': true,
+      'gfx.webrender.software': true,
+      'gfx.webrender.all': true,
+      'layers.acceleration.force-enabled': true,
+      'media.autoplay.default': 0,
+    }
   }
   // a local pairing with a different browser build (eg a WebKit from another Playwright version)
   const executable = process.env[`E2E_${engine.toUpperCase()}_EXECUTABLE`]

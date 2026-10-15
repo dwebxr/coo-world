@@ -55,8 +55,11 @@ export const eq = (actual, expected, message) => {
   }
 }
 
+// every harness wait is scaled for slow machines: E2E_TIMEOUT_SCALE, or 3x on CI runners by default
+export const TIMEOUT_SCALE = Number(process.env.E2E_TIMEOUT_SCALE) || (process.env.CI ? 3 : 1)
+
 export async function waitUntil(fn, { timeout = 15000, interval = 200, message = 'condition' } = {}) {
-  const deadline = Date.now() + timeout
+  const deadline = Date.now() + timeout * TIMEOUT_SCALE
   for (;;) {
     const value = await fn()
     if (value) return value

@@ -10,11 +10,11 @@ if (props.destroyThrows) {
     throw new Error('P1_DESTROY_BOOM')
   })
 }
-let elapsed = 0
+// armed on the first update (the node is mounted by app.add): a frame-counted delay would scale with
+// the renderer's speed and make a slow headless browser look like a missing crash
 let armed = false
-app.on('update', delta => {
-  elapsed += delta
-  if (armed || elapsed < 1) return
+app.on('update', () => {
+  if (armed) return
   armed = true
   node.position.x = {
     valueOf() {

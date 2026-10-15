@@ -65,9 +65,10 @@ jobs:
       - name: Extras (movement, avatar, uploads, AI mock, agent)
         run: node test/e2e/gate-extras.mjs --engine=${{ matrix.engine }}
 
-      # a smoke only on shared runners; the performance budgets are enforced on a designated machine
+      # a smoke only on shared runners (failures and errors, not throughput): 200 frames fit a slow
+      # software-rendered run; the performance budgets (600 frames) are enforced on a designated machine
       - name: Stress (smoke)
-        run: node test/e2e/stress.mjs --engine=${{ matrix.engine }} --frames=600
+        run: node test/e2e/stress.mjs --engine=${{ matrix.engine }} --frames=200
 
       - name: Upload logs and screenshots
         if: failure()

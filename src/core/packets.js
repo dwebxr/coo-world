@@ -1,5 +1,7 @@
 import { Packr } from 'msgpackr'
 
+export const PROTOCOL_VERSION = 2
+
 const packr = new Packr({ structuredClone: true })
 const clientPackr = new Packr({ useRecords: false, structuredClone: false, moreTypes: false, bundleStrings: false })
 

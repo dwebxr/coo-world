@@ -7,7 +7,7 @@ import {
   describeAbort,
   fetchWithRetry,
 } from '../extras/uploadQueue'
-import { readPacket, writeClientPacket } from '../packets'
+import { PROTOCOL_VERSION, readPacket, writeClientPacket } from '../packets'
 import { sanitizePush, sanitizeSessionAvatar, sanitizeTeleport } from '../extras/playerRelayPolicy'
 import { storage } from '../storage'
 import { createDispatchQueue, uuid } from '../utils'
@@ -40,7 +40,7 @@ export class ClientNetwork extends System {
     // これにより同一マシンで複数の node-client エージェントを衝突なく起動できる。
     this.onAuthToken = onAuthToken || null
     const token = authToken ?? (this.onAuthToken ? '' : storage.get('authToken'))
-    let url = `${wsUrl}?authToken=${token}`
+    let url = `${wsUrl}?authToken=${token}&v=${PROTOCOL_VERSION}`
     if (name) url += `&name=${encodeURIComponent(name)}`
     if (avatar) url += `&avatar=${encodeURIComponent(avatar)}`
     this.ws = new WebSocket(url)

@@ -6,12 +6,15 @@ import { pathToFileURL } from 'node:url'
 
 import { REPO_ROOT } from './common.mjs'
 
-const { readPacket, writeClientPacket } = await import(pathToFileURL(path.join(REPO_ROOT, 'src/core/packets.js')))
+const { PROTOCOL_VERSION, readPacket, writeClientPacket } = await import(
+  pathToFileURL(path.join(REPO_ROOT, 'src/core/packets.js'))
+)
 
 export class WireClient {
-  constructor(port, label = 'wire') {
+  constructor(port, label = 'wire', { version = PROTOCOL_VERSION } = {}) {
     this.port = port
     this.label = label
+    this.version = version
     this.inbox = []
     this.waiters = []
   }
@@ -19,7 +22,9 @@ export class WireClient {
   // opens the socket without waiting for a snapshot (a refused connection never gets one); `closed` resolves
   // with the close code
   async open(name = this.label) {
-    const ws = new WebSocket(`ws://localhost:${this.port}/ws?authToken=&name=${encodeURIComponent(name)}`)
+    let url = `ws://localhost:${this.port}/ws?authToken=&name=${encodeURIComponent(name)}`
+    if (this.version !== null) url += `&v=${encodeURIComponent(this.version)}`
+    const ws = new WebSocket(url)
     ws.binaryType = 'arraybuffer'
     this.ws = ws
     this.closed = new Promise(resolve => ws.addEventListener('close', e => resolve(e.code)))

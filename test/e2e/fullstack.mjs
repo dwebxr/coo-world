@@ -8,6 +8,7 @@
 // Requires the four builds (see .github/workflows/e2e.yml). Logs and screenshots go to test/e2e/out/.
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import Database from 'better-sqlite3'
 
 import { APPS_DIR, REPO_ROOT, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
 import { installAsset, startServer } from './lib/server.mjs'
@@ -733,6 +734,27 @@ async function probes(admin, watcher) {
       return `${admitted} admitted, ${refused} refused`
     } finally {
       await limited.stop()
+    }
+  })
+
+  await step('A15 an outdated client is kicked before any users row is created', async () => {
+    const db = new Database(path.join(server.worldDir, 'db.sqlite'), { readonly: true, fileMustExist: true })
+    const outdated = new WireClient(PORT, 'outdated', { version: null })
+    try {
+      const countUsers = db.prepare('SELECT COUNT(*) AS count FROM users')
+      const before = countUsers.get().count
+      await outdated.open()
+      const kick = await outdated.waitFor(m => m.method === 'onKick')
+      eq(kick.data, 'outdated', 'missing version carries the outdated kick reason')
+      let closeCode
+      outdated.closed.then(code => (closeCode = code))
+      await waitUntil(() => closeCode !== undefined, { message: 'outdated socket to close' })
+      eq(closeCode, 1008, 'outdated socket closes with 1008')
+      eq(outdated.inbox.filter(m => m.method === 'onSnapshot').length, 0, 'no snapshot was sent')
+      eq(countUsers.get().count, before, 'no users row was created')
+    } finally {
+      outdated.close()
+      db.close()
     }
   })
 

@@ -11,7 +11,7 @@ import compress from '@fastify/compress'
 import statics from '@fastify/static'
 
 import { createServerWorld } from '../core/createServerWorld'
-import { writePacket } from '../core/packets'
+import { PROTOCOL_VERSION, writePacket } from '../core/packets'
 import { readJWT } from '../core/utils-server'
 import { getDB } from './db'
 import { Storage } from './Storage'
@@ -243,6 +243,11 @@ async function worldNetwork(fastify) {
       return
     }
     ws.on('close', verdict.release)
+    if (req.query.v !== String(PROTOCOL_VERSION)) {
+      ws.send(writePacket('kick', 'outdated'))
+      ws.close(1008, 'outdated')
+      return
+    }
     world.network.onConnection(ws, req.query)
   })
 }

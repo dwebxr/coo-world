@@ -8,7 +8,7 @@ import { createNodeClientWorld } from './build/world-node-client.js'
 // - 設定は環境変数から (WS_URL / AGENT_ID / AGENT_NAME / AGENT_AVATAR)
 // - authToken を per-instance ファイルに保存し、同一マシンで複数体を衝突なく起動可能
 //   (ClientNetwork.init の authToken/onAuthToken 経路を使用)
-// - 切断時は指数 backoff で再接続。kick 理由で分岐 (moderation/duplicate_user は再試行しない)
+// - 切断時は指数 backoff で再接続。kick 理由で分岐 (moderation/duplicate_user/outdated は再試行しない)
 // - perceive(チャット/近傍プレイヤー) -> decide(差し替え可能) -> act のループ
 //
 // 実運用では createBehavior() を LLM 駆動のポリシーに差し替える。
@@ -142,8 +142,11 @@ function connect() {
 
   world.on('kick', code => {
     console.log(`[agent ${AGENT_ID}] kicked: ${code}`)
-    if (code === 'moderation' || code === 'duplicate_user') {
+    if (code === 'moderation' || code === 'duplicate_user' || code === 'outdated') {
       console.error(`[agent ${AGENT_ID}] not retrying (${code})`)
+      if (code === 'outdated') {
+        console.error(`[agent ${AGENT_ID}] rebuild the node client (npm run node-client:build) and restart`)
+      }
       stopped = true
     }
     // transient kicks (player_limit 等) は disconnect ハンドラ経由で再接続

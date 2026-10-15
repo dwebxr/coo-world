@@ -387,7 +387,8 @@ export class PlayerLocal extends Entity {
     const xr = this.isXR
     const freeze = this.data.effect?.freeze
     const anchor = this.getAnchorMatrix()
-    const snare = this.data.effect?.snare || 0
+    let snare = this.data.effect?.snare
+    if (!Number.isFinite(snare) || snare < 0 || snare > 1) snare = 0
 
     if (anchor && !this.capsuleDisabled) {
       this.capsule.setActorFlag(PHYSX.PxActorFlagEnum.eDISABLE_SIMULATION, true)
@@ -669,7 +670,7 @@ export class PlayerLocal extends Entity {
 
       // ground/air jump
       const shouldJump =
-        this.grounded && !this.jumping && this.jumpDown && !this.data.effect?.snare && !this.data.effect?.freeze
+        this.grounded && !this.jumping && this.jumpDown && !snare && !this.data.effect?.freeze
       const shouldAirJump =
         false && !this.grounded && !this.airJumped && this.jumpPressed && !this.world.builder?.enabled // temp: disabled
       if (shouldJump || shouldAirJump) {
@@ -946,7 +947,7 @@ export class PlayerLocal extends Entity {
     } else {
       rotY = this.cam.rotation.y
     }
-    if (this.data.effect?.turn) {
+    if (this.data.effect?.turn === true) {
       applyRotY = true
     } else if (this.moving || this.firstPerson) {
       applyRotY = true
@@ -961,10 +962,8 @@ export class PlayerLocal extends Entity {
     }
 
     // apply emote
-    let emote
-    if (this.data.effect?.emote) {
-      emote = this.data.effect.emote
-    }
+    let emote = this.data.effect?.emote
+    if (typeof emote !== 'string' || !isEmoteUrl(emote)) emote = undefined
     if (this.emote !== emote) {
       this.emote = emote
     }
@@ -972,8 +971,8 @@ export class PlayerLocal extends Entity {
 
     // get locomotion mode
     let mode
-    if (this.data.effect?.emote) {
-      // emote = this.data.effect.emote
+    if (emote) {
+      // emote overrides locomotion
     } else if (this.flying) {
       mode = Modes.FLY
     } else if (this.airJumping) {
@@ -1066,8 +1065,10 @@ export class PlayerLocal extends Entity {
     }
 
     // effect duration
-    if (this.data.effect?.duration) {
-      this.data.effect.duration -= delta
+    const duration = this.data.effect?.duration
+    // zero (like any falsy value) means no duration, as before
+    if (Number.isFinite(duration) && duration > 0) {
+      this.data.effect.duration = duration - delta
       if (this.data.effect.duration <= 0) {
         this.setEffect(null)
       }

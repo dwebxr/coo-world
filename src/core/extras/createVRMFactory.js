@@ -231,7 +231,8 @@ export function createVRMFactory(glb, setupMaterial) {
       if (!url) return
       const opts = getQueryParams(url)
       const loop = opts.l !== '0'
-      const speed = parseFloat(opts.s || 1)
+      let speed = parseFloat(opts.s || 1)
+      if (!Number.isFinite(speed) || speed < 0.01 || speed > 100) speed = 1
       const gaze = opts.g == '1'
 
       if (emotes[url]) {
@@ -472,7 +473,8 @@ export function createVRMFactory(glb, setupMaterial) {
     const poses = {}
     function addPose(key, url) {
       const opts = getQueryParams(url)
-      const speed = parseFloat(opts.s || 1)
+      let speed = parseFloat(opts.s || 1)
+      if (!Number.isFinite(speed) || speed < 0.01 || speed > 100) speed = 1
       const pose = {
         loading: true,
         active: false,

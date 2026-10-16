@@ -200,13 +200,13 @@ async function runSuite() {
     return id === SENTINEL ? result : result.value
   }
   const status = realm => command(realm, PROBE, 'status')
-  const waitStatus = (realm, predicate, message) =>
+  const waitStatus = (realm, predicate, message, timeout = 45000) =>
     waitUntil(
       async () => {
         const value = await status(realm)
         return predicate(value) && value
       },
-      { timeout: 45000, interval: 150, message: `${realm}: ${message}` }
+      { timeout, interval: 150, message: `${realm}: ${message}` }
     )
   const player = () =>
     evaluate(() => {
@@ -230,7 +230,8 @@ async function runSuite() {
     })
   const simulate = async seconds => {
     const start = await status('client')
-    return waitStatus('client', value => value.elapsed - start.elapsed >= seconds, `${seconds}s simulated time`)
+    // software-rendered CI browsers simulate far slower than real time
+    return waitStatus('client', value => value.elapsed - start.elapsed >= seconds, `${seconds}s simulated time`, 45000 + seconds * 30000)
   }
   const key = (action, name) => bounded(page.keyboard[action](name), `keyboard ${action} ${name}`)
   const check = async (name, fn) => {

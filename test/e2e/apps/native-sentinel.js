@@ -46,7 +46,8 @@ function arm() {
         const replacement = { ...original }
         const label = `${name}.${String(key)}`
         if (typeof original.value === 'function') replacement.value = wrap(original.value, label)
-        if (original.get) replacement.get = wrap(original.get, `${label}.get`)
+        // getters are left alone: their receiver is the THREE instance and they return numbers, so they cannot carry
+        // a native, and wrapping every component read made software-rendered CI browsers too slow to simulate
         if (original.set) replacement.set = wrap(original.set, `${label}.set`)
         saved.push({ proto, key, original })
         Object.defineProperty(proto, key, replacement)

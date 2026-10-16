@@ -120,7 +120,7 @@ on failure. Console, page errors, server logs and `physics-boundary-<engine>-res
 
 `native-sentinel.js` enumerates `Reflect.ownKeys` on endowed Enhanced Vector3, stock Vector3
 (`Object.getPrototypeOf(new Object3D().position)`), Quaternion, Euler and Matrix4 prototypes. It
-preserves descriptors while wrapping string/Symbol data functions and accessor getters/setters,
+preserves descriptors while wrapping string/Symbol data functions and accessor setters (getters are left unwrapped: they return numbers from the THREE instance itself, and wrapping every component read made software-rendered CI browsers too slow),
 skips constructors, and checks receiver, arguments and return values for presence of `ptr` inside
 `try`. Wrappers store only method/counter metadata and never read components. Before scenarios,
 copying a fake native records exactly one violation; chaining, components, iteration and change

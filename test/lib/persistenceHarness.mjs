@@ -117,6 +117,8 @@ export function fixture(t, db = database().db) {
   network.db = db
   network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
   world.settings = new Settings(world)
+  network.loadedConfig?.set('spawn', JSON.stringify(network.spawn))
+  network.loadedConfig?.set('settings', JSON.stringify(world.settings.serialize()))
   world.settings.on('change', network.saveSettings)
   world.entities = new Entities(world)
   world.entities.add = data => {

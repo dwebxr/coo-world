@@ -80,7 +80,7 @@ test('Server.tick never re-arms if destroy occurs during a throwing tick', t => 
   assert.equal(timers.tasks.size, 0)
 })
 
-test('Server.tick error dedupe is capped at 32 metadata messages', t => {
+test('Server.tick error dedupe is capped at 32 messages', t => {
   const timers = clock(t)
   const logs = []
   t.mock.method(console, 'error', line => logs.push(line))
@@ -119,7 +119,7 @@ test('crash immediately suppresses every recipient, world events and timers; fai
   world.events.emit('test')
   assert.deepEqual(seen, ['first'])
   assert.equal(timers.tasks.size, 0)
-  assert.throws(() => app.setTimeout(() => {}, 0), /disabled/)
+  assert.throws(() => app.setTimeout(() => {}, 0), /this app has stopped/)
   for (let i = 0; i < 8; i++) await Promise.resolve()
   assert.equal(app.crashed, true)
   assert.equal(app.building, false)

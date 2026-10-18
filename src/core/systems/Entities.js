@@ -68,7 +68,7 @@ export class Entities extends System {
     const entity = this.items.get(id)
     if (!entity) return console.warn(`tried to remove entity that did not exist: ${id}`)
     if (entity.isPlayer) this.players.delete(entity.data.id)
-    if (entity.isApp && this.world.network.isServer) this.world.network.markAppDeleted(id)
+    if (entity.isApp && this.world.network.isServer && !this.destroying) this.world.network.markAppDeleted(id)
     entity.destroy()
     this.items.delete(id)
     this.emit('removed', entity)
@@ -115,11 +115,16 @@ export class Entities extends System {
   }
 
   destroy() {
-    this.items.forEach(item => {
-      this.remove(item.data.id)
-    })
-    this.items.clear()
-    this.players.clear()
-    this.hot.clear()
+    this.destroying = true
+    try {
+      this.items.forEach(item => {
+        this.remove(item.data.id)
+      })
+      this.items.clear()
+      this.players.clear()
+      this.hot.clear()
+    } finally {
+      this.destroying = false
+    }
   }
 }

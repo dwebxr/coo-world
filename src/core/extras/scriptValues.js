@@ -58,11 +58,11 @@ export function toScriptError(err) {
   return error
 }
 
-export function callForScript(fn, thisArg, args) {
+export function callForScript(fn, thisArg, args, allowDestroy = false) {
   const entity = thisArg?.ctx?.entity || thisArg
   const world = thisArg?.ctx?.world || entity?.world
   try {
-    assertScriptActive(entity, world)
+    assertScriptActive(entity, world, allowDestroy)
     return Reflect.apply(fn, thisArg, args)
   } catch (err) {
     handlePhysicsFailure(err, { entity, world, phase: 'callForScript' })

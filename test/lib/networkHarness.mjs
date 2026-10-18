@@ -99,6 +99,8 @@ export function makeNetwork(log = () => {}) {
   network.sockets = new Map()
   network.dirtyBlueprints = new Map()
   network.dirtyApps = new Map()
+  network.loadedConfig = new Map()
+  network.dirtyConfig = new Map()
   network.persistenceRevision = 0
   network.logOnce = createLogOnce(log)
   network.writer = createWriteLedger({ log })

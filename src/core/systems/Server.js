@@ -29,10 +29,11 @@ export class Server extends System {
     try {
       this.world.tick(performance.now())
     } catch (err) {
+      this.world.accumulator = 0
       const message = briefError(err)
       if (this.tickErrors.size < 32 && !this.tickErrors.has(message)) {
         this.tickErrors.add(message)
-        console.error(`[server] tick failed: ${message}`)
+        console.error(`[server] tick failed: ${message}`, err)
       }
     } finally {
       if (this.running && !this.world.fatalError) this.timerId = setTimeout(this.tick, TICK_RATE * 1000)

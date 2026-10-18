@@ -149,9 +149,14 @@ export class App extends Entity {
       (this.mode === Modes.ACTIVE || (this.mode === Modes.MOVING && !this.resetOnMove))
     // (this.mode === Modes.ACTIVE && script && !crashed) ||
     // (this.mode === Modes.MOVING && !this.resetOnMove && !this.scriptError)
-    if (this.n !== n || this.physicsFailureVersion !== failureVersion || this.world.fatalError) return
+    if (this.n !== n || this.world.fatalError) return
+    if (this.physicsFailureVersion !== failureVersion) {
+      this.building = false
+      return
+    }
     if (runScript) {
       this.crashed = false
+      this.nativeFailure = false
       this.abortController = new AbortController()
       try {
         this.script.exec(this.getWorldProxy(), this.getAppProxy(), this.fetch, blueprint.props, this.setTimeout)
@@ -196,11 +201,14 @@ export class App extends Entity {
 
   unbuild() {
     // notify any running script; a throwing listener must not skip the teardown below
+    this.destroying = true
     try {
       this.emit('destroy')
     } catch (err) {
       console.error('script destroy() crashed', this)
       console.error(err)
+    } finally {
+      this.destroying = false
     }
     // cancel any control
     this.control?.release()
@@ -415,29 +423,35 @@ export class App extends Entity {
   }
 
   onWorldEvent(name, callback) {
-    if (this.worldListeners.get(callback)?.name === name) return
+    let listeners = this.worldListeners.get(callback)
+    if (!listeners) this.worldListeners.set(callback, (listeners = new Map()))
+    if (listeners.has(name)) return
     const run = this.deadHook
     const wrapped = (...args) => {
       if (this.crashed || this.world.fatalError || run.dead) return
       callback(...args)
     }
-    this.worldListeners.set(callback, { name, wrapped })
+    listeners.set(name, wrapped)
     this.world.events.on(name, wrapped)
   }
 
   offWorldEvent(name, callback) {
-    const listener = this.worldListeners.get(callback)
-    if (!listener) return
-    this.worldListeners.delete(callback)
-    this.world.events.off(listener.name, listener.wrapped)
+    const listeners = this.worldListeners.get(callback)
+    const wrapped = listeners?.get(name)
+    if (!wrapped) return
+    listeners.delete(name)
+    if (!listeners.size) this.worldListeners.delete(callback)
+    this.world.events.off(name, wrapped)
   }
 
   clearEventListeners() {
     // local
     this.listeners = {}
     // world
-    for (const { name, wrapped } of this.worldListeners.values()) {
-      this.world.events.off(name, wrapped)
+    for (const listeners of this.worldListeners.values()) {
+      for (const [name, wrapped] of listeners) {
+        this.world.events.off(name, wrapped)
+      }
     }
     this.worldListeners.clear()
   }
@@ -526,6 +540,7 @@ export class App extends Entity {
         getters: this.world.apps.worldGetters,
         setters: this.world.apps.worldSetters,
         methods: this.world.apps.worldMethods,
+        destroyMethods: ['off', 'remove'],
       })
     }
     return this.worldProxy
@@ -538,6 +553,7 @@ export class App extends Entity {
         getters: this.world.apps.appGetters,
         setters: this.world.apps.appSetters,
         methods: this.world.apps.appMethods,
+        destroyMethods: ['off', 'send', 'sendTo'],
         // root node props
         fallbackGet: prop => entity.root.getProxy()[prop],
         fallbackSet: (prop, value) => {

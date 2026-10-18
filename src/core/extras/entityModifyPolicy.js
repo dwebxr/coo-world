@@ -81,9 +81,8 @@ export function sanitizePersistedApp(data, { blueprintExists } = {}) {
     quaternion = norm ? unitQuaternion(scaled.map(v => v / norm)) : [0, 0, 0, 1]
   }
   if (
-    !Array.isArray(data.quaternion) ||
-    data.quaternion.length !== 4 ||
-    quaternion.some((v, i) => v !== data.quaternion[i])
+    !boundedArray(data.quaternion, 4, Infinity) ||
+    Math.abs(Math.hypot(...data.quaternion) - 1) > 1e-12
   ) {
     repaired.push('quaternion')
   }

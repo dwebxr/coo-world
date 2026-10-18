@@ -15,7 +15,7 @@ const Network = load('core/systems/ServerNetwork.js', 'ServerNetwork', { writePa
 
 function fixture(t, blueprints = [], entities = [], extra = {}) {
   const world = {
-    settings: { deserialize() {}, setHasAdminCode() {}, on() {} },
+    settings: { deserialize() {}, serialize: () => ({}), setHasAdminCode() {}, on() {} },
     entities: {
       items: new Map(),
       add(data) {
@@ -37,29 +37,33 @@ function fixture(t, blueprints = [], entities = [], extra = {}) {
 
 const row = data => ({ id: data.id, data: JSON.stringify(data) })
 
-test('persisted apps: clamp position and normalize quaternions without narrowing valid scale', () => {
-  assert.equal(typeof policy.sanitizePersistedApp, 'function')
-  assert.equal(typeof policy.appScale, 'function')
-  for (const quaternion of [
-    [0, 0, 0, 2],
-    [1e308, 1e308, 0, 0],
-    [1e-320, 0, 0, 0],
-  ]) {
-    const data = { ...appData(), position: [1e300, -1e300, 7], quaternion, scale: [-1e-9, 1e-40, 3e38] }
-    const before = structuredClone(data)
-    const result = policy.sanitizePersistedApp(data, options)
-    assert.deepEqual(result.data.position, [policy.TRANSFORM_LIMIT, -policy.TRANSFORM_LIMIT, 7])
-    assert.ok(Math.abs(Math.hypot(...result.data.quaternion) - 1) < 1e-14)
-    assert.deepEqual(result.data.scale, data.scale)
-    assert.deepEqual(result.repaired, ['position', 'quaternion'])
-    assert.deepEqual(data, before)
-    assert.notEqual(result.data.scale, data.scale)
+test(
+  'persisted apps: clamp position and normalize quaternions without narrowing valid scale',
+  { timeout: 5000 },
+  () => {
+    assert.equal(typeof policy.sanitizePersistedApp, 'function')
+    assert.equal(typeof policy.appScale, 'function')
+    for (const quaternion of [
+      [0, 0, 0, 2],
+      [1e308, 1e308, 0, 0],
+      [1e-320, 0, 0, 0],
+    ]) {
+      const data = { ...appData(), position: [1e300, -1e300, 7], quaternion, scale: [-1e-9, 1e-40, 3e38] }
+      const before = structuredClone(data)
+      const result = policy.sanitizePersistedApp(data, options)
+      assert.deepEqual(result.data.position, [policy.TRANSFORM_LIMIT, -policy.TRANSFORM_LIMIT, 7])
+      assert.ok(Math.abs(Math.hypot(...result.data.quaternion) - 1) < 1e-14)
+      assert.deepEqual(result.data.scale, data.scale)
+      assert.deepEqual(result.repaired, ['position', 'quaternion'])
+      assert.deepEqual(data, before)
+      assert.notEqual(result.data.scale, data.scale)
+    }
+    const good = policy.sanitizePersistedApp(appData(), options)
+    assert.deepEqual(good.repaired, [])
   }
-  const good = policy.sanitizePersistedApp(appData(), options)
-  assert.deepEqual(good.repaired, [])
-})
+)
 
-test('persisted apps: invalid transform shapes reset safely and report the repaired fields', () => {
+test('persisted apps: invalid transform shapes reset safely and report the repaired fields', { timeout: 5000 }, () => {
   assert.equal(typeof policy.sanitizePersistedApp, 'function')
   for (const value of [null, [], 'bad', [0, 0, 0, 0], [1, 2], [NaN, Infinity, 'x']]) {
     const result = policy.sanitizePersistedApp(
@@ -80,7 +84,7 @@ test('persisted apps: invalid transform shapes reset safely and report the repai
   assert.deepEqual(result.data.state, {})
 })
 
-test('persisted apps: unusable identity, type or blueprint skips the row', () => {
+test('persisted apps: unusable identity, type or blueprint skips the row', { timeout: 5000 }, () => {
   assert.equal(typeof policy.sanitizePersistedApp, 'function')
   for (const data of [
     null,
@@ -106,7 +110,7 @@ for (const [name, bad] of [
   ['mismatched id', { id: 'bad', data: JSON.stringify({ id: 'other', version: 1 }) }],
   ['bad JSON', { id: 'bad', data: '{' }],
 ]) {
-  test(`persisted blueprints: ${name} is skipped with no snapshot or registry entry`, async t => {
+  test(`persisted blueprints: ${name} is skipped with no snapshot or registry entry`, { timeout: 5000 }, async t => {
     const { world, logs } = fixture(t, [bad, row({ id: 'bp', version: 0 })], [row(appData())])
     await assert.doesNotReject(world.network.start())
     assert.deepEqual([...world.blueprints.items.keys()], ['bp'])
@@ -121,72 +125,100 @@ for (const [name, bad] of [
   })
 }
 
-test('persisted blueprints: sanitized policy value strips unknown fields before hydration', async t => {
-  const data = { id: 'bp', version: 0, model: null, props: null, oldField: 'private payload', name: 'x'.repeat(300) }
-  const { world } = fixture(t, [row(data)])
-  await world.network.start()
-  assert.deepEqual(world.blueprints.get('bp'), {
-    id: 'bp',
-    version: 0,
-    model: null,
-    props: null,
-    name: 'x'.repeat(256),
-  })
-  assert.equal(world.blueprints.bytes, writePacket('blueprintAdded', world.blueprints.get('bp')).length)
-})
-
-test('blueprint add: serialization failure leaves registry, size and author bookkeeping unchanged', () => {
-  const blueprints = new Blueprints({ network: { isServer: true } })
-  blueprints.add({ id: 'existing', version: 0 })
-  blueprints.authors.set('existing', { version: 0, socketId: 'builder' })
-  const before = {
-    items: [...blueprints.items],
-    sizes: [...blueprints.sizes],
-    bytes: blueprints.bytes,
-    authors: [...blueprints.authors],
+test(
+  'persisted blueprints: sanitized policy value strips unknown fields before hydration',
+  { timeout: 5000 },
+  async t => {
+    const data = { id: 'bp', version: 0, model: null, props: null, oldField: 'private payload', name: 'x'.repeat(300) }
+    const { world } = fixture(t, [row(data)])
+    await world.network.start()
+    assert.deepEqual(world.blueprints.get('bp'), {
+      id: 'bp',
+      version: 0,
+      model: null,
+      props: null,
+      name: 'x'.repeat(256),
+    })
+    assert.equal(world.blueprints.bytes, writePacket('blueprintAdded', world.blueprints.get('bp')).length)
   }
-  for (const id of ['new', 'existing']) {
-    const data = {
-      id,
-      version: 1,
-      get props() {
-        throw new Error('serialize failed')
-      },
+)
+
+test(
+  'blueprint add: serialization failure leaves registry, size and author bookkeeping unchanged',
+  { timeout: 5000 },
+  () => {
+    const blueprints = new Blueprints({ network: { isServer: true } })
+    blueprints.add({ id: 'existing', version: 0 })
+    blueprints.authors.set('existing', { version: 0, socketId: 'builder' })
+    const before = {
+      items: [...blueprints.items],
+      sizes: [...blueprints.sizes],
+      bytes: blueprints.bytes,
+      authors: [...blueprints.authors],
     }
-    assert.throws(() => blueprints.add(data), /serialize failed/)
-    assert.deepEqual(
-      {
-        items: [...blueprints.items],
-        sizes: [...blueprints.sizes],
-        bytes: blueprints.bytes,
-        authors: [...blueprints.authors],
-      },
-      before
-    )
+    for (const id of ['new', 'existing']) {
+      const data = {
+        id,
+        version: 1,
+        get props() {
+          throw new Error('serialize failed')
+        },
+      }
+      assert.throws(() => blueprints.add(data), /serialize failed/)
+      assert.deepEqual(
+        {
+          items: [...blueprints.items],
+          sizes: [...blueprints.sizes],
+          bytes: blueprints.bytes,
+          authors: [...blueprints.authors],
+        },
+        before
+      )
+    }
   }
-})
+)
 
-test('persisted apps: only hydrated blueprints qualify; row failures are isolated and remain clean', async t => {
-  const rows = [
-    { id: 'json', data: '{' },
-    row({ ...appData(), id: 'wrong', type: 'unknown' }),
-    row({ ...appData(), id: 'missing', blueprint: 'bad' }),
-    { id: 'mismatch', data: JSON.stringify({ ...appData(), id: 'elsewhere' }) },
-    row({ ...appData(), id: 'repair', position: [1e30, 2, 3], quaternion: [0, 0, 0, 2] }),
-    row({ ...appData(), id: 'throws' }),
-    row(appData()),
-  ]
-  const { world, logs } = fixture(t, [row({ id: 'bad', version: -1 }), row({ id: 'bp', version: 0 })], rows)
-  const add = world.entities.add.bind(world.entities)
-  world.entities.add = data => {
-    if (data.id === 'throws') throw new Error('native-capable add failed')
-    return add(data)
+test(
+  'persisted apps: only hydrated blueprints qualify; row failures are isolated and remain clean',
+  { timeout: 5000 },
+  async t => {
+    const rows = [
+      { id: 'json', data: '{' },
+      row({ ...appData(), id: 'wrong', type: 'unknown' }),
+      row({ ...appData(), id: 'missing', blueprint: 'bad' }),
+      { id: 'mismatch', data: JSON.stringify({ ...appData(), id: 'elsewhere' }) },
+      row({ ...appData(), id: 'repair', position: [1e30, 2, 3], quaternion: [0, 0, 0, 2] }),
+      row({ ...appData(), id: 'throws' }),
+      row(appData()),
+    ]
+    const { world, logs } = fixture(t, [row({ id: 'bad', version: -1 }), row({ id: 'bp', version: 0 })], rows)
+    const add = world.entities.add.bind(world.entities)
+    world.entities.add = data => {
+      if (data.id === 'throws') throw new Error('native-capable add failed')
+      return add(data)
+    }
+    await assert.doesNotReject(world.network.start())
+    assert.deepEqual([...world.entities.items.keys()], ['repair', 'app'])
+    assert.deepEqual(world.entities.items.get('repair').data.position, [1e6, 2, 3])
+    assert.deepEqual(world.entities.items.get('repair').data.quaternion, [0, 0, 0, 1])
+    assert.equal(world.network.dirtyApps.size, 0)
+    assert.match(logs[0], /repaired=1 skipped=6/)
+    assert.match(logs[0], /"id":"repair","fields":\["position","quaternion"\]/)
   }
-  await assert.doesNotReject(world.network.start())
-  assert.deepEqual([...world.entities.items.keys()], ['repair', 'app'])
-  assert.deepEqual(world.entities.items.get('repair').data.position, [1e6, 2, 3])
-  assert.deepEqual(world.entities.items.get('repair').data.quaternion, [0, 0, 0, 1])
-  assert.equal(world.network.dirtyApps.size, 0)
-  assert.match(logs[0], /repaired=1 skipped=6/)
-  assert.match(logs[0], /"id":"repair","fields":\["position","quaternion"\]/)
+)
+
+test('N1: unit quaternions within tiny tolerance normalize without a repair report', { timeout: 5000 }, () => {
+  for (const quaternion of [
+    [0, 0, 0, 1 + 5e-13],
+    policy.unitQuaternion([0.1, 0.2, 0.3, Math.sqrt(0.86)]),
+    [0, 0, 0, 1 - 5e-13],
+  ]) {
+    const result = policy.sanitizePersistedApp({ ...appData(), quaternion }, options)
+    assert.deepEqual(result.repaired, [])
+    assert.ok(Math.abs(Math.hypot(...result.data.quaternion) - 1) < 1e-15)
+  }
+  for (const value of [1 + 2e-12, 1 - 2e-12, 0, Infinity, NaN]) {
+    const result = policy.sanitizePersistedApp({ ...appData(), quaternion: [0, 0, 0, value] }, options)
+    assert.deepEqual(result.repaired, ['quaternion'])
+  }
 })

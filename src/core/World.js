@@ -90,7 +90,7 @@ export class World extends EventEmitter {
     }
     this.frame++
     this.time = time
-    this.accumulator += delta
+    this.accumulator = Math.min(this.accumulator + delta, this.maxDeltaTime + this.fixedDeltaTime)
     // prepare physics
     const willFixedStep = this.accumulator >= this.fixedDeltaTime
     this.preFixedUpdate(willFixedStep)

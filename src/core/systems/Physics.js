@@ -5,6 +5,7 @@ import { System } from './System'
 import { Layers } from '../extras/Layers'
 import { loadPhysX } from '../loadPhysX'
 import { serializeError } from '../extras/serializeError'
+import { briefError } from '../extras/logOnce.js'
 
 const _raycastHit = {
   actor: null,
@@ -431,8 +432,16 @@ export class Physics extends System {
             : { tag, playerId, isLocalPlayer }
           Reflect.apply(fn, undefined, [event])
         } catch (err) {
-          handlePhysicsFailure(err, { entity, world: this.world, phase: method })
-          if (!isPhysicsTrap(err)) this.recordCallbackFailure(err, method, entity)
+          if (handlePhysicsFailure(err, { entity, world: this.world, phase: method })) continue
+          const subject = run || registration
+          let warned = this.callbackWarnings.get(subject)
+          if (!warned) this.callbackWarnings.set(subject, (warned = new Set()))
+          if (warned.has(method)) continue
+          warned.add(method)
+          console.error(
+            `[physics] ${method} callback failed (entity ${entity?.data?.id ?? 'none'}): ${briefError(err)}`,
+            err
+          )
         }
       }
     }

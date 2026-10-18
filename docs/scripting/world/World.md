@@ -20,13 +20,17 @@ composed script transforms and geometry are not globally validated by these chec
 
 ## Physics availability
 
-A native physics failure stops the affected app's script dispatch and timers immediately, even
-if the script catches the error. Crash presentation is scheduled once after the current call
-returns. A legitimate replacement script can run again after cleanup of the old run.
+A crash stops the affected app's script dispatch and timers immediately. Native physics failures
+do so even if the script catches the error. Crash presentation is scheduled once after the current
+call returns. Latched API calls report `[app] this app has stopped`, or the physics-failure message
+when a native trap caused the latch. During the destroy event, world/app reads, `app.send/sendTo`,
+`world.off/app.off` and `world.remove` of the app's own nodes remain available for cleanup.
+Native queries, creation and other native-capable calls remain blocked. A legitimate replacement
+script can run again after cleanup of the old run.
 
 A separate simulation health probe checks PhysX after a native trap. If it fails, or an exception
 interrupts the main scene's simulation/fetch, the world stops ticking. The server refuses further
-mutations and attempts to save settled edits, deletions and the latest settings/spawn values before
+mutations and attempts to save settled edits, deletions and changed, loaded settings/spawn values before
 exiting with code 1 for a process restart. One five-second deadline includes in-flight writes and
 the final flush; failed or timed-out saves are logged. Clients stop their animation and background
 tick loops and display a reload error. Ordinary server tick exceptions keep the tick loop running.

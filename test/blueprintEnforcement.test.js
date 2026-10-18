@@ -280,7 +280,7 @@ test('blueprint budget: over-budget startup loads and warns, then allows only no
   const rows = Array.from({ length: 9 }, (_, i) => ({ id: `bp${i}`, data: JSON.stringify(largeBlueprint(`bp${i}`)) }))
   f.network.db = table =>
     table === 'config' ? { where: () => ({ first: async () => undefined }) } : table === 'blueprints' ? rows : []
-  f.world.settings = { deserialize() {}, setHasAdminCode() {}, on() {} }
+  f.world.settings = { deserialize() {}, serialize: () => ({}), setHasAdminCode() {}, on() {} }
   await f.network.start()
   assert.equal(f.world.blueprints.items.size, 9)
   assert.equal(f.world.blueprints.bytes, totalBytes(f.world.blueprints))

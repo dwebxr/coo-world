@@ -15,9 +15,11 @@ export function getPhysicsTrapCount() {
   return traps
 }
 
-export function assertScriptActive(entity, world = entity?.world) {
-  if (entity?.crashed || world?.fatalError) {
-    throw new Error('[physics] disabled for this app after a native failure')
+export function assertScriptActive(entity, world = entity?.world, allowDestroy = false) {
+  if ((entity?.crashed && !(allowDestroy && entity.destroying)) || world?.fatalError) {
+    throw new Error(
+      entity?.nativeFailure ? '[physics] disabled for this app after a native failure' : '[app] this app has stopped'
+    )
   }
 }
 
@@ -34,6 +36,7 @@ export function handlePhysicsFailure(err, { entity, world = entity?.world, phase
     )
   }
   if (entity?.isApp) {
+    entity.nativeFailure = true
     entity.physicsFailureVersion = (entity.physicsFailureVersion || 0) + 1
     entity.scriptError = { name: 'RuntimeError', message: 'Native physics failure' }
     entity.crash()

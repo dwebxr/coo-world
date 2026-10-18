@@ -222,7 +222,7 @@ test('escape scan: host rejections reach scripts through toScriptError', () => {
   assert.match(apps, /reject\(toScriptError\(err\)\)/)
   assert.doesNotMatch(apps, /reject\(err\)/)
   const proxy = read('src/core/extras/createEntityProxy.js')
-  assert.match(proxy, /return callForScript\(method, entity, \[entity, \.\.\.args\]\)/)
+  assert.match(proxy, /return callForScript\(method, entity, \[entity, \.\.\.args\], destroyMethods.includes\(prop\)\)/)
 })
 
 test('escape scan: synchronous physics methods and accessors use guarded calls', () => {

@@ -61,6 +61,8 @@ export class ServerNetwork extends System {
     this.persistenceRevision = 0
     this.savePromise = null
     this.configPromise = null
+    this.loadedConfig = new Map()
+    this.dirtyConfig = new Map()
     this.flushExpired = false
     this.isServer = true
     this.scheduler = createInboundScheduler()
@@ -87,6 +89,7 @@ export class ServerNetwork extends System {
       this.spawn = JSON.parse(defaultSpawn)
       this.logOnce(this, 'spawn-invalid', '[network] invalid stored spawn; using default spawn')
     }
+    this.loadedConfig.set('spawn', JSON.stringify(this.spawn))
     // hydrate blueprints
     const skippedBlueprints = []
     const skippedApps = []
@@ -129,6 +132,7 @@ export class ServerNetwork extends System {
       const settings = JSON.parse(settingsRow?.value || '{}')
       this.world.settings.deserialize(settings)
       this.world.settings.setHasAdminCode(!!process.env.ADMIN_CODE)
+      this.loadedConfig.set('settings', JSON.stringify(this.world.settings.serialize()))
     } catch (err) {
       console.error(err)
     }
@@ -320,7 +324,11 @@ export class ServerNetwork extends System {
 
   async flushBeforeExit(deadlineMs) {
     this.stopForFatal()
-    const config = new Set(['settings', 'spawn'])
+    const config = new Set()
+    for (const [key, saved] of this.loadedConfig) {
+      const data = key === 'settings' ? this.world.settings.serialize() : this.spawn
+      if (this.dirtyConfig.has(key) || JSON.stringify(data) !== saved) config.add(key)
+    }
     let timer
     const flush = async () => {
       await Promise.all([this.savePromise, this.configPromise])
@@ -329,8 +337,8 @@ export class ServerNetwork extends System {
         this.save(),
         (async () => {
           // Settings may have broadcast without another preFixedUpdate to emit change.
-          if (await this.saveSettings()) config.delete('settings')
-          if (await this.saveConfig('spawn', this.spawn)) config.delete('spawn')
+          if (config.has('settings') && (await this.saveSettings())) config.delete('settings')
+          if (config.has('spawn') && (await this.saveConfig('spawn', this.spawn))) config.delete('spawn')
         })(),
       ])
     }
@@ -359,12 +367,22 @@ export class ServerNetwork extends System {
   }
 
   saveConfig(key, data) {
+    if (!this.loadedConfig.has(key)) {
+      // the stored row was never read (or failed to parse); keep it untouched for inspection
+      this.logOnce(this, `config-unloaded:${key}`, `[network] ${key} was not loaded; changes will not be saved`)
+      return Promise.resolve(false)
+    }
     const value = JSON.stringify(data)
+    this.dirtyConfig.set(key, value)
     const promise = (this.configPromise || Promise.resolve())
       .then(async () => {
         if (this.flushExpired) return false
         try {
-          await this.db('config').insert({ key, value }).onConflict('key').merge({ value })
+          if (this.loadedConfig.get(key) !== value) {
+            await this.db('config').insert({ key, value }).onConflict('key').merge({ value })
+            this.loadedConfig.set(key, value)
+          }
+          if (this.dirtyConfig.get(key) === value) this.dirtyConfig.delete(key)
           return true
         } catch (err) {
           this.logOnce(this, `config:${key}`, `[network] error saving ${key}: ${briefError(err)}`)

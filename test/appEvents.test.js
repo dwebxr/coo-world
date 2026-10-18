@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { EventEmitter } from 'node:events'
 import assert from 'node:assert/strict'
 import { loadClient, Blueprints, ClientNetwork } from './lib/clientHarness.mjs'
 import { Entity } from '../src/core/entities/Entity.js'
@@ -30,7 +31,7 @@ const make = ({ isServer = true, onScript } = {}) => {
     briefError,
     createLogOnce: () => createLogOnce(line => logs.push(line)),
   })
-  const world = {
+  const world = Object.assign(new EventEmitter(), {
     network: { isServer, isClient: !isServer, id: 0, send: () => true },
     entities: { items: new Map(), remove: id => world.entities.items.delete(id) },
     events: { off() {} },
@@ -48,7 +49,7 @@ const make = ({ isServer = true, onScript } = {}) => {
             }
           : { toNodes: root },
     },
-  }
+  })
   world.apps = new Apps(world)
   world.blueprints = new Blueprints(world)
   world.blueprints.add({ id: 'bp', version: 0, model: 'cached.glb', script: 'cached.js', props: {} })

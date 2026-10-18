@@ -42,6 +42,45 @@ The players rotation in the world.
 throw. Non-finite or float32-overflow vector components are ignored, with one warning per method.
 The relay bounds below still apply; direct local pushes have no additional `1e4` cap.
 
+### `.getTokenBalance()`: Promise<{ verified, known, balance }>
+
+Returns an intrinsic Promise of a fresh, frozen `{ verified, known, balance }` object for the
+local player on a client. The balance is the configured world's COO token in the wallet's
+associated SPL Token account; other accounts and Token-2022 are not counted.
+
+- `verified`: the server has verified ownership of the wallet for this connection.
+- `known`: a balance read succeeded. A missing token account is known with balance `0`.
+- `balance`: a finite, nonnegative token amount, or `0` when unknown. Check both booleans before using it.
+
+A remote player, any server script, or disabled token gating returns
+`{ verified: false, known: false, balance: 0 }` without a request. Remote/server use warns once per
+app. Operational failures resolve unknown; the Promise never rejects. A call on a stopped app
+or in a fatal world throws synchronously, like other guarded APIs. If the app crashes, rebuilds,
+is destroyed, or the world becomes fatal while waiting, the old call never settles.
+
+Balances may be up to the server cache TTL (default 30 seconds, configurable up to 300 seconds)
+plus 5 seconds on the client old. Budget pressure or outages can make a read unknown; the global
+budget bounds cost, not availability. Ownership must be verified again after reconnect or restart.
+After verification, any client script in this world can read this balance and send it to a server
+script. Neither the wallet address nor verification is stored in player data.
+
+A door opened using this result affects the player's **own screen only**. It is not server-enforced
+passage control: a modified client can open it for itself. Use the engine's
+[`wallet` event](/docs/scripting/world/World.md#engine-events) to refresh displays after verification changes.
+
+```js
+if (world.isClient) {
+  try {
+    const result = await world.getPlayer().getTokenBalance()
+    if (result.verified && result.known && result.balance >= 10000) {
+      // Open this client's door.
+    }
+  } catch (err) {
+    // The app has stopped; no request was started.
+  }
+}
+```
+
 ### `.teleport(position, rotationY)`
 
 Teleports the player instantly to the new position. The `rotationY` value is in radians, and if omitted (or not a number) the player will continue facing their current direction.

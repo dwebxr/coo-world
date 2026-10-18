@@ -5,6 +5,7 @@ import { storage } from '../../core/storage'
 import { ControlPriorities } from '../../core/extras/ControlPriorities'
 import { cls } from '../utils'
 import { useRank } from './useRank'
+import { walletPanelText } from './walletPanelText'
 
 // 開閉状態の記憶 (ブラウザごと)。world.prefs は使わない
 const STORAGE_KEY = 'solanaWalletUI'
@@ -36,9 +37,10 @@ const STATUS_LABELS = {
 }
 
 export function SolanaWalletButton({ world }) {
-  const [connected, setConnected] = useState(false)
-  const [address, setAddress] = useState('')
-  const [connecting, setConnecting] = useState(false)
+  const [walletState, setWalletState] = useState(() => world.solana?.getState() ?? { status: 'disconnected' })
+  const connected = !!walletState.address
+  const address = walletState.address || ''
+  const connecting = walletState.status === 'connecting' || walletState.status === 'signing'
   const [refreshing, setRefreshing] = useState(false)
   // サーバーが実際に付与した権限 (= 今ビルドできるか)。ドット・枠・ステータス文の正はこれ。
   const { isBuilder } = useRank(world, world.entities.player)
@@ -64,33 +66,11 @@ export function SolanaWalletButton({ world }) {
   }, [])
 
   useEffect(() => {
-    // 初期状態をチェック
-    if (world.solana) {
-      setConnected(world.solana.isConnected())
-      setAddress(world.solana.getAddress() || '')
-    }
-
-    // Solana接続イベントをリッスン
-    const onConnected = addr => {
-      setConnected(true)
-      setAddress(addr)
-      // 接続成功で自動的に畳む (以後はドットで状態が分かる)
-      setCollapsedPersist(true)
-    }
-
-    const onDisconnected = () => {
-      setConnected(false)
-      setAddress('')
-    }
-
-    world.on('solana:connected', onConnected)
-    world.on('solana:disconnected', onDisconnected)
-
-    return () => {
-      world.off('solana:connected', onConnected)
-      world.off('solana:disconnected', onDisconnected)
-    }
-  }, [world, setCollapsedPersist])
+    const update = state => setWalletState(state)
+    if (world.solana) update(world.solana.getState())
+    world.on('solana:state', update)
+    return () => world.off('solana:state', update)
+  }, [world])
 
   // ポインタロックの状態 (ClientUI が broadcast する)
   useEffect(() => {
@@ -127,17 +107,14 @@ export function SolanaWalletButton({ world }) {
 
   const connectWallet = async e => {
     blurIfPointer(e)
-    if (isInactive() || connected || connecting) return
+    if (isInactive() || connecting) return
 
-    setConnecting(true)
     try {
       if (world.solana) {
         await world.solana.connect()
       }
     } catch (error) {
       console.error('ウォレット接続エラー:', error)
-    } finally {
-      setConnecting(false)
     }
   }
 
@@ -170,15 +147,18 @@ export function SolanaWalletButton({ world }) {
     }
   }
 
-  // 表示状態 (この順で最初に当たったもの)。solana:connected は connect() の途中で飛ぶので
-  // connected && connecting の瞬間があり、その間はスピナーが勝つ
+  // 署名・確認待ちもスピナーで表示する
   const status = connecting ? 'connecting' : !connected ? 'disconnected' : isBuilder ? 'builder' : 'nobuild'
   const statusLabel = STATUS_LABELS[status]
   // スピナーとドットは畳んでいる時だけ出す。展開時のトグルは常に ×
   const spinning = collapsed && status === 'connecting'
   const showDot = collapsed && (status === 'builder' || status === 'nobuild')
   const requiredAmount = world.solana?.getRequiredTokenAmount() ?? 10000
-  const statusText = isBuilder ? 'Builder access granted' : 'No builder access'
+  const text = walletPanelText(walletState, {
+    effectiveBuilder: isBuilder,
+    rawRank: world.entities.player.data.rank,
+    threshold: requiredAmount,
+  })
 
   return (
     <div
@@ -284,7 +264,7 @@ export function SolanaWalletButton({ world }) {
         {showDot && <span className={cls('solana-wallet-dot', status)} aria-hidden='true' />}
       </button>
 
-      {/* 展開パネル (トグルの真下)。未接続なら接続ボタンだけ */}
+      {/* 展開パネル (トグルの真下) */}
       {!collapsed && (
         <div
           id={PANEL_ID}
@@ -292,10 +272,26 @@ export function SolanaWalletButton({ world }) {
           css={css`
             display: flex;
             flex-direction: column;
-            align-items: flex-end;
+            align-items: stretch;
+            gap: 0.4rem;
+            max-width: min(24rem, calc(100vw - 2rem));
+            padding: 0.6rem 0.8rem;
+            background: rgba(11, 10, 21, 0.85);
+            border-radius: 1rem;
+            color: white;
+            font-size: 0.75rem;
+            pointer-events: auto;
+            backdrop-filter: blur(5px);
           `}
         >
-          {!connected ? (
+          <div className='solana-wallet-status' aria-live='polite'>
+            {text.wallet}
+          </div>
+          <div className='solana-build-status'>{text.build}</div>
+          <div className='solana-wallet-exposure'>
+            このワールドのスクリプトは、確認後のあなたの COO 残高を見ることができます
+          </div>
+          {(!connected || walletState.status === 'unverified') && (
             <button
               type='button'
               className='solana-wallet-button connect'
@@ -324,9 +320,10 @@ export function SolanaWalletButton({ world }) {
                 }
               `}
             >
-              {connecting ? 'Connecting...' : 'Connect Wallet'}
+              {connecting ? 'Connecting...' : walletState.status === 'unverified' ? '署名する' : 'Connect Wallet'}
             </button>
-          ) : (
+          )}
+          {connected && (
             // 接続されている場合はアドレスとトークン情報を表示
             <div
               className='solana-wallet-info'
@@ -417,7 +414,7 @@ export function SolanaWalletButton({ world }) {
                 <button
                   type='button'
                   onClick={refreshBuilderAccess}
-                  disabled={refreshing}
+                  disabled={refreshing || !walletState.verified}
                   aria-label='Refresh builder access'
                   title='Refresh builder access'
                   css={css`
@@ -446,18 +443,6 @@ export function SolanaWalletButton({ world }) {
                 >
                   <RefreshCwIcon size='0.85rem' />
                 </button>
-              </div>
-
-              {/* ステータス表示 */}
-              <div
-                className='solana-status'
-                css={css`
-                  font-size: 0.7rem;
-                  text-align: center;
-                  color: ${isBuilder ? '#4caf50' : '#ff9800'};
-                `}
-              >
-                {statusText}
               </div>
             </div>
           )}

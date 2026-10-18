@@ -9,6 +9,7 @@ export const internalEvents = [
   'destroy',
   'enter',
   'leave',
+  'wallet',
   'chat',
   'command',
   'health',

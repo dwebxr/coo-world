@@ -1,4 +1,5 @@
 import moment from 'moment'
+import { createTokenBalanceClient } from '../extras/tokenBalanceClient'
 import { emoteUrls } from '../extras/playerEmotes'
 import {
   CHECK_TIMEOUT_MS,
@@ -36,6 +37,12 @@ export class ClientNetwork extends System {
     this.queue = createDispatchQueue()
     this.uploads = createUploadQueue()
     this.refusedEvents = new Set()
+    this.tokenBalance = createTokenBalanceClient({
+      send: (name, data) => this.send(name, data),
+      isVerified: () => this.world.solana?.isVerified() ?? false,
+      onChange: () => this.world.emit('solana:balance'),
+    })
+    this.world.on('fatal', this.onFatal)
   }
 
   init({ wsUrl, name, avatar, authToken, onAuthToken }) {
@@ -282,7 +289,24 @@ export class ClientNetwork extends System {
 
   // Solanaビルダーゲーティング: サーバー発行 nonce を solana-integration に中継
   onBuilderNonce = data => {
-    this.world.emit('solana:builderNonce', data?.nonce)
+    this.world.emit('solana:builderNonce', data)
+  }
+
+  onWalletStatus = data => {
+    this.world.emit('solana:walletStatus', data)
+  }
+
+  onTokenBalance = data => {
+    this.tokenBalance.onTokenBalance(data)
+  }
+
+  disposeWallet(reason) {
+    this.world.solana?.dispose(reason)
+    this.tokenBalance.dispose()
+  }
+
+  onFatal = () => {
+    this.disposeWallet('fatal')
   }
 
   onPong = time => {
@@ -294,11 +318,15 @@ export class ClientNetwork extends System {
   }
 
   onClose = code => {
-    if (this.world.fatalError) return
+    if (this.world.fatalError) {
+      this.disposeWallet('fatal')
+      return
+    }
     // 切断前に受信済みのパケット (kick 等) を処理しておく。
     // これをしないと、キューされた 'kick' が tick で flush される前に
     // 'disconnect' が発火し、consumer が world を破棄して kick 理由を取りこぼす。
     this.flush()
+    this.disposeWallet('close')
     this.world.chat.add({
       id: uuid(),
       from: null,
@@ -311,6 +339,8 @@ export class ClientNetwork extends System {
   }
 
   destroy() {
+    this.disposeWallet('destroy')
+    this.world.off('fatal', this.onFatal)
     if (this.ws) {
       this.ws.removeEventListener('message', this.onPacket)
       this.ws.removeEventListener('close', this.onClose)

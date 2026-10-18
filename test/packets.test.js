@@ -44,6 +44,10 @@ const names = [
   'revokeBuilderByToken',
   'requestBuilderNonce',
   'builderNonce',
+  'walletStatus',
+  'tokenBalanceRequest',
+  'tokenBalance',
+  'requestBuilderRecheck',
 ]
 
 function capitalize(str) {

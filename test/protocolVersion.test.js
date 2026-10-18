@@ -59,7 +59,7 @@ async function makeRoute() {
 }
 
 test('protocol version: missing or mismatched versions are kicked before world admission', async () => {
-  for (const v of [undefined, '', '1', '02', '2.0', '3', ['2', '2']]) {
+  for (const v of [undefined, '', '1', '2', '03', '3.0', '4', ['3', '3']]) {
     const route = await makeRoute()
     const ws = route.connect(v === undefined ? {} : { v })
     assert.deepEqual(ws.packets, [['onKick', 'outdated']])
@@ -70,10 +70,10 @@ test('protocol version: missing or mismatched versions are kicked before world a
   }
 })
 
-test('protocol version: v=2 reaches the world with the original connection params', async () => {
-  assert.equal(PROTOCOL_VERSION, 2)
+test('protocol version: v=3 reaches the world with the original connection params', async () => {
+  assert.equal(PROTOCOL_VERSION, 3)
   const route = await makeRoute()
-  const params = { v: '2', authToken: 'token', name: 'player' }
+  const params = { v: '3', authToken: 'token', name: 'player' }
   const ws = route.connect(params)
   assert.deepEqual(ws.packets, [])
   assert.equal(ws.closeCode, undefined)
@@ -92,13 +92,13 @@ test('protocol version: address admission runs first and an outdated socket hold
   assert.equal(route.connections.length, 0)
   outdated.transport.emit('close')
   assert.equal(route.limits.stats().active, 0)
-  const current = route.connect({ v: '2' })
+  const current = route.connect({ v: '3' })
   assert.equal(route.connections.length, 1)
   current.transport.emit('close')
   assert.equal(route.limits.stats().active, 0)
 })
 
-test('WireClient advertises v=2 by default and can omit it for the outdated probe', async t => {
+test('WireClient advertises v=3 by default and can omit it for the outdated probe', async t => {
   const original = globalThis.WebSocket
   t.after(() => (globalThis.WebSocket = original))
   globalThis.WebSocket = class extends EventTarget {
@@ -109,7 +109,7 @@ test('WireClient advertises v=2 by default and can omit it for the outdated prob
     }
   }
   const current = await new WireClient(3000).open()
-  assert.equal(new URL(current.ws.url).searchParams.get('v'), '2')
+  assert.equal(new URL(current.ws.url).searchParams.get('v'), '3')
   const outdated = await new WireClient(3000, 'outdated', { version: null }).open()
   assert.equal(new URL(outdated.ws.url).searchParams.has('v'), false)
 })

@@ -1,6 +1,6 @@
 import { Packr } from 'msgpackr'
 
-export const PROTOCOL_VERSION = 2
+export const PROTOCOL_VERSION = 3
 
 const packr = new Packr({ structuredClone: true })
 const clientPackr = new Packr({ useRecords: false, structuredClone: false, moreTypes: false, bundleStrings: false })
@@ -33,6 +33,10 @@ const names = [
   'revokeBuilderByToken',
   'requestBuilderNonce',
   'builderNonce',
+  'walletStatus',
+  'tokenBalanceRequest',
+  'tokenBalance',
+  'requestBuilderRecheck',
 ]
 
 const byName = {}

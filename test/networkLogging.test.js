@@ -32,6 +32,10 @@ const methods = [
   'onModifyRank',
   'onSpawnModified',
   'onRequestBuilderByToken',
+  'onRequestBuilderNonce',
+  'onRequestBuilderRecheck',
+  'onTokenBalanceRequest',
+  'onRevokeBuilderByToken',
 ]
   .map(name => {
     const method = source.match(new RegExp(`^  ${name}(?:\\(| = )[^]*?^  }`, 'm'))?.[0]
@@ -121,6 +125,8 @@ function fixture() {
     id,
     player: {
       data: { id, userId: id, position: [0, 0, 0], quaternion: [0, 0, 0, 1] },
+      rankRevision: 0,
+      rankWritesPending: 0,
       isPlayer: true,
       isBuilder: () => true,
       isAdmin: () => true,

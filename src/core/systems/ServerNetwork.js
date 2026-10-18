@@ -28,6 +28,8 @@ import { SNAPSHOT_CAP, createWriteLedger } from '../extras/writeLedger'
 import { briefError, createLogOnce } from '../extras/logOnce'
 import { readInboundPacket } from '../../server/inboundDecode'
 import * as solanaGating from '../../server/solana-gating'
+import { createSolanaRpc } from '../../server/solanaRpc'
+import { createTokenBalanceService } from '../../server/tokenBalance'
 import { grantTokenRank, persistRank, revokeTokenRank } from '../../server/rankGrants'
 
 const SAVE_INTERVAL = parseInt(process.env.SAVE_INTERVAL || '60') // seconds
@@ -72,8 +74,11 @@ export class ServerNetwork extends System {
     this.writer = createWriteLedger({ log: line => console.error(line) })
   }
 
-  init({ db }) {
+  init({ db, tokenBalanceService }) {
     this.db = db
+    this.tokenBalanceService = solanaGating.TOKEN_GATING_ENABLED
+      ? (tokenBalanceService ?? createTokenBalanceService({ readRaw: createSolanaRpc().readRaw }))
+      : null
   }
 
   async start() {
@@ -461,6 +466,7 @@ export class ServerNetwork extends System {
 
       // create socket
       socket = new Socket({ id: user.id, ws, network: this })
+      socket.wallet = solanaGating.createWalletSession()
 
       // spawn player
       socket.player = this.world.entities.add(
@@ -480,6 +486,9 @@ export class ServerNetwork extends System {
         },
         true
       )
+
+      socket.player.rankRevision = 0
+      socket.player.rankWritesPending = 0
 
       // send snapshot
       const snapshot = writePacket('snapshot', {
@@ -568,6 +577,7 @@ export class ServerNetwork extends System {
         } else {
           rank = Ranks.VISITOR
         }
+        player.rankRevision++
         player.modify({ rank })
         this.send('entityModified', { id, rank })
         socket.send('chatAdded', {
@@ -577,14 +587,23 @@ export class ServerNetwork extends System {
           body: granted ? 'Admin granted!' : 'Admin revoked!',
           createdAt: moment().toISOString(),
         })
+        player.rankWritesPending++
         try {
-          await persistRank({ db: this.db, player, rank, wallets: solanaGating })
+          await persistRank({
+            db: this.db,
+            player,
+            rank,
+            wallets: solanaGating,
+            isCurrent: () => this.sockets.get(player.data.id)?.player === player,
+          })
         } catch (err) {
           this.logOnce(
             socket,
             'user-rank-save',
             `error saving user rank for ${String(userId).slice(0, 64)}; the session keeps its previous grant state: ${briefError(err)}`
           )
+        } finally {
+          player.rankWritesPending--
         }
       }
     }
@@ -654,17 +673,27 @@ export class ServerNetwork extends System {
     if (rank !== Ranks.VISITOR && rank !== Ranks.BUILDER && rank !== Ranks.ADMIN) return
     const player = this.world.entities.get(playerId)
     if (!player || !player.isPlayer) return
+    player.rankRevision++
     player.modify({ rank })
     this.send('entityModified', { id: playerId, rank })
     // once the rank is in the database any session-only token grant is over
+    player.rankWritesPending++
     try {
-      await persistRank({ db: this.db, player, rank, wallets: solanaGating })
+      await persistRank({
+        db: this.db,
+        player,
+        rank,
+        wallets: solanaGating,
+        isCurrent: () => this.sockets.get(player.data.id)?.player === player,
+      })
     } catch (err) {
       this.logOnce(
         socket,
         'user-rank-save',
         `error saving user rank for ${String(playerId).slice(0, 64)}; the session keeps its previous grant state: ${briefError(err)}`
       )
+    } finally {
+      player.rankWritesPending--
     }
   }
 
@@ -692,24 +721,55 @@ export class ServerNetwork extends System {
     this.world.livekit.setMuted(data.playerId, data.muted)
   }
 
-  // Solanaビルダーゲーティング: ウォレット所有証明用の nonce を発行
-  onRequestBuilderNonce = (socket, data) => {
-    if (!solanaGating.TOKEN_GATING_ENABLED) return
-    const walletAddress = data?.walletAddress
-    if (!walletAddress || typeof walletAddress !== 'string') return
-    // per-socket レート制限 (RPC 枯渇 DoS 防止)
-    if (!solanaGating.checkRateLimit(socket.id)) return
-    const nonce = solanaGating.issueNonce(socket.id, walletAddress)
-    socket.send('builderNonce', { nonce })
+  invalidateWallet(socket, { clearVerified }) {
+    const state = socket.wallet
+    state.generation++
+    state.challenge = null
+    state.pendingBalance = null
+    if (clearVerified) state.verified = null
   }
 
-  // Solanaトークンによるビルダー権限リクエスト
-  // 署名でウォレット所有を証明し、残高はサーバー側で on-chain 検証する
-  // (クライアント自己申告のアドレス/残高は一切信用しない)
-  onRequestBuilderByToken = async (socket, data) => {
-    if (!solanaGating.TOKEN_GATING_ENABLED) return
+  current(socket, generation, player) {
+    return (
+      this.sockets.get(socket.id) === socket &&
+      !socket.disconnected &&
+      !this.stopping &&
+      !this.world.fatalError &&
+      socket.wallet.generation === generation &&
+      socket.player === player
+    )
+  }
 
-    const { walletAddress, signature, nonce } = data || {}
+  onRequestBuilderNonce = (socket, data) => {
+    if (this.stopping || this.world.fatalError) return
+    if (!solanaGating.TOKEN_GATING_ENABLED || !isObject(data) || Array.isArray(data)) return
+    const { walletAddress, attempt } = data
+    if (!solanaGating.isWalletAddress(walletAddress) || !solanaGating.isWalletRequestId(attempt)) return
+    const state = socket.wallet
+    if (!this.current(socket, state.generation, socket.player)) return
+    const now = Date.now()
+    const retryAfterMs = solanaGating.CHALLENGE_COOLDOWN_MS - (now - state.lastChallengeAt)
+    if (retryAfterMs > 0) {
+      if (!state.challengeCooldownReplied) {
+        state.challengeCooldownReplied = true
+        socket.send('builderNonce', { attempt, retryAfterMs })
+      }
+      return
+    }
+    const wasVerified = !!state.verified
+    this.invalidateWallet(socket, { clearVerified: true })
+    if (wasVerified) socket.send('walletStatus', { verified: false })
+    state.lastChallengeAt = now
+    state.challengeCooldownReplied = false
+    const challenge = solanaGating.buildChallenge(walletAddress, solanaGating.WALLET_HOST, now)
+    state.challenge = { ...challenge, attempt }
+    socket.send('builderNonce', { attempt, nonce: challenge.nonce, message: challenge.message })
+  }
+
+  onRequestBuilderByToken = async (socket, data) => {
+    if (this.stopping || this.world.fatalError) return
+    if (!solanaGating.TOKEN_GATING_ENABLED || !isObject(data) || Array.isArray(data) || !socket.player) return
+    const { walletAddress, signature, nonce, attempt } = data
     if (!walletAddress || !signature || !nonce) {
       return this.logOnce(
         socket,
@@ -717,79 +777,137 @@ export class ServerNetwork extends System {
         'Invalid builder token request (missing walletAddress/signature/nonce)'
       )
     }
-
+    if (!solanaGating.isWalletRequestId(attempt)) return
     const player = socket.player
-    if (!player) return
-
-    // 既にビルダー以上の権限を持っている場合はスキップ
-    if (player.data.rank >= Ranks.BUILDER) return
-
-    const result = await solanaGating.verifyAndCheckBalance({
-      socketId: socket.id,
-      walletAddress,
-      signature,
-      nonce,
-    })
-
+    const state = socket.wallet
+    if (!this.current(socket, state.generation, player)) return
+    const challenge = state.challenge
+    // An obsolete packet cannot consume the current attempt or produce another failure reply.
+    if (!challenge || challenge.nonce !== nonce || challenge.attempt !== attempt) return
+    state.challenge = null
+    const result = solanaGating.checkChallenge(challenge, { walletAddress, signature, nonce }, Date.now())
     if (!result.ok) {
-      // 残高不足はユーザーに具体的に通知。それ以外の失敗理由は詳細を伏せる
-      const body =
-        result.reason === 'insufficient'
-          ? `ビルダー権限には ${solanaGating.REQUIRED_TOKEN_AMOUNT.toLocaleString()} トークンが必要です (現在: ${Number(
-              result.balance || 0
-            ).toLocaleString()})`
-          : 'ウォレット認証に失敗しました'
-      socket.send('chatAdded', { id: uuid(), body, createdAt: moment().toISOString() })
+      this.invalidateWallet(socket, { clearVerified: true })
+      socket.send('walletStatus', { verified: false, attempt })
+      socket.send('chatAdded', {
+        id: uuid(),
+        body: 'ウォレット認証に失敗しました',
+        createdAt: moment().toISOString(),
+      })
       return
     }
-
-    // ビルダー権限を付与（セッション限定、DBには保存しない）
-    // the verified wallet keys this session's upload limits; kept server-side, never in the broadcast data.
-    // the session may have ended while the chain was consulted: then there is nothing to grant
-    if (!grantTokenRank({ socket, player, walletAddress, wallets: solanaGating })) return
-    const rank = Ranks.BUILDER
-    player.modify({ rank })
-    this.send('entityModified', { id: player.data.id, rank })
-
-    socket.send('chatAdded', {
-      id: uuid(),
-      body: `トークン認証成功! ビルダー権限が付与されました (${Number(result.balance).toLocaleString()} tokens)`,
-      createdAt: moment().toISOString(),
-    })
-
-    console.log(
-      `Builder rank granted to ${player.data.name} via verified wallet ownership (${walletAddress}: ${result.balance} tokens)`
-    )
+    state.verified = walletAddress
+    socket.send('walletStatus', { verified: true, wallet: walletAddress, attempt })
+    if (player.data.rank >= Ranks.BUILDER) return
+    await this.checkBuilderBalance(socket, true)
   }
 
-  // Solanaウォレット切断時にビルダー権限を剥奪 (自己降格のみ・署名検証不要)
-  onRevokeBuilderByToken = async (socket, data) => {
-    if (!solanaGating.TOKEN_GATING_ENABLED) {
+  async checkBuilderBalance(socket, notifyInsufficient) {
+    const player = socket.player
+    const { generation, verified: walletAddress } = socket.wallet
+    const revision = player.rankRevision
+    let result = { known: false }
+    if (!player.rankWritesPending) {
+      try {
+        result = await this.tokenBalanceService.get(walletAddress, { fresh: true })
+      } catch {
+        // The production service resolves unknown; an injected service may reject.
+      }
+    }
+    if (!this.current(socket, generation, player) || player.rankRevision !== revision) return
+    if (!(player.data.rank < Ranks.BUILDER)) return
+    if (player.rankWritesPending) result = { known: false }
+    let body
+    if (result.known && result.balance >= solanaGating.REQUIRED_TOKEN_AMOUNT) {
+      if (!grantTokenRank({ socket, player, walletAddress, wallets: solanaGating })) return
+      const rank = Ranks.BUILDER
+      player.rankRevision++
+      player.modify({ rank })
+      this.send('entityModified', { id: player.data.id, rank })
+      body = `トークン認証成功! ビルダー権限が付与されました (${Number(result.balance).toLocaleString()} tokens)`
+    } else if (result.known && result.balance < solanaGating.REQUIRED_TOKEN_AMOUNT) {
+      if (!notifyInsufficient) return
+      body = `ビルダー権限には ${solanaGating.REQUIRED_TOKEN_AMOUNT.toLocaleString()} トークンが必要です (現在: ${Number(result.balance).toLocaleString()})`
+    } else {
+      body = '残高を確認できませんでした。しばらくしてから更新ボタンを押してください'
+    }
+    socket.send('chatAdded', { id: uuid(), body, createdAt: moment().toISOString() })
+  }
+
+  onRequestBuilderRecheck = async (socket, data) => {
+    if (this.stopping || this.world.fatalError) return
+    if (!solanaGating.TOKEN_GATING_ENABLED || !isObject(data) || Array.isArray(data) || Object.keys(data).length) return
+    const player = socket.player
+    const state = socket.wallet
+    if (!player || !state.verified || !(player.data.rank < Ranks.BUILDER)) return
+    if (!this.current(socket, state.generation, player)) return
+    const now = Date.now()
+    if (now - state.builderRecheckAt < solanaGating.BUILDER_RECHECK_MS) return
+    state.builderRecheckAt = now
+    await this.checkBuilderBalance(socket, false)
+  }
+
+  onTokenBalanceRequest = async (socket, data) => {
+    if (this.stopping || this.world.fatalError) return
+    if (!isObject(data) || Array.isArray(data) || !solanaGating.isWalletRequestId(data.id)) return
+    const { id } = data
+    const state = socket.wallet
+    const player = socket.player
+    if (!this.current(socket, state.generation, player)) return
+    const bucket = state.balanceBucket
+    const now = Date.now()
+    bucket.tokens = Math.min(3, bucket.tokens + Math.max(0, now - bucket.at) / 2000)
+    bucket.at = now
+    if (bucket.tokens < 1) return
+    bucket.tokens--
+    if (state.pendingBalance) return
+    if (!state.verified) {
+      socket.send('tokenBalance', { id, verified: false, known: false, balance: 0 })
       return
     }
+    const { generation, verified: wallet } = state
+    const pending = { id }
+    state.pendingBalance = pending
+    let result = { known: false }
+    try {
+      try {
+        result = await this.tokenBalanceService.get(wallet)
+      } catch {
+        // Operational failures still produce a bounded unknown answer.
+      }
+      if (!this.current(socket, generation, player) || state.verified !== wallet) return
+      socket.send('tokenBalance', {
+        id,
+        verified: true,
+        known: result.known,
+        balance: result.known ? result.balance : 0,
+      })
+    } finally {
+      if (state.pendingBalance === pending) state.pendingBalance = null
+    }
+  }
 
+  onRevokeBuilderByToken = (socket, data) => {
+    if (this.stopping || this.world.fatalError) return
+    if (!solanaGating.TOKEN_GATING_ENABLED || !isObject(data) || Array.isArray(data) || Object.keys(data).length) return
+    const state = socket.wallet
+    const changed = !!(state.verified || state.challenge)
+    this.invalidateWallet(socket, { clearVerified: true })
+    if (!this.current(socket, state.generation, socket.player)) return
+    if (changed) socket.send('walletStatus', { verified: false })
     const player = socket.player
     if (!player) return
-
-    // 管理者の場合は権限を剥奪しない
-    if (player.data.rank >= Ranks.ADMIN) {
-      return
-    }
-
-    // トークンで付与されたビルダー権限のみ剥奪（ビジターに戻す）
     if (player.data.rank === Ranks.BUILDER && player.data.tokenGrantedRank) {
       const rank = Ranks.VISITOR
+      player.rankRevision++
       player.modify({ rank })
       revokeTokenRank({ socket, player, wallets: solanaGating })
       this.send('entityModified', { id: player.data.id, rank })
-
       socket.send('chatAdded', {
         id: uuid(),
         body: 'ウォレット切断: ビルダー権限が解除されました',
         createdAt: moment().toISOString(),
       })
-
-      console.log(`Builder rank revoked from ${player.data.name} (wallet disconnected)`)
     }
   }
 

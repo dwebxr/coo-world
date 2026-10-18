@@ -10,7 +10,7 @@ import websocket from '@fastify/websocket'
 import WebSocket from 'ws'
 import { createConnectionLimits, readConnectionLimitsEnv } from '../../src/server/connectionLimits.js'
 import { BACKLOG_CAP, PACKET_CAP, WRITE_OVERHEAD } from '../../src/core/extras/writeLedger.js'
-import { writeClientPacket } from '../../src/core/packets.js'
+import { PROTOCOL_VERSION, writeClientPacket } from '../../src/core/packets.js'
 import { loadRoute, makeNetwork, Socket } from './networkHarness.mjs'
 
 const name = process.argv[2]
@@ -74,13 +74,13 @@ try {
 const port = app.server.address().port
 const clients = []
 const connect = async options => {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?v=2`, options)
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?v=${PROTOCOL_VERSION}`, options)
   ws.on('error', () => {})
   clients.push(ws)
   await once(ws, 'open')
   return ws
 }
-const raw = async (query = '?v=2', headers = '') => {
+const raw = async (query = `?v=${PROTOCOL_VERSION}`, headers = '') => {
   const socket = net.connect(port, '127.0.0.1')
   socket.on('error', () => {})
   clients.push(socket)
@@ -96,7 +96,7 @@ try {
   if (name === 'refused-upgrade') {
     const first = await connect()
     let connected = false
-    const refused = new WebSocket(`ws://127.0.0.1:${port}/ws?v=2`)
+    const refused = new WebSocket(`ws://127.0.0.1:${port}/ws?v=${PROTOCOL_VERSION}`)
     clients.push(refused)
     refused.on('error', () => {})
     refused.on('open', () => {
@@ -138,7 +138,7 @@ try {
       agent.destroy()
     }
   } else if (name === 'abort-upgrade') {
-    const { socket } = await raw('?v=2', 'X-Abort: yes\r\n')
+    const { socket } = await raw(`?v=${PROTOCOL_VERSION}`, 'X-Abort: yes\r\n')
     await until(() => inUpgrade)
     assert.equal(limits.stats().active, 1)
     socket.resetAndDestroy()

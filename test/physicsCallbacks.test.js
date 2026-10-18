@@ -635,7 +635,7 @@ for (const trigger of [false, true]) {
       assert.equal(calls, 1)
       assert.equal(logs.length, 1)
       assert.equal(logs[0].fetching, false)
-      assert.ok(logs[0].line.includes('native trap true'))
+      assert.ok(logs[0].line.includes('native failure'))
       healthy()
     },
     trigger

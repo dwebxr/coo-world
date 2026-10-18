@@ -1,4 +1,4 @@
-import { callForScript, toScriptError } from '../extras/scriptValues'
+import { callForScript } from '../extras/scriptValues'
 import { isBoolean } from 'lodash-es'
 import * as THREE from '../extras/three'
 import { getNodeRef, isRefAllowed, registerNodeRefGetter } from './refs'
@@ -333,6 +333,7 @@ export class Node {
   }
 
   get onPointerEnter() {
+    if (this.ctx?.entity?.crashed || this.ctx?.world?.fatalError) return null
     return this._onPointerEnter
   }
 
@@ -341,6 +342,7 @@ export class Node {
   }
 
   get onPointerLeave() {
+    if (this.ctx?.entity?.crashed || this.ctx?.world?.fatalError) return null
     return this._onPointerLeave
   }
 
@@ -349,6 +351,7 @@ export class Node {
   }
 
   get onPointerDown() {
+    if (this.ctx?.entity?.crashed || this.ctx?.world?.fatalError) return null
     return this._onPointerDown
   }
 
@@ -357,6 +360,7 @@ export class Node {
   }
 
   get onPointerUp() {
+    if (this.ctx?.entity?.crashed || this.ctx?.world?.fatalError) return null
     return this._onPointerUp
   }
 
@@ -416,11 +420,13 @@ export class Node {
           return self.active
         },
         set active(value) {
-          try {
-            self.active = value
-          } catch (err) {
-            throw toScriptError(err)
-          }
+          callForScript(
+            () => {
+              self.active = value
+            },
+            self,
+            []
+          )
         },
         get parent() {
           return self.parent?.getProxy()
@@ -481,24 +487,28 @@ export class Node {
           return true
         },
         get onPointerEnter() {
+          if (this.ctx?.entity?.crashed || this.ctx?.world?.fatalError) return null
           return self.onPointerEnter
         },
         set onPointerEnter(value) {
           self.onPointerEnter = value
         },
         get onPointerLeave() {
+          if (this.ctx?.entity?.crashed || this.ctx?.world?.fatalError) return null
           return self.onPointerLeave
         },
         set onPointerLeave(value) {
           self.onPointerLeave = value
         },
         get onPointerDown() {
+          if (this.ctx?.entity?.crashed || this.ctx?.world?.fatalError) return null
           return self.onPointerDown
         },
         set onPointerDown(value) {
           self.onPointerDown = value
         },
         get onPointerUp() {
+          if (this.ctx?.entity?.crashed || this.ctx?.world?.fatalError) return null
           return self.onPointerUp
         },
         set onPointerUp(value) {

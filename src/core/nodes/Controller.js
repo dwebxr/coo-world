@@ -1,4 +1,5 @@
-import { callForScript, toScriptError } from '../extras/scriptValues'
+import { createLogOnce } from '../extras/logOnce.js'
+import { callForScript } from '../extras/scriptValues'
 import * as THREE from '../extras/three'
 import {
   readVec3,
@@ -15,6 +16,8 @@ import { DEG2RAD } from '../extras/general'
 
 import { Node } from './Node'
 import { Layers } from '../extras/Layers'
+
+const warnController = createLogOnce()
 
 const layers = ['environment', 'prop', 'player', 'tool']
 
@@ -69,8 +72,19 @@ export class Controller extends Node {
     desc.material = this.ctx.world.physics.defaultMaterial
     desc.contactOffset = 0.1 // PhysX default = 0.1
     desc.stepOffset = 0.5 // PhysX default = 0.5m
-    this.controller = this.ctx.world.physics.controllerManager.createController(desc) // prettier-ignore
-    PHYSX.destroy(desc)
+    this.controller = null
+    try {
+      if (desc.isValid()) {
+        const controller = this.ctx.world.physics.controllerManager.createController(desc)
+        if (controller?.ptr) this.controller = controller
+      }
+    } finally {
+      PHYSX.destroy(desc)
+    }
+    if (!this.controller) {
+      warnController(this, 'controller', '[controller] invalid descriptor or failed to create controller')
+      return
+    }
     const worldPosition = this.getWorldPosition()
     const px = scratchPxExtVec3()
     vec3ToPx(worldPosition, px)
@@ -340,18 +354,10 @@ export class Controller extends Node {
           self.onContactEnd = value
         },
         get isGrounded() {
-          try {
-            return self.isGrounded
-          } catch (err) {
-            throw toScriptError(err)
-          }
+          return callForScript(() => self.isGrounded, self, [])
         },
         get isCeiling() {
-          try {
-            return self.isCeiling
-          } catch (err) {
-            throw toScriptError(err)
-          }
+          return callForScript(() => self.isCeiling, self, [])
         },
         teleport(vec3) {
           return callForScript(self.teleport, self, [vec3])

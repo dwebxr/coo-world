@@ -1,3 +1,4 @@
+import { handlePhysicsFailure } from './physicsFailure.js'
 import { isFiniteF32, warnOnce } from './physxConvert.js'
 
 const cache = new Map() // id -> { id, pmesh, refs }
@@ -22,7 +23,7 @@ class PMeshHandle {
   }
 }
 
-export function geometryToPxMesh(world, geometry, convex) {
+export function geometryToPxMesh(world, geometry, convex, entity) {
   const id = `${geometry.uuid}_${convex ? 'convex' : 'triangles'}`
 
   let item = cache.get(id)
@@ -104,6 +105,7 @@ export function geometryToPxMesh(world, geometry, convex) {
       pmesh = PHYSX.CreateTriangleMesh(world.physics.cookingParams, desc)
     }
   } catch (err) {
+    handlePhysicsFailure(err, { entity, world, phase: 'geometryToPxMesh' })
     console.error('geometryToPxMesh failed...')
     console.error(err)
     return null

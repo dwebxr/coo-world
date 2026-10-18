@@ -25,6 +25,7 @@ export function CoreUI({ world }) {
   const [confirm, setConfirm] = useState(null)
   const [code, setCode] = useState(false)
   const [avatar, setAvatar] = useState(null)
+  const [fatal, setFatal] = useState(world.fatalError)
   const [disconnected, setDisconnected] = useState(false)
   const [kicked, setKicked] = useState(null)
   useEffect(() => {
@@ -37,6 +38,7 @@ export function CoreUI({ world }) {
     world.on('avatar', setAvatar)
     world.on('kick', setKicked)
     world.on('disconnect', setDisconnected)
+    world.on('fatal', setFatal)
     return () => {
       world.off('ready', setReady)
       world.off('player', setPlayer)
@@ -47,6 +49,7 @@ export function CoreUI({ world }) {
       world.off('avatar', setAvatar)
       world.off('kick', setKicked)
       world.off('disconnect', setDisconnected)
+      world.off('fatal', setFatal)
     }
   }, [])
 
@@ -86,7 +89,7 @@ export function CoreUI({ world }) {
         overflow: hidden;
       `}
     >
-      {disconnected && <Disconnected />}
+      {(disconnected || fatal) && <Disconnected message={fatal ? 'Physics stopped. Reload to reconnect.' : null} />}
       {!ui.reticleSuppressors && <Reticle world={world} />}
       {<Toast world={world} />}
       {ready && <ActionsBlock world={world} />}
@@ -428,7 +431,7 @@ function Message({ msg, now }) {
   )
 }
 
-function Disconnected() {
+function Disconnected({ message }) {
   // useEffect(() => {
   //   document.body.style.filter = 'grayscale(100%)'
   //   return () => {
@@ -481,7 +484,7 @@ function Disconnected() {
         onClick={() => window.location.reload()}
       >
         <RefreshCwIcon size='1.1rem' />
-        <span>Reconnect</span>
+        <span>{message || 'Reconnect'}</span>
       </div>
     </>
   )

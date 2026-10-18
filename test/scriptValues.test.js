@@ -222,16 +222,19 @@ test('escape scan: host rejections reach scripts through toScriptError', () => {
   assert.match(apps, /reject\(toScriptError\(err\)\)/)
   assert.doesNotMatch(apps, /reject\(err\)/)
   const proxy = read('src/core/extras/createEntityProxy.js')
-  assert.match(proxy, /return method\(entity, \.\.\.args\)[\s\S]*?catch \(err\) \{[\s\S]*?throw toScriptError\(err\)/)
+  assert.match(proxy, /return callForScript\(method, entity, \[entity, \.\.\.args\]\)/)
 })
 
-test('escape scan: synchronous physics proxies use guarded calls and inline accessor catches', () => {
+test('escape scan: synchronous physics methods and accessors use guarded calls', () => {
   const values = read('src/core/extras/scriptValues.js')
-  assert.match(values, /return Reflect.apply\(fn, thisArg, args\)[\s\S]*?catch \(err\) \{\s*throw toScriptError\(err\)/)
+  assert.match(
+    values,
+    /return Reflect.apply\(fn, thisArg, args\)[\s\S]*?catch \(err\) \{\s*handlePhysicsFailure\(err,[^\n]+\n\s*throw toScriptError\(err\)/
+  )
   for (const file of ['Node', 'RigidBody', 'Controller']) {
     const source = read(`src/core/nodes/${file}.js`)
-    assert.match(source, /import \{ callForScript, toScriptError \}/)
+    assert.match(source, /import \{ callForScript \}/)
     assert.match(source, /callForScript\(self\./)
-    assert.match(source, /catch \(err\) \{\s*throw toScriptError\(err\)/)
+    assert.match(source, /callForScript\(\s*\(\) =>/)
   }
 })

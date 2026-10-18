@@ -1,3 +1,4 @@
+import { handlePhysicsFailure } from '../extras/physicsFailure.js'
 import * as THREE from '../extras/three'
 import { vec3ToPxPos, quatToPxRot, warnOnce } from '../extras/physxConvert.js'
 import { isBoolean, isNumber } from 'lodash-es'
@@ -58,7 +59,7 @@ export class Collider extends Node {
     } else if (this._type === 'geometry') {
       // note: triggers MUST be convex according to PhysX/Unity
       const isConvex = this._trigger || this._convex
-      pmesh = geometryToPxMesh(this.ctx.world, this._geometry, isConvex)
+      pmesh = geometryToPxMesh(this.ctx.world, this._geometry, isConvex, this.ctx.entity)
       if (!pmesh) return console.error('failed to generate collider pmesh')
       this.matrixWorld.decompose(_v1, _q1, _v2)
       const scaleVec = new PHYSX.PxVec3(_v2.x, _v2.y, _v2.z)
@@ -92,6 +93,7 @@ export class Collider extends Node {
     try {
       shape = this.ctx.world.physics.physics.createShape(geometry, material, true, flags)
     } catch (err) {
+      handlePhysicsFailure(err, { entity: this.ctx.entity, world: this.ctx.world, phase: 'Collider.mount' })
       console.error('[collider] failed to create shape')
       console.error(err)
     } finally {

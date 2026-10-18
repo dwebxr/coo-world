@@ -53,6 +53,7 @@ export class ServerNetwork extends System {
     this.connecting = new Set() // user ids reserved while their connection is still being set up
     this.socketIntervalId = setInterval(() => this.checkSockets(), PING_RATE * 1000)
     this.saveTimerId = null
+    this.stopping = false
     this.dirtyBlueprints = new Set()
     this.dirtyApps = new Set()
     this.isServer = true
@@ -110,7 +111,7 @@ export class ServerNetwork extends System {
     // watch settings changes
     this.world.settings.on('change', this.saveSettings)
     // queue first save
-    if (SAVE_INTERVAL) {
+    if (SAVE_INTERVAL && !this.stopping) {
       this.saveTimerId = setTimeout(this.save, SAVE_INTERVAL * 1000)
     }
   }
@@ -161,11 +162,13 @@ export class ServerNetwork extends System {
 
   // Admission charges the bytes and nodes before the inbox retains a copy.
   admit(socket, packet) {
+    if (this.stopping) return false
     return this.gate.admit(socket, packet, { builder: socket.player?.isBuilder() === true })
   }
 
   // Capacity is reserved before copying, including arrivals deferred during dispatch.
   enqueue(socket, packet, entry) {
+    if (this.stopping) return false
     if (socket.disconnected) return this.gate.refuse(socket, 'disconnected', entry.name, 'disconnected')
     if (!this.scheduler.reserve(socket, entry)) {
       return this.gate.refuse(socket, 'inbox', entry.name, 'inbox full')
@@ -182,6 +185,7 @@ export class ServerNetwork extends System {
   // The scheduler releases inbox credit before decoding and bounds each tick's work.
   flush() {
     this.scheduler.flush((socket, entry) => {
+      if (this.stopping) return
       const { copy, bytes, nodes, name, builder } = entry
       let decoded
       try {
@@ -297,7 +301,28 @@ export class ServerNetwork extends System {
       }
     } finally {
       // queue again, even if something above threw
-      this.saveTimerId = setTimeout(this.save, SAVE_INTERVAL * 1000)
+      if (!this.stopping) this.saveTimerId = setTimeout(this.save, SAVE_INTERVAL * 1000)
+    }
+  }
+
+  stopForFatal() {
+    this.stopping = true
+    clearTimeout(this.saveTimerId)
+    clearInterval(this.socketIntervalId)
+  }
+
+  async flushBeforeExit(deadlineMs) {
+    // Commit 3 replaces this temporary save with the revisioned, serialized flush.
+    let timer
+    try {
+      await Promise.race([
+        this.save(),
+        new Promise((resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('save deadline exceeded')), deadlineMs)
+        }),
+      ])
+    } finally {
+      clearTimeout(timer)
     }
   }
 
@@ -321,6 +346,7 @@ export class ServerNetwork extends System {
   }
 
   async onConnection(ws, params) {
+    if (this.stopping) return ws.close()
     let cancelled = false
     ws.once('close', () => (cancelled = true))
     let reserved = null
@@ -713,6 +739,7 @@ export class ServerNetwork extends System {
   }
 
   onBlueprintAdded = (socket, blueprint) => {
+    if (this.stopping) return
     if (!this.requireBuilder(socket, 'add blueprint')) return
     const { ok, value: safe } = sanitizeBlueprintAdd(blueprint, {
       onUnknownKey: key => this.logOnce(socket, 'blueprint-unknown', `blueprint: unknown key ${key}`),
@@ -734,6 +761,7 @@ export class ServerNetwork extends System {
   }
 
   onBlueprintModified = (socket, data) => {
+    if (this.stopping) return
     if (!this.requireBuilder(socket, 'modify blueprint')) return
     const { ok, value: safe } = sanitizeBlueprintModify(data, {
       onUnknownKey: key => this.logOnce(socket, 'blueprint-unknown', `blueprint: unknown key ${key}`),
@@ -781,6 +809,7 @@ export class ServerNetwork extends System {
   }
 
   onEntityAdded = (socket, data) => {
+    if (this.stopping) return
     if (!this.requireBuilder(socket, 'add entity')) return
     const refused = socket.refusedBlueprint
     if (refused) {
@@ -806,6 +835,7 @@ export class ServerNetwork extends System {
   }
 
   onEntityModified = async (socket, data) => {
+    if (this.stopping) return
     if (!isObject(data)) return this.logOnce(socket, 'entity-packet-invalid', 'onEntityModified: invalid packet')
     const entity = this.world.entities.get(data.id)
     if (!entity) {
@@ -884,6 +914,7 @@ export class ServerNetwork extends System {
   }
 
   onEntityEvent = (socket, event, meta) => {
+    if (this.stopping) return
     if (!Array.isArray(event)) return
     const [id, version, name, data] = event
     // engine hooks and world events are never raised from the network
@@ -894,6 +925,7 @@ export class ServerNetwork extends System {
   }
 
   onEntityRemoved = (socket, id) => {
+    if (this.stopping) return
     if (typeof id !== 'string') return
     const entity = this.world.entities.get(id)
     if (!entity) return
@@ -909,6 +941,7 @@ export class ServerNetwork extends System {
   }
 
   onSettingsModified = (socket, data) => {
+    if (this.stopping) return
     if (!this.requireBuilder(socket, 'modify settings')) return
     if (!isObject(data)) return
     const { key, value } = data
@@ -933,6 +966,7 @@ export class ServerNetwork extends System {
   }
 
   onSpawnModified = async (socket, op) => {
+    if (this.stopping) return
     if (!this.requireBuilder(socket, 'modify spawn')) return
     const player = socket.player
     if (op === 'set') {
@@ -991,6 +1025,7 @@ export class ServerNetwork extends System {
   }
 
   onAi = (socket, action) => {
+    if (this.stopping) return
     if (!this.requireBuilder(socket, 'use ai')) return
     this.world.ai.onAction(action)
   }
@@ -1005,7 +1040,7 @@ export class ServerNetwork extends System {
     this.world.apps.eventLedger.purgeSocket(socket.id)
     this.world.livekit.clearModifiers(socket.id)
     solanaGating.clearSocket(socket.id)
-    socket.player?.destroy(true)
+    if (!this.stopping) socket.player?.destroy(true)
     // only drop the entry that still refers to this socket
     if (this.sockets.get(socket.id) === socket) this.sockets.delete(socket.id)
   }

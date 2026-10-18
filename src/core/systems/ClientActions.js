@@ -181,7 +181,7 @@ function createAction(world) {
         if (node.progress === 0) {
           cancelled = false
           try {
-            node._onStart.call(undefined) // script callbacks run without a receiver
+            if (!node.ctx?.entity?.crashed && !world.fatalError) node._onStart.call(undefined) // script callbacks run without a receiver
           } catch (err) {
             console.error('action.onStart:', err)
           }
@@ -192,7 +192,8 @@ function createAction(world) {
         if (node.progress === node._duration) {
           node.progress = 0
           try {
-            node._onTrigger.call(undefined, { playerId: world.entities.player.data.id })
+            if (!node.ctx?.entity?.crashed && !world.fatalError)
+              node._onTrigger.call(undefined, { playerId: world.entities.player.data.id })
           } catch (err) {
             console.error('action.onTrigger:', err)
           }
@@ -200,7 +201,7 @@ function createAction(world) {
       } else if (node.progress > 0) {
         if (!cancelled) {
           try {
-            node._onCancel.call(undefined)
+            if (!node.ctx?.entity?.crashed && !world.fatalError) node._onCancel.call(undefined)
           } catch (err) {
             console.error('action.onCancel:', err)
           }

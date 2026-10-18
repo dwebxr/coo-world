@@ -1,3 +1,4 @@
+import { handlePhysicsFailure } from '../extras/physicsFailure.js'
 import * as THREE from '../extras/three'
 import { vec3ToPxPos, quatToPxRot, warnOnce } from '../extras/physxConvert.js'
 import { isBoolean, isNumber, isString, isArray, isObject, isFunction, isEqual } from 'lodash-es'
@@ -222,63 +223,69 @@ export class Prim extends Node {
   }
 
   async mount() {
-    this.needsRebuild = false
+    try {
+      this.needsRebuild = false
 
-    // do some trickery to get a unit geometry size with a scale offset we can apply.
-    // essentially lets us use unit-sized geometry and transfers the offset to scale.
-    // for example there will only ever be ONE box geometry used, scaling will form its size.
-    // but for shapes with varying config, eg cylinder top and bottom radii, these are normalized by ratio.
-    const { size, scaleOffset } = getGeometryConfig(this._type, this._size)
-    this.scaleOffset.fromArray(scaleOffset)
-    this.updateMatrixWorldOffset()
+      // do some trickery to get a unit geometry size with a scale offset we can apply.
+      // essentially lets us use unit-sized geometry and transfers the offset to scale.
+      // for example there will only ever be ONE box geometry used, scaling will form its size.
+      // but for shapes with varying config, eg cylinder top and bottom radii, these are normalized by ratio.
+      const { size, scaleOffset } = getGeometryConfig(this._type, this._size)
+      this.scaleOffset.fromArray(scaleOffset)
+      this.updateMatrixWorldOffset()
 
-    // Create visual if visible
-    if (this._opacity > 0) {
-      // Get unit-sized geometry for this type
-      const geometry = getGeometry(this._type, size)
+      // Create visual if visible
+      if (this._opacity > 0) {
+        // Get unit-sized geometry for this type
+        const geometry = getGeometry(this._type, size)
 
-      // Get loader if available (client-side only)
-      const loader = this.ctx.world.loader || null
+        // Get loader if available (client-side only)
+        const loader = this.ctx.world.loader || null
 
-      // Create material with current properties
-      const material = getMaterial({
-        // color: this._color,
-        // emissive: this._emissive,
-        // emissiveIntensity: this._emissiveIntensity,
-        metalness: this._metalness,
-        roughness: this._roughness,
-        opacity: quantizeOpacity(this._opacity), // reduce material variations
-        texture: this._texture,
-        doubleside: this._doubleside,
-      })
+        // Create material with current properties
+        const material = getMaterial({
+          // color: this._color,
+          // emissive: this._emissive,
+          // emissiveIntensity: this._emissiveIntensity,
+          metalness: this._metalness,
+          roughness: this._roughness,
+          opacity: quantizeOpacity(this._opacity), // reduce material variations
+          texture: this._texture,
+          doubleside: this._doubleside,
+        })
 
-      if (this._texture && !material._texApplied) {
-        const n = ++this.n
-        await applyTexture(material, this._texture, loader)
-        if (n !== this.n) return // remounted or destroyed
+        if (this._texture && !material._texApplied) {
+          const n = ++this.n
+          await applyTexture(material, this._texture, loader)
+          if (n !== this.n) return // remounted or destroyed
+        }
+
+        // Create mesh
+        this.handle = this.ctx.world.stage.insertLinked({
+          geometry,
+          material,
+          uberShader: true,
+          castShadow: this._castShadow,
+          receiveShadow: this._receiveShadow,
+          matrix: this.matrixWorldOffset,
+          // color: this._color,
+          node: this,
+        })
+        // console.log('FOO', this._color)
+        this.handle.setColor(this._color)
+        this.handle.setEmissive(this._emissive)
+        this.handle.setEmissiveIntensity(this._emissiveIntensity)
+        count++
       }
 
-      // Create mesh
-      this.handle = this.ctx.world.stage.insertLinked({
-        geometry,
-        material,
-        uberShader: true,
-        castShadow: this._castShadow,
-        receiveShadow: this._receiveShadow,
-        matrix: this.matrixWorldOffset,
-        // color: this._color,
-        node: this,
-      })
-      // console.log('FOO', this._color)
-      this.handle.setColor(this._color)
-      this.handle.setEmissive(this._emissive)
-      this.handle.setEmissiveIntensity(this._emissiveIntensity)
-      count++
-    }
-
-    // Create physics if enabled
-    if (this._physics && !this.ctx.moving) {
-      this.mountPhysics(size)
+      // Create physics if enabled
+      if (this._physics && !this.ctx.moving) {
+        this.mountPhysics(size)
+      }
+    } catch (err) {
+      handlePhysicsFailure(err, { entity: this.ctx.entity, world: this.ctx.world, phase: 'Prim.mount' })
+      console.error('[prim] mount failed')
+      console.error(err)
     }
   }
 
@@ -326,7 +333,7 @@ export class Prim extends Node {
       const threeGeometry = getGeometry(this._type, size)
 
       // Create convex mesh
-      pmesh = geometryToPxMesh(this.ctx.world, threeGeometry, true)
+      pmesh = geometryToPxMesh(this.ctx.world, threeGeometry, true, this.ctx.entity)
       if (pmesh && pmesh.value) {
         // Create scale and its components explicitly so we can free them
         const _scaleVec = new PHYSX.PxVec3(_v2.x, _v2.y, _v2.z)

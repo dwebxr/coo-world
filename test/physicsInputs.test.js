@@ -48,6 +48,7 @@ const physics = {
   PxExtendedVec3: PxVec3,
   PxTransform,
   PxIDENTITYEnum: { PxIdentity: 0 },
+  PxRigidBodyFlagEnum: { eKINEMATIC: 1 },
   PxForceModeEnum: { eFORCE: 0, eIMPULSE: 1, eACCELERATION: 2, eVELOCITY_CHANGE: 3 },
   PxControllerCollisionFlagEnum: { eCOLLISION_DOWN: 1, eCOLLISION_UP: 2 },
   PxRigidBodyExt: {
@@ -131,6 +132,7 @@ function body(actor = true) {
       getAngularVelocity: native('getAngularVelocity', velocity),
       setLinearVelocity: native('setLinearVelocity'),
       setAngularVelocity: native('setAngularVelocity'),
+      getRigidBodyFlags: () => ({ isSet: () => true }),
       setKinematicTarget: native('setKinematicTarget'),
       isSleeping: native('isSleeping', true),
       release: native('release'),

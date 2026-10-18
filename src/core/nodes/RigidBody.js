@@ -17,7 +17,7 @@ import {
 } from '../extras/physxConvert.js'
 
 import { Node } from './Node'
-import { callForScript, toScriptError } from '../extras/scriptValues'
+import { callForScript } from '../extras/scriptValues'
 import { isFunction, isNumber, isString } from 'lodash-es'
 
 const _v1 = new THREE.Vector3()
@@ -347,7 +347,7 @@ export class RigidBody extends Node {
       warnOnce('[rigidbody] addForceAtPos ignored a non-finite force or pos')
       return
     }
-    if (!this.actor) return
+    if (!this.actor?.getLinearVelocity) return
     if (!this._pv1) this._pv1 = new PHYSX.PxVec3()
     if (!this._pv2) this._pv2 = new PHYSX.PxVec3()
     mode = getForceMode(mode)
@@ -363,7 +363,7 @@ export class RigidBody extends Node {
       warnOnce('[rigidbody] addForceAtLocalPos ignored a non-finite force or pos')
       return
     }
-    if (!this.actor) return
+    if (!this.actor?.getLinearVelocity) return
     if (!this._pv1) this._pv1 = new PHYSX.PxVec3()
     if (!this._pv2) this._pv2 = new PHYSX.PxVec3()
     mode = getForceMode(mode)
@@ -468,7 +468,7 @@ export class RigidBody extends Node {
       warnOnce('[rigidbody] getVelocityAtPos ignored a non-finite pos')
       return writeVec3(vec3, 0, 0, 0)
     }
-    if (!this.actor) return writeVec3(vec3, 0, 0, 0)
+    if (!this.actor?.getLinearVelocity) return writeVec3(vec3, 0, 0, 0)
     const px = scratchPxVec3()
     vec3ToPx(_v1, px)
     return pxToVec3(vec3, PHYSX.PxRigidBodyExt.prototype.getVelocityAtPos(this.actor, px))
@@ -482,7 +482,7 @@ export class RigidBody extends Node {
       warnOnce('[rigidbody] getLocalVelocityAtLocalPos ignored a non-finite pos')
       return writeVec3(vec3, 0, 0, 0)
     }
-    if (!this.actor) return writeVec3(vec3, 0, 0, 0)
+    if (!this.actor?.getLinearVelocity) return writeVec3(vec3, 0, 0, 0)
     const px = scratchPxVec3()
     vec3ToPx(_v1, px)
     return pxToVec3(vec3, PHYSX.PxRigidBodyExt.prototype.getLocalVelocityAtLocalPos(this.actor, px))
@@ -509,6 +509,8 @@ export class RigidBody extends Node {
       warnOnce('[rigidbody] setKinematicTarget ignored a non-finite position or quaternion')
       return
     }
+    if (!this.actor?.setKinematicTarget) return
+    if (!this.actor.getRigidBodyFlags().isSet(PHYSX.PxRigidBodyFlagEnum.eKINEMATIC)) return
     vec3ToPxPos(_v1, this._tm)
     quatToPxRot(_q1, this._tm)
     this.actor?.setKinematicTarget(this._tm)
@@ -567,11 +569,7 @@ export class RigidBody extends Node {
           self.onTriggerLeave = value
         },
         get sleeping() {
-          try {
-            return self.sleeping
-          } catch (err) {
-            throw toScriptError(err)
-          }
+          return callForScript(() => self.sleeping, self, [])
         },
         addForce(force, mode) {
           return callForScript(self.addForce, self, [force, mode])

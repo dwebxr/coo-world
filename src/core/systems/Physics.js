@@ -1,3 +1,4 @@
+import { handlePhysicsFailure, isPhysicsTrap, getPhysicsTrapCount } from '../extras/physicsFailure.js'
 import * as THREE from '../extras/three'
 import { matrixToPxTransform, vec3ToPx, pxToVec3, pxToQuat } from '../extras/physxConvert.js'
 import { System } from './System'
@@ -38,6 +39,9 @@ export class Physics extends System {
   constructor(world) {
     super(world)
     this.scene = null
+    this.probeTick = 0
+    this.lastProbeTick = -1
+    this.needsProbe = false
   }
 
   async init() {
@@ -56,6 +60,7 @@ export class Physics extends System {
     this.triggerCallbacks = []
     this.pendingCallbacks = []
     this.callbackFailures = []
+    this.overflowTraps = 0
     this.callbackWarnings = new WeakMap()
     this.registrations = new WeakMap()
 
@@ -162,6 +167,61 @@ export class Physics extends System {
     this.transform = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
 
     this.setupControllerManager()
+    this.createProbeScene()
+  }
+
+  createProbeScene() {
+    const desc = new PHYSX.PxSceneDesc(this.tolerances)
+    const gravity = new PHYSX.PxVec3(0, -9.81, 0)
+    desc.gravity = gravity
+    desc.cpuDispatcher = PHYSX.DefaultCpuDispatcherCreate(0)
+    desc.filterShader = PHYSX.DefaultFilterShader()
+    this.probeScene = this.physics.createScene(desc)
+    PHYSX.destroy(desc)
+    PHYSX.destroy(gravity)
+    const pose = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
+    const flags = new PHYSX.PxShapeFlags(PHYSX.PxShapeFlagEnum.eSIMULATION_SHAPE)
+    for (const dynamic of [false, true]) {
+      pose.p.y = dynamic ? 2 : 0
+      const geometry = dynamic ? new PHYSX.PxSphereGeometry(0.25) : new PHYSX.PxBoxGeometry(1, 0.25, 1)
+      const actor = dynamic ? this.physics.createRigidDynamic(pose) : this.physics.createRigidStatic(pose)
+      const shape = this.physics.createShape(geometry, this.defaultMaterial, true, flags)
+      actor.attachShape(shape)
+      this.probeScene.addActor(actor)
+      shape.release()
+      PHYSX.destroy(geometry)
+    }
+    PHYSX.destroy(flags)
+    PHYSX.destroy(pose)
+  }
+
+  probe() {
+    try {
+      this.probeScene.simulate(1 / 60)
+      if (!this.probeScene.fetchResults(true)) return false
+      const vector = new PHYSX.PxVec3()
+      PHYSX.destroy(vector)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  checkHealth() {
+    if (this.world.fatalError || (!this.needsProbe && getPhysicsTrapCount() < 64)) return
+    if (this.lastProbeTick === this.probeTick) return
+    this.lastProbeTick = this.probeTick
+    this.needsProbe = false
+    if (!this.probe()) this.world.fatal('physics unusable')
+  }
+
+  preTick() {
+    this.probeTick++
+    this.checkHealth()
+  }
+
+  postTick() {
+    this.checkHealth()
   }
 
   setupControllerManager() {
@@ -294,28 +354,32 @@ export class Physics extends System {
   }
 
   recordCallbackFailure(err, phase, entity) {
-    // Do not inspect thrown objects: even instanceof can throw for a revoked proxy.
-    let runtimeError = false
-    try {
-      runtimeError = err instanceof WebAssembly.RuntimeError
-    } catch {
-      // Unknown thrown values are still contained.
-    }
+    const runtimeError = isPhysicsTrap(err)
     if (this.callbackFailures.length < 32) {
       this.callbackFailures.push({ phase, runtimeError, entity })
+    } else if (runtimeError) {
+      this.overflowTraps++
     }
   }
 
   drainCallbackFailures() {
-    if (!this.callbackFailures.length) return
+    if (!this.callbackFailures.length && !this.overflowTraps) return
     const failures = this.callbackFailures
     this.callbackFailures = []
+    if (this.overflowTraps) {
+      failures.push({ phase: 'callback overflow', runtimeError: true, count: this.overflowTraps })
+      this.overflowTraps = 0
+    }
     this.handleContainedCallbackFailures(failures)
   }
 
-  // Commit 2 plugs the shared physics failure handler into this hook.
   handleContainedCallbackFailures(failures) {
-    for (const { phase, runtimeError, entity } of failures) {
+    for (const { phase, runtimeError, entity, count } of failures) {
+      // Identity was classified inside the native callback; only metadata survives it.
+      if (runtimeError) {
+        handlePhysicsFailure(new WebAssembly.RuntimeError(), { entity, world: this.world, phase, count })
+        continue
+      }
       const subject = entity || this
       let warned = this.callbackWarnings.get(subject)
       if (!warned) this.callbackWarnings.set(subject, (warned = new Set()))
@@ -345,12 +409,13 @@ export class Physics extends System {
   dispatchCallbacks(callbacks) {
     for (const { recipients, contacts } of callbacks) {
       for (const recipient of recipients) {
+        if (this.world.fatalError) return
         if (!recipient) continue
         const { registration, entity, run, fn, method, tag, playerId, isLocalPlayer } = recipient
         const { handle, ptr, destroyed } = registration
         if (destroyed || this.handles.get(ptr) !== handle || this.registrations.get(handle) !== registration) continue
         if (handle.node?.ctx?.entity !== entity) continue
-        if (entity?.isApp && (entity.destroyed || entity.deadHook !== run || run?.dead)) continue
+        if (entity?.isApp && (entity.destroyed || entity.crashed || entity.deadHook !== run || run?.dead)) continue
         try {
           const event = contacts
             ? {
@@ -365,7 +430,8 @@ export class Physics extends System {
             : { tag, playerId, isLocalPlayer }
           Reflect.apply(fn, undefined, [event])
         } catch (err) {
-          this.recordCallbackFailure(err, method, entity)
+          handlePhysicsFailure(err, { entity, world: this.world, phase: method })
+          if (!isPhysicsTrap(err)) this.recordCallbackFailure(err, method, entity)
         }
       }
     }
@@ -394,17 +460,30 @@ export class Physics extends System {
   }
 
   postFixedUpdate(delta) {
+    if (this.world.fatalError) return
     const pending = this.pendingCallbacks
     this.pendingCallbacks = []
     this.dispatchCallbacks(pending)
+    this.checkHealth()
+    if (this.world.fatalError) return
+    let phase = 'simulate'
     try {
       this.scene.simulate(delta)
+      phase = 'fetchResults'
       this.scene.fetchResults(true)
+    } catch (err) {
+      handlePhysicsFailure(err, { world: this.world, phase })
+      this.world.fatal(`physics ${phase} interrupted`)
+      return
     } finally {
       this.drainCallbackFailures()
     }
+    this.checkHealth()
+    if (this.world.fatalError) return
     this.processContactCallbacks()
     this.processTriggerCallbacks()
+    this.checkHealth()
+    if (this.world.fatalError) return
     const activeActors = PHYSX.SupportFunctions.prototype.PxScene_getActiveActors(this.scene)
     const size = activeActors.size()
     for (let i = 0; i < size; i++) {
@@ -427,6 +506,7 @@ export class Physics extends System {
   }
 
   preUpdate(alpha) {
+    if (this.world.fatalError) return
     this.world.stage.clean()
     let failed
     for (const handle of this.active) {
@@ -458,6 +538,7 @@ export class Physics extends System {
     const crashed = new Set()
     for (const { handle, err } of failed) {
       const owner = handle.node?.ctx?.entity
+      const trapped = handlePhysicsFailure(err, { entity: owner, world: this.world, phase: 'Physics.preUpdate' })
       try {
         if (!handle._interpolateFailed) {
           handle._interpolateFailed = true
@@ -472,7 +553,7 @@ export class Physics extends System {
       }
       if (owner?.isApp && !crashed.has(owner)) {
         crashed.add(owner)
-        owner.crash()
+        if (!trapped) owner.crash()
       }
     }
   }

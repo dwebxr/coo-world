@@ -26,6 +26,22 @@ export function challengeHost(env = process.env) {
 
 export const WALLET_HOST = challengeHost()
 
+export function challengeUri(env = process.env, domain = challengeHost(env)) {
+  for (const value of [env.PUBLIC_API_URL, env.PUBLIC_WS_URL]) {
+    try {
+      const url = new URL(value)
+      if (url.protocol === 'ws:') url.protocol = 'http:'
+      if (url.protocol === 'wss:') url.protocol = 'https:'
+      if (url.origin !== 'null') return url.origin
+    } catch {
+      // Try the next configured URL, then the challenge domain.
+    }
+  }
+  return `https://${domain}`
+}
+
+export const WALLET_URI = challengeUri()
+
 export function isWalletAddress(address) {
   if (typeof address !== 'string' || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address)) return false
   try {
@@ -37,6 +53,10 @@ export function isWalletAddress(address) {
 
 export function isWalletRequestId(id) {
   return Number.isInteger(id) && id >= 1 && id <= 0x7fffffff
+}
+
+export function isWalletNonce(nonce) {
+  return typeof nonce === 'string' && nonce.length === 64 && /^[a-f0-9]{64}$/.test(nonce)
 }
 
 export function signatureBytes(signature) {
@@ -53,16 +73,18 @@ export function signatureBytes(signature) {
   return bytes.length === 64 && bytes.toString('base64') === signature ? bytes : null
 }
 
-export function buildChallenge(address, host, now) {
-  const nonce = Buffer.from(nacl.randomBytes(32)).toString('base64')
-  const message = `${host} wants you to verify your Solana wallet.\nWallet: ${address}\nNonce: ${nonce}`
-  if (!isWalletAddress(address) || Buffer.byteLength(message) > 512) throw new Error('invalid challenge')
-  return { nonce, message, address, expiresAt: now + CHALLENGE_TTL_MS }
+export function buildChallenge(address, host, now, uri = `https://${host}`) {
+  // v4.3 SIWS format lets wallets compare the challenge domain with the page origin.
+  const nonce = Buffer.from(nacl.randomBytes(32)).toString('hex')
+  const expiresAt = now + CHALLENGE_TTL_MS
+  const message = `${host} wants you to sign in with your Solana account:\n${address}\n\nVerify wallet ownership for this world. This does not authorize any transaction.\n\nURI: ${uri}\nVersion: 1\nNonce: ${nonce}\nIssued At: ${new Date(now).toISOString()}\nExpiration Time: ${new Date(expiresAt).toISOString()}`
+  if (!isWalletAddress(address) || Buffer.byteLength(message) > 1024) throw new Error('invalid challenge')
+  return { nonce, message, address, expiresAt }
 }
 
 export function checkChallenge(challenge, { walletAddress, signature, nonce }, now) {
   if (!challenge) return { ok: false, reason: 'no_nonce' }
-  if (typeof nonce !== 'string' || nonce.length !== 44 || challenge.nonce !== nonce) {
+  if (!isWalletNonce(nonce) || challenge.nonce !== nonce) {
     return { ok: false, reason: 'nonce_mismatch' }
   }
   if (now >= challenge.expiresAt) return { ok: false, reason: 'nonce_expired' }

@@ -12,7 +12,13 @@ import { Ranks } from '../src/core/extras/ranks.js'
 import { sanitizeName, isAvatarUrl } from '../src/core/extras/entityModifyPolicy.js'
 import * as gating from '../src/server/solana-gating.js'
 
-const enabled = { ...gating, TOKEN_GATING_ENABLED: true, REQUIRED_TOKEN_AMOUNT: 10000, WALLET_HOST: 'test.example' }
+const enabled = {
+  ...gating,
+  TOKEN_GATING_ENABLED: true,
+  REQUIRED_TOKEN_AMOUNT: 10000,
+  WALLET_HOST: 'test.example',
+  WALLET_URI: 'https://test.example',
+}
 const keyA = nacl.sign.keyPair()
 const keyB = nacl.sign.keyPair()
 const addressOf = key => new PublicKey(key.publicKey).toBase58()
@@ -129,7 +135,7 @@ function fixture(t, { result = { known: true, balance: 0 } } = {}) {
   return f
 }
 
-test('wallet service: one injected or production instance; disabled gating constructs neither service nor RPC', () => {
+test('wallet service: disabled gating ignores balance requests and constructs neither service nor RPC', async () => {
   for (const on of [false, true]) {
     let rpc = 0,
       services = 0
@@ -155,6 +161,12 @@ test('wallet service: one injected or production instance; disabled gating const
     assert.equal(injected.tokenBalanceService, on ? service : null)
     assert.equal(rpc, on ? 1 : 0)
     assert.equal(services, on ? 1 : 0)
+    if (!on) {
+      // No socket access, admission mutation, reply or service call when gating is disabled.
+      const socket = new Proxy({}, { get: () => assert.fail('disabled handler touched socket') })
+      await production.onTokenBalanceRequest(socket, { id: 1 })
+      await injected.onTokenBalanceRequest(socket, { id: 1 })
+    }
   }
 })
 
@@ -230,7 +242,7 @@ test('wallet replies: no challenge, reused verification and revoke floods are si
     await f.network.onRequestBuilderByToken(socket, {
       walletAddress: address,
       signature: 'invalid',
-      nonce: 'x'.repeat(44),
+      nonce: 'b'.repeat(64),
       attempt: 1,
     })
     f.network.onRevokeBuilderByToken(socket, {})
@@ -602,8 +614,23 @@ test('wallet bounds: malformed inbound fields do not issue challenges or start r
   assert.equal(f.calls.length, 0)
   assert.equal(socket.wallet.generation, 0)
   const proof = f.challenge(socket, 0x7fffffff)
+  assert.match(socket.wallet.challenge.message, /\nURI: https:\/\/test.example\nVersion: 1\n/)
   clear(socket)
   for (const attempt of invalidIds) await f.network.onRequestBuilderByToken(socket, { ...proof, attempt })
+  for (const nonce of [
+    [],
+    {},
+    42,
+    'a'.repeat(63),
+    'a'.repeat(65),
+    'a'.repeat(64) + '\n',
+    'a'.repeat(64) + '\r',
+    'g'.repeat(64),
+    'A'.repeat(64),
+    Buffer.alloc(32).toString('base64'),
+  ]) {
+    await f.network.onRequestBuilderByToken(socket, { ...proof, nonce })
+  }
   assert.ok(socket.wallet.challenge)
   assert.deepEqual(packets(socket), [])
   await f.network.onRequestBuilderByToken(socket, { ...proof, signature: Array(64).fill(256) })

@@ -118,9 +118,29 @@ if (world.isClient) {
   ui.add(balanceLabel)
   app.add(ui)
 
+  const formatBalance = balance => {
+    const formatted = balance.toLocaleString('en-US', { maximumFractionDigits: 2 })
+    if (formatted !== String(balance)) return formatted
+    // SES tames toLocaleString and omits Intl. Round decimal digits and group locally.
+    const [coefficient, exponent = '0'] = String(balance).split('e')
+    const [whole, fraction = ''] = coefficient.split('.')
+    const shift = Number(exponent) - fraction.length + 2
+    let cents = BigInt(whole + fraction)
+    if (shift >= 0) cents *= 10n ** BigInt(shift)
+    else {
+      const divisor = 10n ** BigInt(-shift)
+      cents = (cents + divisor / 2n) / divisor
+    }
+    const integer = (cents / 100n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+    const decimal = (cents % 100n).toString().padStart(2, '0').replace(/0+$/, '')
+    return decimal ? `${integer}.${decimal}` : integer
+  }
+
   const showBalance = result => {
     balanceLabel.value =
-      result?.verified && result.known ? `Your Balance: ${result.balance} ${tokenSymbol}` : 'Wallet not connected'
+      result?.verified && result.known
+        ? `Your Balance: ${formatBalance(result.balance)} ${tokenSymbol}`
+        : 'Wallet not connected'
   }
 
   const refreshBalance = async () => {
@@ -137,10 +157,11 @@ if (world.isClient) {
 
   const openDoor = () => {
     if (isMoving) return
-    isOpen = !isOpen
-    targetPosition = isOpen ? 1 : 0
-    isMoving = true
     openTimer = 0
+    if (isOpen) return
+    isOpen = true
+    targetPosition = 1
+    isMoving = true
   }
 
   const action = app.create('action', {

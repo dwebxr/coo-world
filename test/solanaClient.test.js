@@ -9,8 +9,8 @@ import { strictDecode } from '../src/core/extras/strictDecode.js'
 import { packetMethodById } from '../src/core/packets.js'
 
 const address = '1'.repeat(32)
-const nonce = Buffer.alloc(32, 42).toString('base64')
-const message = `world.example wants you to verify your Solana wallet.\nWallet: ${address}\nNonce: ${nonce}`
+const nonce = Buffer.alloc(32, 42).toString('hex')
+const message = `world.example wants you to sign in with your Solana account:\n${address}\n\nVerify wallet ownership for this world. This does not authorize any transaction.\n\nURI: https://world.example\nVersion: 1\nNonce: ${nonce}\nIssued At: 2026-10-18T00:00:00.000Z\nExpiration Time: 2026-10-18T00:01:00.000Z`
 const flush = async () => {
   for (let i = 0; i < 8; i++) await Promise.resolve()
 }
@@ -158,7 +158,7 @@ test('client: obsolete replies across same-address reconnect', async t => {
   const b = await h.start()
   assert.notEqual(a.attempt, b.attempt)
   const before = h.solana.getState()
-  h.challenge(a.attempt, { nonce: Buffer.alloc(32, 1).toString('base64') })
+  h.challenge(a.attempt, { nonce: Buffer.alloc(32, 1).toString('hex') })
   h.status(a.attempt)
   await flush()
   assert.deepEqual(h.solana.getState(), before)
@@ -337,7 +337,7 @@ test('client: server invalidation preserves the new attempt', async t => {
   assert.equal(h.solana.getState().status, 'unverified')
 })
 
-test('client: bounded inputs and signing rejection', async t => {
+test('client: hex nonce and 1024-byte bounds; signing rejection', async t => {
   for (const badAddress of ['', '0bad', '1'.repeat(33), '1'.repeat(45)]) {
     const h = setup(t)
     h.provider.publicKey.toString = () => badAddress
@@ -345,12 +345,38 @@ test('client: bounded inputs and signing rejection', async t => {
     assert.equal(h.solana.isConnected(), false)
     assert.equal(h.world.packets.length, 0)
   }
-  for (const bad of [{ nonce: 'short' }, { message: 'あ'.repeat(171) }, { message: '' }]) {
+  for (const bad of [
+    ...[
+      null,
+      [],
+      42,
+      'short',
+      'a'.repeat(63),
+      'a'.repeat(65),
+      'a'.repeat(64) + '\n',
+      'a'.repeat(64) + '\r',
+      'g'.repeat(64),
+      'A'.repeat(64),
+      Buffer.alloc(32).toString('base64'),
+    ].map(nonce => ({ nonce })),
+    { message: 'あ'.repeat(342) },
+    { message: 'a'.repeat(1025) },
+    { message: '' },
+  ]) {
     const h = setup(t)
     const run = await h.start()
     h.challenge(run.attempt, bad)
     assert.equal(await run.promise, null)
     assert.equal(h.signed.length, 0)
+  }
+  for (const message of ['a'.repeat(1024), 'あ'.repeat(341) + 'a']) {
+    const h = setup(t)
+    const run = await h.start()
+    h.challenge(run.attempt, { message })
+    await flush()
+    assert.deepEqual(h.signed, [[message, 'utf8']])
+    h.status(run.attempt)
+    assert.equal(await run.promise, address)
   }
   for (const signature of [new Uint8Array(63), new Uint8Array(65), new Array(64), Array(64).fill(256), 'bad', null]) {
     const h = setup(t)

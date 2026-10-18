@@ -1,5 +1,12 @@
 import { Ranks } from '../../core/extras/ranks.js'
 
+const balanceFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 })
+const formatBalance = balance => {
+  const formatted = balance.toLocaleString('en-US', { maximumFractionDigits: 2 })
+  // SES replaces toLocaleString with toString; Intl is still available in the host UI.
+  return formatted === String(balance) ? balanceFormat.format(balance) : formatted
+}
+
 export function walletPanelText(walletState, { effectiveBuilder, rawRank, threshold }) {
   const { status, known, balance } = walletState
   let wallet
@@ -14,7 +21,7 @@ export function walletPanelText(walletState, { effectiveBuilder, rawRank, thresh
       wallet = '未確認 (署名する)'
       break
     case 'verified':
-      wallet = known ? `確認済み・残高 ${balance} COO` : '確認済み・残高を取得できません'
+      wallet = known ? `確認済み・残高 ${formatBalance(balance)} COO` : '確認済み・残高を取得できません'
       break
     default:
       wallet = 'ウォレット未接続'

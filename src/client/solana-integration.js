@@ -128,11 +128,16 @@ export function createSolanaIntegration(world) {
           }, data.retryAfterMs)
           return
         }
-        if (typeof data.nonce !== 'string' || data.nonce.length !== 44 || typeof data.message !== 'string') {
+        if (
+          typeof data.nonce !== 'string' ||
+          data.nonce.length !== 64 ||
+          !/^[a-f0-9]{64}$/.test(data.nonce) ||
+          typeof data.message !== 'string'
+        ) {
           return finish(null)
         }
         const bytes = new TextEncoder().encode(data.message)
-        if (!bytes.length || bytes.length > 512) return finish(null)
+        if (!bytes.length || bytes.length > 1024) return finish(null)
         finish({ nonce: data.nonce, bytes })
       }
       const timer = setTimeout(cancel, NONCE_WAIT_MS)

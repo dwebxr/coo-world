@@ -1,6 +1,5 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { EventEmitter } from 'node:events'
 import 'ses'
 await import('../src/core/lockdown.js')
 import { createTokenBalanceClient } from '../src/core/extras/tokenBalanceClient.js'
@@ -93,6 +92,7 @@ test('balance: correlation, sharing, timeout and cache invalidation', async t =>
 test('balance: refused sends and disposal resolve unknown', async t => {
   for (const send of [
     () => false,
+    () => undefined,
     () => {
       throw Error('closed')
     },
@@ -119,7 +119,10 @@ test('panel: every row and open-build hint', () => {
     [{ status: 'signing' }, '署名を確認中…'],
     [{ status: 'unverified' }, '未確認 (署名する)'],
     [{ status: 'verified', known: false }, '確認済み・残高を取得できません'],
-    [{ status: 'verified', known: true, balance: 12345 }, '確認済み・残高 12345 COO'],
+    [{ status: 'verified', known: true, balance: 12345 }, '確認済み・残高 12,345 COO'],
+    [{ status: 'verified', known: true, balance: 1e21 }, '確認済み・残高 1,000,000,000,000,000,000,000 COO'],
+    [{ status: 'verified', known: true, balance: 1234.5678 }, '確認済み・残高 1,234.57 COO'],
+    [{ status: 'verified', known: true, balance: 1.005 }, '確認済み・残高 1.01 COO'],
     [{ status: 'verified', known: true, balance: 0 }, '確認済み・残高 0 COO'],
   ]
   for (const [state, wallet] of rows) {
@@ -255,7 +258,8 @@ test('script: stopped app throws synchronously', () => {
 
 test('event: scripts cannot forge wallet; direction is enforced', () => {
   const world = clientWorld()
-  world.events = new EventEmitter()
+  const Events = loadClient('core/systems/Events.js', 'Events')
+  world.events = new Events(world)
   const errors = []
   const Apps = loadClient('core/systems/Apps.js', 'Apps', {
     internalEvents,
@@ -264,7 +268,9 @@ test('event: scripts cannot forge wallet; direction is enforced', () => {
   const apps = new Apps(world)
   const entity = { world, data: { id: 'app' }, blueprint: { version: 1 } }
   let events = 0
-  world.events.on('wallet', () => events++)
+  for (const name of ['wallet', 'enter', 'leave', 'chat', 'command', 'health', 'normal']) {
+    world.events.on(name, () => events++)
+  }
   const compartment = new Compartment({
     app: {
       emit: (...args) => apps.appMethods.emit(entity, ...args),
@@ -279,6 +285,19 @@ test('event: scripts cannot forge wallet; direction is enforced', () => {
   assert.equal(events, 0)
   assert.equal(world.packets.length, 0)
   assert.equal(errors.length, 4)
+  compartment.evaluate(`
+    for (const event of ['wallet', 'enter', 'leave', 'chat', 'command', 'health', 'normal']) {
+      for (const name of [[event], { toString: () => event }]) {
+        app.emit(name, {})
+        world.emit(name, {})
+        app.send(name, {})
+        app.sendTo('player', name, {})
+      }
+    }
+  `)
+  assert.equal(events, 0)
+  assert.equal(world.packets.length, 0)
+  assert.equal(errors.length, 60)
   for (const method of [
     'onTokenBalanceRequest',
     'onRequestBuilderRecheck',

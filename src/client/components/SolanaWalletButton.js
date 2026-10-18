@@ -42,6 +42,7 @@ export function SolanaWalletButton({ world }) {
   const address = walletState.address || ''
   const connecting = walletState.status === 'connecting' || walletState.status === 'signing'
   const [refreshing, setRefreshing] = useState(false)
+  const refreshLocked = useRef(false)
   // サーバーが実際に付与した権限 (= 今ビルドできるか)。ドット・枠・ステータス文の正はこれ。
   const { isBuilder } = useRank(world, world.entities.player)
   // ポインタロック中は ui.active が false になる → ウィジェットごと隠す (A-3)。
@@ -133,8 +134,10 @@ export function SolanaWalletButton({ world }) {
 
   const refreshBuilderAccess = async e => {
     blurIfPointer(e)
-    if (isInactive() || !connected || refreshing) return
+    if (isInactive() || !connected || !walletState.verified || refreshLocked.current) return
 
+    refreshLocked.current = true
+    const pressedAt = Date.now()
     setRefreshing(true)
     try {
       if (world.solana) {
@@ -143,6 +146,10 @@ export function SolanaWalletButton({ world }) {
     } catch (error) {
       console.error('ビルダー権限更新エラー:', error)
     } finally {
+      // Keep the button locked through both the request and two seconds since the press.
+      const remaining = 2000 - (Date.now() - pressedAt)
+      if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining))
+      refreshLocked.current = false
       setRefreshing(false)
     }
   }

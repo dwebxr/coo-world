@@ -581,18 +581,40 @@ async function runSuite() {
     await check('(b) signed below threshold: INSUFFICIENT and blocked', async () => {
       await rpc.set(holder.address, { balance: LOW })
       await button(holder, 'Connect Wallet')
-      await panel(holder, `確認済み・残高 ${LOW} COO`, 'ビルド権限なし')
+      await panel(
+        holder,
+        `確認済み・残高 ${LOW.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
+        'ビルド権限なし'
+      )
       eq((await state(holder)).signatures, 1, 'real signature once')
       await prepareWalk(holder)
       const result = await trigger(holder, 'INSUFFICIENT COO')
-      eq(result.balance, `Your Balance: ${LOW} COO`, 'script balance label')
+      eq(
+        result.balance,
+        `Your Balance: ${LOW.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
+        'script balance label'
+      )
       return walk(holder, false)
     })
     await rpc.set(holder.address, { balance: HIGH })
     await sleep(CACHE_WAIT_MS)
     await Promise.all([prepareWalk(holder), prepareWalk(visitor)])
     await trigger(holder, 'ACCESS GRANTED')
-    await wait(holder, id => window.world.entities.get(id).root.get('LeftDoor').position.x > 1, 'fully open', DOOR)
+    await wait(
+      holder,
+      ({ id, x }) => window.world.entities.get(id).root.get('LeftDoor').position.x === x,
+      'fully open',
+      { id: DOOR, x: initial.left[0] + 1 }
+    )
+    await check('(c) Open again while open keeps it open', async () => {
+      const opened = await state(holder)
+      await trigger(holder, 'ACCESS GRANTED')
+      await simulate(holder, 0.25)
+      const stillOpen = await state(holder)
+      assert.deepEqual(stillOpen.left, opened.left, 'second Open keeps left panel open')
+      assert.deepEqual(stillOpen.right, opened.right, 'second Open keeps right panel open')
+      return stillOpen
+    })
     // Run both walks together, while only the holder has opened its local colliders.
     const [crossed, blocked] = await Promise.all([walk(holder, true), walk(visitor, false)])
     await check('(c) raised balance after both caches: ACCESS GRANTED and crosses', async () => {
@@ -641,11 +663,19 @@ async function runSuite() {
       await bounded(becomeAdmin(visitor.page, 'e2e'), 'admin command', 30000)
       await rpc.set(visitor.address, { balance: LOW })
       await button(visitor, 'Connect Wallet')
-      await panel(visitor, `確認済み・残高 ${LOW} COO`, 'ビルド権限あり')
+      await panel(
+        visitor,
+        `確認済み・残高 ${LOW.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
+        'ビルド権限あり'
+      )
       const value = await trigger(visitor, 'INSUFFICIENT COO')
       eq(value.rank, 2, 'raw admin rank')
       eq(value.verified, true, 'admin verified')
-      eq(value.balance, `Your Balance: ${LOW} COO`, 'admin script balance')
+      eq(
+        value.balance,
+        `Your Balance: ${LOW.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
+        'admin script balance'
+      )
       eq(value.signatures, 1, 'admin signs once')
       return value
     })
@@ -653,7 +683,11 @@ async function runSuite() {
       await button(holder, 'Disconnect')
       await panel(holder, 'ウォレット未接続', 'ビルド権限なし')
       await button(holder, 'Connect Wallet')
-      await panel(holder, `確認済み・残高 ${HIGH} COO`, 'ビルド権限あり')
+      await panel(
+        holder,
+        `確認済み・残高 ${HIGH.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
+        'ビルド権限あり'
+      )
       eq((await state(holder)).rank, 1, 'verified rich visitor granted')
       await button(holder, 'Disconnect')
       await panel(holder, 'ウォレット未接続', 'ビルド権限なし')
@@ -701,13 +735,21 @@ async function runSuite() {
       await rpc.set(holder.address, { balance: LOW })
       await sleep(CACHE_WAIT_MS)
       await button(holder, 'Connect Wallet')
-      await panel(holder, `確認済み・残高 ${LOW} COO`, 'ビルド権限なし')
+      await panel(
+        holder,
+        `確認済み・残高 ${LOW.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
+        'ビルド権限なし'
+      )
       const signatures = (await state(holder)).signatures
       eq(signatures, 3, 'one signature per connection')
       await rpc.set(holder.address, { balance: HIGH })
       await sleep(CACHE_WAIT_MS)
       await button(holder, 'Refresh builder access')
-      await panel(holder, `確認済み・残高 ${HIGH} COO`, 'ビルド権限あり')
+      await panel(
+        holder,
+        `確認済み・残高 ${HIGH.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
+        'ビルド権限あり'
+      )
       const refreshed = await state(holder)
       eq(refreshed.rank, 1, 'signature-free recheck grants')
       eq(refreshed.signatures, signatures, 'refresh did not sign')

@@ -761,7 +761,7 @@ export class ServerNetwork extends System {
     if (wasVerified) socket.send('walletStatus', { verified: false })
     state.lastChallengeAt = now
     state.challengeCooldownReplied = false
-    const challenge = solanaGating.buildChallenge(walletAddress, solanaGating.WALLET_HOST, now)
+    const challenge = solanaGating.buildChallenge(walletAddress, solanaGating.WALLET_HOST, now, solanaGating.WALLET_URI)
     state.challenge = { ...challenge, attempt }
     socket.send('builderNonce', { attempt, nonce: challenge.nonce, message: challenge.message })
   }
@@ -777,7 +777,7 @@ export class ServerNetwork extends System {
         'Invalid builder token request (missing walletAddress/signature/nonce)'
       )
     }
-    if (!solanaGating.isWalletRequestId(attempt)) return
+    if (!solanaGating.isWalletRequestId(attempt) || !solanaGating.isWalletNonce(nonce)) return
     const player = socket.player
     const state = socket.wallet
     if (!this.current(socket, state.generation, player)) return
@@ -849,6 +849,7 @@ export class ServerNetwork extends System {
 
   onTokenBalanceRequest = async (socket, data) => {
     if (this.stopping || this.world.fatalError) return
+    if (!solanaGating.TOKEN_GATING_ENABLED) return
     if (!isObject(data) || Array.isArray(data) || !solanaGating.isWalletRequestId(data.id)) return
     const { id } = data
     const state = socket.wallet

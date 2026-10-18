@@ -43,7 +43,7 @@ export function createTokenBalanceClient({ send, isVerified, onChange = () => {}
       pending = request
       request.timer = setTimeout(() => finish(request, unknown(), true), TIMEOUT_MS)
       try {
-        if (send('tokenBalanceRequest', { id: request.id }) === false) finish(request, unknown(), true)
+        if (send('tokenBalanceRequest', { id: request.id }) !== true) finish(request, unknown(), true)
       } catch {
         finish(request, unknown(), true)
       }

@@ -49,14 +49,14 @@ Set `PUBLIC_RPC_URL=https://sentinel.invalid/?api-key=E2E_SENTINEL` on the build
 the build-time filter, as CI does. The harness sets that sentinel again at runtime, boots a fresh
 world on port 3127 (`--port=<n>` overrides), and runs its own loopback JSON-RPC mock. No wallet,
 RPC service, production world or real tokens are used. Two isolated browser contexts each get a
-seeded tweetnacl wallet before navigation; the real server verifies their signatures.
+seeded tweetnacl wallet before navigation; each signs the exact v4.3 SIWS challenge bytes (64-character hex nonce, 60-second expiration, 1024-byte cap), and the real server verifies the stored message.
 
 The fixture creates a static lintel and two kinematic panel rigidbodies. Its gate/animation body
 matches the owner-pasted door script; the harness invokes the actual Open action and reads its
 sign nodes. Movement uses W for 1.5 simulated seconds and records the position every update:
 blocked means z never goes below 0 while reaching within 0.65m of the plane; crossing requires
 z < -0.4 while open. Both walks overlap for (c)/(d). The starting point is [30, 2.05, 2], on a
-separate fixture floor. The test also checks return to authored panel transforms after auto-close.
+separate fixture floor. The test also checks that pressing Open again while open keeps both panels open, and that auto-close restores the authored panel transforms. Panel and door balance expectations use en-US grouping and at most two fraction digits.
 
 Balance changes and outage checks wait 6.5 wall seconds (server TTL 1s + client TTL 5s + margin).
 Simulation waits allow 30s plus 30s per simulated second, scaled by `E2E_TIMEOUT_SCALE`; the

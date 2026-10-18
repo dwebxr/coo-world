@@ -452,6 +452,11 @@ test('fatal stop suppresses save rearming and refuses mutating packets', async t
     'onSettingsModified',
     'onSpawnModified',
     'onAi',
+    'onRequestBuilderNonce',
+    'onRequestBuilderByToken',
+    'onRequestBuilderRecheck',
+    'onTokenBalanceRequest',
+    'onRevokeBuilderByToken',
   ]
   const methods = names
     .map(name => {

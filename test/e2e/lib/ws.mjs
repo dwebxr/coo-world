@@ -21,8 +21,8 @@ export class WireClient {
 
   // opens the socket without waiting for a snapshot (a refused connection never gets one); `closed` resolves
   // with the close code
-  async open(name = this.label) {
-    let url = `ws://localhost:${this.port}/ws?authToken=&name=${encodeURIComponent(name)}`
+  async open(name = this.label, { authToken = '' } = {}) {
+    let url = `ws://localhost:${this.port}/ws?authToken=${encodeURIComponent(authToken)}&name=${encodeURIComponent(name)}`
     if (this.version !== null) url += `&v=${encodeURIComponent(this.version)}`
     const ws = new WebSocket(url)
     ws.binaryType = 'arraybuffer'
@@ -39,8 +39,8 @@ export class WireClient {
     return this
   }
 
-  async connect(name = this.label) {
-    await this.open(name)
+  async connect(name = this.label, options) {
+    await this.open(name, options)
     const snap = await this.waitFor(m => m.method === 'onSnapshot', { timeout: 20000 })
     this.id = snap.data.id
     this.snapshot = snap.data

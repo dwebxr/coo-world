@@ -20,7 +20,9 @@ import { appState, becomeAdmin, installApp, launchBrowser, saveArtifacts } from 
 // the client's payload check, applied here to what the server really put on the wire
 const { sanitizeTeleport } = await import(pathToFileURL(path.join(REPO_ROOT, 'src/core/extras/playerRelayPolicy.js')))
 // the server's old encoder, for the hostile reference-extension probe
-const { writePacket, readPacket } = await import(pathToFileURL(path.join(REPO_ROOT, 'src/core/packets.js')))
+const { PROTOCOL_VERSION, writePacket, readPacket } = await import(
+  pathToFileURL(path.join(REPO_ROOT, 'src/core/packets.js'))
+)
 
 const ENGINE = arg('engine', 'chromium')
 const PORT = Number(arg('port', 3121))
@@ -746,7 +748,7 @@ async function probes(admin, watcher) {
       let refused = 0
       for (let i = 0; i < 200; i++) {
         const outcome = await new Promise((resolve, reject) => {
-          const ws = new WebSocket(`ws://localhost:${port}/ws?v=2&name=churn-${i}`)
+          const ws = new WebSocket(`ws://localhost:${port}/ws?v=${PROTOCOL_VERSION}&name=churn-${i}`)
           let result
           let upgraded = false
           const timer = setTimeout(() => {

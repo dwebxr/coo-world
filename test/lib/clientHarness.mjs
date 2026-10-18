@@ -1,4 +1,6 @@
 import fs from 'node:fs'
+import { createTokenBalanceClient } from '../../src/core/extras/tokenBalanceClient.js'
+import { internalEvents } from '../../src/core/extras/internalEvents.js'
 import { EventEmitter } from 'node:events'
 import * as THREE from 'three'
 import { isEqual, cloneDeep, isBoolean, isNumber } from 'lodash-es'
@@ -44,6 +46,7 @@ export function loadClient(file, name, context = {}) {
     uuid,
     createDispatchQueue,
     createUploadQueue,
+    createTokenBalanceClient,
     writeClientPacket,
     writePacket,
     WORLD_BLUEPRINT_BYTES,
@@ -64,7 +67,7 @@ export function loadClient(file, name, context = {}) {
     isEmoteUrl,
     normalizeSettingValue,
     createEventLedger,
-    internalEvents: [],
+    internalEvents,
     ...context,
   }
   const code = source.replace(/^import[\s\S]*?from ['"][^'"]+['"]\n/gm, '').replace(/^export /gm, '')

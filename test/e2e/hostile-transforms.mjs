@@ -167,13 +167,13 @@ async function runSuite() {
     return value
   }
   const playerState = id => evaluate(readPlayer, id)
-  const waitPlayer = (id, predicate, message) =>
+  const waitPlayer = (id, predicate, message, timeout = 30000) =>
     waitUntil(
       async () => {
         const state = await playerState(id)
         return state && predicate(state) && state
       },
-      { timeout: 30000, message }
+      { timeout, message }
     )
   const health = async () => {
     const response = await bounded(
@@ -359,7 +359,9 @@ async function runSuite() {
       const recovered = await waitPlayer(
         localId,
         state => !state.effect && !state.capsuleDisabled && state.frame > anchored.frame,
-        'local effect expiry'
+        'local effect expiry',
+        // the 2 s effect expires in simulated browser time; software-rendered CI browsers run far slower
+        30000 + 2 * 30000
       )
       assertPlayer(recovered)
       finitePose(recovered.bodyPose, 'recovered local capsule')

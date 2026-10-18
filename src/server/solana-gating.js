@@ -1,64 +1,120 @@
-import { Connection, PublicKey } from '@solana/web3.js'
-import { getAssociatedTokenAddress, getAccount } from '@solana/spl-token'
+import { PublicKey } from '@solana/web3.js'
 import nacl from 'tweetnacl'
-
-// フォーク専用: Solanaトークンによるビルダー権限ゲーティング (サーバー側検証)
-//
-// セキュリティ設計:
-// - サーバーが nonce を発行し、クライアントにウォレット署名させて所有を証明させる
-//   (クライアント自己申告のアドレス/残高は一切信用しない)
-// - nonce は単回使用・socket バインド・TTL 失効
-// - トークン残高はサーバー側で on-chain 取得する。RPC 失敗時は fail-CLOSE (付与しない)
-// - リクエストは per-socket レート制限で RPC 枯渇 DoS を防ぐ
 
 const numOr = (v, d) => {
   const n = Number(v)
   return Number.isFinite(n) ? n : d
 }
 
-// 実行時に process.env から解決 (ビルド時焼き込みではなくコンテナ起動時の値)
-const TOKEN_MINT = process.env.PUBLIC_TOKEN_MINT || null
-const TOKEN_DECIMALS = numOr(process.env.PUBLIC_TOKEN_DECIMALS, 6)
-// サーバー専用 RPC があれば優先 (専用/有料エンドポイント推奨)。無ければ PUBLIC を流用
-const RPC_URL = process.env.SOLANA_RPC_URL || process.env.PUBLIC_RPC_URL || 'https://api.devnet.solana.com'
-
-export const TOKEN_GATING_ENABLED = !!TOKEN_MINT
+export const TOKEN_GATING_ENABLED = !!process.env.PUBLIC_TOKEN_MINT
 export const REQUIRED_TOKEN_AMOUNT = numOr(process.env.PUBLIC_REQUIRED_TOKEN_AMOUNT, 10000)
+export const CHALLENGE_TTL_MS = 60_000
+export const CHALLENGE_COOLDOWN_MS = 5_000
+export const BUILDER_RECHECK_MS = 10_000
 
-const NONCE_TTL_MS = 60_000 // nonce 有効期限
-const RATE_LIMIT_MS = 5_000 // per-socket クールダウン
-
-let connection = null
-const getConnection = () => {
-  if (!connection && TOKEN_GATING_ENABLED) {
-    connection = new Connection(RPC_URL, 'confirmed')
+export function challengeHost(env = process.env) {
+  for (const url of [env.PUBLIC_API_URL, env.PUBLIC_WS_URL]) {
+    try {
+      const host = new URL(url).host
+      if (/^[a-z0-9.-]{1,253}(:\d{1,5})?$/i.test(host)) return host
+    } catch {
+      // Try the next configured URL, then the literal world name.
+    }
   }
-  return connection
+  return 'coo-world'
 }
 
-// socketId -> { nonce, walletAddress, expiresAt }
-const nonces = new Map()
-// socketId -> lastRequestMs
-const lastRequest = new Map()
+export const WALLET_HOST = challengeHost()
 
-// per-socket レート制限。true=許可
-export const checkRateLimit = socketId => {
-  const now = Date.now()
-  const last = lastRequest.get(socketId) || 0
-  if (now - last < RATE_LIMIT_MS) return false
-  lastRequest.set(socketId, now)
-  return true
+export function challengeUri(env = process.env, domain = challengeHost(env)) {
+  for (const value of [env.PUBLIC_API_URL, env.PUBLIC_WS_URL]) {
+    try {
+      const url = new URL(value)
+      if (url.protocol === 'ws:') url.protocol = 'http:'
+      if (url.protocol === 'wss:') url.protocol = 'https:'
+      if (url.origin !== 'null') return url.origin
+    } catch {
+      // Try the next configured URL, then the challenge domain.
+    }
+  }
+  return `https://${domain}`
 }
 
-// nonce を発行して socket にバインド (base64)
-export const issueNonce = (socketId, walletAddress) => {
-  const nonce = Buffer.from(nacl.randomBytes(32)).toString('base64')
-  nonces.set(socketId, { nonce, walletAddress, expiresAt: Date.now() + NONCE_TTL_MS })
-  return nonce
+export const WALLET_URI = challengeUri()
+
+export function isWalletAddress(address) {
+  if (typeof address !== 'string' || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address)) return false
+  try {
+    return new PublicKey(address).toBase58() === address
+  } catch {
+    return false
+  }
 }
 
-// socketId -> the wallet that earned this session its builder rank. server-side only: it keys the upload
-// limits of token-granted builders and is never written to player data, which is broadcast
+export function isWalletRequestId(id) {
+  return Number.isInteger(id) && id >= 1 && id <= 0x7fffffff
+}
+
+export function isWalletNonce(nonce) {
+  return typeof nonce === 'string' && nonce.length === 64 && /^[a-f0-9]{64}$/.test(nonce)
+}
+
+export function signatureBytes(signature) {
+  if (signature instanceof Uint8Array) return signature.length === 64 ? signature : null
+  if (Array.isArray(signature)) {
+    if (signature.length !== 64) return null
+    for (const byte of signature) {
+      if (!Number.isInteger(byte) || byte < 0 || byte > 255) return null
+    }
+    return Uint8Array.from(signature)
+  }
+  if (typeof signature !== 'string' || !/^[A-Za-z0-9+/]{86}==$/.test(signature)) return null
+  const bytes = Buffer.from(signature, 'base64')
+  return bytes.length === 64 && bytes.toString('base64') === signature ? bytes : null
+}
+
+export function buildChallenge(address, host, now, uri = `https://${host}`) {
+  // v4.3 SIWS format lets wallets compare the challenge domain with the page origin.
+  const nonce = Buffer.from(nacl.randomBytes(32)).toString('hex')
+  const expiresAt = now + CHALLENGE_TTL_MS
+  const message = `${host} wants you to sign in with your Solana account:\n${address}\n\nVerify wallet ownership for this world. This does not authorize any transaction.\n\nURI: ${uri}\nVersion: 1\nNonce: ${nonce}\nIssued At: ${new Date(now).toISOString()}\nExpiration Time: ${new Date(expiresAt).toISOString()}`
+  if (!isWalletAddress(address) || Buffer.byteLength(message) > 1024) throw new Error('invalid challenge')
+  return { nonce, message, address, expiresAt }
+}
+
+export function checkChallenge(challenge, { walletAddress, signature, nonce }, now) {
+  if (!challenge) return { ok: false, reason: 'no_nonce' }
+  if (!isWalletNonce(nonce) || challenge.nonce !== nonce) {
+    return { ok: false, reason: 'nonce_mismatch' }
+  }
+  if (now >= challenge.expiresAt) return { ok: false, reason: 'nonce_expired' }
+  if (!isWalletAddress(walletAddress)) return { ok: false, reason: 'bad_wallet' }
+  if (challenge.address !== walletAddress) return { ok: false, reason: 'wallet_mismatch' }
+  const bytes = signatureBytes(signature)
+  if (!bytes) return { ok: false, reason: 'bad_signature' }
+  const ok = nacl.sign.detached.verify(
+    new TextEncoder().encode(challenge.message),
+    bytes,
+    new PublicKey(walletAddress).toBytes()
+  )
+  return { ok, reason: ok ? 'ok' : 'signature_invalid' }
+}
+
+export function createWalletSession() {
+  return {
+    generation: 0,
+    verified: null,
+    challenge: null,
+    lastChallengeAt: 0,
+    challengeCooldownReplied: false,
+    balanceBucket: { tokens: 3, at: Date.now() },
+    pendingBalance: null,
+    builderRecheckAt: 0,
+  }
+}
+
+// Only token-granted builders enter this map, which keys session upload limits.
+// Wallet verification for other ranks stays on the socket, never in player data.
 const wallets = new Map()
 export const recordWallet = (socketId, walletAddress) => {
   wallets.set(socketId, walletAddress)
@@ -67,77 +123,6 @@ export const walletOf = socketId => wallets.get(socketId) || null
 export const clearWallet = socketId => {
   wallets.delete(socketId)
 }
-
-// 切断時のクリーンアップ
 export const clearSocket = socketId => {
-  nonces.delete(socketId)
-  lastRequest.delete(socketId)
   wallets.delete(socketId)
-}
-
-const toBytes = sig => {
-  if (sig instanceof Uint8Array) return sig // Buffer も該当
-  if (Array.isArray(sig)) return Uint8Array.from(sig)
-  if (typeof sig === 'string') return Uint8Array.from(Buffer.from(sig, 'base64'))
-  if (sig && typeof sig === 'object') return Uint8Array.from(Object.values(sig))
-  throw new Error('unknown signature format')
-}
-
-// nonce + 署名 + on-chain 残高を検証。{ ok, balance, reason } を返す。
-// nonce は成否に関わらず単回使用 (即破棄)。RPC 失敗は fail-CLOSE。
-export const verifyAndCheckBalance = async ({ socketId, walletAddress, signature, nonce }) => {
-  // 1. nonce 検証 (単回使用・socket バインド・失効・アドレス一致)
-  const record = nonces.get(socketId)
-  nonces.delete(socketId)
-  if (!record) return { ok: false, reason: 'no_nonce' }
-  if (record.nonce !== nonce) return { ok: false, reason: 'nonce_mismatch' }
-  if (record.walletAddress !== walletAddress) return { ok: false, reason: 'wallet_mismatch' }
-  if (Date.now() > record.expiresAt) return { ok: false, reason: 'nonce_expired' }
-
-  // 2. ウォレット所有証明 (署名検証)
-  let pubkey
-  try {
-    pubkey = new PublicKey(walletAddress)
-  } catch {
-    return { ok: false, reason: 'bad_wallet' }
-  }
-  let sigBytes
-  try {
-    sigBytes = toBytes(signature)
-  } catch {
-    return { ok: false, reason: 'bad_signature' }
-  }
-  const msgBytes = new TextEncoder().encode(nonce)
-  let verified = false
-  try {
-    verified = nacl.sign.detached.verify(msgBytes, sigBytes, pubkey.toBytes())
-  } catch {
-    // 不正な長さの署名等で nacl が throw しても fail-CLOSE
-    return { ok: false, reason: 'signature_invalid' }
-  }
-  if (!verified) {
-    return { ok: false, reason: 'signature_invalid' }
-  }
-
-  // 3. on-chain 残高取得 (RPC 失敗は fail-CLOSE)
-  const conn = getConnection()
-  if (!conn || !TOKEN_MINT) return { ok: false, reason: 'not_configured' }
-  let balance = 0
-  try {
-    const mint = new PublicKey(TOKEN_MINT)
-    const ata = await getAssociatedTokenAddress(mint, pubkey)
-    const account = await getAccount(conn, ata)
-    balance = Number(account.amount) / Math.pow(10, TOKEN_DECIMALS)
-  } catch (err) {
-    // トークンアカウント未作成 = 本当に残高0 (これは検証成功として拒否理由に回す)
-    if (err?.name === 'TokenAccountNotFoundError') {
-      balance = 0
-    } else {
-      // タイムアウト/レート制限等の一時障害は付与しない (fail-close)
-      console.error('[solana-gating] RPC balance check failed:', err?.message || err)
-      return { ok: false, reason: 'rpc_error' }
-    }
-  }
-  const ok = balance >= REQUIRED_TOKEN_AMOUNT
-  return { ok, balance, reason: ok ? 'ok' : 'insufficient' }
 }

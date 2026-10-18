@@ -343,13 +343,14 @@ test('ServerNetwork: oversized snapshot closes with 1011 and never writes the sn
   network.db = () => ({ where: () => ({ first: async () => user }) })
   const serial = { serialize: () => [] }
   network.world = {
+    ...network.world,
     settings: { ...serial, playerLimit: 0 },
-    livekit: serial,
+    livekit: { ...serial, clearModifiers() {} },
     collections: serial,
     chat: serial,
     ai: serial,
     blueprints: { serialize: () => 'x'.repeat(SNAPSHOT_CAP) },
-    entities: { ...serial, add: () => ({ data: user }) },
+    entities: { ...serial, add: () => ({ data: user, destroy() {} }) },
     events: { emit() {} },
   }
   const method = connectionMethod({

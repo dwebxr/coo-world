@@ -70,6 +70,23 @@ Adds a node into world-space, maintaining its current world transform.
 
 Subscribes to both engine events (eg when players `enter` or `leave` the world) and custom events emitted by other apps (via `app.emit()`)
 
+#### Engine events
+
+- `enter`: a player enters the world (`{ playerId }`).
+- `leave`: a player leaves the world (`{ playerId }`).
+- `wallet`: the local client's server-verified wallet status is accepted. The payload is a frozen
+  `{ playerId, verified }` object; `verified` is a boolean independent of build permission. Only
+  the local player produces this event, only on the client. Discarded/obsolete statuses emit
+  nothing, and scripts cannot emit or send this engine event. The balance is not in the event;
+  read it with [`player.getTokenBalance()`](/docs/scripting/world/Player.md).
+
+```js
+world.on('wallet', async ({ playerId, verified }) => {
+  const result = await world.getPlayer().getTokenBalance()
+  // Update the local wallet/balance display.
+})
+```
+
 ### `.off(event, callback)`
 
 Unsubscribes from world events.

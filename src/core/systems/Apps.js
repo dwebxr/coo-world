@@ -118,6 +118,7 @@ export class Apps extends System {
         entity.offWorldEvent(name, callback)
       },
       emit(entity, name, data) {
+        if (typeof name !== 'string') return console.error('apps cannot emit events with non-string names')
         if (internalEvents.includes(name)) {
           return console.error(`apps cannot emit internal events (${name})`)
         }
@@ -339,6 +340,10 @@ export class Apps extends System {
         entity.off(name, callback)
       },
       send(entity, name, data, ignoreSocketId) {
+        if (typeof name !== 'string') {
+          console.error('apps cannot send events with non-string names')
+          return false
+        }
         if (internalEvents.includes(name)) {
           console.error(`apps cannot send internal events (${name})`)
           return false
@@ -351,6 +356,10 @@ export class Apps extends System {
         return world.network.send('entityEvent', event, ignoreSocketId)
       },
       sendTo(entity, playerId, name, data) {
+        if (typeof name !== 'string') {
+          console.error('apps cannot send events with non-string names')
+          return false
+        }
         if (internalEvents.includes(name)) {
           console.error(`apps cannot send internal events (${name})`)
           return false
@@ -364,6 +373,7 @@ export class Apps extends System {
         return world.network.asScript(() => world.network.sendTo(playerId, 'entityEvent', event), entity, name)
       },
       emit(entity, name, data) {
+        if (typeof name !== 'string') return console.error('apps cannot emit events with non-string names')
         if (internalEvents.includes(name)) {
           return console.error(`apps cannot emit internal events (${name})`)
         }

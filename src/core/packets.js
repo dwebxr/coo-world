@@ -5,6 +5,8 @@ export const PROTOCOL_VERSION = 2
 const packr = new Packr({ structuredClone: true })
 const clientPackr = new Packr({ useRecords: false, structuredClone: false, moreTypes: false, bundleStrings: false })
 
+// External agents (Coo: dwebxr/coo-hyperliza lib/world-protocol.ts) pin PROTOCOL_VERSION and a copy of this table.
+// Append new names at the end only; inserting or reordering shifts their ids, and a version bump kicks them.
 // prettier-ignore
 const names = [
   'snapshot',
@@ -33,6 +35,10 @@ const names = [
   'revokeBuilderByToken',
   'requestBuilderNonce',
   'builderNonce',
+  'walletStatus',
+  'tokenBalanceRequest',
+  'tokenBalance',
+  'requestBuilderRecheck',
 ]
 
 const byName = {}

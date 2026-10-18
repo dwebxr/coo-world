@@ -1,3 +1,6 @@
+import { PublicKey } from '@solana/web3.js'
+import { Ranks } from '../core/extras/ranks'
+
 // デフォルト設定
 // nonce の返事を待つ上限 (サーバーのクールダウンは 5 秒)
 const NONCE_WAIT_MS = 15000
@@ -41,150 +44,251 @@ const uint8ToBase64 = bytes => {
   return btoa(bin)
 }
 
-const isWalletAddress = value =>
-  typeof value === 'string' && value.length > 0 && value.length <= 64 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(value)
-
-// Solana統合ファイル (named export)
-export function createSolanaIntegration(world) {
-  const config = buildConfig()
-
-  // feature-flag: tokenMint 未設定なら統合を初期化しない (world.solana も生やさない)
-  if (!config.tokenMint) {
-    console.log('[Solana] tokenMint 未設定のため統合を無効化')
-    return null
-  }
-
-  console.log('[Solana] Config loaded:', config)
-
-  // 接続状態を追跡
-  let isConnected = false
-  let walletAddress = null
-  let noncePending = false
-  // サーバーはクールダウン中の nonce 要求に返事をしないので、待ちっぱなしにしない
-  let nonceTimer = null
-  const clearNonceWait = () => {
-    clearTimeout(nonceTimer)
-    nonceTimer = null
-  }
-  const refuse = () => {
-    clearNonceWait()
-    noncePending = false
-    world.emit('toast', 'ウォレットのリクエストを送信できませんでした')
+const isWalletAddress = value => {
+  if (typeof value !== 'string' || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value)) return false
+  try {
+    return new PublicKey(value).toBase58() === value
+  } catch {
     return false
   }
+}
 
-  // ウォレット所有証明フロー:
-  // 1) サーバーに nonce を要求 2) 署名 3) 署名付きで権限リクエスト
-  // 実際のビルダー権限付与はサーバーが on-chain 残高を検証して行う
-  const requestBuilderAccess = () => {
-    if (!world.network || !walletAddress || noncePending) return
-    if (!isWalletAddress(walletAddress)) return refuse()
-    noncePending = true
-    if (!world.network.send('requestBuilderNonce', { walletAddress })) return refuse()
-    nonceTimer = setTimeout(() => {
-      nonceTimer = null
-      noncePending = false
-    }, NONCE_WAIT_MS)
-  }
+// サーバーの確認状態とビルド権限は独立して扱う
+export function createSolanaIntegration(world) {
+  const config = buildConfig()
+  if (!config.tokenMint) return null
 
-  const onBuilderNonce = async nonce => {
-    if (!noncePending) return
-    clearNonceWait()
-    if (typeof nonce !== 'string' || !nonce.length || nonce.length > 128) return refuse()
-    if (!isWalletAddress(walletAddress)) return refuse()
-    const address = walletAddress
+  const balances = world.network.tokenBalance
+  let generation = 0
+  let nextAttempt = 0
+  let active = null
+  let provider = null
+  let disposed = false
+  let status = 'disconnected'
+  let address = null
+  let verified = false
+
+  const getState = () => ({ status, address, ...balances.peek(), verified })
+  const publish = () => world.emit('solana:state', getState())
+  const current = run => !disposed && !world.fatalError && active === run && generation === run.generation
+  const send = (name, data) => {
     try {
-      if (typeof window === 'undefined' || !window.solana?.signMessage) {
-        world.emit('toast', 'ウォレットがメッセージ署名に対応していません')
-        return
-      }
-      const message = new TextEncoder().encode(nonce)
-      const signed = await window.solana.signMessage(message, 'utf8')
-      // Phantom等は { signature: Uint8Array } を返す。生の Uint8Array の場合も許容
-      const sigBytes = signed?.signature ?? signed
-      if (!(sigBytes instanceof Uint8Array) && !Array.isArray(sigBytes)) return refuse()
-      if (!sigBytes.length || sigBytes.length > 128) return refuse()
-      if (!sigBytes.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) return refuse()
-      if (address !== walletAddress) return refuse()
-      const signature = uint8ToBase64(sigBytes instanceof Uint8Array ? sigBytes : Uint8Array.from(sigBytes))
-      if (!world.network.send('requestBuilderByToken', { walletAddress, signature, nonce })) return refuse()
-    } catch (error) {
-      console.error('[Solana] 署名エラー:', error)
-      world.emit('toast', 'ウォレット署名に失敗しました')
-    } finally {
-      noncePending = false
+      return world.network.send(name, data) === true
+    } catch {
+      return false
     }
   }
-  world.on('solana:builderNonce', onBuilderNonce)
-
-  // Solanaオブジェクトをワールドに追加
-  world.solana = {
-    getConfig: () => ({ ...config }),
-
-    connect: async () => {
-      try {
-        if (typeof window === 'undefined' || !window.solana) {
-          console.error('Solanaプロバイダーが見つかりません')
-          world.emit('toast', 'Solanaウォレットが見つかりません')
-          return null
-        }
-        await window.solana.connect()
-        const publicKey = window.solana.publicKey.toString()
-        if (!isWalletAddress(publicKey)) {
-          refuse()
-          return null
-        }
-        isConnected = true
-        walletAddress = publicKey
-        console.log('Solanaウォレット接続成功:', publicKey)
-        world.emit('solana:connected', publicKey)
-        // サーバーに所有証明+権限リクエスト
-        requestBuilderAccess()
-        return publicKey
-      } catch (error) {
-        noncePending = false
-        console.error('Solanaウォレット接続エラー:', error)
-        world.emit('toast', 'ウォレット接続に失敗しました')
-        return null
-      }
-    },
-
-    disconnect: async () => {
-      try {
-        if (typeof window !== 'undefined' && window.solana) {
-          await window.solana.disconnect()
-        }
-        // サーバーに権限剥奪をリクエスト (自己降格)
-        if (world.network) {
-          if (!world.network.send('revokeBuilderByToken', {})) refuse()
-        }
-        isConnected = false
-        walletAddress = null
-        clearNonceWait()
-        noncePending = false
-        console.log('Solanaウォレット切断完了')
-        world.emit('solana:disconnected')
-        return true
-      } catch (error) {
-        clearNonceWait()
-        noncePending = false
-        console.error('Solanaウォレット切断エラー:', error)
-        world.emit('toast', 'ウォレット切断に失敗しました')
-        return false
-      }
-    },
-
-    isConnected: () => isConnected,
-    getAddress: () => walletAddress,
-    // ブラウザでは残高を取得しない。null は取得不可を表す
-    getTokenBalance: () => null,
-    getRequiredTokenAmount: () => config.requiredTokenAmount,
-
-    // サーバーへ所有証明とビルダー権限を再リクエスト
-    refreshBalance: async () => {
-      requestBuilderAccess()
-    },
+  const clearAttempt = () => {
+    if (!active) return
+    for (const cleanup of active.cleanups) cleanup()
+    active.cleanups.clear()
+    active = null
   }
 
+  // プロバイダーを待つ前に必ず同期で無効化する
+  const invalidate = reason => {
+    generation++
+    clearAttempt()
+    verified = false
+    if (reason !== 'attempt' && reason !== 'failure') address = null
+    status = address ? 'unverified' : 'disconnected'
+    balances.invalidate()
+  }
+
+  const fail = run => {
+    if (!current(run)) return
+    invalidate('failure')
+    status = 'unverified'
+    publish()
+    world.emit('toast', 'Could not verify your wallet. Please sign again.')
+  }
+
+  // クールダウンの再送を含め、nonce 待ちは合計 15 秒まで
+  const waitForNonce = run =>
+    new Promise(resolve => {
+      let retried = false
+      let retryTimer
+      const finish = value => {
+        clearTimeout(timer)
+        clearTimeout(retryTimer)
+        world.off('solana:builderNonce', onNonce)
+        run.cleanups.delete(cancel)
+        resolve(value)
+      }
+      const cancel = () => finish(null)
+      const onNonce = data => {
+        if (!current(run) || data?.attempt !== run.id) return
+        if ('retryAfterMs' in data) {
+          if (retried || !Number.isFinite(data.retryAfterMs) || data.retryAfterMs <= 0 || data.retryAfterMs > 5000) {
+            return finish(null)
+          }
+          retried = true
+          retryTimer = setTimeout(() => {
+            if (!current(run) || !send('requestBuilderNonce', { walletAddress: address, attempt: run.id })) finish(null)
+          }, data.retryAfterMs)
+          return
+        }
+        if (
+          typeof data.nonce !== 'string' ||
+          data.nonce.length !== 64 ||
+          !/^[a-f0-9]{64}$/.test(data.nonce) ||
+          typeof data.message !== 'string'
+        ) {
+          return finish(null)
+        }
+        const bytes = new TextEncoder().encode(data.message)
+        if (!bytes.length || bytes.length > 1024) return finish(null)
+        finish({ nonce: data.nonce, bytes })
+      }
+      const timer = setTimeout(cancel, NONCE_WAIT_MS)
+      run.cleanups.add(cancel)
+      world.on('solana:builderNonce', onNonce)
+    })
+
+  const waitForAck = run =>
+    new Promise(resolve => {
+      const finish = value => {
+        clearTimeout(timer)
+        run.ack = null
+        run.cleanups.delete(cancel)
+        resolve(value)
+      }
+      const cancel = () => finish(null)
+      const timer = setTimeout(cancel, 15000)
+      run.ack = finish
+      run.cleanups.add(cancel)
+    })
+
+  // このゲートを通った status だけがキャッシュとスクリプトイベントに影響する
+  const onWalletStatus = data => {
+    if (disposed || world.fatalError || typeof data?.verified !== 'boolean') return
+    if (Object.prototype.hasOwnProperty.call(data, 'attempt')) {
+      if (!Number.isInteger(data.attempt) || data.attempt < 1 || data.attempt > 0x7fffffff) return
+      if (!active || !current(active) || data.attempt !== active.id) return
+      if (data.verified && (data.wallet !== address || !isWalletAddress(data.wallet))) return
+    } else if (data.verified) {
+      return
+    }
+    verified = data.verified
+    if (verified) status = 'verified'
+    else if (!active || status === 'verified') status = address ? 'unverified' : 'disconnected'
+    balances.invalidate()
+    active?.ack?.(data)
+    if (world.network.isClient && world.entities.player) {
+      world.events.emit('wallet', Object.freeze({ playerId: world.entities.player.data.id, verified }))
+    }
+    if (verified) void balances.get()
+  }
+
+  const detachProvider = () => {
+    try {
+      if (typeof provider?.off === 'function') provider.off('accountChanged', onAccountChanged)
+      else provider?.removeListener?.('accountChanged', onAccountChanged)
+    } catch {
+      // プロバイダー側の例外でもローカルの破棄を進める
+    }
+    provider = null
+  }
+  const disconnect = () => {
+    invalidate('disconnect')
+    send('revokeBuilderByToken', {})
+    const previous = provider
+    detachProvider()
+    // 切断の拒否・永久待ちがローカル状態を保持しないよう、await しない
+    try {
+      Promise.resolve(previous?.disconnect?.()).catch(() => {})
+    } catch {
+      // ウォレット側の後始末は best effort
+    }
+    return true
+  }
+  const onAccountChanged = () => {
+    if (disposed || !provider) return
+    disconnect()
+    world.emit('toast', 'Wallet changed. Reconnect and sign again.')
+  }
+
+  const connect = async () => {
+    if (disposed || world.fatalError) return null
+    invalidate('attempt')
+    const run = { generation, id: null, cleanups: new Set() }
+    active = run
+    status = 'connecting'
+    publish()
+    try {
+      detachProvider()
+      provider = typeof window !== 'undefined' ? window.solana : null
+      if (!provider?.connect || !provider?.signMessage) throw new Error('wallet unavailable')
+      const wallet = provider
+      provider.on?.('accountChanged', onAccountChanged)
+      await wallet.connect()
+      if (!current(run)) return null
+      const publicKey = wallet.publicKey?.toString()
+      if (!isWalletAddress(publicKey) || nextAttempt === 0x7fffffff) throw new Error('invalid wallet attempt')
+      address = publicKey
+      run.id = ++nextAttempt
+      status = 'signing'
+      publish()
+      const nonceWait = waitForNonce(run)
+      if (!send('requestBuilderNonce', { walletAddress: address, attempt: run.id })) throw new Error('send refused')
+      const challenge = await nonceWait
+      if (!current(run)) return null
+      if (!challenge) throw new Error('nonce unavailable')
+      const signed = await wallet.signMessage(challenge.bytes, 'utf8')
+      if (!current(run)) return null
+      const signature = signed?.signature ?? signed
+      if (!(signature instanceof Uint8Array) && !Array.isArray(signature)) throw new Error('invalid signature')
+      if (signature.length !== 64) throw new Error('invalid signature')
+      for (const byte of signature) {
+        if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new Error('invalid signature')
+      }
+      const ackWait = waitForAck(run)
+      if (
+        !send('requestBuilderByToken', {
+          walletAddress: address,
+          signature: uint8ToBase64(signature),
+          nonce: challenge.nonce,
+          attempt: run.id,
+        })
+      )
+        throw new Error('send refused')
+      const ack = await ackWait
+      if (!current(run)) return null
+      if (!ack?.verified || !verified) throw new Error('verification unavailable')
+      clearAttempt()
+      return address
+    } catch {
+      fail(run)
+      return null
+    }
+  }
+
+  const dispose = reason => {
+    if (disposed) return
+    disposed = true
+    invalidate(reason)
+    detachProvider()
+    world.off('solana:walletStatus', onWalletStatus)
+    world.off('solana:balance', publish)
+  }
+  world.on('solana:walletStatus', onWalletStatus)
+  world.on('solana:balance', publish)
+  world.solana = {
+    getConfig: () => ({ ...config }),
+    getState,
+    connect,
+    disconnect,
+    invalidate,
+    dispose,
+    isConnected: () => !!address,
+    isVerified: () => verified,
+    getAddress: () => address,
+    getTokenBalance: () => balances.get(),
+    getRequiredTokenAmount: () => config.requiredTokenAmount,
+    refreshBalance: () => {
+      if (verified && world.entities.player?.data.rank < Ranks.BUILDER) send('requestBuilderRecheck', {})
+      return balances.get({ refresh: true })
+    },
+  }
   return world.solana
 }

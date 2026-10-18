@@ -20,16 +20,34 @@ import {
   sanitizeAppRelease,
   sanitizeEntityAdd,
   sanitizePlayerSelfModify,
+  sanitizeName,
   sanitizePersistedApp,
   sanitizeSpawn,
 } from '../../src/core/extras/entityModifyPolicy.js'
 import { readInboundPacket } from '../../src/server/inboundDecode.js'
+import * as solanaGating from '../../src/server/solana-gating.js'
+import { grantTokenRank, persistRank, revokeTokenRank } from '../../src/server/rankGrants.js'
+import { createSolanaRpc } from '../../src/server/solanaRpc.js'
+import { createTokenBalanceService } from '../../src/server/tokenBalance.js'
+import { Ranks } from '../../src/core/extras/ranks.js'
 import { clientIpKeys } from '../../src/server/uploadLimits.js'
 
 export const serverSource = fs.readFileSync(new URL('../../src/server/index.js', import.meta.url), 'utf8')
 const source = fs.readFileSync(new URL('../../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
 const names = [
+  'init',
   'start',
+  'onDisconnect',
+  'onCommand',
+  'onModifyRank',
+  'invalidateWallet',
+  'current',
+  'checkBuilderBalance',
+  'onRequestBuilderNonce',
+  'onRequestBuilderByToken',
+  'onRequestBuilderRecheck',
+  'onTokenBalanceRequest',
+  'onRevokeBuilderByToken',
   'markBlueprintDirty',
   'markAppDirty',
   'markAppDeleted',
@@ -58,45 +76,59 @@ const methods = names
     return method
   })
   .join('\n')
-const Network = vm.runInNewContext(`(class Network { ${methods} })`, {
-  writePacket,
-  packetNameById,
-  peekPacketId,
-  Uint8Array,
-  Date,
-  JSON,
-  moment,
-  appPersistenceData,
-  persistenceRecord,
-  uuid,
-  packetNodeLimit,
-  readInboundPacket,
-  briefError,
-  sanitizeBlueprintAdd,
-  sanitizeBlueprintModify,
-  WORLD_BLUEPRINT_BYTES,
-  defaultSpawn: '{"position":[0,0,0],"quaternion":[0,0,0,1]}',
-  SAVE_INTERVAL: 0,
-  process: { env: {} },
-  console,
-  sanitizeAppModify,
-  sanitizeAppRelease,
-  sanitizeEntityAdd,
-  sanitizePlayerSelfModify,
-  sanitizePersistedApp,
-  sanitizeSpawn,
-  isObject: value => value !== null && typeof value === 'object',
-})
+function networkClass(context) {
+  return vm.runInNewContext(`(class Network { ${methods} })`, {
+    writePacket,
+    packetNameById,
+    peekPacketId,
+    Uint8Array,
+    Date,
+    JSON,
+    moment,
+    appPersistenceData,
+    persistenceRecord,
+    uuid,
+    packetNodeLimit,
+    readInboundPacket,
+    briefError,
+    sanitizeBlueprintAdd,
+    sanitizeBlueprintModify,
+    WORLD_BLUEPRINT_BYTES,
+    defaultSpawn: '{"position":[0,0,0],"quaternion":[0,0,0,1]}',
+    SAVE_INTERVAL: 0,
+    process: { env: {} },
+    console,
+    solanaGating,
+    grantTokenRank,
+    persistRank,
+    revokeTokenRank,
+    createSolanaRpc,
+    createTokenBalanceService,
+    Ranks,
+    sanitizeAppModify,
+    sanitizeAppRelease,
+    sanitizeEntityAdd,
+    sanitizePlayerSelfModify,
+    sanitizeName,
+    sanitizePersistedApp,
+    sanitizeSpawn,
+    isObject: value => value !== null && typeof value === 'object',
+    ...context,
+  })
+}
 const socketSource = fs.readFileSync(new URL('../../src/core/Socket.js', import.meta.url), 'utf8')
 export const Socket = vm.runInNewContext(`(${socketSource.slice(socketSource.indexOf('class Socket'))})`, {
   writePacket,
 })
 
-export function makeNetwork(log = () => {}) {
+export function makeNetwork(log = () => {}, { context, tokenBalanceService } = {}) {
+  const Network = networkClass(context)
   const network = new Network()
+  network.init({ tokenBalanceService })
   network.isServer = true
   network.id = 0
   network.sockets = new Map()
+  network.connecting = new Set()
   network.dirtyBlueprints = new Map()
   network.dirtyApps = new Map()
   network.loadedConfig = new Map()
@@ -106,11 +138,9 @@ export function makeNetwork(log = () => {}) {
   network.writer = createWriteLedger({ log })
   network.gate = createInboundGate({ log })
   network.scheduler = createInboundScheduler()
-  network.world = { apps: { eventLedger: createEventLedger() } }
-  network.onDisconnect = socket => {
-    socket.disconnected = true
-    network.scheduler.purge(socket)
-    network.sockets.delete(socket.id)
+  network.world = {
+    apps: { eventLedger: createEventLedger() },
+    livekit: { clearModifiers() {} },
   }
   return network
 }
@@ -132,8 +162,11 @@ export function fakeWs() {
   }
   ws.terminate = () => {
     ws.terminations++
+    if (ws.readyState === 3) return
     ws.readyState = 3
+    ws.emit('close')
   }
+  ws.close = ws.terminate
   ws.drain = () => {
     for (const cb of ws.pending.splice(0)) cb()
   }
@@ -171,6 +204,7 @@ export function connectionMethod(context) {
     SNAPSHOT_CAP,
     Socket,
     briefError,
+    solanaGating,
     ...context,
   })
 }

@@ -4,10 +4,13 @@
 
 // writes the rank; once it is in the database any session-only grant is over and the user is a plain
 // stored-rank user. a failed write rejects and leaves the session as it was, for the caller to report
-export async function persistRank({ db, player, rank, wallets }) {
+export async function persistRank({ db, player, rank, wallets, isCurrent }) {
+  const revision = player.rankRevision
   await db('users').where('id', player.data.id).update({ rank })
-  player.data.tokenGrantedRank = false
-  wallets.clearWallet(player.data.id)
+  if (player.rankRevision === revision && isCurrent()) {
+    player.data.tokenGrantedRank = false
+    wallets.clearWallet(player.data.id)
+  }
 }
 
 // marks the session as token-granted and keys its limits to the wallet. a grant that lands after the

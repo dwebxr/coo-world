@@ -24,6 +24,7 @@ The server build must come last: each build empties `build/`.
 | --- | --- |
 | `fullstack.mjs --engine=<e>` | boots a server on a throwaway `world-e2e-*` directory, runs the sandbox probes over the wire protocol (intrinsic/endowment/stash writes, blob facade, object URL types, error shapes, Stage/Physics containment, the retry cap) and the player-relay checks (a client-sent `playerTeleport`/`playerPush`/`playerSessionAvatar` is dropped and logged once per socket; a server script's calls still reach the target with well-formed payloads) and the chat check (a malformed chat message from a ws client is refused, a valid one is rebuilt server-side, and the history a later browser receives renders as text), then loads the world in the browser: frozen intrinsics, the same probes, `world.open` policy, an image from `createObjectURL`, a throwing script, a client script acting on a remote player (no packet, one log per method) and on its local player (teleport, push, session avatar through the URL policy), and the Monaco editor (colouring, widgets, edit + save, server confirmation) |
 | `gate-extras.mjs --engine=<e>` | walk, jump, VRM session avatar, builder uploads (glb/vrm/png), AI create through a mock Anthropic base URL, `agent.mjs` for 60 s |
+| `token-gate.mjs --engine=<e>` | (a) unverified and (b) signed low balance blocked by panel colliders; (c) raised balance opens locally and crosses; (d) concurrent second context stays blocked; (e) no browser RPC requests or sentinel in served JS/maps; (f) outage fails closed while ticking; (g) admin wallet verification; (h) fresh builder grant, revoke/recheck refusal and signature-free refresh grant |
 | `physics-boundary.mjs --engine=<e>` | server/browser physics input probes and native sentinel; contacts, controllers, joints, queries, interpolation, movement, zero-scale survival, contact mutation, deferred removal and static-body availability; `--sentinel-only` runs a base-compatible detection control |
 | `hostile-transforms.mjs --engine=<e>` | loaded remote avatar + hostile self transforms, benign quaternion normalisation, scaled anchors on remote and local players, demoted-mover release, native physics recovery, finite late-join snapshots; parent watchdog kills frozen processes |
 | `stress.mjs --engine=<e> [--apps=20 --prims=50 --frames=600] [--monitor]` | 1000 moving nodes; prints per-frame JS mean/median/p90, render commit time and server CPU as JSON and fails on crashes, errors or fewer frames than requested; `--monitor` adds the server tick sampler (`MONITOR_TICK=1`). CI runs it with `--frames=200` as a smoke; the budgets use 600 |
@@ -40,6 +41,31 @@ renderer, harden state).
 `E2E_BUILD_ROOT=<dir>` runs another checkout's `build/` (A/B comparisons), `E2E_OUT_DIR=<dir>` moves
 the logs and screenshots away from `test/e2e/out/`, and `E2E_<ENGINE>_EXECUTABLE=<path>` pairs the
 harness with a specific browser build.
+
+## Token gate (local only)
+
+Run `node test/e2e/token-gate.mjs --engine=chromium` (or `webkit` / `firefox`) after the four builds.
+Set `PUBLIC_RPC_URL=https://sentinel.invalid/?api-key=E2E_SENTINEL` on the build commands to exercise
+the build-time filter, as CI does. The harness sets that sentinel again at runtime, boots a fresh
+world on port 3127 (`--port=<n>` overrides), and runs its own loopback JSON-RPC mock. No wallet,
+RPC service, production world or real tokens are used. Two isolated browser contexts each get a
+seeded tweetnacl wallet before navigation; each signs the exact v4.3 SIWS challenge bytes (64-character hex nonce, 60-second expiration, 1024-byte cap), and the real server verifies the stored message.
+
+The fixture creates a static lintel and two kinematic panel rigidbodies. Its gate/animation body
+matches the owner-pasted door script; the harness invokes the actual Open action and reads its
+sign nodes. Movement uses W for 1.5 simulated seconds and records the position every update:
+blocked means z never goes below 0 while reaching within 0.65m of the plane; crossing requires
+z < -0.4 while open. Both walks overlap for (c)/(d). The starting point is [30, 2.05, 2], on a
+separate fixture floor. The test also checks that pressing Open again while open keeps both panels open, and that auto-close restores the authored panel transforms. Panel and door balance expectations use en-US grouping and at most two fraction digits.
+
+Balance changes and outage checks wait 6.5 wall seconds (server TTL 1s + client TTL 5s + margin).
+Simulation waits allow 30s plus 30s per simulated second, scaled by `E2E_TIMEOUT_SCALE`; the
+whole-suite watchdog is 480s, also scaled. Evaluates/captures default to 5s, cleanup to 10s.
+All requests from both contexts are observed throughout; the privacy check runs last and fetches
+`/env.js` plus every JS/map in the public and world asset directories, decoding inline maps too.
+Console, page errors, server logs, request/RPC counts and movement evidence go to
+`token-gate-<engine>-*` in the output directory. Final screenshots are captured only on failure.
+Chromium/WebKit are required in CI; Firefox is advisory.
 
 ## Hostile transforms (local only)
 

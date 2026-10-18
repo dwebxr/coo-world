@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { EventEmitter } from 'node:events'
 import assert from 'node:assert/strict'
 import { loadClient, Blueprints, ClientNetwork } from './lib/clientHarness.mjs'
 import { Entity } from '../src/core/entities/Entity.js'
@@ -30,7 +31,7 @@ const make = ({ isServer = true, onScript } = {}) => {
     briefError,
     createLogOnce: () => createLogOnce(line => logs.push(line)),
   })
-  const world = {
+  const world = Object.assign(new EventEmitter(), {
     network: { isServer, isClient: !isServer, id: 0, send: () => true },
     entities: { items: new Map(), remove: id => world.entities.items.delete(id) },
     events: { off() {} },
@@ -48,7 +49,7 @@ const make = ({ isServer = true, onScript } = {}) => {
             }
           : { toNodes: root },
     },
-  }
+  })
   world.apps = new Apps(world)
   world.blueprints = new Blueprints(world)
   world.blueprints.add({ id: 'bp', version: 0, model: 'cached.glb', script: 'cached.js', props: {} })
@@ -56,6 +57,71 @@ const make = ({ isServer = true, onScript } = {}) => {
   world.entities.items.set('app', app)
   return { world, app, seen, logs, ledger: world.apps.eventLedger }
 }
+
+test('Apps: non-string event names cannot emit or send, even with coercion', () => {
+  for (const isServer of [false, true]) {
+    const errors = []
+    const sent = []
+    const emitted = []
+    const Apps = loadClient('core/systems/Apps.js', 'Apps', {
+      console: { error: value => errors.push(value) },
+      warn() {},
+    })
+    const world = {
+      network: {
+        isServer,
+        send: (...args) => sent.push(args) && true,
+        sendTo: (...args) => sent.push(args) && true,
+        asScript: fn => fn(),
+      },
+      entities: { get: () => ({}) },
+      events: { emit: (...args) => emitted.push(args) },
+    }
+    const apps = new Apps(world)
+    const entity = { data: { id: 'app' }, blueprint: { version: 1 } }
+    for (const event of ['wallet', 'normal']) {
+      for (const name of [[event], { toString: () => event }, { toString: () => assert.fail('name coerced') }]) {
+        apps.worldMethods.emit(entity, name, {})
+        apps.appMethods.emit(entity, name, {})
+        assert.equal(apps.appMethods.send(entity, name, {}), false)
+        assert.equal(apps.appMethods.sendTo(entity, 'player', name, {}), false)
+      }
+    }
+    assert.equal(errors.length, 24)
+    assert.equal(sent.length, 0)
+    assert.equal(emitted.length, 0)
+    apps.worldMethods.emit(entity, 'normal', 1)
+    apps.appMethods.emit(entity, 'normal', 2)
+    assert.deepEqual(emitted, [
+      ['normal', 1],
+      ['normal', 2],
+    ])
+    assert.equal(apps.appMethods.send(entity, 'normal', 3), true)
+    if (isServer) assert.equal(apps.appMethods.sendTo(entity, 'player', 'normal', 4), true)
+    assert.equal(sent.length, isServer ? 2 : 1)
+  }
+})
+
+test('Events: on, off and emit ignore non-string names without coercion', () => {
+  const Events = loadClient('core/systems/Events.js', 'Events')
+  const events = new Events({})
+  for (const event of ['wallet', 'normal']) {
+    const seen = []
+    const callback = (...args) => seen.push(args)
+    events.on(event, callback)
+    for (const name of [[event], { toString: () => event }, { toString: () => assert.fail('name coerced') }]) {
+      events.on(name, () => assert.fail('non-string listener installed'))
+      events.emit(name, 1, 2)
+      events.off(name, callback)
+    }
+    assert.deepEqual(seen, [])
+    events.emit(event, 3, 4)
+    assert.deepEqual(seen, [[3, 4]])
+    events.off(event, callback)
+    events.emit(event, 5, 6)
+    assert.equal(seen.length, 1)
+  }
+})
 
 test('App: current/older events emit, non-builders cannot keep, and far-future versions always drop', () => {
   const { world, app, seen, logs, ledger } = make()

@@ -8,6 +8,7 @@ import { readVec3, warnOnce } from './physxConvert.js'
 
 const _v = new THREE.Vector3()
 const HEALTH_MAX = 100
+const balanceWarnings = new WeakSet()
 
 export function createPlayerProxy(entity, player) {
   const world = player.world
@@ -69,6 +70,30 @@ export function createPlayerProxy(entity, player) {
     },
     get destroyed() {
       return !!player.destroyed
+    },
+    getTokenBalance() {
+      const run = entity.getDeadHook()
+      return new Promise(resolve => {
+        const settle = value => {
+          if (run.dead || entity.crashed || entity.destroyed || world.fatalError) return
+          const verified = value?.verified === true
+          const known = verified && value?.known === true && Number.isFinite(value.balance) && value.balance >= 0
+          resolve(Object.freeze({ verified, known, balance: known ? value.balance : 0 }))
+        }
+        const unavailable = !world.network.isClient || player.data.id !== world.network.id
+        if (unavailable && !balanceWarnings.has(entity)) {
+          balanceWarnings.add(entity)
+          console.warn('[player] getTokenBalance is available only for the local player in client scripts')
+        }
+        let result
+        try {
+          if (!unavailable && world.solana) result = world.network.tokenBalance.get()
+        } catch {
+          // Operational failures resolve unknown and never cross the script boundary.
+          result = { verified: world.solana?.isVerified() === true }
+        }
+        Promise.resolve(result).then(settle, () => settle({ verified: world.solana?.isVerified() === true }))
+      })
     },
     teleport(position, rotationY) {
       if (player.data.owner !== world.network.id && world.network.isClient) {
@@ -234,7 +259,7 @@ export function createPlayerProxy(entity, player) {
       proxy[name] = (...args) => world.network.asScript(() => method(...args), entity, name)
     }
   }
-  for (const name of ['push', 'teleport']) {
+  for (const name of ['push', 'teleport', 'getTokenBalance']) {
     const method = proxy[name]
     proxy[name] = (...args) => callForScript(method, entity, args)
   }

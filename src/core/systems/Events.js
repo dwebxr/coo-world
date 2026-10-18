@@ -15,6 +15,7 @@ export class Events extends System {
   }
 
   on(name, callback) {
+    if (typeof name !== 'string') return
     if (!this.listeners[name]) {
       this.listeners[name] = new Set()
     }
@@ -22,11 +23,13 @@ export class Events extends System {
   }
 
   off(name, callback) {
+    if (typeof name !== 'string') return
     if (!this.listeners[name]) return
     this.listeners[name].delete(callback)
   }
 
   emit(name, a1, a2) {
+    if (typeof name !== 'string') return
     if (!this.listeners[name]) return
     for (const callback of this.listeners[name]) {
       try {

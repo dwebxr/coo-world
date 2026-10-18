@@ -2,6 +2,11 @@
 
 A collider connects to its parent rigidbody to simulate under physics.
 
+Contact events go to the parent rigidbody's `onContactStart`/`onContactEnd`; trigger events go
+to its `onTriggerEnter`/`onTriggerLeave`. See [RigidBody event objects](RigidBody.md#event-objects)
+for their fields, fresh per-recipient objects and deferred synthetic end/leave timing. The
+collider itself does not own these callbacks.
+
 NOTE: Setting/modifying the geometry are not currently supported, and only be configured within a GLTF (eg via blender).
 
 ## Properties
@@ -35,4 +40,3 @@ NOTE: Triggers are forced to act like convex shapes. This is a limitation in the
 ### `.{...Node}`
 
 Inherits all [Node](/docs/scripting/nodes/Node.md) properties
-

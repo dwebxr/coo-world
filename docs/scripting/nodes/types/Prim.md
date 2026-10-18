@@ -128,19 +128,23 @@ Tag for identifying physics bodies when raycasting etc. Defaults to `null`.
 
 ### `.onContactStart`: Function | null
 
-Physics callback function, called when contact with another physics body begins. Receives the other body as parameter. Defaults to `null`.
+Physics callback function, called when contact with another physics body begins. Receives a [contact event](RigidBody.md#event-objects), not a node reference. Defaults to `null`.
 
 ### `.onContactEnd`: Function | null
 
-Physics callback function, called when contact with another physics body ends. Receives the other body as parameter. Defaults to `null`.
+Physics callback function, called when contact with another physics body ends. Receives a [contact event](RigidBody.md#event-objects) with an empty `contacts` array. Defaults to `null`.
 
 ### `.onTriggerEnter`: Function | null
 
-Physics callback function, called when another body enters this trigger volume. Only works when `trigger` is `true`. Defaults to `null`.
+Physics callback function, called when another body enters this trigger volume. Receives a [trigger event](RigidBody.md#event-objects). Only works when `trigger` is `true`. Defaults to `null`.
 
 ### `.onTriggerLeave`: Function | null
 
-Physics callback function, called when another body leaves this trigger volume. Only works when `trigger` is `true`. Defaults to `null`.
+Physics callback function, called when another body leaves this trigger volume. Receives a [trigger event](RigidBody.md#event-objects). Only works when `trigger` is `true`. Defaults to `null`.
+
+Events, contact arrays and vectors are fresh per recipient and are never shared or reused.
+Synthetic contact-end and trigger-leave callbacks caused by removal run at the next physics
+step, before simulation; removed, remounted or rebuilt recipients are skipped.
 
 ### `.{...Node}`
 
@@ -275,4 +279,4 @@ app.add(triggerZone)
 - Physics bodies are centered to match the visual geometry
 - Dynamic bodies require the `mass` property to be set
 - Trigger volumes don't cause physical collisions but can detect overlaps
-- Physics callbacks (onContactStart, etc.) receive the other colliding object as a parameter
+- Physics callbacks receive the event objects described above

@@ -19,8 +19,12 @@ if (EXPECT_VIOLATIONS && !SUBSET) throw new Error('--expect-violations requires 
 const PREFIX = path.join(ensureOut(), `physics-boundary-${ENGINE}${SUBSET ? '-sentinel-only' : ''}`)
 const SENTINEL = 'native-sentinel'
 const PROBE = 'physics-probe'
+const AVAILABILITY = 'physics-availability'
+const SUITE_SECONDS = SUBSET ? 360 : 600
+const CONTROLLER_WARNING = '[controller] invalid descriptor or failed to create controller'
 const BROWSER_NOISE = /WebGL|GPU|swiftshader|favicon|livekit|ERR_|Failed to load resource/i
 // Exact expected input-policy diagnostics; intentional brand errors stay in structured probe reports.
+// Valid static calls, event mutation and repeated removal must not add warnings to this allowlist.
 const EXPECTED_MESSAGES = new Set([
   '[rigidbody] addForce ignored a non-finite force',
   '[rigidbody] addForceAtPos ignored a non-finite force or pos',
@@ -40,8 +44,10 @@ const EXPECTED_MESSAGES = new Set([
   '[player] push ignored a non-finite force',
   '[raycast] ignored a non-finite origin or direction',
   '[overlapSphere] ignored a non-finite origin',
+  CONTROLLER_WARNING,
 ])
-const expected = line => EXPECTED_MESSAGES.has(line.replace(/^\[(warning|warn|error)\] /, '').trim())
+const messageText = line => line.replace(/^\[(warning|warn|error)\] /, '').trim()
+const expected = line => EXPECTED_MESSAGES.has(messageText(line))
 
 if (arg('watchdog-child', false) === true) {
   if (!process.send) throw new Error('run through the parent watchdog')
@@ -109,7 +115,10 @@ function runWatchdog() {
     if (worldDir) fs.rmSync(worldDir, { recursive: true, force: true })
     process.exit(code)
   }
-  const deadline = setTimeout(() => stop(1, 'suite exceeded its 360s deadline (scaled)'), 360000 * TIMEOUT_SCALE)
+  const deadline = setTimeout(
+    () => stop(1, `suite exceeded its ${SUITE_SECONDS}s deadline (scaled)`),
+    SUITE_SECONDS * 1000 * TIMEOUT_SCALE
+  )
   const monitor = setInterval(() => {
     try {
       scan()
@@ -231,7 +240,12 @@ async function runSuite() {
   const simulate = async seconds => {
     const start = await status('client')
     // software-rendered CI browsers simulate far slower than real time
-    return waitStatus('client', value => value.elapsed - start.elapsed >= seconds, `${seconds}s simulated time`, 45000 + seconds * 30000)
+    return waitStatus(
+      'client',
+      value => value.elapsed - start.elapsed >= seconds,
+      `${seconds}s simulated time`,
+      45000 + seconds * 30000
+    )
   }
   const key = (action, name) => bounded(page.keyboard[action](name), `keyboard ${action} ${name}`)
   const check = async (name, fn) => {
@@ -253,6 +267,54 @@ async function runSuite() {
         }, id),
       { timeout: 30000, message: `${id} ready` }
     )
+  }
+  const availability = realm => command(realm, AVAILABILITY, 'status')
+  const checkAvailability = async (name, action, done, seconds) => {
+    await check(name, async () => {
+      const reports = []
+      const starts = {}
+      for (const realm of ['server', 'client']) {
+        starts[realm] = await availability(realm)
+        await command(realm, AVAILABILITY, action)
+      }
+      for (const realm of ['server', 'client']) {
+        const attack = await waitUntil(
+          async () => {
+            const value = await availability(realm)
+            return done(value) && value
+          },
+          { timeout: 45000 + seconds * 30000, interval: 150, message: `${realm}: ${action} finished` }
+        )
+        // Fresh fall in a different app proves the main scene still works after each regression.
+        const before = await status(realm)
+        await command(realm, PROBE, 'lift')
+        const lifted = await waitStatus(realm, s => s.dynamic[1] > 4, 'unrelated body lifted')
+        const landed = await waitStatus(
+          realm,
+          s => s.counts.body.begin > before.counts.body.begin && s.dynamic[1] > 2.1 && s.dynamic[1] < 2.5,
+          'unrelated body lands on its floor',
+          45000 + 3 * 30000
+        )
+        const settled = await waitStatus(realm, s => s.elapsed - landed.elapsed >= 0.5, 'landing stays settled', 60000)
+        ok(settled.dynamic.every(Number.isFinite), `${realm}: unrelated body stays finite`)
+        ok(settled.dynamic[1] > 2.1 && settled.dynamic[1] < 2.5, `${realm}: body stays on the floor`)
+        ok(settled.ticks > before.ticks + 10, `${realm}: other app keeps ticking`)
+        const after = await availability(realm)
+        ok(
+          after.ticks > starts[realm].ticks && after.steps > starts[realm].steps,
+          `${realm}: update and physics steps advance`
+        )
+        eq(after.removals.filter(r => r.done && r.left !== 1).length, 0, `${realm}: no stale end/leave callbacks`)
+        reports.push({ realm, before: starts[realm], attack, after, lifted, landed, settled })
+      }
+      const errors = await evaluate(() =>
+        [...window.world.entities.items.values()]
+          .filter(entity => entity.isApp && entity.scriptError)
+          .map(entity => ({ id: entity.data.id, message: entity.scriptError.message }))
+      )
+      assert.deepEqual(errors, [], 'no browser app scriptError after availability scenario')
+      return reports
+    })
   }
   try {
     server = await bounded(startServer({ port: PORT, logPath: `${PREFIX}-server.log` }), 'server startup', 125000)
@@ -319,7 +381,7 @@ async function runSuite() {
         return reports
       })
     }
-    await check('dynamic contacts: two begin/end cycles with pooled contact points', async () => {
+    await check('dynamic contacts: two begin/end cycles with fresh contact points', async () => {
       const reports = []
       for (const realm of ['server', 'client']) {
         let previous = { prim: 0, body: 0 }
@@ -379,6 +441,29 @@ async function runSuite() {
         }
         return reports
       })
+      await install(AVAILABILITY, 'physics-availability.js')
+      await checkAvailability(
+        'contact mutation: 128 begin/end cycles, independent retained events and continued physics in both realms',
+        'mutateContacts',
+        s => s.mutation?.done && s.mutation.begin === 128 && s.mutation.end === 128 && s.mutation.observed === 128,
+        6
+      )
+      await checkAvailability(
+        're-entrant removal: deferred contact end and trigger leave preserve siblings in both realms',
+        'removeAgain',
+        s => s.removals.length === 6 && s.removals.every(r => r.entered === 1 && r.left === 1 && r.removed && r.done),
+        1
+      )
+      await checkAvailability(
+        'static body: 2000 caught-loop calls per velocity/force method leave both worlds usable',
+        'hammerStatic',
+        s =>
+          s.hammer?.errors.length === 0 &&
+          s.hammer.invalidController &&
+          Object.keys(s.hammer.calls).length === 4 &&
+          Object.values(s.hammer.calls).every(n => n === 2000),
+        1
+      )
     }
     await check('player walks while sentinel is armed', async () => {
       if (!SUBSET) {
@@ -572,6 +657,23 @@ async function runSuite() {
       }
     )
     await check('no script, physics or uncaught browser failures', async () => {
+      assert.deepEqual(
+        consoleLines.filter(line => /RuntimeError/.test(line)),
+        [],
+        'no browser RuntimeError'
+      )
+      assert.deepEqual(server.lines(/RuntimeError/), [], 'no server RuntimeError')
+      const warningCount = SUBSET ? 0 : 1
+      eq(
+        consoleLines.filter(line => messageText(line) === CONTROLLER_WARNING).length,
+        warningCount,
+        'browser descriptor warning once'
+      )
+      eq(
+        server.lines(/\[controller\]/).filter(line => messageText(line) === CONTROLLER_WARNING).length,
+        warningCount,
+        'server descriptor warning once'
+      )
       const browserFailures = consoleLines.filter(
         line =>
           !expected(line) &&

@@ -2,6 +2,11 @@
 
 A capsule controller that can be used to easily build moving characters, npcs, pets, mounts etc.
 
+An invalid native capsule descriptor or failed allocation disables this node's physics and
+logs one warning. Even positive dimensions can form an invalid descriptor with the controller's
+step offset. Without a native controller, `move` does nothing and `teleport` still updates the
+node position. This mount check does not provide general geometry/scalar validation.
+
 ## Properties
 
 ### `.radius`: Number
@@ -23,10 +28,16 @@ A tag that can be seen by raycast, trigger and contact events.
 ### `.onContactStart`: Function
 
 A function that is called whenever another physics object comes in contact with this controller.
+Receives a [contact event](RigidBody.md#event-objects).
 
 ### `.onContactEnd`: Function
 
 A function that is called whenever another physics object ends contact with this controller.
+Receives a [contact event](RigidBody.md#event-objects) with an empty `contacts` array.
+
+Events and their contact arrays/vectors are fresh per recipient and may be retained. Synthetic
+end events caused by removal run at the next physics step, before simulation. Removed, remounted
+or rebuilt recipients are skipped.
 
 ### `.isGrounded`: Boolean
 

@@ -23,7 +23,8 @@ concurrency:
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # software-rendered Chromium runs the simulated-time suites far below real time (physics-boundary alone can take 20+ min)
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:

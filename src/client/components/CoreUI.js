@@ -255,6 +255,8 @@ function Chat({ world }) {
           value={msg}
           onChange={e => setMsg(e.target.value)}
           onKeyDown={e => {
+            // keys that confirm or cancel an IME conversion (Enter, Escape) belong to the IME
+            if (e.nativeEvent?.isComposing || e.keyCode === 229) return
             if (e.code === 'Escape') {
               setActive(false)
             }

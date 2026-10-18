@@ -64,6 +64,7 @@ export function FieldText({ label, hint, placeholder, value, onChange }) {
           onFocus={e => e.target.select()}
           onChange={e => setLocalValue(e.target.value)}
           onKeyDown={e => {
+            if (e.nativeEvent?.isComposing || e.keyCode === 229) return
             if (e.code === 'Enter') {
               e.preventDefault()
               onChange(localValue)
@@ -150,6 +151,7 @@ export function FieldTextarea({ label, hint, placeholder, value, onChange }) {
           onFocus={e => e.target.select()}
           onChange={e => setLocalValue(e.target.value)}
           onKeyDown={e => {
+            if (e.nativeEvent?.isComposing || e.keyCode === 229) return
             if (e.metaKey && e.code === 'Enter') {
               e.preventDefault()
               e.target.blur()
@@ -689,6 +691,7 @@ export function FieldNumber({
           value={local}
           onChange={e => setLocal(e.target.value)}
           onKeyDown={e => {
+            if (e.nativeEvent?.isComposing || e.keyCode === 229) return
             if (e.code === 'Enter') {
               e.preventDefault()
               e.target.blur()
@@ -821,6 +824,7 @@ export function FieldVec3({
             value={axis.local}
             onChange={e => axis.setLocal(e.target.value)}
             onKeyDown={e => {
+              if (e.nativeEvent?.isComposing || e.keyCode === 229) return
               if (e.code === 'Enter') {
                 e.preventDefault()
                 e.target.blur()

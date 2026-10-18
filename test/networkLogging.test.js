@@ -20,6 +20,7 @@ import { sanitizeBlueprintModify } from '../src/core/extras/blueprintPolicy.js'
 const source = fs.readFileSync(new URL('../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
 const methods = [
   'requireBuilder',
+  'saveConfig',
   'onBlueprintModified',
   'revertBlueprint',
   'onEntityModified',

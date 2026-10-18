@@ -428,7 +428,7 @@ test('client fatal stops animation, worker and visibility restart; close cannot 
   network.onClose(1006)
 })
 
-test('temporary fatal flush awaits save with a deadline and refuses mutating packets', async t => {
+test('fatal stop suppresses save rearming and refuses mutating packets', async t => {
   const sourceRoot = process.env.REAL_PHYSX_SOURCE_ROOT
   const source = fs.readFileSync(
     sourceRoot
@@ -438,8 +438,8 @@ test('temporary fatal flush awaits save with a deadline and refuses mutating pac
   )
   const names = [
     'stopForFatal',
-    'flushBeforeExit',
     'save',
+    'saveDirty',
     'admit',
     'enqueue',
     'flush',
@@ -472,8 +472,8 @@ test('temporary fatal flush awaits save with a deadline and refuses mutating pac
   })
   const network = new Network()
   network.stopForFatal()
-  network.dirtyBlueprints = new Set()
-  network.dirtyApps = new Set()
+  network.dirtyBlueprints = new Map()
+  network.dirtyApps = new Map()
   await network.save()
   assert.equal(timers.tasks.size, 0, 'the existing save does not rearm during shutdown')
   assert.equal(network.admit(), false)
@@ -481,23 +481,6 @@ test('temporary fatal flush awaits save with a deadline and refuses mutating pac
   network.scheduler = { flush: fn => fn({}, {}) }
   network.flush()
   for (const name of names.filter(name => name.startsWith('on'))) await network[name]()
-  let resolveSave
-  network.save = () =>
-    new Promise(resolve => {
-      resolveSave = resolve
-    })
-  let finished = false
-  const save = network.flushBeforeExit(5000).then(() => {
-    finished = true
-  })
-  await Promise.resolve()
-  assert.equal(finished, false)
-  resolveSave()
-  await save
-  assert.equal(timers.tasks.size, 0)
-  const hanging = network.flushBeforeExit(5000)
-  timers.fire()
-  await assert.rejects(hanging, /deadline/)
 })
 
 test('latched apps cannot dispatch pointer or control callbacks', () => {

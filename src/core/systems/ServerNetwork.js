@@ -4,7 +4,8 @@ import { Socket } from '../Socket'
 import { uuid } from '../utils'
 import { System } from './System'
 import { createJWT, readJWT } from '../utils-server'
-import { cloneDeep, isNumber } from 'lodash-es'
+import { isNumber } from 'lodash-es'
+import { appPersistenceData, persistenceRecord } from '../extras/persistenceRecord.js'
 import * as THREE from '../extras/three'
 import { Ranks } from '../extras/ranks'
 import {
@@ -54,8 +55,12 @@ export class ServerNetwork extends System {
     this.socketIntervalId = setInterval(() => this.checkSockets(), PING_RATE * 1000)
     this.saveTimerId = null
     this.stopping = false
-    this.dirtyBlueprints = new Set()
-    this.dirtyApps = new Set()
+    this.dirtyBlueprints = new Map()
+    this.dirtyApps = new Map()
+    this.persistenceRevision = 0
+    this.savePromise = null
+    this.configPromise = null
+    this.flushExpired = false
     this.isServer = true
     this.scheduler = createInboundScheduler()
     this.gate = createInboundGate()
@@ -228,80 +233,63 @@ export class ServerNetwork extends System {
     return false
   }
 
-  save = async () => {
-    try {
-      const counts = {
-        upsertedBlueprints: 0,
-        upsertedApps: 0,
-        deletedApps: 0,
-      }
-      const now = moment().toISOString()
-      // blueprints
-      for (const id of this.dirtyBlueprints) {
-        const blueprint = this.world.blueprints.get(id)
+  markBlueprintDirty(data) {
+    const record = persistenceRecord(data)
+    this.dirtyBlueprints.set(data.id, { revision: ++this.persistenceRevision, record })
+  }
+
+  markAppDirty(data, change) {
+    const settled = appPersistenceData(data, change)
+    if (settled.mover || settled.uploader) return
+    const record = persistenceRecord(settled)
+    this.dirtyApps.set(settled.id, { revision: ++this.persistenceRevision, record })
+  }
+
+  markAppDeleted(id) {
+    this.dirtyApps.set(id, { revision: ++this.persistenceRevision, record: null })
+  }
+
+  save = () => {
+    clearTimeout(this.saveTimerId)
+    const promise = (this.savePromise || Promise.resolve())
+      .then(() => this.saveDirty())
+      .finally(() => {
+        if (this.savePromise !== promise) return
+        this.savePromise = null
+        if (!this.stopping) this.saveTimerId = setTimeout(this.save, SAVE_INTERVAL * 1000)
+      })
+    this.savePromise = promise
+    return promise
+  }
+
+  async saveDirty() {
+    const counts = { blueprints: 0, apps: 0, deleted: 0 }
+    const now = moment().toISOString()
+    for (const [table, dirty] of [
+      ['blueprints', this.dirtyBlueprints],
+      ['entities', this.dirtyApps],
+    ]) {
+      for (const [id, { revision, record }] of [...dirty]) {
+        if (this.flushExpired) return
         try {
-          const record = {
-            id: blueprint.id,
-            data: JSON.stringify(blueprint),
-          }
-          await this.db('blueprints')
-            .insert({ ...record, createdAt: now, updatedAt: now })
-            .onConflict('id')
-            .merge({ ...record, updatedAt: now })
-          counts.upsertedBlueprints++
-          this.dirtyBlueprints.delete(id)
-        } catch (err) {
-          console.log(`error saving blueprint: ${blueprint.id}`)
-          console.error(err)
-        }
-      }
-      // app entities
-      for (const id of this.dirtyApps) {
-        const entity = this.world.entities.get(id)
-        if (entity) {
-          // it needs creating/updating
-          if (entity.data.uploader || entity.data.mover) {
-            continue // ignore while uploading or moving
-          }
-          try {
-            const data = cloneDeep(entity.data)
-            data.state = null
-            const record = {
-              id: entity.data.id,
-              data: JSON.stringify(entity.data),
-            }
-            await this.db('entities')
+          if (record === null) {
+            await this.db(table).where('id', id).delete()
+            counts.deleted++
+          } else {
+            await this.db(table)
               .insert({ ...record, createdAt: now, updatedAt: now })
               .onConflict('id')
               .merge({ ...record, updatedAt: now })
-            counts.upsertedApps++
-            this.dirtyApps.delete(id)
-          } catch (err) {
-            console.log(`error saving entity: ${entity.data.id}`)
-            console.error(err)
+            counts[table === 'blueprints' ? 'blueprints' : 'apps']++
           }
-        } else {
-          // it was removed
-          try {
-            await this.db('entities').where('id', id).delete()
-            counts.deletedApps++
-            this.dirtyApps.delete(id)
-          } catch (err) {
-            console.log(`error deleting entity: ${id}`)
-            console.error(err)
-          }
+          if (dirty.get(id)?.revision === revision) dirty.delete(id)
+        } catch (err) {
+          console.error(`[network] error saving ${table} ${id}: ${briefError(err)}`)
         }
       }
-      // log
-      const didSave = counts.upsertedBlueprints > 0 || counts.upsertedApps > 0 || counts.deletedApps > 0
-      if (didSave) {
-        console.log(
-          `world saved (${counts.upsertedBlueprints} blueprints, ${counts.upsertedApps} apps, ${counts.deletedApps} apps removed)`
-        )
-      }
-    } finally {
-      // queue again, even if something above threw
-      if (!this.stopping) this.saveTimerId = setTimeout(this.save, SAVE_INTERVAL * 1000)
+    }
+    if (counts.blueprints || counts.apps || counts.deleted) {
+      console.log(`world saved (${counts.blueprints} blueprints, ${counts.apps} apps, ${counts.deleted} apps removed)`)
     }
   }
 
@@ -312,37 +300,67 @@ export class ServerNetwork extends System {
   }
 
   async flushBeforeExit(deadlineMs) {
-    // Commit 3 replaces this temporary save with the revisioned, serialized flush.
+    this.stopForFatal()
+    const config = new Set(['settings', 'spawn'])
     let timer
+    const flush = async () => {
+      await Promise.all([this.savePromise, this.configPromise])
+      if (this.flushExpired) return
+      await Promise.all([
+        this.save(),
+        (async () => {
+          // Settings may have broadcast without another preFixedUpdate to emit change.
+          if (await this.saveSettings()) config.delete('settings')
+          if (await this.saveConfig('spawn', this.spawn)) config.delete('spawn')
+        })(),
+      ])
+    }
     try {
       await Promise.race([
-        this.save(),
+        flush(),
         new Promise((resolve, reject) => {
-          timer = setTimeout(() => reject(new Error('save deadline exceeded')), deadlineMs)
+          timer = setTimeout(() => {
+            this.flushExpired = true
+            reject(new Error('save deadline exceeded'))
+          }, deadlineMs)
         }),
       ])
+      if (this.dirtyBlueprints.size || this.dirtyApps.size || config.size) {
+        throw new Error('final save incomplete')
+      }
+      console.log('[network] final save complete')
     } finally {
       clearTimeout(timer)
+      if (this.dirtyBlueprints.size || this.dirtyApps.size || config.size) {
+        console.error(
+          `[network] not persisted: blueprints=${JSON.stringify([...this.dirtyBlueprints.keys()])} apps=${JSON.stringify([...this.dirtyApps.keys()])} config=${JSON.stringify([...config])}`
+        )
+      }
     }
   }
 
-  saveSettings = async () => {
-    try {
-      const data = this.world.settings.serialize()
-      const value = JSON.stringify(data)
-      await this.db('config')
-        .insert({
-          key: 'settings',
-          value,
-        })
-        .onConflict('key')
-        .merge({
-          value,
-        })
-    } catch (err) {
-      console.error('error saving settings')
-      console.error(err)
-    }
+  saveConfig(key, data) {
+    const value = JSON.stringify(data)
+    const promise = (this.configPromise || Promise.resolve())
+      .then(async () => {
+        if (this.flushExpired) return false
+        try {
+          await this.db('config').insert({ key, value }).onConflict('key').merge({ value })
+          return true
+        } catch (err) {
+          this.logOnce(this, `config:${key}`, `[network] error saving ${key}: ${briefError(err)}`)
+          return false
+        }
+      })
+      .finally(() => {
+        if (this.configPromise === promise) this.configPromise = null
+      })
+    this.configPromise = promise
+    return promise
+  }
+
+  saveSettings = () => {
+    return this.saveConfig('settings', this.world.settings.serialize())
   }
 
   async onConnection(ws, params) {
@@ -755,9 +773,9 @@ export class ServerNetwork extends System {
         : this.logOnce(socket, 'blueprint-add-invalid', 'onBlueprintAdded: invalid blueprint')
     }
     if (socket.refusedBlueprint?.id === safe.id) socket.refusedBlueprint = null
+    this.markBlueprintDirty(safe)
     this.world.blueprints.add(safe)
     this.send('blueprintAdded', safe, socket.id)
-    this.dirtyBlueprints.add(safe.id)
   }
 
   onBlueprintModified = (socket, data) => {
@@ -786,9 +804,9 @@ export class ServerNetwork extends System {
         this.revertBlueprint(socket, blueprint)
         return
       }
+      this.markBlueprintDirty({ ...blueprint, ...safe })
       this.send('blueprintModified', safe, socket.id)
       this.world.blueprints.modify(safe, false, { authorSocketId: socket.id })
-      this.dirtyBlueprints.add(safe.id)
     }
     // otherwise, send a revert back to client, because someone else modified before them
     else {
@@ -829,9 +847,9 @@ export class ServerNetwork extends System {
     if (!safe) {
       return this.logOnce(socket, 'entity-invalid', `onEntityAdded: invalid entity: ${String(data?.id).slice(0, 64)}`)
     }
+    this.markAppDirty(safe)
     this.send('entityAdded', safe, socket.id)
-    const entity = this.world.entities.add(safe)
-    this.dirtyApps.add(entity.data.id)
+    this.world.entities.add(safe)
   }
 
   onEntityModified = async (socket, data) => {
@@ -906,10 +924,9 @@ export class ServerNetwork extends System {
           `onEntityModified: no permitted fields: ${String(data.id).slice(0, 64)}`
         )
       }
+      this.markAppDirty(entity.data, safe)
       this.send('entityModified', safe, socket.id)
       entity.modify(safe)
-      // mark for saving
-      this.dirtyApps.add(entity.data.id)
     }
   }
 
@@ -937,7 +954,6 @@ export class ServerNetwork extends System {
     if (!uploader && !this.requireBuilder(socket, 'remove entity')) return
     this.world.entities.remove(id)
     this.send('entityRemoved', id, socket.id)
-    this.dirtyApps.add(id)
   }
 
   onSettingsModified = (socket, data) => {
@@ -987,20 +1003,7 @@ export class ServerNetwork extends System {
     } else {
       return
     }
-    const data = JSON.stringify(this.spawn)
-    try {
-      await this.db('config')
-        .insert({
-          key: 'spawn',
-          value: data,
-        })
-        .onConflict('key')
-        .merge({
-          value: data,
-        })
-    } catch (err) {
-      this.logOnce(socket, 'spawn-save', `error saving spawn: ${briefError(err)}`)
-    }
+    await this.saveConfig('spawn', this.spawn)
     socket.send('chatAdded', {
       id: uuid(),
       from: null,

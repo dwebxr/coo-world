@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import vm from 'node:vm'
 import { EventEmitter } from 'node:events'
 import moment from 'moment'
+import { appPersistenceData, persistenceRecord } from '../../src/core/extras/persistenceRecord.js'
 import { uuid } from '../../src/core/utils.js'
 import { PROTOCOL_VERSION, packetNameById, peekPacketId, writePacket } from '../../src/core/packets.js'
 import { createWriteLedger, SNAPSHOT_CAP } from '../../src/core/extras/writeLedger.js'
@@ -28,6 +29,10 @@ export const serverSource = fs.readFileSync(new URL('../../src/server/index.js',
 const source = fs.readFileSync(new URL('../../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
 const names = [
   'start',
+  'markBlueprintDirty',
+  'markAppDirty',
+  'markAppDeleted',
+  'saveConfig',
   'preFixedUpdate',
   'asScript',
   'write',
@@ -60,6 +65,8 @@ const Network = vm.runInNewContext(`(class Network { ${methods} })`, {
   Date,
   JSON,
   moment,
+  appPersistenceData,
+  persistenceRecord,
   uuid,
   packetNodeLimit,
   readInboundPacket,
@@ -88,8 +95,9 @@ export function makeNetwork(log = () => {}) {
   network.isServer = true
   network.id = 0
   network.sockets = new Map()
-  network.dirtyBlueprints = new Set()
-  network.dirtyApps = new Set()
+  network.dirtyBlueprints = new Map()
+  network.dirtyApps = new Map()
+  network.persistenceRevision = 0
   network.logOnce = createLogOnce(log)
   network.writer = createWriteLedger({ log })
   network.gate = createInboundGate({ log })

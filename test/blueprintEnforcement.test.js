@@ -76,7 +76,7 @@ test('blueprint enforcement: decoded adds and modifies store and broadcast only 
   assert.deepEqual(f.world.blueprints.get('bp'), { ...safeAdd, ...safeChange })
   assert.deepEqual(f.packets()[1], ['onBlueprintModified', safeChange])
   assert.deepEqual(f.world.blueprints.authors.get('bp'), { version: 1, socketId: f.author.id })
-  assert.deepEqual([...f.network.dirtyBlueprints], ['bp'])
+  assert.deepEqual([...f.network.dirtyBlueprints.keys()], ['bp'])
   assert.equal(f.packets(f.author).length, 0, 'accepted broadcasts exclude the editing socket')
 })
 
@@ -157,7 +157,7 @@ test('blueprint enforcement: a refused add removes the matching optimistic entit
   assert.equal(f.world.blueprints.get('bp'), current)
   assert.equal(f.author.refusedBlueprint, null)
   assert.equal(f.packets().length, 0)
-  assert.deepEqual([...f.network.dirtyApps], ['other-socket-app'])
+  assert.deepEqual([...f.network.dirtyApps.keys()], ['other-socket-app'])
   assert.equal(f.network.dirtyBlueprints.size, 0)
   f.send('entityAdded', app('next-app', 'bp'))
   assert.ok(f.world.entities.get('next-app'), 'the pending refusal is consumed once')
@@ -333,7 +333,7 @@ test('announce before apply: app entity modification precedes its synchronous re
     ['onEntityModified', { id: 'app', blueprint: 'bp' }],
     ['onEntityEvent', ['app', 0, 'init', {}]],
   ])
-  assert.deepEqual([...f.network.dirtyApps], ['app'])
+  assert.deepEqual([...f.network.dirtyApps.keys()], ['app'])
   assert.deepEqual(f.logs, [])
 })
 
@@ -351,6 +351,6 @@ test('announce before apply: app entity addition precedes its synchronous init e
     ['onEntityAdded', data],
     ['onEntityEvent', ['app', 0, 'init', {}]],
   ])
-  assert.deepEqual([...f.network.dirtyApps], ['app'])
+  assert.deepEqual([...f.network.dirtyApps.keys()], ['app'])
   assert.deepEqual(f.logs, [])
 })

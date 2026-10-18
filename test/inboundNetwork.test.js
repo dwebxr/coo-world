@@ -1,3 +1,4 @@
+import { persistenceRecord } from '../src/core/extras/persistenceRecord.js'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
@@ -18,6 +19,7 @@ import { sanitizeBlueprintModify } from '../src/core/extras/blueprintPolicy.js'
 // Exercise the real receive/queue/flush methods without booting physics, the database or Solana.
 const source = fs.readFileSync(new URL('../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
 const methods = [
+  'markBlueprintDirty',
   'admit',
   'enqueue',
   'flush',
@@ -44,6 +46,7 @@ const Network = vm.runInNewContext(`(class Network { ${methods} })`, {
   console,
   internalEvents: ['update'],
   sanitizeBlueprintModify,
+  persistenceRecord,
 })
 const make = () => {
   const logs = []
@@ -265,7 +268,8 @@ test('onBlueprintModified: passes the editing socket as author without changing 
     modify: (...args) => seen.push(args),
   }
   network.send = () => {}
-  network.dirtyBlueprints = new Set()
+  network.dirtyBlueprints = new Map()
+  network.persistenceRevision = 0
   const data = { id: 'bp', version: 1 }
   network.onBlueprintModified(socket, data)
   assert.equal(seen.length, 1)

@@ -15,6 +15,7 @@ const q1 = new THREE.Quaternion()
 
 // beyond this a speaker's mouth stays closed and its voice is not sampled
 const LIPSYNC_MAX_DISTANCE = 20
+let lipsyncWarned = false
 
 export class ClientLiveKit extends System {
   constructor(world) {
@@ -352,7 +353,8 @@ class PlayerVoice {
         const stream = new MediaStream([this.track.mediaStreamTrack])
         this.tap = createVoiceTap(this.world.audio.ctx, stream)
       } catch (err) {
-        console.warn('[livekit] lip sync unavailable for this voice:', err?.message)
+        if (!lipsyncWarned) console.warn('[livekit] lip sync unavailable:', err?.message)
+        lipsyncWarned = true
         this.tap = null
       }
     }

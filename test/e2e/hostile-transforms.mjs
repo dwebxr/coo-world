@@ -508,7 +508,7 @@ async function runSuite() {
   }
 }
 
-// runs in the page: drive one avatar's mouth and sum the morph influences of both clones
+// runs in the page: drive one avatar's mouth and snapshot the morph influences of both clones
 function mouthProbe(id) {
   const remote = window.world.entities.get(id)?.avatar?.instance
   const local = window.world.entities.player?.avatar?.instance

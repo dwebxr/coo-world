@@ -350,7 +350,7 @@ test('RigidBody reads script components once, ignores forged hasInstance, and pr
 
 function controller() {
   const node = new Controller()
-  node.ctx = { world: { physics: { controllerFilters: {} } } }
+  node.ctx = { world: { physics: { controllerFilters: {}, drainCallbackFailures() {} } } }
   node.controller = {
     move: native('controller.move', { isSet: flag => flag === 1 }),
     setFootPosition: native('setFootPosition'),

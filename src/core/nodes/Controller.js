@@ -136,11 +136,13 @@ export class Controller extends Node {
   unmount() {
     if (this.mesh) {
       this.ctx.world.graphics.scene.remove(this.mesh)
+      this.mesh = null
     }
     this.actorHandle?.destroy()
     this.actorHandle = null
     this.controller?.release()
     this.controller = null
+    this.moveFlags = null
   }
 
   copy(source, recursive) {
@@ -276,7 +278,12 @@ export class Controller extends Node {
     if (!this.controller) return
     const px = scratchPxVec3()
     vec3ToPx(_v1, px)
-    this.moveFlags = this.controller.move(px, 0, 1 / 60, this.ctx.world.physics.controllerFilters)
+    const physics = this.ctx.world.physics
+    try {
+      this.moveFlags = this.controller.move(px, 0, 1 / 60, physics.controllerFilters)
+    } finally {
+      physics.drainCallbackFailures()
+    }
     // this.isGrounded = moveFlags.isSet(PHYSX.PxControllerCollisionFlagEnum.eCOLLISION_DOWN) // prettier-ignore
     const pos = this.controller.getFootPosition()
     pxToVec3(this.position, pos)

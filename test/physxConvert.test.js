@@ -419,6 +419,7 @@ test('converted node positions still dirty and commit; Physics move skips invali
 
     const physics = new Physics({})
     physics.handles = new Map()
+    physics.registrations = new WeakMap()
     physics.scene = { addActor() {} }
     physics.transform = nativePose()
     const poses = []

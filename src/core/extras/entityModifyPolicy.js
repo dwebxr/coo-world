@@ -44,7 +44,7 @@ export function unitQuaternion(value) {
   return q.map(v => v / n)
 }
 
-function appScale(value) {
+export function appScale(value) {
   if (!Array.isArray(value) || value.length !== 3) return null
   const result = []
   for (let i = 0; i < 3; i++) {
@@ -56,6 +56,46 @@ function appScale(value) {
     result.push(v)
   }
   return result
+}
+
+export function sanitizePersistedApp(data, { blueprintExists } = {}) {
+  if (!isPlainObject(data) || data.type !== 'app') return null
+  if (typeof data.id !== 'string' || !data.id) return null
+  if (typeof data.blueprint !== 'string' || !data.blueprint || !blueprintExists?.(data.blueprint)) return null
+  const repaired = []
+  let position = boundedArray(data.position, 3, TRANSFORM_LIMIT)
+  if (!position) {
+    position = Array.isArray(data.position) && data.position.length === 3 ? data.position : [0, 0, 0]
+    position = Array.from(position, v =>
+      typeof v === 'number' && !Number.isNaN(v) ? Math.max(-TRANSFORM_LIMIT, Math.min(TRANSFORM_LIMIT, v)) : 0
+    )
+    repaired.push('position')
+  }
+  let quaternion = unitQuaternion(data.quaternion)
+  if (!quaternion) {
+    const q = boundedArray(data.quaternion, 4, Infinity)
+    const max = q && Math.max(...q.map(Math.abs))
+    // Scale first so finite, nonzero quaternions also normalize at extreme magnitudes.
+    const scaled = max ? q.map(v => v / max) : null
+    const norm = scaled && Math.hypot(...scaled)
+    quaternion = norm ? unitQuaternion(scaled.map(v => v / norm)) : [0, 0, 0, 1]
+  }
+  if (
+    !Array.isArray(data.quaternion) ||
+    data.quaternion.length !== 4 ||
+    quaternion.some((v, i) => v !== data.quaternion[i])
+  ) {
+    repaired.push('quaternion')
+  }
+  let scale = appScale(data.scale)
+  if (!scale) {
+    scale = [1, 1, 1]
+    repaired.push('scale')
+  }
+  return {
+    data: { ...data, position, quaternion, scale, state: {} },
+    repaired,
+  }
 }
 
 export function sanitizeSpawn(data) {

@@ -15,6 +15,7 @@ import {
   sanitizeEntityAdd,
   sanitizeName,
   sanitizePlayerSelfModify,
+  sanitizePersistedApp,
   sanitizeSpawn,
 } from '../extras/entityModifyPolicy'
 import { createRelayDrop } from '../extras/playerRelayPolicy'
@@ -87,10 +88,18 @@ export class ServerNetwork extends System {
       this.logOnce(this, 'spawn-invalid', '[network] invalid stored spawn; using default spawn')
     }
     // hydrate blueprints
+    const skippedBlueprints = []
+    const skippedApps = []
+    const repairedApps = []
     const blueprints = await this.db('blueprints')
     for (const blueprint of blueprints) {
-      const data = JSON.parse(blueprint.data)
-      this.world.blueprints.add(data, true)
+      try {
+        const result = sanitizeBlueprintAdd(JSON.parse(blueprint.data))
+        if (!result.ok || result.value.id !== blueprint.id) throw new Error('invalid blueprint')
+        this.world.blueprints.add(result.value)
+      } catch {
+        skippedBlueprints.push(blueprint.id)
+      }
     }
     if (this.world.blueprints.bytes > WORLD_BLUEPRINT_BYTES) {
       console.warn(
@@ -100,10 +109,20 @@ export class ServerNetwork extends System {
     // hydrate entities
     const entities = await this.db('entities')
     for (const entity of entities) {
-      const data = JSON.parse(entity.data)
-      data.state = {}
-      this.world.entities.add(data, true)
+      try {
+        const result = sanitizePersistedApp(JSON.parse(entity.data), {
+          blueprintExists: id => !!this.world.blueprints.get(id),
+        })
+        if (!result || result.data.id !== entity.id) throw new Error('invalid app')
+        this.world.entities.add(result.data, true)
+        if (result.repaired.length) repairedApps.push({ id: entity.id, fields: result.repaired })
+      } catch {
+        skippedApps.push(entity.id)
+      }
     }
+    console.log(
+      `[network] hydration: blueprints=${blueprints.length - skippedBlueprints.length} apps=${entities.length - skippedApps.length} repaired=${repairedApps.length} skipped=${skippedBlueprints.length + skippedApps.length} skippedBlueprints=${JSON.stringify(skippedBlueprints)} skippedApps=${JSON.stringify(skippedApps)} repairedApps=${JSON.stringify(repairedApps)}`
+    )
     // hydrate settings
     let settingsRow = await this.db('config').where('key', 'settings').first()
     try {

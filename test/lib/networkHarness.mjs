@@ -20,6 +20,7 @@ import {
   sanitizeAppRelease,
   sanitizeEntityAdd,
   sanitizePlayerSelfModify,
+  sanitizePersistedApp,
   sanitizeSpawn,
 } from '../../src/core/extras/entityModifyPolicy.js'
 import { readInboundPacket } from '../../src/server/inboundDecode.js'
@@ -82,6 +83,7 @@ const Network = vm.runInNewContext(`(class Network { ${methods} })`, {
   sanitizeAppRelease,
   sanitizeEntityAdd,
   sanitizePlayerSelfModify,
+  sanitizePersistedApp,
   sanitizeSpawn,
   isObject: value => value !== null && typeof value === 'object',
 })

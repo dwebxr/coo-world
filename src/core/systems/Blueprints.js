@@ -33,8 +33,8 @@ export class Blueprints extends System {
       data = this.preflight(data, true)
       if (!data || !this.world.network.send('blueprintAdded', data)) return false
     }
-    this.items.set(data.id, data)
     this.trackSize(data)
+    this.items.set(data.id, data)
     this.authors.delete(data.id)
     if (local && !this.world.network.isClient) {
       this.world.network.send('blueprintAdded', data)

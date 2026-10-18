@@ -277,7 +277,7 @@ test('blueprint budget: over-budget startup loads and warns, then allows only no
   const warnings = []
   t.mock.method(console, 'warn', line => warnings.push(line))
   const f = fixture()
-  const rows = Array.from({ length: 9 }, (_, i) => ({ data: JSON.stringify(largeBlueprint(`bp${i}`)) }))
+  const rows = Array.from({ length: 9 }, (_, i) => ({ id: `bp${i}`, data: JSON.stringify(largeBlueprint(`bp${i}`)) }))
   f.network.db = table =>
     table === 'config' ? { where: () => ({ first: async () => undefined }) } : table === 'blueprints' ? rows : []
   f.world.settings = { deserialize() {}, setHasAdminCode() {}, on() {} }

@@ -244,6 +244,18 @@ async function runSuite() {
       evidence.push({ baseline })
     })
 
+    await check('lip sync: avatars sharing one VRM keep separate mouths', async () => {
+      const probe = await evaluate(mouthProbe, visitor.id)
+      ok(probe.instances, `remote and local avatar instances: ${JSON.stringify(probe)}`)
+      // the same factory hands both instances one shallow-copied glb, so they share one template
+      ok(probe.sharedTemplate, 'both avatars come from one VRM template')
+      ok(probe.open.remote > probe.before.remote, `the default avatar resolves a mouth morph: ${JSON.stringify(probe)}`)
+      eq(probe.open.local, probe.before.local, 'opening the remote mouth leaves the local avatar unchanged')
+      eq(probe.closed.remote, probe.before.remote, 'closing restores the remote mouth')
+      eq(probe.closed.local, probe.before.local, 'the local avatar stays unchanged')
+      evidence.push({ mouth: probe })
+    })
+
     const hostile = [{ q: [1e200, 0, 0, 1] }, { q: [0, 0, 0, 0] }, { p: [1e300, 0, 0] }, { p: [1e308, 0, 0] }]
     for (const [index, payload] of hostile.entries()) {
       await check(
@@ -494,6 +506,27 @@ async function runSuite() {
     // The parent kills the worker and any surviving descendants, including detached browser groups.
     await new Promise(() => {})
   }
+}
+
+// runs in the page: drive one avatar's mouth and sum the morph influences of both clones
+function mouthProbe(id) {
+  const remote = window.world.entities.get(id)?.avatar?.instance
+  const local = window.world.entities.player?.avatar?.instance
+  if (!remote?.setMouth || !local?.setMouth) return { instances: false }
+  const sum = instance => {
+    let total = 0
+    instance.raw.scene.traverse(o => {
+      if (o.isMesh && o.morphTargetInfluences) for (const v of o.morphTargetInfluences) total += v
+    })
+    return total
+  }
+  const read = () => ({ remote: sum(remote), local: sum(local) })
+  const before = read()
+  remote.setMouth(1)
+  const open = read()
+  remote.setMouth(0)
+  const closed = read()
+  return { instances: true, sharedTemplate: remote.raw.userData === local.raw.userData, before, open, closed }
 }
 
 function readPlayer(id) {

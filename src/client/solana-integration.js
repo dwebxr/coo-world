@@ -1,15 +1,12 @@
-import { Connection, PublicKey } from '@solana/web3.js'
-import { getAssociatedTokenAddress, getAccount } from '@solana/spl-token'
-
 // デフォルト設定
+// nonce の返事を待つ上限 (サーバーのクールダウンは 5 秒)
+const NONCE_WAIT_MS = 15000
+
 const DEFAULT_CONFIG = {
-  rpcUrl: 'https://api.devnet.solana.com',
   // HYPERトークンのミントアドレス (未設定なら機能無効)
   tokenMint: null,
   // ビルダー権限に必要な最小トークン量
   requiredTokenAmount: 10000,
-  // トークンのデシマル (通常は6か9)
-  tokenDecimals: 6,
 }
 
 // 実行時に環境変数を解決する。
@@ -31,10 +28,8 @@ const resolveNum = (key, fallback) => {
 
 const buildConfig = () => ({
   ...DEFAULT_CONFIG,
-  rpcUrl: resolveEnv('PUBLIC_RPC_URL') ?? DEFAULT_CONFIG.rpcUrl,
   tokenMint: resolveEnv('PUBLIC_TOKEN_MINT') ?? DEFAULT_CONFIG.tokenMint,
   requiredTokenAmount: resolveNum('PUBLIC_REQUIRED_TOKEN_AMOUNT', DEFAULT_CONFIG.requiredTokenAmount),
-  tokenDecimals: resolveNum('PUBLIC_TOKEN_DECIMALS', DEFAULT_CONFIG.tokenDecimals),
 })
 
 // Solana統合が設定済み (=有効) かどうか
@@ -64,56 +59,18 @@ export function createSolanaIntegration(world) {
   // 接続状態を追跡
   let isConnected = false
   let walletAddress = null
-  let tokenBalance = 0
-  let hasBuilderAccess = false
   let noncePending = false
+  // サーバーはクールダウン中の nonce 要求に返事をしないので、待ちっぱなしにしない
+  let nonceTimer = null
+  const clearNonceWait = () => {
+    clearTimeout(nonceTimer)
+    nonceTimer = null
+  }
   const refuse = () => {
+    clearNonceWait()
     noncePending = false
     world.emit('toast', 'ウォレットのリクエストを送信できませんでした')
     return false
-  }
-
-  // Solana RPC接続 (残高表示用。権限判定はサーバー側が正)
-  let connection = null
-  try {
-    connection = new Connection(config.rpcUrl, 'confirmed')
-  } catch (error) {
-    console.error('Solana RPC接続の初期化に失敗:', error)
-  }
-
-  // トークン残高を取得 (表示用)。
-  // 戻り値: { balance, unknown } — RPC 一時障害は unknown:true で「残高0」と混同しない (finding 0.3/9.2)
-  const fetchTokenBalance = async walletAddr => {
-    if (!connection || !config.tokenMint || !walletAddr) {
-      return { balance: 0, unknown: true }
-    }
-    try {
-      const walletPubkey = new PublicKey(walletAddr)
-      const mintPubkey = new PublicKey(config.tokenMint)
-      const ataAddress = await getAssociatedTokenAddress(mintPubkey, walletPubkey)
-      const tokenAccount = await getAccount(connection, ataAddress)
-      const balance = Number(tokenAccount.amount) / Math.pow(10, config.tokenDecimals)
-      return { balance, unknown: false }
-    } catch (error) {
-      // トークンアカウント未作成 = 本当に残高0
-      if (error?.name === 'TokenAccountNotFoundError') {
-        return { balance: 0, unknown: false }
-      }
-      // それ以外 (RPC 障害等) は残高不明として扱う
-      console.error('[Solana] 残高取得エラー (不明扱い):', error?.name, error?.message)
-      return { balance: 0, unknown: true }
-    }
-  }
-
-  // 表示用の残高を更新
-  const refreshDisplayBalance = async () => {
-    if (!walletAddress) return
-    const { balance, unknown } = await fetchTokenBalance(walletAddress)
-    if (!unknown) {
-      tokenBalance = balance
-    }
-    hasBuilderAccess = !unknown && balance >= config.requiredTokenAmount
-    world.emit('solana:builderAccessChanged', hasBuilderAccess, tokenBalance)
   }
 
   // ウォレット所有証明フロー:
@@ -124,10 +81,15 @@ export function createSolanaIntegration(world) {
     if (!isWalletAddress(walletAddress)) return refuse()
     noncePending = true
     if (!world.network.send('requestBuilderNonce', { walletAddress })) return refuse()
+    nonceTimer = setTimeout(() => {
+      nonceTimer = null
+      noncePending = false
+    }, NONCE_WAIT_MS)
   }
 
   const onBuilderNonce = async nonce => {
     if (!noncePending) return
+    clearNonceWait()
     if (typeof nonce !== 'string' || !nonce.length || nonce.length > 128) return refuse()
     if (!isWalletAddress(walletAddress)) return refuse()
     const address = walletAddress
@@ -176,8 +138,7 @@ export function createSolanaIntegration(world) {
         walletAddress = publicKey
         console.log('Solanaウォレット接続成功:', publicKey)
         world.emit('solana:connected', publicKey)
-        // 表示用残高を更新しつつ、サーバーに所有証明+権限リクエスト
-        await refreshDisplayBalance()
+        // サーバーに所有証明+権限リクエスト
         requestBuilderAccess()
         return publicKey
       } catch (error) {
@@ -199,14 +160,13 @@ export function createSolanaIntegration(world) {
         }
         isConnected = false
         walletAddress = null
-        tokenBalance = 0
-        hasBuilderAccess = false
+        clearNonceWait()
         noncePending = false
         console.log('Solanaウォレット切断完了')
         world.emit('solana:disconnected')
-        world.emit('solana:builderAccessChanged', false, 0)
         return true
       } catch (error) {
+        clearNonceWait()
         noncePending = false
         console.error('Solanaウォレット切断エラー:', error)
         world.emit('toast', 'ウォレット切断に失敗しました')
@@ -216,15 +176,13 @@ export function createSolanaIntegration(world) {
 
     isConnected: () => isConnected,
     getAddress: () => walletAddress,
-    getTokenBalance: () => tokenBalance,
-    hasBuilderAccess: () => hasBuilderAccess,
+    // ブラウザでは残高を取得しない。null は取得不可を表す
+    getTokenBalance: () => null,
     getRequiredTokenAmount: () => config.requiredTokenAmount,
 
-    // 残高再取得 + サーバーへ所有証明の再送
+    // サーバーへ所有証明とビルダー権限を再リクエスト
     refreshBalance: async () => {
-      await refreshDisplayBalance()
       requestBuilderAccess()
-      return hasBuilderAccess
     },
   }
 

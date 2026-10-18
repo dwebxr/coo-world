@@ -12,6 +12,7 @@ import statics from '@fastify/static'
 
 import { createServerWorld } from '../core/createServerWorld'
 import { PROTOCOL_VERSION, writePacket } from '../core/packets'
+import { buildPublicEnv } from '../core/extras/publicEnv'
 import { readJWT } from '../core/utils-server'
 import { getDB } from './db'
 import { Storage } from './Storage'
@@ -147,13 +148,7 @@ const connectionLimits = createConnectionLimits(connectionLimitsConfig)
 const kLease = Symbol('wsLease')
 fastify.register(worldNetwork)
 
-const publicEnvs = {}
-for (const key in process.env) {
-  if (key.startsWith('PUBLIC_')) {
-    const value = process.env[key]
-    publicEnvs[key] = value
-  }
-}
+const publicEnvs = buildPublicEnv(process.env)
 const envsCode = `
   if (!globalThis.env) globalThis.env = {}
   globalThis.env = ${JSON.stringify(publicEnvs)}

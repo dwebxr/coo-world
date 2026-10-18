@@ -770,3 +770,23 @@ test('wallet persist race: overlapping administrative writes keep grants blocked
   await f.network.onRequestBuilderRecheck(socket, {})
   assert.equal(socket.player.data.rank, Ranks.BUILDER)
 })
+
+test('wallet compatibility: a pre-attempt client (protocol v2, release A) is ignored without replies', async t => {
+  const f = fixture(t)
+  const socket = await f.connect('visitor', Ranks.VISITOR)
+  clear(socket)
+  const generation = socket.wallet.generation
+  // the release A client sends the nonce request and the bare-nonce proof without an attempt id
+  f.network.onRequestBuilderNonce(socket, { walletAddress: address })
+  await f.network.onRequestBuilderByToken(socket, {
+    walletAddress: address,
+    signature: Buffer.alloc(64, 42).toString('base64'),
+    nonce: 'A'.repeat(44),
+  })
+  f.network.onRevokeBuilderByToken(socket, {})
+  assert.deepEqual(packets(socket), [])
+  assert.equal(socket.wallet.verified, null)
+  assert.equal(socket.wallet.challenge, null)
+  assert.equal(socket.wallet.generation, generation + 1)
+  assert.equal(f.calls.length, 0)
+})

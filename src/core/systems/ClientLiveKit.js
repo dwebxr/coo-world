@@ -348,7 +348,8 @@ class PlayerVoice {
   setLipsync(on) {
     if (on && !this.tap) {
       try {
-        const stream = this.track.mediaStream ?? new MediaStream([this.track.mediaStreamTrack])
+        // only the microphone track: a stream holding several audio tracks would let the source pick another
+        const stream = new MediaStream([this.track.mediaStreamTrack])
         this.tap = createVoiceTap(this.world.audio.ctx, stream)
       } catch (err) {
         console.warn('[livekit] lip sync unavailable for this voice:', err?.message)

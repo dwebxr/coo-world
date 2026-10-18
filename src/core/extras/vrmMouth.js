@@ -50,7 +50,8 @@ export function createMouth(cloneScene, binds) {
     const mesh = objects[objectIndex]
     if (mesh?.isMesh && usableIndex(mesh, morphIndex)) targets.push({ mesh, morphIndex, weight })
   }
-  let last = 0
+  // unset until the first call: a model may load its mouth morph non-zero, so the first value always writes
+  let last = NaN
   const write = value => {
     for (const { mesh, morphIndex, weight } of targets) mesh.morphTargetInfluences[morphIndex] = weight * value
     last = value

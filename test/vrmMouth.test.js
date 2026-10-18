@@ -138,3 +138,17 @@ test('mouth: a clone whose hierarchy changed after resolution keeps its resolved
   mouth.set(1)
   assert.deepEqual(influences(clone).Face, [0, 0, 1])
 })
+
+test('mouth: the first value always writes, so a mouth morph that loads non-zero closes on set(0)', () => {
+  const { scene, face } = template()
+  face.morphTargetInfluences[1] = 0.6
+  const binds = collectMouthBinds(manager({ aa: [{ primitives: [face], index: 1, weight: 1 }] }), scene)
+  const a = scene.clone()
+  const b = scene.clone()
+  const mouth = createMouth(a, binds)
+  mouth.set(0)
+  assert.deepEqual(influences(a).Face, [0, 0, 0])
+  // the template and another clone keep their loaded weight
+  assert.deepEqual(influences(scene).Face, [0, 0.6, 0])
+  assert.deepEqual(influences(b).Face, [0, 0.6, 0])
+})

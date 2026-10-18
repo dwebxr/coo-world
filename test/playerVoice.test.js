@@ -32,6 +32,11 @@ function harness() {
     TrackSource: {},
     prepareVideoElement: () => {},
     createVoiceTap,
+    MediaStream: class {
+      constructor(tracks) {
+        this.tracks = tracks
+      }
+    },
     mouthTarget,
     nextMouth,
     quantizeMouth,
@@ -48,7 +53,7 @@ function audioNode() {
   return node
 }
 
-function setup({ lipsync = true, level = 'spatial', muted = false } = {}) {
+function setup({ lipsync = true, level = 'spatial', muted = false, audioParams = false } = {}) {
   const h = harness()
   const nodes = []
   const ctx = {
@@ -60,7 +65,14 @@ function setup({ lipsync = true, level = 'spatial', muted = false } = {}) {
       return n
     },
     createPanner: () => {
-      const n = Object.assign(audioNode(), { setPosition() {}, setOrientation() {} })
+      const n = Object.assign(audioNode(), { positions: 0 })
+      if (audioParams) {
+        const param = () => ({ linearRampToValueAtTime: () => n.positions++ })
+        Object.assign(n, { positionX: param(), positionY: param(), positionZ: param() })
+        Object.assign(n, { orientationX: param(), orientationY: param(), orientationZ: param() })
+      } else {
+        Object.assign(n, { setPosition: () => n.positions++, setOrientation() {} })
+      }
       nodes.push(n)
       return n
     },
@@ -85,7 +97,8 @@ function setup({ lipsync = true, level = 'spatial', muted = false } = {}) {
   }
   const participant = new EventEmitter()
   const track = {
-    mediaStream: { id: 'stream' },
+    mediaStream: { id: 'grouped stream' },
+    mediaStreamTrack: { id: 'mic' },
     attached: 0,
     detached: 0,
     setAudioContext() {},
@@ -108,7 +121,8 @@ const frames = (voice, n, delta = 1 / 60) => {
 test('player voice: loud audio opens the mouth, silence closes it, writes only on change', () => {
   const s = setup({ level: 'global' })
   assert.equal(s.taps.length, 1)
-  assert.equal(s.taps[0].stream, s.track.mediaStream)
+  // the tap listens to the microphone track alone, not whatever else shares its stream
+  assert.deepEqual(s.taps[0].stream.tracks, [s.track.mediaStreamTrack])
   assert.equal(s.track.attached, 1)
   s.taps[0].level = 0.3
   frames(s.voice, 30)
@@ -239,3 +253,15 @@ test('livekit: a re-subscribe destroys the old voice and prefs toggle lip sync o
   assert.equal(prefs.listenerCount('change'), 0)
   assert.equal(settings.listenerCount('change'), 0)
 })
+
+for (const audioParams of [false, true]) {
+  test(`player voice: spatial panning keeps updating without lip sync or an avatar (${audioParams ? 'AudioParam' : 'legacy'} panner)`, () => {
+    for (const variant of ['lipsync off', 'no avatar']) {
+      const s = setup({ lipsync: variant !== 'lipsync off', level: 'spatial', audioParams })
+      if (variant === 'no avatar') s.player.avatar = null
+      const panner = s.nodes.find(n => 'positions' in n)
+      frames(s.voice, 3)
+      assert.ok(panner.positions >= 3, `${variant}: panner moved ${panner.positions} times`)
+    }
+  })
+}

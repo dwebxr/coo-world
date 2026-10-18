@@ -4,6 +4,7 @@ import { every, isArray, isBoolean, isNumber, isString } from 'lodash-es'
 import { Node } from './Node'
 import { Display, isDisplay } from '../extras/yoga'
 import { fillRoundRect } from '../extras/roundRect'
+import { wrapText } from '../extras/wrapText.js'
 
 const textAligns = ['left', 'center', 'right']
 
@@ -653,26 +654,6 @@ export class UIText extends Node {
     }
     return this.proxy
   }
-}
-
-function wrapText(ctx, text, maxWidth) {
-  const words = text.split(' ')
-  const lines = []
-  let currentLine = words[0]
-
-  for (let i = 1; i < words.length; i++) {
-    const word = words[i]
-    const width = ctx.measureText(currentLine + ' ' + word).width
-    if (width <= maxWidth) {
-      currentLine += ' ' + word
-    } else {
-      lines.push(currentLine)
-      currentLine = word
-    }
-  }
-  lines.push(currentLine)
-
-  return lines
 }
 
 function isTextAlign(value) {

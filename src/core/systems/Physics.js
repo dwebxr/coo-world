@@ -1,6 +1,6 @@
 import { handlePhysicsFailure, isPhysicsTrap, getPhysicsTrapCount } from '../extras/physicsFailure.js'
 import * as THREE from '../extras/three'
-import { matrixToPxTransform, vec3ToPx, pxToVec3, pxToQuat } from '../extras/physxConvert.js'
+import { matrixToPxTransform, vec3ToPx, pxToVec3, pxToQuat, warnOnce } from '../extras/physxConvert.js'
 import { System } from './System'
 import { Layers } from '../extras/Layers'
 import { loadPhysX } from '../loadPhysX'
@@ -153,13 +153,14 @@ export class Physics extends System {
     this.handles = new Map()
     this.active = new Set()
 
-    this.materials = {}
+    this.materials = new Map()
 
     this.raycastResult = new PHYSX.PxRaycastResult()
     this.sweepPose = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
     this.sweepResult = new PHYSX.PxSweepResult()
     this.overlapPose = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
     this.overlapResult = new PHYSX.PxOverlapResult()
+    this.overlapSphereGeometry = new PHYSX.PxSphereGeometry(1)
     this.queryFilterData = new PHYSX.PxQueryFilterData()
 
     this._pv1 = new PHYSX.PxVec3()
@@ -635,7 +636,8 @@ export class Physics extends System {
 
   overlapSphere(radius, origin, layerMask) {
     if (!vec3ToPx(origin, this.overlapPose.p)) return []
-    const geometry = getSphereGeometry(radius)
+    const geometry = this.overlapSphereGeometry
+    geometry.set_radius(Math.fround(radius))
     this.queryFilterData.data.word0 = layerMask // what to hit, eg Layers.player.group | Layers.environment.group
     this.queryFilterData.data.word1 = 0
     const didHit = this.scene.overlap(geometry, this.overlapPose, this.overlapResult, this.queryFilterData)
@@ -653,32 +655,26 @@ export class Physics extends System {
   }
 
   getMaterial(staticFriction, dynamicFriction, restitution) {
-    // we cache and re-use material as PhysX has a limit of 64k.
-    // this only works if the materials are not modified by the user, eg
-    // players change friction coefficients etc
-    // cached and re-used because PhysX has a limit of 64k
-    const id = `${staticFriction}${dynamicFriction}${restitution}`
-    let material = this.materials[id]
-    if (!material) {
-      material = this.physics.createMaterial(staticFriction, dynamicFriction, restitution)
-      this.materials[id] = material
+    const id = `${staticFriction}|${dynamicFriction}|${restitution}`
+    const cached = this.materials.get(id)
+    if (cached) return cached
+    // Shapes retain these materials, so never evict or change an existing entry.
+    if (this.materials.size >= 4096) {
+      warnOnce('physics-material-cap', '[physics] material cache full; using default material')
+      return this.defaultMaterial
     }
+    const material = this.physics.createMaterial(staticFriction, dynamicFriction, restitution)
+    if (!material?.ptr) {
+      warnOnce('physics-material-null', '[physics] failed to create material; using default material')
+      return this.defaultMaterial
+    }
+    this.materials.set(id, material)
     return material
   }
 }
 
 function copyPoint(point) {
   return [point.x, point.y, point.z]
-}
-
-const spheres = new Map()
-function getSphereGeometry(radius) {
-  let sphere = spheres.get(radius)
-  if (!sphere) {
-    sphere = new PHYSX.PxSphereGeometry(radius)
-    spheres.set(radius, sphere)
-  }
-  return sphere
 }
 
 function getOrCreateOverlapHit(idx) {

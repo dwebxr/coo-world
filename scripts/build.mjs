@@ -5,19 +5,15 @@ import * as esbuild from 'esbuild'
 import { fileURLToPath } from 'url'
 import { polyfillNode } from 'esbuild-plugin-polyfill-node'
 import { makePhysxFinalizePlugin } from './lib/finalizePhysxBuild.mjs'
+import { buildPublicEnvDefines } from '../src/core/extras/publicEnv.js'
 
 const dev = process.argv.includes('--dev')
 const dirname = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = path.join(dirname, '../')
 const buildDir = path.join(rootDir, 'build')
 
-// PUBLIC_ で始まる環境変数をクライアントに渡す
-const publicEnvDefines = {}
-for (const [key, value] of Object.entries(process.env)) {
-  if (key.startsWith('PUBLIC_')) {
-    publicEnvDefines[`process.env.${key}`] = JSON.stringify(value)
-  }
-}
+// 公開可能な PUBLIC_ 環境変数だけをクライアントに渡す
+const publicEnvDefines = buildPublicEnvDefines(process.env)
 
 // await fs.emptyDir(buildDir)
 await fs.emptyDir(path.join(buildDir, 'public'))

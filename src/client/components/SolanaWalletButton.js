@@ -39,11 +39,8 @@ export function SolanaWalletButton({ world }) {
   const [connected, setConnected] = useState(false)
   const [address, setAddress] = useState('')
   const [connecting, setConnecting] = useState(false)
-  const [tokenBalance, setTokenBalance] = useState(0)
-  const [hasBuilderAccess, setHasBuilderAccess] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   // サーバーが実際に付与した権限 (= 今ビルドできるか)。ドット・枠・ステータス文の正はこれ。
-  // hasBuilderAccess はクライアント側の残高判定なので残高の数字の色にだけ使う
   const { isBuilder } = useRank(world, world.entities.player)
   // ポインタロック中は ui.active が false になる → ウィジェットごと隠す (A-3)。
   // 'ui' イベントは変化時にしか飛ばないので初期値は直接読む
@@ -71,8 +68,6 @@ export function SolanaWalletButton({ world }) {
     if (world.solana) {
       setConnected(world.solana.isConnected())
       setAddress(world.solana.getAddress() || '')
-      setTokenBalance(world.solana.getTokenBalance())
-      setHasBuilderAccess(world.solana.hasBuilderAccess())
     }
 
     // Solana接続イベントをリッスン
@@ -86,23 +81,14 @@ export function SolanaWalletButton({ world }) {
     const onDisconnected = () => {
       setConnected(false)
       setAddress('')
-      setTokenBalance(0)
-      setHasBuilderAccess(false)
-    }
-
-    const onBuilderAccessChanged = (hasAccess, balance) => {
-      setHasBuilderAccess(hasAccess)
-      setTokenBalance(balance)
     }
 
     world.on('solana:connected', onConnected)
     world.on('solana:disconnected', onDisconnected)
-    world.on('solana:builderAccessChanged', onBuilderAccessChanged)
 
     return () => {
       world.off('solana:connected', onConnected)
       world.off('solana:disconnected', onDisconnected)
-      world.off('solana:builderAccessChanged', onBuilderAccessChanged)
     }
   }, [world, setCollapsedPersist])
 
@@ -168,7 +154,7 @@ export function SolanaWalletButton({ world }) {
     }
   }
 
-  const refreshBalance = async e => {
+  const refreshBuilderAccess = async e => {
     blurIfPointer(e)
     if (isInactive() || !connected || refreshing) return
 
@@ -178,7 +164,7 @@ export function SolanaWalletButton({ world }) {
         await world.solana.refreshBalance()
       }
     } catch (error) {
-      console.error('残高更新エラー:', error)
+      console.error('ビルダー権限更新エラー:', error)
     } finally {
       setRefreshing(false)
     }
@@ -191,12 +177,8 @@ export function SolanaWalletButton({ world }) {
   // スピナーとドットは畳んでいる時だけ出す。展開時のトグルは常に ×
   const spinning = collapsed && status === 'connecting'
   const showDot = collapsed && (status === 'builder' || status === 'nobuild')
-  const requiredAmount = world.solana?.getRequiredTokenAmount() || 10000
-  const statusText = isBuilder
-    ? 'Builder access granted'
-    : hasBuilderAccess
-      ? 'Balance OK, not verified by server (see chat)'
-      : 'Need more tokens for builder'
+  const requiredAmount = world.solana?.getRequiredTokenAmount() ?? 10000
+  const statusText = isBuilder ? 'Builder access granted' : 'No builder access'
 
   return (
     <div
@@ -403,7 +385,7 @@ export function SolanaWalletButton({ world }) {
                 </button>
               </div>
 
-              {/* トークン残高行 (アイコンはサーバー付与、数字の色だけクライアント残高判定) */}
+              {/* 必要トークン量の案内 (アイコンは現在のビルド権限) */}
               <div
                 className='solana-token-info'
                 css={css`
@@ -416,13 +398,13 @@ export function SolanaWalletButton({ world }) {
                 `}
               >
                 <div
-                  className='solana-token-balance'
+                  className='solana-token-requirement'
                   css={css`
                     display: flex;
                     align-items: center;
                     gap: 0.3rem;
                     font-size: 0.75rem;
-                    color: ${hasBuilderAccess ? '#4caf50' : 'rgba(255, 255, 255, 0.6)'};
+                    color: rgba(255, 255, 255, 0.6);
                   `}
                 >
                   {isBuilder ? (
@@ -430,16 +412,14 @@ export function SolanaWalletButton({ world }) {
                   ) : (
                     <AlertCircleIcon size='0.9rem' color='#ff9800' />
                   )}
-                  <span>
-                    {tokenBalance.toLocaleString()} / {requiredAmount.toLocaleString()}
-                  </span>
+                  <span>Builder access requires {requiredAmount.toLocaleString()} tokens</span>
                 </div>
                 <button
                   type='button'
-                  onClick={refreshBalance}
+                  onClick={refreshBuilderAccess}
                   disabled={refreshing}
-                  aria-label='Refresh balance'
-                  title='Refresh balance'
+                  aria-label='Refresh builder access'
+                  title='Refresh builder access'
                   css={css`
                     background: transparent;
                     border: none;

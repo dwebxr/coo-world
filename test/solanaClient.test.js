@@ -2,9 +2,11 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { clientWorld, loadClient } from './lib/clientHarness.mjs'
 import { strictDecode } from '../src/core/extras/strictDecode.js'
+import { packetMethodById } from '../src/core/packets.js'
 
-function setup() {
+function setup(env = {}) {
   const world = clientWorld()
+  const rpcCalls = { connection: 0, ata: 0, account: 0 }
   const provider = {
     publicKey: { toString: () => '1'.repeat(32) },
     async connect() {},
@@ -14,18 +16,91 @@ function setup() {
     },
   }
   const create = loadClient('client/solana-integration.js', 'createSolanaIntegration', {
-    process: { env: { PUBLIC_TOKEN_MINT: '1'.repeat(32) } },
+    process: { env: { PUBLIC_TOKEN_MINT: '1'.repeat(32), ...env } },
     window: { solana: provider },
-    Connection: class {},
-    PublicKey: class {},
-    getAssociatedTokenAddress: async () => 'ata',
-    getAccount: async () => ({ amount: 0n }),
+    Connection: class {
+      constructor() {
+        rpcCalls.connection++
+        throw Error('client must not construct an RPC connection')
+      }
+    },
+    getAssociatedTokenAddress: async () => {
+      rpcCalls.ata++
+      throw Error('client must not derive a balance account')
+    },
+    getAccount: async () => {
+      rpcCalls.account++
+      throw Error('client must not fetch a balance')
+    },
     console: { log() {}, error() {} },
   })
-  return { world, provider, solana: create(world), nonce: value => world.listeners('solana:builderNonce')[0](value) }
+  return {
+    world,
+    provider,
+    rpcCalls,
+    solana: create(world),
+    nonce: value => world.listeners('solana:builderNonce')[0](value),
+  }
 }
 
 const lastPacket = world => strictDecode(world.packets.at(-1), { maxNodes: 4096, build: true }).value[1]
+
+test('Solana client: connect, bare-nonce signing, refresh and revoke work without any RPC reads', async () => {
+  for (const env of [{}, { PUBLIC_RPC_URL: 'https://sentinel.invalid/?api-key=T1_SENTINEL' }]) {
+    const { world, provider, solana, nonce, rpcCalls } = setup(env)
+    const address = provider.publicKey.toString()
+    const events = []
+    const signed = []
+    let connects = 0
+    let disconnects = 0
+    provider.connect = async () => connects++
+    provider.disconnect = async () => disconnects++
+    provider.signMessage = async (message, encoding) => {
+      signed.push([new TextDecoder().decode(message), encoding])
+      return { signature: new Uint8Array(64).fill(42) }
+    }
+    world.on('solana:connected', wallet => events.push(['connected', wallet]))
+    world.on('solana:disconnected', () => events.push(['disconnected']))
+
+    assert.equal(solana.getTokenBalance(), null)
+    assert.equal('rpcUrl' in solana.getConfig(), false)
+    assert.equal(await solana.connect(), address)
+    assert.equal(solana.isConnected(), true)
+    assert.equal(solana.getAddress(), address)
+    await nonce('bare-nonce')
+    assert.equal(solana.getTokenBalance(), null)
+    await solana.refreshBalance()
+    await nonce('refresh-nonce')
+    assert.equal(solana.getTokenBalance(), null)
+    assert.equal(await solana.disconnect(), true)
+    assert.equal(solana.isConnected(), false)
+    assert.equal(solana.getAddress(), null)
+    assert.equal(solana.getTokenBalance(), null)
+    await solana.refreshBalance()
+
+    const signature = Buffer.alloc(64, 42).toString('base64')
+    const packets = world.packets.map(packet => {
+      const [id, data] = strictDecode(packet, { maxNodes: 4096, build: true }).value
+      return [packetMethodById(id), data]
+    })
+    assert.deepEqual(packets, [
+      ['onRequestBuilderNonce', { walletAddress: address }],
+      ['onRequestBuilderByToken', { walletAddress: address, signature, nonce: 'bare-nonce' }],
+      ['onRequestBuilderNonce', { walletAddress: address }],
+      ['onRequestBuilderByToken', { walletAddress: address, signature, nonce: 'refresh-nonce' }],
+      ['onRevokeBuilderByToken', {}],
+    ])
+    assert.deepEqual(signed, [
+      ['bare-nonce', 'utf8'],
+      ['refresh-nonce', 'utf8'],
+    ])
+    assert.deepEqual(events, [['connected', address], ['disconnected']])
+    assert.equal(connects, 1)
+    assert.equal(disconnects, 1)
+    assert.deepEqual(world.toasts, [])
+    assert.deepEqual(rpcCalls, { connection: 0, ata: 0, account: 0 })
+  }
+})
 
 test('Solana client: validates bounded base58 addresses before connected events or sends', async () => {
   for (const address of ['0bad', '', '1'.repeat(65), {}, 'abc\n']) {
@@ -100,4 +175,29 @@ test('Solana client: sends a bounded base64 signature; every send refusal and si
   const count = world.packets.length
   await solana.refreshBalance()
   assert.equal(world.packets.length, count + 1)
+})
+
+test('Solana client: an unanswered nonce request stops blocking refresh after the wait limit', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { world, solana, nonce } = setup()
+  const nonceRequests = () =>
+    world.packets.filter(
+      packet =>
+        packetMethodById(strictDecode(packet, { maxNodes: 4096, build: true }).value[0]) === 'onRequestBuilderNonce'
+    ).length
+  await solana.connect()
+  assert.equal(nonceRequests(), 1)
+  // the server's cooldown drops this request without a reply
+  await solana.refreshBalance()
+  assert.equal(nonceRequests(), 1)
+  t.mock.timers.tick(14999)
+  await solana.refreshBalance()
+  assert.equal(nonceRequests(), 1)
+  t.mock.timers.tick(1)
+  await solana.refreshBalance()
+  assert.equal(nonceRequests(), 2)
+  // an answered request clears the wait, so a late timer cannot reopen a second request mid-signature
+  await nonce('late-nonce')
+  t.mock.timers.tick(15000)
+  assert.equal(nonceRequests(), 2)
 })

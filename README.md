@@ -116,8 +116,8 @@ Connect a Solana wallet holding **100,000 COO** tokens to receive builder permis
 Add the following environment variables to your `.env` file:
 
 ```bash
-# Solana RPC URL (Helius recommended)
-PUBLIC_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_API_KEY
+# Solana RPC URL (Helius recommended). Server only: it is never sent to browsers
+SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_API_KEY
 
 # Token mint address (SPL token address)
 PUBLIC_TOKEN_MINT=8MXWPUCmxtmaxNSmAve3YvQNAKmAbZJ1XxSnrqN9pump
@@ -132,7 +132,7 @@ PUBLIC_TOKEN_DECIMALS=6
 ### Features
 
 - **Connect Wallet**: Connect Solana wallets like Phantom
-- **Token Balance Display**: Shows the balance of the configured token
+- **Server-Side Balance Check**: The server reads the token balance; browsers never contact the RPC
 - **Automatic Permission Grant**: Builder permissions are automatically granted when holding the required token amount
 - **Session-Only**: Permissions granted via token are valid only for the current session (reset on reload)
 - **Wallet Disconnect**: Builder permissions are automatically revoked when wallet is disconnected

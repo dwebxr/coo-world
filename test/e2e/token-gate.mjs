@@ -291,7 +291,8 @@ async function runSuite() {
       clearTimeout(timer)
     }
   }
-  const evaluate = (client, fn, data) => bounded(client.page.evaluate(fn, data), `${client.label}: evaluate`)
+  // a software-rendered page can hold its main thread for seconds while the world loads
+  const evaluate = (client, fn, data) => bounded(client.page.evaluate(fn, data), `${client.label}: evaluate`, 15000)
   const wait = (client, fn, message, data, timeout = 20000) =>
     waitUntil(() => evaluate(client, fn, data), { message: `${client.label}: ${message}`, timeout, interval: 100 })
   const key = (client, action, name) =>

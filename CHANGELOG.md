@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- tests: token gate E2E uses signed mock wallets and SPL account RPC responses to check local door collisions, wallet/admin and builder flows, outage recovery, and RPC credential isolation in Chromium/WebKit (Firefox advisory).
 - apps: client-local `player.getTokenBalance()` and the protected `wallet` event expose verified COO balances to world scripts; reads are cached and local gates affect only the player’s own screen.
 - server: per-socket wallet verification, signature-free builder rechecks, and one shared balance service with fresh-only grants and bounded requests.
 - tests: Phase 3b-1 real-PhysX availability regressions and server/browser E2E probes cover contact mutation, deferred removal and repeated static-body calls, with independent falling-body and tick checks.

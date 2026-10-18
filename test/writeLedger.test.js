@@ -1,3 +1,4 @@
+import { callForScript } from '../src/core/extras/scriptValues.js'
 import { chatEnvelope } from '../src/core/extras/chatPolicy.js'
 import { sanitizePlayerSelfModify } from '../src/core/extras/entityModifyPolicy.js'
 import { readVec3, warnOnce } from '../src/core/extras/physxConvert.js'
@@ -281,6 +282,7 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
       THREE,
       readVec3,
       warnOnce,
+      callForScript,
       console,
       clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v)),
       sanitizePlayerSelfModify: (data, id) => sanitizePlayerSelfModify({ ef: { ...data.ef } }, id),

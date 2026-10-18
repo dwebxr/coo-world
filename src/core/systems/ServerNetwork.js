@@ -4,7 +4,8 @@ import { Socket } from '../Socket'
 import { uuid } from '../utils'
 import { System } from './System'
 import { createJWT, readJWT } from '../utils-server'
-import { cloneDeep, isNumber } from 'lodash-es'
+import { isNumber } from 'lodash-es'
+import { appPersistenceData, persistenceRecord } from '../extras/persistenceRecord.js'
 import * as THREE from '../extras/three'
 import { Ranks } from '../extras/ranks'
 import {
@@ -14,6 +15,7 @@ import {
   sanitizeEntityAdd,
   sanitizeName,
   sanitizePlayerSelfModify,
+  sanitizePersistedApp,
   sanitizeSpawn,
 } from '../extras/entityModifyPolicy'
 import { createRelayDrop } from '../extras/playerRelayPolicy'
@@ -53,8 +55,15 @@ export class ServerNetwork extends System {
     this.connecting = new Set() // user ids reserved while their connection is still being set up
     this.socketIntervalId = setInterval(() => this.checkSockets(), PING_RATE * 1000)
     this.saveTimerId = null
-    this.dirtyBlueprints = new Set()
-    this.dirtyApps = new Set()
+    this.stopping = false
+    this.dirtyBlueprints = new Map()
+    this.dirtyApps = new Map()
+    this.persistenceRevision = 0
+    this.savePromise = null
+    this.configPromise = null
+    this.loadedConfig = new Map()
+    this.dirtyConfig = new Map()
+    this.flushExpired = false
     this.isServer = true
     this.scheduler = createInboundScheduler()
     this.gate = createInboundGate()
@@ -80,11 +89,20 @@ export class ServerNetwork extends System {
       this.spawn = JSON.parse(defaultSpawn)
       this.logOnce(this, 'spawn-invalid', '[network] invalid stored spawn; using default spawn')
     }
+    this.loadedConfig.set('spawn', JSON.stringify(this.spawn))
     // hydrate blueprints
+    const skippedBlueprints = []
+    const skippedApps = []
+    const repairedApps = []
     const blueprints = await this.db('blueprints')
     for (const blueprint of blueprints) {
-      const data = JSON.parse(blueprint.data)
-      this.world.blueprints.add(data, true)
+      try {
+        const result = sanitizeBlueprintAdd(JSON.parse(blueprint.data))
+        if (!result.ok || result.value.id !== blueprint.id) throw new Error('invalid blueprint')
+        this.world.blueprints.add(result.value)
+      } catch {
+        skippedBlueprints.push(blueprint.id)
+      }
     }
     if (this.world.blueprints.bytes > WORLD_BLUEPRINT_BYTES) {
       console.warn(
@@ -94,23 +112,34 @@ export class ServerNetwork extends System {
     // hydrate entities
     const entities = await this.db('entities')
     for (const entity of entities) {
-      const data = JSON.parse(entity.data)
-      data.state = {}
-      this.world.entities.add(data, true)
+      try {
+        const result = sanitizePersistedApp(JSON.parse(entity.data), {
+          blueprintExists: id => !!this.world.blueprints.get(id),
+        })
+        if (!result || result.data.id !== entity.id) throw new Error('invalid app')
+        this.world.entities.add(result.data, true)
+        if (result.repaired.length) repairedApps.push({ id: entity.id, fields: result.repaired })
+      } catch {
+        skippedApps.push(entity.id)
+      }
     }
+    console.log(
+      `[network] hydration: blueprints=${blueprints.length - skippedBlueprints.length} apps=${entities.length - skippedApps.length} repaired=${repairedApps.length} skipped=${skippedBlueprints.length + skippedApps.length} skippedBlueprints=${JSON.stringify(skippedBlueprints)} skippedApps=${JSON.stringify(skippedApps)} repairedApps=${JSON.stringify(repairedApps)}`
+    )
     // hydrate settings
     let settingsRow = await this.db('config').where('key', 'settings').first()
     try {
       const settings = JSON.parse(settingsRow?.value || '{}')
       this.world.settings.deserialize(settings)
       this.world.settings.setHasAdminCode(!!process.env.ADMIN_CODE)
+      this.loadedConfig.set('settings', JSON.stringify(this.world.settings.serialize()))
     } catch (err) {
       console.error(err)
     }
     // watch settings changes
     this.world.settings.on('change', this.saveSettings)
     // queue first save
-    if (SAVE_INTERVAL) {
+    if (SAVE_INTERVAL && !this.stopping) {
       this.saveTimerId = setTimeout(this.save, SAVE_INTERVAL * 1000)
     }
   }
@@ -161,11 +190,13 @@ export class ServerNetwork extends System {
 
   // Admission charges the bytes and nodes before the inbox retains a copy.
   admit(socket, packet) {
+    if (this.stopping) return false
     return this.gate.admit(socket, packet, { builder: socket.player?.isBuilder() === true })
   }
 
   // Capacity is reserved before copying, including arrivals deferred during dispatch.
   enqueue(socket, packet, entry) {
+    if (this.stopping) return false
     if (socket.disconnected) return this.gate.refuse(socket, 'disconnected', entry.name, 'disconnected')
     if (!this.scheduler.reserve(socket, entry)) {
       return this.gate.refuse(socket, 'inbox', entry.name, 'inbox full')
@@ -182,6 +213,7 @@ export class ServerNetwork extends System {
   // The scheduler releases inbox credit before decoding and bounds each tick's work.
   flush() {
     this.scheduler.flush((socket, entry) => {
+      if (this.stopping) return
       const { copy, bytes, nodes, name, builder } = entry
       let decoded
       try {
@@ -224,103 +256,152 @@ export class ServerNetwork extends System {
     return false
   }
 
-  save = async () => {
-    try {
-      const counts = {
-        upsertedBlueprints: 0,
-        upsertedApps: 0,
-        deletedApps: 0,
-      }
-      const now = moment().toISOString()
-      // blueprints
-      for (const id of this.dirtyBlueprints) {
-        const blueprint = this.world.blueprints.get(id)
+  markBlueprintDirty(data) {
+    const record = persistenceRecord(data)
+    this.dirtyBlueprints.set(data.id, { revision: ++this.persistenceRevision, record })
+  }
+
+  markAppDirty(data, change) {
+    const settled = appPersistenceData(data, change)
+    if (settled.mover || settled.uploader) return
+    const record = persistenceRecord(settled)
+    this.dirtyApps.set(settled.id, { revision: ++this.persistenceRevision, record })
+  }
+
+  markAppDeleted(id) {
+    this.dirtyApps.set(id, { revision: ++this.persistenceRevision, record: null })
+  }
+
+  save = () => {
+    clearTimeout(this.saveTimerId)
+    const promise = (this.savePromise || Promise.resolve())
+      .then(() => this.saveDirty())
+      .finally(() => {
+        if (this.savePromise !== promise) return
+        this.savePromise = null
+        if (!this.stopping) this.saveTimerId = setTimeout(this.save, SAVE_INTERVAL * 1000)
+      })
+    this.savePromise = promise
+    return promise
+  }
+
+  async saveDirty() {
+    const counts = { blueprints: 0, apps: 0, deleted: 0 }
+    const now = moment().toISOString()
+    for (const [table, dirty] of [
+      ['blueprints', this.dirtyBlueprints],
+      ['entities', this.dirtyApps],
+    ]) {
+      for (const [id, { revision, record }] of [...dirty]) {
+        if (this.flushExpired) return
         try {
-          const record = {
-            id: blueprint.id,
-            data: JSON.stringify(blueprint),
-          }
-          await this.db('blueprints')
-            .insert({ ...record, createdAt: now, updatedAt: now })
-            .onConflict('id')
-            .merge({ ...record, updatedAt: now })
-          counts.upsertedBlueprints++
-          this.dirtyBlueprints.delete(id)
-        } catch (err) {
-          console.log(`error saving blueprint: ${blueprint.id}`)
-          console.error(err)
-        }
-      }
-      // app entities
-      for (const id of this.dirtyApps) {
-        const entity = this.world.entities.get(id)
-        if (entity) {
-          // it needs creating/updating
-          if (entity.data.uploader || entity.data.mover) {
-            continue // ignore while uploading or moving
-          }
-          try {
-            const data = cloneDeep(entity.data)
-            data.state = null
-            const record = {
-              id: entity.data.id,
-              data: JSON.stringify(entity.data),
-            }
-            await this.db('entities')
+          if (record === null) {
+            await this.db(table).where('id', id).delete()
+            counts.deleted++
+          } else {
+            await this.db(table)
               .insert({ ...record, createdAt: now, updatedAt: now })
               .onConflict('id')
               .merge({ ...record, updatedAt: now })
-            counts.upsertedApps++
-            this.dirtyApps.delete(id)
-          } catch (err) {
-            console.log(`error saving entity: ${entity.data.id}`)
-            console.error(err)
+            counts[table === 'blueprints' ? 'blueprints' : 'apps']++
           }
-        } else {
-          // it was removed
-          try {
-            await this.db('entities').where('id', id).delete()
-            counts.deletedApps++
-            this.dirtyApps.delete(id)
-          } catch (err) {
-            console.log(`error deleting entity: ${id}`)
-            console.error(err)
-          }
+          if (dirty.get(id)?.revision === revision) dirty.delete(id)
+        } catch (err) {
+          console.error(`[network] error saving ${table} ${id}: ${briefError(err)}`)
         }
       }
-      // log
-      const didSave = counts.upsertedBlueprints > 0 || counts.upsertedApps > 0 || counts.deletedApps > 0
-      if (didSave) {
-        console.log(
-          `world saved (${counts.upsertedBlueprints} blueprints, ${counts.upsertedApps} apps, ${counts.deletedApps} apps removed)`
-        )
-      }
-    } finally {
-      // queue again, even if something above threw
-      this.saveTimerId = setTimeout(this.save, SAVE_INTERVAL * 1000)
+    }
+    if (counts.blueprints || counts.apps || counts.deleted) {
+      console.log(`world saved (${counts.blueprints} blueprints, ${counts.apps} apps, ${counts.deleted} apps removed)`)
     }
   }
 
-  saveSettings = async () => {
-    try {
-      const data = this.world.settings.serialize()
-      const value = JSON.stringify(data)
-      await this.db('config')
-        .insert({
-          key: 'settings',
-          value,
-        })
-        .onConflict('key')
-        .merge({
-          value,
-        })
-    } catch (err) {
-      console.error('error saving settings')
-      console.error(err)
+  stopForFatal() {
+    this.stopping = true
+    clearTimeout(this.saveTimerId)
+    clearInterval(this.socketIntervalId)
+  }
+
+  async flushBeforeExit(deadlineMs) {
+    this.stopForFatal()
+    const config = new Set()
+    for (const [key, saved] of this.loadedConfig) {
+      const data = key === 'settings' ? this.world.settings.serialize() : this.spawn
+      if (this.dirtyConfig.has(key) || JSON.stringify(data) !== saved) config.add(key)
     }
+    let timer
+    const flush = async () => {
+      await Promise.all([this.savePromise, this.configPromise])
+      if (this.flushExpired) return
+      await Promise.all([
+        this.save(),
+        (async () => {
+          // Settings may have broadcast without another preFixedUpdate to emit change.
+          if (config.has('settings') && (await this.saveSettings())) config.delete('settings')
+          if (config.has('spawn') && (await this.saveConfig('spawn', this.spawn))) config.delete('spawn')
+        })(),
+      ])
+    }
+    try {
+      await Promise.race([
+        flush(),
+        new Promise((resolve, reject) => {
+          timer = setTimeout(() => {
+            this.flushExpired = true
+            reject(new Error('save deadline exceeded'))
+          }, deadlineMs)
+        }),
+      ])
+      if (this.dirtyBlueprints.size || this.dirtyApps.size || config.size) {
+        throw new Error('final save incomplete')
+      }
+      console.log('[network] final save complete')
+    } finally {
+      clearTimeout(timer)
+      if (this.dirtyBlueprints.size || this.dirtyApps.size || config.size) {
+        console.error(
+          `[network] not persisted: blueprints=${JSON.stringify([...this.dirtyBlueprints.keys()])} apps=${JSON.stringify([...this.dirtyApps.keys()])} config=${JSON.stringify([...config])}`
+        )
+      }
+    }
+  }
+
+  saveConfig(key, data) {
+    if (!this.loadedConfig.has(key)) {
+      // the stored row was never read (or failed to parse); keep it untouched for inspection
+      this.logOnce(this, `config-unloaded:${key}`, `[network] ${key} was not loaded; changes will not be saved`)
+      return Promise.resolve(false)
+    }
+    const value = JSON.stringify(data)
+    this.dirtyConfig.set(key, value)
+    const promise = (this.configPromise || Promise.resolve())
+      .then(async () => {
+        if (this.flushExpired) return false
+        try {
+          if (this.loadedConfig.get(key) !== value) {
+            await this.db('config').insert({ key, value }).onConflict('key').merge({ value })
+            this.loadedConfig.set(key, value)
+          }
+          if (this.dirtyConfig.get(key) === value) this.dirtyConfig.delete(key)
+          return true
+        } catch (err) {
+          this.logOnce(this, `config:${key}`, `[network] error saving ${key}: ${briefError(err)}`)
+          return false
+        }
+      })
+      .finally(() => {
+        if (this.configPromise === promise) this.configPromise = null
+      })
+    this.configPromise = promise
+    return promise
+  }
+
+  saveSettings = () => {
+    return this.saveConfig('settings', this.world.settings.serialize())
   }
 
   async onConnection(ws, params) {
+    if (this.stopping) return ws.close()
     let cancelled = false
     ws.once('close', () => (cancelled = true))
     let reserved = null
@@ -713,6 +794,7 @@ export class ServerNetwork extends System {
   }
 
   onBlueprintAdded = (socket, blueprint) => {
+    if (this.stopping) return
     if (!this.requireBuilder(socket, 'add blueprint')) return
     const { ok, value: safe } = sanitizeBlueprintAdd(blueprint, {
       onUnknownKey: key => this.logOnce(socket, 'blueprint-unknown', `blueprint: unknown key ${key}`),
@@ -728,12 +810,13 @@ export class ServerNetwork extends System {
         : this.logOnce(socket, 'blueprint-add-invalid', 'onBlueprintAdded: invalid blueprint')
     }
     if (socket.refusedBlueprint?.id === safe.id) socket.refusedBlueprint = null
+    this.markBlueprintDirty(safe)
     this.world.blueprints.add(safe)
     this.send('blueprintAdded', safe, socket.id)
-    this.dirtyBlueprints.add(safe.id)
   }
 
   onBlueprintModified = (socket, data) => {
+    if (this.stopping) return
     if (!this.requireBuilder(socket, 'modify blueprint')) return
     const { ok, value: safe } = sanitizeBlueprintModify(data, {
       onUnknownKey: key => this.logOnce(socket, 'blueprint-unknown', `blueprint: unknown key ${key}`),
@@ -758,9 +841,9 @@ export class ServerNetwork extends System {
         this.revertBlueprint(socket, blueprint)
         return
       }
+      this.markBlueprintDirty({ ...blueprint, ...safe })
       this.send('blueprintModified', safe, socket.id)
       this.world.blueprints.modify(safe, false, { authorSocketId: socket.id })
-      this.dirtyBlueprints.add(safe.id)
     }
     // otherwise, send a revert back to client, because someone else modified before them
     else {
@@ -781,6 +864,7 @@ export class ServerNetwork extends System {
   }
 
   onEntityAdded = (socket, data) => {
+    if (this.stopping) return
     if (!this.requireBuilder(socket, 'add entity')) return
     const refused = socket.refusedBlueprint
     if (refused) {
@@ -800,12 +884,13 @@ export class ServerNetwork extends System {
     if (!safe) {
       return this.logOnce(socket, 'entity-invalid', `onEntityAdded: invalid entity: ${String(data?.id).slice(0, 64)}`)
     }
+    this.markAppDirty(safe)
     this.send('entityAdded', safe, socket.id)
-    const entity = this.world.entities.add(safe)
-    this.dirtyApps.add(entity.data.id)
+    this.world.entities.add(safe)
   }
 
   onEntityModified = async (socket, data) => {
+    if (this.stopping) return
     if (!isObject(data)) return this.logOnce(socket, 'entity-packet-invalid', 'onEntityModified: invalid packet')
     const entity = this.world.entities.get(data.id)
     if (!entity) {
@@ -876,14 +961,14 @@ export class ServerNetwork extends System {
           `onEntityModified: no permitted fields: ${String(data.id).slice(0, 64)}`
         )
       }
+      this.markAppDirty(entity.data, safe)
       this.send('entityModified', safe, socket.id)
       entity.modify(safe)
-      // mark for saving
-      this.dirtyApps.add(entity.data.id)
     }
   }
 
   onEntityEvent = (socket, event, meta) => {
+    if (this.stopping) return
     if (!Array.isArray(event)) return
     const [id, version, name, data] = event
     // engine hooks and world events are never raised from the network
@@ -894,6 +979,7 @@ export class ServerNetwork extends System {
   }
 
   onEntityRemoved = (socket, id) => {
+    if (this.stopping) return
     if (typeof id !== 'string') return
     const entity = this.world.entities.get(id)
     if (!entity) return
@@ -905,10 +991,10 @@ export class ServerNetwork extends System {
     if (!uploader && !this.requireBuilder(socket, 'remove entity')) return
     this.world.entities.remove(id)
     this.send('entityRemoved', id, socket.id)
-    this.dirtyApps.add(id)
   }
 
   onSettingsModified = (socket, data) => {
+    if (this.stopping) return
     if (!this.requireBuilder(socket, 'modify settings')) return
     if (!isObject(data)) return
     const { key, value } = data
@@ -933,6 +1019,7 @@ export class ServerNetwork extends System {
   }
 
   onSpawnModified = async (socket, op) => {
+    if (this.stopping) return
     if (!this.requireBuilder(socket, 'modify spawn')) return
     const player = socket.player
     if (op === 'set') {
@@ -953,20 +1040,7 @@ export class ServerNetwork extends System {
     } else {
       return
     }
-    const data = JSON.stringify(this.spawn)
-    try {
-      await this.db('config')
-        .insert({
-          key: 'spawn',
-          value: data,
-        })
-        .onConflict('key')
-        .merge({
-          value: data,
-        })
-    } catch (err) {
-      this.logOnce(socket, 'spawn-save', `error saving spawn: ${briefError(err)}`)
-    }
+    await this.saveConfig('spawn', this.spawn)
     socket.send('chatAdded', {
       id: uuid(),
       from: null,
@@ -991,6 +1065,7 @@ export class ServerNetwork extends System {
   }
 
   onAi = (socket, action) => {
+    if (this.stopping) return
     if (!this.requireBuilder(socket, 'use ai')) return
     this.world.ai.onAction(action)
   }
@@ -1005,7 +1080,7 @@ export class ServerNetwork extends System {
     this.world.apps.eventLedger.purgeSocket(socket.id)
     this.world.livekit.clearModifiers(socket.id)
     solanaGating.clearSocket(socket.id)
-    socket.player?.destroy(true)
+    if (!this.stopping) socket.player?.destroy(true)
     // only drop the entry that still refers to this socket
     if (this.sockets.get(socket.id) === socket) this.sockets.delete(socket.id)
   }

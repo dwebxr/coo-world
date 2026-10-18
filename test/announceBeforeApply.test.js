@@ -1,3 +1,4 @@
+import { makeNetwork } from './lib/networkHarness.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
@@ -19,6 +20,11 @@ for (const action of ['create', 'edit', 'fix', 'classify']) {
   test(`announce before apply: ServerAI ${action} broadcasts before modifying`, async () => {
     const calls = []
     const blueprint = { id: 'bp', version: 7, script: 'asset://old.js' }
+    const network = makeNetwork()
+    network.send = (...args) => {
+      assert.equal(JSON.parse(network.dirtyBlueprints.get('bp').record.data).version, 8)
+      calls.push(args)
+    }
     const world = {
       blueprints: {
         get: () => blueprint,
@@ -27,7 +33,7 @@ for (const action of ['create', 'edit', 'fix', 'classify']) {
           calls.push(['apply', change])
         },
       },
-      network: { send: (...args) => calls.push(args), dirtyBlueprints: new Set() },
+      network,
       loader: { get: () => ({ code: 'app.on("init", () => {})' }) },
     }
     const ai = new ServerAI(world)
@@ -37,7 +43,7 @@ for (const action of ['create', 'edit', 'fix', 'classify']) {
     await ai[action]({ blueprintId: 'bp', appId: 'app', prompt: 'prompt', error: {} })
     assert.equal(calls.length, 2)
     assert.equal(calls[0][1].version, 8)
-    assert.deepEqual([...world.network.dirtyBlueprints], ['bp'])
+    assert.deepEqual([...world.network.dirtyBlueprints.keys()], ['bp'])
   })
 }
 

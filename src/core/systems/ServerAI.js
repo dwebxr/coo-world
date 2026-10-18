@@ -94,9 +94,10 @@ export class ServerAI extends System {
     const blueprint = this.world.blueprints.get(blueprintId)
     const version = blueprint.version + 1
     const change = { id: blueprint.id, version, script: url }
+    if (this.world.network.stopping) return
+    this.world.network.markBlueprintDirty({ ...blueprint, ...change })
     this.world.network.send('blueprintModified', change)
     this.world.blueprints.modify(change)
-    this.world.network.dirtyBlueprints.add(change.id)
   }
 
   async edit({ blueprintId, appId, prompt }) {
@@ -129,9 +130,10 @@ export class ServerAI extends System {
     blueprint = this.world.blueprints.get(blueprintId)
     const version = blueprint.version + 1
     const change = { id: blueprint.id, version, script: url }
+    if (this.world.network.stopping) return
+    this.world.network.markBlueprintDirty({ ...blueprint, ...change })
     this.world.network.send('blueprintModified', change)
     this.world.blueprints.modify(change)
-    this.world.network.dirtyBlueprints.add(change.id)
   }
 
   async fix({ blueprintId, appId, error }) {
@@ -163,9 +165,10 @@ export class ServerAI extends System {
     blueprint = this.world.blueprints.get(blueprintId)
     const version = blueprint.version + 1
     const change = { id: blueprint.id, version, script: url }
+    if (this.world.network.stopping) return
+    this.world.network.markBlueprintDirty({ ...blueprint, ...change })
     this.world.network.send('blueprintModified', change)
     this.world.blueprints.modify(change)
-    this.world.network.dirtyBlueprints.add(change.id)
   }
 
   async classify({ blueprintId, prompt }) {
@@ -175,9 +178,10 @@ export class ServerAI extends System {
     const blueprint = this.world.blueprints.get(blueprintId)
     const version = blueprint.version + 1
     const change = { id: blueprint.id, version, name }
+    if (this.world.network.stopping) return
+    this.world.network.markBlueprintDirty({ ...blueprint, ...change })
     this.world.network.send('blueprintModified', change)
     this.world.blueprints.modify(change)
-    this.world.network.dirtyBlueprints.add(change.id)
   }
 }
 

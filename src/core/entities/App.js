@@ -1,3 +1,4 @@
+import { assertScriptActive, handlePhysicsFailure } from '../extras/physicsFailure.js'
 import { Entity } from './Entity'
 import { createNode } from '../extras/createNode'
 import { LerpVector3 } from '../extras/LerpVector3'
@@ -33,6 +34,7 @@ export class App extends Entity {
     super(world, data, local)
     this.isApp = true
     this.n = 0
+    this.crashed = false
     this.worldNodes = new Set()
     this.hotEvents = 0
     this.worldListeners = new Map()
@@ -68,6 +70,7 @@ export class App extends Entity {
   async build(crashed) {
     this.building = true
     const n = ++this.n
+    const failureVersion = this.physicsFailureVersion
     // fetch blueprint
     const blueprint = this.world.blueprints.get(this.data.blueprint)
 
@@ -119,7 +122,7 @@ export class App extends Entity {
       root = glb.toNodes()
     }
     // if a new build happened while we were fetching, stop here
-    if (this.n !== n) return
+    if (this.n !== n || this.world.fatalError) return
     // unbuild any previous version
     this.unbuild()
     // mode
@@ -146,10 +149,18 @@ export class App extends Entity {
       (this.mode === Modes.ACTIVE || (this.mode === Modes.MOVING && !this.resetOnMove))
     // (this.mode === Modes.ACTIVE && script && !crashed) ||
     // (this.mode === Modes.MOVING && !this.resetOnMove && !this.scriptError)
+    if (this.n !== n || this.world.fatalError) return
+    if (this.physicsFailureVersion !== failureVersion) {
+      this.building = false
+      return
+    }
     if (runScript) {
+      this.crashed = false
+      this.nativeFailure = false
       this.abortController = new AbortController()
       try {
         this.script.exec(this.getWorldProxy(), this.getAppProxy(), this.fetch, blueprint.props, this.setTimeout)
+        if (this.n !== n || this.crashed || this.world.fatalError) return
         this.scriptError = null
       } catch (err) {
         this.scriptError = serializeError(err)
@@ -190,11 +201,14 @@ export class App extends Entity {
 
   unbuild() {
     // notify any running script; a throwing listener must not skip the teardown below
+    this.destroying = true
     try {
       this.emit('destroy')
     } catch (err) {
       console.error('script destroy() crashed', this)
       console.error(err)
+    } finally {
+      this.destroying = false
     }
     // cancel any control
     this.control?.release()
@@ -341,15 +355,21 @@ export class App extends Entity {
   }
 
   crash() {
-    // the rebuild runs unobserved by callers; a failure must not surface as an unhandled rejection
-    // or leave the app stuck in the building state (which would queue events forever)
-    const promise = this.build(true)
-    const n = this.n
-    promise.catch(err => {
-      console.error('crash rebuild failed', this)
-      console.error(err)
-      // only this build may clear the flag; a newer build owns it otherwise
-      if (this.n === n) this.building = false
+    if (this.crashed || this.destroyed) return
+    this.crashed = true
+    this.deadHook.dead = true
+    this.timers.clear()
+    this.world.setHot(this, false)
+    const n = ++this.n // invalidate builds already waiting on assets
+    queueMicrotask(() => {
+      if (this.n !== n || this.destroyed || this.world.fatalError) return
+      const promise = this.build(true)
+      const build = this.n
+      promise.catch(err => {
+        handlePhysicsFailure(err, { entity: this, phase: 'crash rebuild' })
+        console.error(`[app] crash rebuild failed (entity ${this.data.id})`)
+        if (this.n === build) this.building = false
+      })
     })
   }
 
@@ -391,28 +411,47 @@ export class App extends Entity {
   }
 
   emit(name, a1, a2) {
+    // a crashed app still gets its destroy event so the script can clean up; native work from it is
+    // refused by the latched script boundaries
+    const suppressed = () => (this.crashed && name !== 'destroy') || this.world.fatalError
+    if (suppressed()) return
     if (!this.listeners[name]) return
     for (const callback of this.listeners[name]) {
+      if (suppressed()) return
       callback(a1, a2)
     }
   }
 
   onWorldEvent(name, callback) {
-    this.worldListeners.set(callback, name)
-    this.world.events.on(name, callback)
+    let listeners = this.worldListeners.get(callback)
+    if (!listeners) this.worldListeners.set(callback, (listeners = new Map()))
+    if (listeners.has(name)) return
+    const run = this.deadHook
+    const wrapped = (...args) => {
+      if (this.crashed || this.world.fatalError || run.dead) return
+      callback(...args)
+    }
+    listeners.set(name, wrapped)
+    this.world.events.on(name, wrapped)
   }
 
   offWorldEvent(name, callback) {
-    this.worldListeners.delete(callback)
-    this.world.events.off(name, callback)
+    const listeners = this.worldListeners.get(callback)
+    const wrapped = listeners?.get(name)
+    if (!wrapped) return
+    listeners.delete(name)
+    if (!listeners.size) this.worldListeners.delete(callback)
+    this.world.events.off(name, wrapped)
   }
 
   clearEventListeners() {
     // local
     this.listeners = {}
     // world
-    for (const [callback, name] of this.worldListeners) {
-      this.world.events.off(name, callback)
+    for (const listeners of this.worldListeners.values()) {
+      for (const [name, wrapped] of listeners) {
+        this.world.events.off(name, wrapped)
+      }
     }
     this.worldListeners.clear()
   }
@@ -460,7 +499,12 @@ export class App extends Entity {
 
   // scripts get an opaque handle; the timer itself stays host-private
   setTimeout = (fn, ms) => {
-    return this.timers.set(fn, ms)
+    assertScriptActive(this)
+    const run = this.deadHook
+    return this.timers.set(() => {
+      if (this.crashed || this.world.fatalError || run.dead) return
+      fn()
+    }, ms)
   }
 
   getDeadHook = () => {
@@ -496,6 +540,7 @@ export class App extends Entity {
         getters: this.world.apps.worldGetters,
         setters: this.world.apps.worldSetters,
         methods: this.world.apps.worldMethods,
+        destroyMethods: ['off', 'remove'],
       })
     }
     return this.worldProxy
@@ -508,6 +553,7 @@ export class App extends Entity {
         getters: this.world.apps.appGetters,
         setters: this.world.apps.appSetters,
         methods: this.world.apps.appMethods,
+        destroyMethods: ['off', 'send', 'sendTo'],
         // root node props
         fallbackGet: prop => entity.root.getProxy()[prop],
         fallbackSet: (prop, value) => {

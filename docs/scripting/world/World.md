@@ -12,8 +12,33 @@ the local and shared positions diverge. Teleports also enforce this bound, and s
 pushes have a separate `1e4` per-component bound; see [Player](/docs/scripting/world/Player.md).
 
 Network quaternions must have a finite norm within 0.1 of 1 and are normalised before use. Invalid
-spawn records fall back to the default spawn; invalid spawn changes are refused. Existing persisted
-builder app transforms and arbitrary composed script transforms are not validated by this boundary.
+spawn records fall back to the default spawn; invalid spawn changes are refused. At startup,
+persisted app transforms are repaired where possible (bounded positions, normalised or identity
+quaternions, valid scales or `[1, 1, 1]`). Unusable apps and blueprints are skipped and logged;
+their stored rows remain untouched. Repairs stay in memory until an explicit edit. Arbitrary
+composed script transforms and geometry are not globally validated by these checks.
+
+## Physics availability
+
+A crash stops the affected app's script dispatch and timers immediately. Native physics failures
+do so even if the script catches the error. Crash presentation is scheduled once after the current
+call returns. Latched API calls report `[app] this app has stopped`, or the physics-failure message
+when a native trap caused the latch. During the destroy event, world/app reads, `app.send/sendTo`,
+`world.off/app.off` and `world.remove` of the app's own nodes remain available for cleanup.
+Native queries, creation and other native-capable calls remain blocked. A legitimate replacement
+script can run again after cleanup of the old run.
+
+A separate simulation health probe checks PhysX after a native trap. If it fails, or an exception
+interrupts the main scene's simulation/fetch, the world stops ticking. The server refuses further
+mutations and attempts to save settled edits, deletions and changed, loaded settings/spawn values before
+exiting with code 1 for a process restart. One five-second deadline includes in-flight writes and
+the final flush; failed or timed-out saves are logged. Clients stop their animation and background
+tick loops and display a reload error. Ordinary server tick exceptions keep the tick loop running.
+
+This is Phase 3b-1 availability handling. Geometry/scalar validation, joint limits and native
+allocation leaks remain for Phase 3b-2. Invalid geometry can still corrupt other bodies without
+throwing, so a successful health probe cannot detect every failure. Pending asynchronous native
+continuations are not globally cancelled after fatal shutdown.
 
 ## API
 
@@ -70,6 +95,7 @@ Returns an array of overlapping physics hits, each exposing `tag` and `playerId`
 radii throw. `origin` accepts endowed and stock THREE `Vector3` instances; lookalike objects
 throw. Non-finite or float32-overflow origin components return `[]` and log a warning once.
 `layerMask` follows the same rules as `raycast`, including unfiltered `undefined`/`null`.
+Changing query radii reuses one native sphere geometry rather than growing a radius cache.
 
 ### `.createLayerMask(...groups)`
 

@@ -1,3 +1,5 @@
+import { assertScriptActive, handlePhysicsFailure } from './physicsFailure.js'
+
 // Values crossing from the host into app scripts.
 //
 // Scripts share the frozen intrinsics with the host, but host-API objects (DOMException, undici errors,
@@ -56,10 +58,14 @@ export function toScriptError(err) {
   return error
 }
 
-export function callForScript(fn, thisArg, args) {
+export function callForScript(fn, thisArg, args, allowDestroy = false) {
+  const entity = thisArg?.ctx?.entity || thisArg
+  const world = thisArg?.ctx?.world || entity?.world
   try {
+    assertScriptActive(entity, world, allowDestroy)
     return Reflect.apply(fn, thisArg, args)
   } catch (err) {
+    handlePhysicsFailure(err, { entity, world, phase: 'callForScript' })
     throw toScriptError(err)
   }
 }

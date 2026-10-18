@@ -69,6 +69,7 @@ export class ClientNetwork extends System {
   }
 
   send(name, data) {
+    if (this.world.fatalError) return
     const packet = writeClientPacket(name, data)
     if (!this.packetFits(name, packet)) {
       if (BUILDER_ONLY_PACKETS.includes(name)) {
@@ -130,11 +131,14 @@ export class ClientNetwork extends System {
   }
 
   enqueue(method, data) {
+    if (this.world.fatalError) return
     this.queue.enqueue(method, data)
   }
 
   flush() {
-    this.queue.flush((method, data) => this[method]?.(data))
+    this.queue.flush((method, data) => {
+      if (!this.world.fatalError) this[method]?.(data)
+    })
   }
 
   getTime() {
@@ -290,6 +294,7 @@ export class ClientNetwork extends System {
   }
 
   onClose = code => {
+    if (this.world.fatalError) return
     // 切断前に受信済みのパケット (kick 等) を処理しておく。
     // これをしないと、キューされた 'kick' が tick で flush される前に
     // 'disconnect' が発火し、consumer が world を破棄して kick 理由を取りこぼす。

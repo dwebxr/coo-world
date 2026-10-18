@@ -93,11 +93,7 @@ for (const { name, create } of cases) {
       const { node, shapes } = create()
       stub.state.shapeResult = mode
       stub.state.onCreateShape = () => assert.ok(!node.shape, 'shape was published before validation')
-      if (mode === 'throw' && node instanceof Prim) {
-        await assert.rejects(node.mount(), /injected shape failure/)
-      } else {
-        await node.mount()
-      }
+      await node.mount()
       assert.equal(node.shape, null)
       assert.equal(node.pmesh, null)
       assert.equal(shapes.size, 0)

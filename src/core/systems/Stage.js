@@ -1,3 +1,4 @@
+import { handlePhysicsFailure } from '../extras/physicsFailure.js'
 import * as THREE from '../extras/three'
 import { isNumber } from 'lodash-es'
 
@@ -87,6 +88,7 @@ export class Stage extends System {
     const crashed = new Set()
     for (const { node, err } of failed) {
       const owner = node.ctx?.entity
+      const trapped = handlePhysicsFailure(err, { entity: owner, world: this.world, phase: 'Stage.clean' })
       try {
         if (!node._cleanFailed) {
           node._cleanFailed = true
@@ -100,7 +102,7 @@ export class Stage extends System {
       if (owner?.isApp) {
         if (crashed.has(owner)) continue
         crashed.add(owner)
-        owner.crash()
+        if (!trapped) owner.crash()
         continue
       }
       // the traversal that failed started at the top of the dirty chain, like Node.clean()

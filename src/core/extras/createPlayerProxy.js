@@ -1,3 +1,4 @@
+import { callForScript } from './scriptValues.js'
 import { getRef } from '../nodes/Node'
 import { clamp, uuid } from '../utils'
 import * as THREE from './three'
@@ -144,7 +145,7 @@ export function createPlayerProxy(entity, player) {
           if (activeEffectConfig !== config) return
           activeEffectConfig = null
           player.setEffect(null)
-          opts.onEnd?.call(undefined)
+          if (!entity.crashed && !world.fatalError) opts.onEnd?.call(undefined)
         },
       }
       activeEffectConfig = config
@@ -232,6 +233,10 @@ export function createPlayerProxy(entity, player) {
       const method = proxy[name]
       proxy[name] = (...args) => world.network.asScript(() => method(...args), entity, name)
     }
+  }
+  for (const name of ['push', 'teleport']) {
+    const method = proxy[name]
+    proxy[name] = (...args) => callForScript(method, entity, args)
   }
   return proxy
 }

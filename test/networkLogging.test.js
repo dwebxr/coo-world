@@ -20,6 +20,7 @@ import { sanitizeBlueprintModify } from '../src/core/extras/blueprintPolicy.js'
 const source = fs.readFileSync(new URL('../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
 const methods = [
   'requireBuilder',
+  'saveConfig',
   'onBlueprintModified',
   'revertBlueprint',
   'onEntityModified',
@@ -85,6 +86,8 @@ function fixture() {
     },
   })
   const network = new Network()
+  network.loadedConfig = new Map([['spawn', null]])
+  network.dirtyConfig = new Map()
   const once = createLogOnce(line => {
     assert.equal(typeof line, 'string')
     lines.push(line)

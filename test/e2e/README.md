@@ -24,7 +24,7 @@ The server build must come last: each build empties `build/`.
 | --- | --- |
 | `fullstack.mjs --engine=<e>` | boots a server on a throwaway `world-e2e-*` directory, runs the sandbox probes over the wire protocol (intrinsic/endowment/stash writes, blob facade, object URL types, error shapes, Stage/Physics containment, the retry cap) and the player-relay checks (a client-sent `playerTeleport`/`playerPush`/`playerSessionAvatar` is dropped and logged once per socket; a server script's calls still reach the target with well-formed payloads) and the chat check (a malformed chat message from a ws client is refused, a valid one is rebuilt server-side, and the history a later browser receives renders as text), then loads the world in the browser: frozen intrinsics, the same probes, `world.open` policy, an image from `createObjectURL`, a throwing script, a client script acting on a remote player (no packet, one log per method) and on its local player (teleport, push, session avatar through the URL policy), and the Monaco editor (colouring, widgets, edit + save, server confirmation) |
 | `gate-extras.mjs --engine=<e>` | walk, jump, VRM session avatar, builder uploads (glb/vrm/png), AI create through a mock Anthropic base URL, `agent.mjs` for 60 s |
-| `physics-boundary.mjs --engine=<e>` | server/browser physics input probes and native sentinel; contacts, controllers, joints, queries, interpolation, walk/jump, rotating/translating platform, anchor, flying, zero-scale geometry survival; `--sentinel-only` runs a base-compatible detection control |
+| `physics-boundary.mjs --engine=<e>` | server/browser physics input probes and native sentinel; contacts, controllers, joints, queries, interpolation, movement, zero-scale survival, contact mutation, deferred removal and static-body availability; `--sentinel-only` runs a base-compatible detection control |
 | `hostile-transforms.mjs --engine=<e>` | loaded remote avatar + hostile self transforms, benign quaternion normalisation, scaled anchors on remote and local players, demoted-mover release, native physics recovery, finite late-join snapshots; parent watchdog kills frozen processes |
 | `stress.mjs --engine=<e> [--apps=20 --prims=50 --frames=600] [--monitor]` | 1000 moving nodes; prints per-frame JS mean/median/p90, render commit time and server CPU as JSON and fails on crashes, errors or fewer frames than requested; `--monitor` adds the server tick sampler (`MONITOR_TICK=1`). CI runs it with `--frames=200` as a smoke; the budgets use 600 |
 
@@ -113,7 +113,7 @@ against the candidate with relaxed expectations.
 This always boots a new default world on port 3126 (`--port=<n>` overrides). It has no remote URL or
 `--world` option and never reads or writes the developer's `world/`. Chromium/WebKit are required in
 CI; Firefox is advisory. A parent watchdog tracks/kills the full process tree on completion or a
-360-second deadline. Evaluates, commands, health checks, screenshots and cleanup have bounded waits
+600-second deadline (360 seconds for `--sentinel-only`). Evaluates, commands, health checks, screenshots and cleanup have bounded waits
 (5 seconds per evaluate/capture); all deadlines use `E2E_TIMEOUT_SCALE`. Screenshots are saved only
 on failure. Console, page errors, server logs and `physics-boundary-<engine>-results.json` (with a
 `-sentinel-only` suffix for the subset) retain counts, poses and scenario evidence.
@@ -137,7 +137,22 @@ The full suite checks:
   raycast. Getters return vectors/identity, targets default correctly, controller flags are false
   before moving, and pre-mount teleport works. Impulses are asserted **after a simulation step**.
 - Dynamic prim and rigidbody falls, finite contact position/normal/impulse values and at least two
-  begin/end cycles (pool reuse) in both realms. The client node position must follow interpolation.
+  begin/end cycles with fresh events in both realms. The client node position must follow interpolation.
+- Phase 3b-1 `physics-availability.js`, using `probe:command` in both realms: 128 contact begin/end
+  cycles replace `event.contacts[0].position` with `{}`; the other recipient's vectors stay finite
+  and both retained events remain unchanged. Contact-end and trigger-leave handlers remove body A
+  again after its removal, for RigidBody, Prim and Controller: dispatch must be deferred, happen
+  exactly once and preserve siblings and parent links, with no stale callbacks after B is removed.
+- A static rigidbody gets 2,000 calls **per method** to `getVelocityAtPos`,
+  `getLocalVelocityAtLocalPos`, `addForceAtPos` and `addForceAtLocalPos`, each inside try/catch.
+  Queries must return zero into the supplied target, forces must leave the static pose unchanged,
+  and no call may throw. A positive-but-invalid controller descriptor (`0.01` radius/height)
+  must warn exactly once, ignore moves, retain teleport position and unmount safely.
+- After **each** availability scenario, a body in the separate `physics-probe` app is lifted,
+  observed falling onto its floor and checked again after 0.5 simulated seconds. Both realms must
+  advance script updates and physics steps. No `RuntimeError` may appear in either log, and no
+  unexpected `scriptError` is allowed. Per-scenario waits include 30 seconds of wall time per
+  requested simulated second, additionally scaled by `E2E_TIMEOUT_SCALE`.
 - Trigger enter/leave; client/server controller teleport/move; fixed/socket/hinge/distance joints
   between two dynamic bodies, forged-body rejection and constrained separation under opposing
   velocities; server/client raycast and overlapSphere find the far tagged fixture.
@@ -153,7 +168,10 @@ The full suite checks:
 - A geometry collider with constructor `scale: [0, 1, 1]` in both realms: true zero is retained and
   each world keeps ticking. This is a compatibility check, not geometry validity (Phase 3b).
 
-Expected warnOnce messages are matched exactly. Intentional brand errors are caught and reported
+Expected warnOnce messages are matched exactly, including
+`[controller] invalid descriptor or failed to create controller` once per realm in the full suite.
+The contact mutation, repeated removal and valid static-body calls must emit no warnings.
+Intentional brand errors are caught and reported
 as structured evidence, not logged as unhandled errors. Unexpected script/physics errors, page
 errors, event drops and nonzero candidate sentinel counts fail the run. XR is **review-only**:
 inspect PlayerLocal's physical movement conversion and skip behavior with a headset follow-up.

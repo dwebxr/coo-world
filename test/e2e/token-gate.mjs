@@ -427,7 +427,8 @@ async function runSuite() {
     const seed = Array(32).fill(seedByte)
     const address = new PublicKey(nacl.sign.keyPair.fromSeed(Uint8Array.from(seed)).publicKey).toBase58()
     const context = await bounded(
-      browser.newContext({ viewport: { width: 1000, height: 800 }, serviceWorkers: 'block' }),
+      // a small viewport keeps the software renderer's share of each frame low; two pages render at once
+      browser.newContext({ viewport: { width: 480, height: 320 }, serviceWorkers: 'block' }),
       'context'
     )
     const client = { label, context, address, consoleLines: [], pageErrors: [] }

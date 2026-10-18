@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import * as playwright from 'playwright'
 
-import { sleep } from './common.mjs'
+import { sleep, TIMEOUT_SCALE } from './common.mjs'
 
 export const ENGINES = ['chromium', 'webkit', 'firefox']
 
@@ -93,12 +93,15 @@ export async function saveArtifacts({ page, consoleLines = [], pageErrors = [], 
 export async function becomeAdmin(page, code = 'e2e') {
   await page.evaluate(() => document.activeElement?.blur?.())
   await page.keyboard.press('Enter')
+  // software-rendered CI browsers process input and packets far slower than real time
   await page.waitForFunction(() => document.activeElement?.classList.contains('side-chatbox-input'), null, {
-    timeout: 8000,
+    timeout: 8000 * TIMEOUT_SCALE,
   })
   await page.keyboard.type(`/admin ${code}`)
   await page.keyboard.press('Enter')
-  await page.waitForFunction(() => window.world.entities.player?.data?.rank === 2, null, { timeout: 15000 })
+  await page.waitForFunction(() => window.world.entities.player?.data?.rank === 2, null, {
+    timeout: 15000 * TIMEOUT_SCALE,
+  })
   await page.evaluate(() => document.activeElement?.blur?.())
 }
 

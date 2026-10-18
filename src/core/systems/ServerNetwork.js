@@ -791,7 +791,7 @@ export class ServerNetwork extends System {
       socket.send('walletStatus', { verified: false, attempt })
       socket.send('chatAdded', {
         id: uuid(),
-        body: 'ウォレット認証に失敗しました',
+        body: 'Wallet verification failed.',
         createdAt: moment().toISOString(),
       })
       return
@@ -824,12 +824,12 @@ export class ServerNetwork extends System {
       player.rankRevision++
       player.modify({ rank })
       this.send('entityModified', { id: player.data.id, rank })
-      body = `トークン認証成功! ビルダー権限が付与されました (${Number(result.balance).toLocaleString()} tokens)`
+      body = `Token verified! Builder access granted (${Number(result.balance).toLocaleString()} tokens)`
     } else if (result.known && result.balance < solanaGating.REQUIRED_TOKEN_AMOUNT) {
       if (!notifyInsufficient) return
-      body = `ビルダー権限には ${solanaGating.REQUIRED_TOKEN_AMOUNT.toLocaleString()} トークンが必要です (現在: ${Number(result.balance).toLocaleString()})`
+      body = `Builder access requires ${solanaGating.REQUIRED_TOKEN_AMOUNT.toLocaleString()} tokens (current: ${Number(result.balance).toLocaleString()})`
     } else {
-      body = '残高を確認できませんでした。しばらくしてから更新ボタンを押してください'
+      body = 'Could not check your balance. Press refresh in a moment.'
     }
     socket.send('chatAdded', { id: uuid(), body, createdAt: moment().toISOString() })
   }
@@ -906,7 +906,7 @@ export class ServerNetwork extends System {
       this.send('entityModified', { id: player.data.id, rank })
       socket.send('chatAdded', {
         id: uuid(),
-        body: 'ウォレット切断: ビルダー権限が解除されました',
+        body: 'Wallet disconnected: builder access removed.',
         createdAt: moment().toISOString(),
       })
     }

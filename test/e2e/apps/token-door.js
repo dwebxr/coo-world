@@ -183,7 +183,7 @@ if (world.isClient) {
       showBalance(result)
       if (!result.verified) {
         signLabel.value = 'CONNECT WALLET'
-        hintLabel.value = '右上のウォレットボタンで接続して署名してください'
+        hintLabel.value = 'Please connect using the wallet button in the upper-right corner and sign'
       } else if (!result.known) {
         signLabel.value = 'TRY AGAIN'
       } else if (result.balance < minimumAmount) {

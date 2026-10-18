@@ -270,7 +270,7 @@ test('client: accountChanged revokes without signing', async t => {
   assert.equal(h.solana.getState().status, 'disconnected')
   assert.equal(requests(h.world, 'RevokeBuilderByToken').length, 1)
   assert.equal(h.signed.length, 1)
-  assert.match(h.world.toasts.at(-1), /再接続/)
+  assert.match(h.world.toasts.at(-1), /Reconnect/)
 })
 
 for (const mode of ['close', 'destroy', 'fatal', 'fatal close']) {

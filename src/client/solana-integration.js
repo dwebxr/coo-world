@@ -100,7 +100,7 @@ export function createSolanaIntegration(world) {
     invalidate('failure')
     status = 'unverified'
     publish()
-    world.emit('toast', 'ウォレットを確認できませんでした。もう一度署名してください')
+    world.emit('toast', 'Could not verify your wallet. Please sign again.')
   }
 
   // クールダウンの再送を含め、nonce 待ちは合計 15 秒まで
@@ -205,7 +205,7 @@ export function createSolanaIntegration(world) {
   const onAccountChanged = () => {
     if (disposed || !provider) return
     disconnect()
-    world.emit('toast', 'ウォレットが変更されました。再接続して署名してください')
+    world.emit('toast', 'Wallet changed. Reconnect and sign again.')
   }
 
   const connect = async () => {

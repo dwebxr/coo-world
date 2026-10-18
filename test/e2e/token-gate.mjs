@@ -569,10 +569,10 @@ async function runSuite() {
     const visitor = await openClient('visitor', 73)
     const initial = await state(holder)
     await check('(a) unverified: CONNECT WALLET and blocked', async () => {
-      await panel(holder, 'ウォレット未接続', 'ビルド権限なし')
+      await panel(holder, 'Wallet not connected', 'No builder access')
       await prepareWalk(holder)
       const result = await trigger(holder, 'CONNECT WALLET')
-      eq(result.hint, '右上のウォレットボタンで接続して署名してください', 'wallet hint')
+      eq(result.hint, 'Please connect using the wallet button in the upper-right corner and sign', 'wallet hint')
       eq(result.balance, 'Wallet not connected', 'balance label')
       const trace = await walk(holder, false)
       eq(rpc.calls.length, 0, 'unverified visitors never read RPC')
@@ -583,8 +583,8 @@ async function runSuite() {
       await button(holder, 'Connect Wallet')
       await panel(
         holder,
-        `確認済み・残高 ${LOW.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
-        'ビルド権限なし'
+        `Verified · ${LOW.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
+        'No builder access'
       )
       eq((await state(holder)).signatures, 1, 'real signature once')
       await prepareWalk(holder)
@@ -646,7 +646,7 @@ async function runSuite() {
       const before = await state(holder)
       const serverBefore = await serverTime()
       await trigger(holder, 'TRY AGAIN')
-      await panel(holder, '確認済み・残高を取得できません', 'ビルド権限なし')
+      await panel(holder, 'Verified · balance unavailable', 'No builder access')
       const trace = await walk(holder, false)
       const after = await state(holder)
       ok(after.frame > before.frame + 10 && after.elapsed > before.elapsed + 1, 'world kept updating during outage')
@@ -665,8 +665,8 @@ async function runSuite() {
       await button(visitor, 'Connect Wallet')
       await panel(
         visitor,
-        `確認済み・残高 ${LOW.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
-        'ビルド権限あり'
+        `Verified · ${LOW.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
+        'Builder access'
       )
       const value = await trigger(visitor, 'INSUFFICIENT COO')
       eq(value.rank, 2, 'raw admin rank')
@@ -681,16 +681,16 @@ async function runSuite() {
     })
     await check('(h) fresh grant; revoke/recheck refuses; refresh grants without signing', async () => {
       await button(holder, 'Disconnect')
-      await panel(holder, 'ウォレット未接続', 'ビルド権限なし')
+      await panel(holder, 'Wallet not connected', 'No builder access')
       await button(holder, 'Connect Wallet')
       await panel(
         holder,
-        `確認済み・残高 ${HIGH.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
-        'ビルド権限あり'
+        `Verified · ${HIGH.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
+        'Builder access'
       )
       eq((await state(holder)).rank, 1, 'verified rich visitor granted')
       await button(holder, 'Disconnect')
-      await panel(holder, 'ウォレット未接続', 'ビルド権限なし')
+      await panel(holder, 'Wallet not connected', 'No builder access')
       await wait(holder, () => window.world.entities.player.data.rank === 0, 'revoke demotion')
       const rpcBefore = rpc.calls.length
       // The UI disables refresh when unverified. Exercise the actual refused packet explicitly.
@@ -737,8 +737,8 @@ async function runSuite() {
       await button(holder, 'Connect Wallet')
       await panel(
         holder,
-        `確認済み・残高 ${LOW.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
-        'ビルド権限なし'
+        `Verified · ${LOW.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
+        'No builder access'
       )
       const signatures = (await state(holder)).signatures
       eq(signatures, 3, 'one signature per connection')
@@ -747,8 +747,8 @@ async function runSuite() {
       await button(holder, 'Refresh builder access')
       await panel(
         holder,
-        `確認済み・残高 ${HIGH.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
-        'ビルド権限あり'
+        `Verified · ${HIGH.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
+        'Builder access'
       )
       const refreshed = await state(holder)
       eq(refreshed.rank, 1, 'signature-free recheck grants')

@@ -209,7 +209,7 @@ for (const [name, result, granted] of [
     assert.equal(chats.length, 1)
     assert.match(
       chats[0].body,
-      granted ? /トークン認証成功/ : name === 'below' ? /トークンが必要/ : /残高を確認できませんでした/
+      granted ? /Token verified/ : name === 'below' ? /requires .* tokens/ : /Could not check your balance/
     )
   })
 }

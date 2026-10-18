@@ -295,9 +295,7 @@ export function SolanaWalletButton({ world }) {
             {text.wallet}
           </div>
           <div className='solana-build-status'>{text.build}</div>
-          <div className='solana-wallet-exposure'>
-            このワールドのスクリプトは、確認後のあなたの COO 残高を見ることができます
-          </div>
+          <div className='solana-wallet-exposure'>Scripts in this world can see your COO balance once you verify.</div>
           {(!connected || walletState.status === 'unverified') && (
             <button
               type='button'
@@ -327,7 +325,7 @@ export function SolanaWalletButton({ world }) {
                 }
               `}
             >
-              {connecting ? 'Connecting...' : walletState.status === 'unverified' ? '署名する' : 'Connect Wallet'}
+              {connecting ? 'Connecting...' : walletState.status === 'unverified' ? 'Sign' : 'Connect Wallet'}
             </button>
           )}
           {connected && (

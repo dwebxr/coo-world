@@ -12,23 +12,23 @@ export function walletPanelText(walletState, { effectiveBuilder, rawRank, thresh
   let wallet
   switch (status) {
     case 'connecting':
-      wallet = '接続中…'
+      wallet = 'Connecting…'
       break
     case 'signing':
-      wallet = '署名を確認中…'
+      wallet = 'Waiting for signature…'
       break
     case 'unverified':
-      wallet = '未確認 (署名する)'
+      wallet = 'Not verified (sign to verify)'
       break
     case 'verified':
-      wallet = known ? `確認済み・残高 ${formatBalance(balance)} COO` : '確認済み・残高を取得できません'
+      wallet = known ? `Verified · ${formatBalance(balance)} COO` : 'Verified · balance unavailable'
       break
     default:
-      wallet = 'ウォレット未接続'
+      wallet = 'Wallet not connected'
   }
-  let build = effectiveBuilder ? 'ビルド権限あり' : 'ビルド権限なし'
+  let build = effectiveBuilder ? 'Builder access' : 'No builder access'
   if (status === 'verified' && known && balance >= threshold && rawRank < Ranks.BUILDER) {
-    build += '・更新ボタンで権限を確認できます'
+    build += ' · press refresh to check builder access'
   }
   return { wallet, build }
 }

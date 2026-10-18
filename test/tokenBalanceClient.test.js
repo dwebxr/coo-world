@@ -114,16 +114,16 @@ test('balance: refused sends and disposal resolve unknown', async t => {
 
 test('panel: every row and open-build hint', () => {
   const rows = [
-    [{ status: 'disconnected' }, 'ウォレット未接続'],
-    [{ status: 'connecting' }, '接続中…'],
-    [{ status: 'signing' }, '署名を確認中…'],
-    [{ status: 'unverified' }, '未確認 (署名する)'],
-    [{ status: 'verified', known: false }, '確認済み・残高を取得できません'],
-    [{ status: 'verified', known: true, balance: 12345 }, '確認済み・残高 12,345 COO'],
-    [{ status: 'verified', known: true, balance: 1e21 }, '確認済み・残高 1,000,000,000,000,000,000,000 COO'],
-    [{ status: 'verified', known: true, balance: 1234.5678 }, '確認済み・残高 1,234.57 COO'],
-    [{ status: 'verified', known: true, balance: 1.005 }, '確認済み・残高 1.01 COO'],
-    [{ status: 'verified', known: true, balance: 0 }, '確認済み・残高 0 COO'],
+    [{ status: 'disconnected' }, 'Wallet not connected'],
+    [{ status: 'connecting' }, 'Connecting…'],
+    [{ status: 'signing' }, 'Waiting for signature…'],
+    [{ status: 'unverified' }, 'Not verified (sign to verify)'],
+    [{ status: 'verified', known: false }, 'Verified · balance unavailable'],
+    [{ status: 'verified', known: true, balance: 12345 }, 'Verified · 12,345 COO'],
+    [{ status: 'verified', known: true, balance: 1e21 }, 'Verified · 1,000,000,000,000,000,000,000 COO'],
+    [{ status: 'verified', known: true, balance: 1234.5678 }, 'Verified · 1,234.57 COO'],
+    [{ status: 'verified', known: true, balance: 1.005 }, 'Verified · 1.01 COO'],
+    [{ status: 'verified', known: true, balance: 0 }, 'Verified · 0 COO'],
   ]
   for (const [state, wallet] of rows) {
     for (const effectiveBuilder of [false, true]) {
@@ -132,7 +132,8 @@ test('panel: every row and open-build hint', () => {
         assert.deepEqual(walletPanelText(state, { effectiveBuilder, rawRank, threshold: 10000 }), {
           wallet,
           build:
-            (effectiveBuilder ? 'ビルド権限あり' : 'ビルド権限なし') + (hint ? '・更新ボタンで権限を確認できます' : ''),
+            (effectiveBuilder ? 'Builder access' : 'No builder access') +
+            (hint ? ' · press refresh to check builder access' : ''),
         })
       }
     }
@@ -142,7 +143,7 @@ test('panel: every row and open-build hint', () => {
       { status: 'verified', known: true, balance: 0 },
       { effectiveBuilder: true, rawRank: 0, threshold: 0 }
     ).build,
-    /更新ボタン/
+    /press refresh/
   )
 })
 

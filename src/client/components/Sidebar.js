@@ -447,6 +447,7 @@ function Prefs({ world, hidden }) {
   const [music, setMusic] = useState(world.prefs.music)
   const [sfx, setSFX] = useState(world.prefs.sfx)
   const [voice, setVoice] = useState(world.prefs.voice)
+  const [lipsync, setLipsync] = useState(world.prefs.lipsync)
   const [ui, setUI] = useState(world.prefs.ui)
   const [canFullscreen, isFullscreen, toggleFullscreen] = useFullscreen()
   const [actions, setActions] = useState(world.prefs.actions)
@@ -483,6 +484,7 @@ function Prefs({ world, hidden }) {
       if (changes.music) setMusic(changes.music.value)
       if (changes.sfx) setSFX(changes.sfx.value)
       if (changes.voice) setVoice(changes.voice.value)
+      if (changes.lipsync) setLipsync(changes.lipsync.value)
       if (changes.ui) setUI(changes.ui.value)
       if (changes.actions) setActions(changes.actions.value)
       if (changes.stats) setStats(changes.stats.value)
@@ -617,6 +619,14 @@ function Prefs({ world, hidden }) {
           step={0.05}
           value={voice}
           onChange={voice => world.prefs.setVoice(voice)}
+        />
+        <FieldToggle
+          label='Lip Sync'
+          hint='Move avatar mouths when people talk'
+          trueLabel='On'
+          falseLabel='Off'
+          value={lipsync}
+          onChange={lipsync => world.prefs.setLipsync(lipsync)}
         />
       </div>
     </Pane>

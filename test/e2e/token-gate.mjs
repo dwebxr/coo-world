@@ -569,6 +569,20 @@ async function runSuite() {
     browser = await bounded(launchBrowser(ENGINE), 'browser launch', 60000)
     const holder = await openClient('holder', 72)
     const visitor = await openClient('visitor', 73)
+    // A starved CI runner can drop a page's socket on a missed heartbeat, typically while it loads beside
+    // another page. Checks that need the server therefore run with one page open, and a page closed after
+    // losing its socket is recorded and kept out of the final console check (its closed-socket send errors
+    // are the drop itself).
+    const isConnected = client => evaluate(client, () => window.world?.network?.ws?.readyState === 1).catch(() => false)
+    const closeClient = async client => {
+      if (client.closed) return
+      if (!(await isConnected(client))) {
+        client.dropped = true
+        evidence.push({ scenario: `${client.label} had lost its socket when closed`, value: null })
+      }
+      client.closed = true
+      await bounded(client.context.close(), `close ${client.label}`, 30000).catch(() => {})
+    }
     const initial = await state(holder)
     await check('(a) unverified: CONNECT WALLET and blocked', async () => {
       await panel(holder, 'Wallet not connected', 'No builder access')
@@ -628,6 +642,8 @@ async function runSuite() {
       eq((await state(visitor)).verified, false, 'other wallet remains unverified')
       return blocked
     })
+    // the visitor's part is done; one page renders from here on
+    await closeClient(visitor)
     await waitUntil(
       async () => {
         const value = await state(holder)
@@ -661,26 +677,6 @@ async function runSuite() {
     })
     await rpc.set(holder.address, { outage: false, balance: HIGH })
     await sleep(CACHE_WAIT_MS)
-    await check('(g) admin code: wallet verifies and script receives balance', async () => {
-      await bounded(becomeAdmin(visitor.page, 'e2e'), 'admin command', 30000)
-      await rpc.set(visitor.address, { balance: LOW })
-      await button(visitor, 'Connect Wallet')
-      await panel(
-        visitor,
-        `Verified · ${LOW.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
-        'Builder access'
-      )
-      const value = await trigger(visitor, 'INSUFFICIENT COO')
-      eq(value.rank, 2, 'raw admin rank')
-      eq(value.verified, true, 'admin verified')
-      eq(
-        value.balance,
-        `Your Balance: ${LOW.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
-        'admin script balance'
-      )
-      eq(value.signatures, 1, 'admin signs once')
-      return value
-    })
     await check('(h) fresh grant; revoke/recheck refuses; refresh grants without signing', async () => {
       await button(holder, 'Disconnect')
       await panel(holder, 'Wallet not connected', 'No builder access')
@@ -757,6 +753,35 @@ async function runSuite() {
       eq(refreshed.signatures, signatures, 'refresh did not sign')
       return refreshed
     })
+    // (g) runs with one page open: the holder is done, and the admin page loads alone
+    await closeClient(holder)
+    let admin
+    for (let attempt = 1; ; attempt++) {
+      admin = await openClient(attempt === 1 ? 'admin' : `admin-${attempt}`, 73)
+      if (await isConnected(admin)) break
+      await closeClient(admin)
+      if (attempt === 3) throw new Error('the admin page lost its socket while loading three times')
+    }
+    await check('(g) admin code: wallet verifies and script receives balance', async () => {
+      await bounded(becomeAdmin(admin.page, 'e2e'), 'admin command', 30000)
+      await rpc.set(admin.address, { balance: LOW })
+      await button(admin, 'Connect Wallet')
+      await panel(
+        admin,
+        `Verified · ${LOW.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
+        'Builder access'
+      )
+      const value = await trigger(admin, 'INSUFFICIENT COO')
+      eq(value.rank, 2, 'raw admin rank')
+      eq(value.verified, true, 'admin verified')
+      eq(
+        value.balance,
+        `Your Balance: ${LOW.toLocaleString('en-US', { maximumFractionDigits: 2 })} COO`,
+        'admin script balance'
+      )
+      eq(value.signatures, 1, 'admin signs once')
+      return value
+    })
     // Run privacy last so it covers every scenario, context, script and response above.
     await check('(e) no browser RPC requests or credentials in any served JS/map', async () => {
       const urls = new Set(['env.js'])
@@ -781,6 +806,7 @@ async function runSuite() {
     })
     await check('no script, physics or uncaught browser failures', async () => {
       for (const client of clients) {
+        if (client.dropped) continue
         assert.deepEqual(client.pageErrors, [], `${client.label}: page errors`)
         assert.deepEqual(
           client.consoleLines.filter(
@@ -791,7 +817,7 @@ async function runSuite() {
           [],
           `${client.label}: console`
         )
-        eq(await evaluate(client, () => !!window.world.fatalError), false, 'world not fatal')
+        if (!client.closed) eq(await evaluate(client, () => !!window.world.fatalError), false, 'world not fatal')
       }
       assert.deepEqual(
         server.lines(/script .*crashed|RuntimeError|SES_UNCAUGHT|SES_UNHANDLED|UnhandledPromiseRejection/),

@@ -43,6 +43,8 @@ export class ClientPrefs extends System {
     this.music = isNumber(data.music) ? data.music : 1
     this.sfx = isNumber(data.sfx) ? data.sfx : 1
     this.voice = isNumber(data.voice) ? data.voice : 1
+    // voice-driven avatar mouths cost a little per speaker each frame, so phones and tablets opt in
+    this.lipsync = isBoolean(data.lipsync) ? data.lipsync : !isTouch
     this.v = data.v
 
     this.changes = null
@@ -85,6 +87,7 @@ export class ClientPrefs extends System {
       music: this.music,
       sfx: this.sfx,
       voice: this.voice,
+      lipsync: this.lipsync,
       v: this.v,
     })
   }
@@ -131,6 +134,10 @@ export class ClientPrefs extends System {
 
   setVoice(value) {
     this.modify('voice', value)
+  }
+
+  setLipsync(value) {
+    this.modify('lipsync', value)
   }
 
   destroy() {

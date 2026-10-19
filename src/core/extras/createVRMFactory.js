@@ -6,6 +6,7 @@ import { getTrianglesFromGeometry } from './getTrianglesFromGeometry'
 import { getTextureBytesFromMaterial } from './getTextureBytesFromMaterial'
 import { Emotes } from './playerEmotes'
 import { Modes } from './locomotionModes'
+import { collectMouthBinds, createMouth } from './vrmMouth'
 
 const v1 = new THREE.Vector3()
 const v2 = new THREE.Vector3()
@@ -54,6 +55,8 @@ export function createVRMFactory(glb, setupMaterial) {
   // remove secondary
   const secondaries = glb.scene.children.filter(n => n.name === 'secondary') // prettier-ignore
   for (const node of secondaries) node.removeFromParent()
+  // mouth binds by template traversal index; every instance resolves them against its own clone
+  const mouthBinds = collectMouthBinds(glb.userData.vrm?.expressionManager, glb.scene)
   // enable shadows
   glb.scene.traverse(obj => {
     if (obj.isMesh) {
@@ -144,6 +147,8 @@ export function createVRMFactory(glb, setupMaterial) {
 
   function create(matrix, hooks, node) {
     const vrm = cloneGLB(glb)
+    // before the root bone leaves the clone: until then its traversal order matches the template
+    const mouth = createMouth(vrm.scene, mouthBinds)
     const tvrm = vrm.userData.vrm
     const skinnedMeshes = getSkinnedMeshes(vrm.scene)
     const skeleton = skinnedMeshes[0].skeleton // should be same across all skinnedMeshes
@@ -629,7 +634,12 @@ export function createVRMFactory(glb, setupMaterial) {
       disableRateCheck() {
         rateCheck = false
       },
+      // 0..1, applied now rather than on the throttled update
+      setMouth(value) {
+        mouth.set(value)
+      },
       destroy() {
+        mouth.dispose()
         hooks.scene.remove(vrm.scene)
         // world.updater.remove(update)
         hooks.octree?.remove(sItem)

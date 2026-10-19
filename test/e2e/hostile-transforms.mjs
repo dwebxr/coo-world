@@ -244,6 +244,18 @@ async function runSuite() {
       evidence.push({ baseline })
     })
 
+    await check('lip sync: avatars sharing one VRM keep separate mouths', async () => {
+      const probe = await evaluate(mouthProbe, visitor.id)
+      ok(probe.instances, `remote and local avatar instances: ${JSON.stringify(probe)}`)
+      // the same factory hands both instances one shallow-copied glb, so they share one template
+      ok(probe.sharedTemplate, 'both avatars come from one VRM template')
+      // the default avatar.vrm drives its mouth with one bind: the `aa` (VRM 0.x `a`) morph 39 on its face mesh
+      eq(JSON.stringify(probe.opened), JSON.stringify([{ morph: 39, value: 1 }]), 'only the remote mouth morph opens')
+      ok(probe.localUnchanged, 'the local avatar from the same template is untouched')
+      ok(probe.remoteRestored, 'closing restores every remote morph')
+      evidence.push({ mouth: probe })
+    })
+
     const hostile = [{ q: [1e200, 0, 0, 1] }, { q: [0, 0, 0, 0] }, { p: [1e300, 0, 0] }, { p: [1e308, 0, 0] }]
     for (const [index, payload] of hostile.entries()) {
       await check(
@@ -493,6 +505,34 @@ async function runSuite() {
     process.send({ type: 'complete', code: finish() ? 1 : 0 })
     // The parent kills the worker and any surviving descendants, including detached browser groups.
     await new Promise(() => {})
+  }
+}
+
+// runs in the page: drive one avatar's mouth and snapshot the morph influences of both clones
+function mouthProbe(id) {
+  const remote = window.world.entities.get(id)?.avatar?.instance
+  const local = window.world.entities.player?.avatar?.instance
+  if (!remote?.setMouth || !local?.setMouth) return { instances: false }
+  const snapshot = instance => {
+    const arrays = []
+    instance.raw.scene.traverse(o => o.isMesh && o.morphTargetInfluences && arrays.push([...o.morphTargetInfluences]))
+    return arrays
+  }
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+  const remoteBefore = snapshot(remote)
+  const localBefore = snapshot(local)
+  remote.setMouth(1)
+  const remoteOpen = snapshot(remote)
+  const opened = []
+  remoteOpen.forEach((arr, m) => arr.forEach((v, i) => v !== remoteBefore[m][i] && opened.push({ morph: i, value: v })))
+  const localUnchanged = same(snapshot(local), localBefore)
+  remote.setMouth(0)
+  return {
+    instances: true,
+    sharedTemplate: remote.raw.userData === local.raw.userData,
+    opened,
+    localUnchanged: localUnchanged && same(snapshot(local), localBefore),
+    remoteRestored: same(snapshot(remote), remoteBefore),
   }
 }
 

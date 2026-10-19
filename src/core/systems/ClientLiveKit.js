@@ -5,10 +5,17 @@ import { System } from './System'
 import { isBoolean } from 'lodash-es'
 import { TrackSource } from 'livekit-server-sdk'
 import { prepareVideoElement } from './ClientLoader'
+import { createVoiceTap } from '../extras/voiceTap'
+import { mouthTarget, nextMouth, quantizeMouth } from '../extras/voiceLevel'
 
 const v1 = new THREE.Vector3()
 const v2 = new THREE.Vector3()
+const v3 = new THREE.Vector3()
 const q1 = new THREE.Quaternion()
+
+// beyond this a speaker's mouth stays closed and its voice is not sampled
+const LIPSYNC_MAX_DISTANCE = 20
+let lipsyncWarned = false
 
 export class ClientLiveKit extends System {
   constructor(world) {
@@ -33,6 +40,12 @@ export class ClientLiveKit extends System {
     this.defaultLevel = this.world.settings.voice
     this.status.level = this.defaultLevel
     this.world.settings.on('change', this.onSettingsChange)
+    this.world.prefs?.on('change', this.onPrefsChange)
+  }
+
+  onPrefsChange = changes => {
+    if (!changes.lipsync) return
+    this.voices.forEach(voice => voice.setLipsync(changes.lipsync.value))
   }
 
   onSettingsChange = changes => {
@@ -201,9 +214,12 @@ export class ClientLiveKit extends System {
     if (!player) return console.error('onTrackSubscribed failed: no player')
     const world = this.world
     if (track.source === 'microphone') {
+      // a re-subscribe replaces the voice; the old one must release its listener and nodes
+      this.voices.get(playerId)?.destroy()
       const level = this.levels[playerId] || this.defaultLevel
       const muted = this.muted.has(playerId)
-      const voice = new PlayerVoice(world, player, level, muted, track, participant)
+      const lipsync = this.world.prefs?.lipsync ?? false
+      const voice = new PlayerVoice(world, player, level, muted, track, participant, lipsync)
       this.voices.set(playerId, voice)
     }
     if (track.source === 'screen_share') {
@@ -265,6 +281,8 @@ export class ClientLiveKit extends System {
   }
 
   destroy() {
+    this.world.settings.off('change', this.onSettingsChange)
+    this.world.prefs?.off('change', this.onPrefsChange)
     this.voices.forEach(voice => {
       voice.destroy()
     })
@@ -290,7 +308,7 @@ export class ClientLiveKit extends System {
 }
 
 class PlayerVoice {
-  constructor(world, player, level, muted, track, participant) {
+  constructor(world, player, level, muted, track, participant, lipsync = false) {
     this.world = world
     this.player = player
     this.level = level
@@ -315,10 +333,67 @@ class PlayerVoice {
     this.panner.connect(this.gain)
     this.track.attach()
     this.apply()
-    this.participant.on(ParticipantEvent.IsSpeakingChanged, speaking => {
+    this.onSpeakingChanged = speaking => {
       this.world.livekit.emit('speaking', { playerId: this.player.data.id, speaking })
       this.player.setSpeaking(speaking)
-    })
+    }
+    this.participant.on(ParticipantEvent.IsSpeakingChanged, this.onSpeakingChanged)
+    // lip sync: a listen-only tap (after attach, so the remote stream already flows into WebAudio)
+    this.tap = null
+    this.mouth = 0
+    this.mouthWritten = -1
+    this.mouthInstance = null
+    this.setLipsync(lipsync)
+  }
+
+  setLipsync(on) {
+    if (on && !this.tap) {
+      try {
+        // only the microphone track: a stream holding several audio tracks would let the source pick another
+        const stream = new MediaStream([this.track.mediaStreamTrack])
+        this.tap = createVoiceTap(this.world.audio.ctx, stream)
+      } catch (err) {
+        if (!lipsyncWarned) console.warn('[livekit] lip sync unavailable:', err?.message)
+        lipsyncWarned = true
+        this.tap = null
+      }
+    }
+    if (!on && this.tap) {
+      this.tap.destroy()
+      this.tap = null
+      this.mouth = 0
+      this.mouthInstance?.setMouth(0)
+      this.mouthWritten = 0
+    }
+  }
+
+  updateMouth(delta) {
+    const instance = this.player.avatar?.instance ?? null
+    if (instance !== this.mouthInstance) {
+      // a rebuilt avatar starts closed; re-apply the current level to it
+      this.mouthInstance = instance
+      this.mouthWritten = -1
+    }
+    const active =
+      !!this.tap &&
+      !this.muted &&
+      this.level !== 'disabled' &&
+      !!instance &&
+      this.world.audio.ctx.state === 'running' &&
+      this.distanceToCamera() <= LIPSYNC_MAX_DISTANCE
+    const target = active ? mouthTarget(this.tap.rms()) : 0
+    this.mouth = nextMouth(this.mouth, target, delta)
+    const value = quantizeMouth(this.mouth)
+    if (instance && value !== this.mouthWritten) {
+      instance.setMouth(value)
+      this.mouthWritten = value
+    }
+  }
+
+  distanceToCamera() {
+    const pos = v1.setFromMatrixPosition(this.player.base.matrixWorld)
+    const cam = v3.setFromMatrixPosition(this.world.camera.matrixWorld)
+    return pos.distanceTo(cam)
   }
 
   setMuted(muted) {
@@ -350,6 +425,7 @@ class PlayerVoice {
   }
 
   lateUpdate(delta) {
+    this.updateMouth(delta)
     if (this.muted) return
     if (this.level !== 'spatial') return
     const audio = this.world.audio
@@ -372,6 +448,13 @@ class PlayerVoice {
   }
 
   destroy() {
+    this.participant.off(ParticipantEvent.IsSpeakingChanged, this.onSpeakingChanged)
+    this.tap?.destroy()
+    this.tap = null
+    this.mouthInstance?.setMouth(0)
+    this.mouthInstance = null
+    this.root.disconnect()
+    this.panner.disconnect()
     this.world.livekit.emit('speaking', { playerId: this.player.data.id, speaking: false })
     this.player.setSpeaking(false)
     this.track.detach()

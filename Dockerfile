@@ -1,5 +1,5 @@
 # Build stage
-FROM node:22.11.0-alpine AS builder
+FROM node:22.23.4-alpine AS builder
 WORKDIR /app
 
 # Copy package.json and package-lock.json to leverage layer caching
@@ -14,7 +14,7 @@ RUN npm run build
 RUN npm prune --omit=dev
 
 # Production stage
-FROM node:22.11.0-alpine AS production
+FROM node:22.23.4-alpine AS production
 WORKDIR /app
 
 # Add curl for healthcheck

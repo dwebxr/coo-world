@@ -29,7 +29,7 @@ Based on [Hyperfy](https://github.com/hyperfy-xyz/hyperfy) v0.16.0
 
 ### Prerequisites
 
-- Node.js 22.11.0+ (via [nvm](https://github.com/nvm-sh/nvm) or direct install)
+- Node.js 22.23.4+ (via [nvm](https://github.com/nvm-sh/nvm) or direct install)
 
 ### Installation
 

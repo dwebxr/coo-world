@@ -10,7 +10,7 @@ relative to the repo; nothing reads the developer's `.env`.
 ## Prerequisites
 
 ```bash
-export PATH="$HOME/.nvm/versions/node/v22.11.0/bin:$PATH"
+export PATH="$HOME/.nvm/versions/node/v22.23.4/bin:$PATH"
 npm ci
 npx playwright install --with-deps chromium   # or webkit / firefox
 npm run client:build && npm run viewer:build && npm run node-client:build && npm run build
@@ -69,10 +69,10 @@ Chromium/WebKit are required in CI; Firefox is advisory.
 
 ## Hostile transforms (local only)
 
-After the four builds, run with Node **22.11.0**:
+After the four builds, run with Node **22.23.4**:
 
 ```bash
-export PATH="$HOME/.nvm/versions/node/v22.11.0/bin:$PATH"
+export PATH="$HOME/.nvm/versions/node/v22.23.4/bin:$PATH"
 node test/e2e/hostile-transforms.mjs --engine=chromium
 node test/e2e/hostile-transforms.mjs --engine=webkit
 ```
@@ -113,10 +113,10 @@ movement observed by a second socket, late join, disconnect, and only the benign
 
 ## Physics boundary and native sentinel (local only)
 
-After the four builds, with Node **22.11.0**:
+After the four builds, with Node **22.23.4**:
 
 ```bash
-export PATH="$HOME/.nvm/versions/node/v22.11.0/bin:$PATH"
+export PATH="$HOME/.nvm/versions/node/v22.23.4/bin:$PATH"
 node test/e2e/physics-boundary.mjs --engine=chromium
 node test/e2e/physics-boundary.mjs --engine=webkit
 node test/e2e/physics-boundary.mjs --engine=chromium --sentinel-only

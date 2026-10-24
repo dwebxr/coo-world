@@ -17,10 +17,9 @@ RUN npm prune --omit=dev
 FROM node:22.23.4-alpine AS production
 WORKDIR /app
 
-# Add curl for healthcheck; the system Brotli it links must carry the CVE-2026-111497 fix (1.2.1+), which
-# the base image may predate
-RUN apk upgrade --no-cache brotli-libs && \
-    apk add --no-cache curl && \
+# Add curl for healthcheck; the system Brotli it links must carry the CVE-2026-111497 fix, so the build fails
+# rather than ship an older brotli-libs
+RUN apk add --no-cache --upgrade curl 'brotli-libs>=1.2.1' && \
     adduser -S nodeuser -u 1001
 
 # Copy only necessary files from builder

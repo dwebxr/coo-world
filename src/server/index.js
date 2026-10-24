@@ -8,6 +8,7 @@ import Fastify from 'fastify'
 import ws from '@fastify/websocket'
 import cors from '@fastify/cors'
 import compress from '@fastify/compress'
+import { compressOptions } from './compressOptions'
 import statics from '@fastify/static'
 
 import { createServerWorld } from '../core/createServerWorld'
@@ -105,7 +106,7 @@ await world.init({
 })
 
 fastify.register(cors)
-fastify.register(compress)
+fastify.register(compress, compressOptions())
 fastify.get('/', async (req, reply) => {
   const title = world.settings.title || 'World'
   const desc = world.settings.desc || ''

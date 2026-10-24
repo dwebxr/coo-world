@@ -14,6 +14,7 @@ import { installFetchBrotliGuard } from '../src/server/fetchGuard.js'
 // (Pre-existing and out of scope: an external buffer that is not refused cannot load on the server either,
 // because three's FileLoader reports progress with ProgressEvent, which Node lacks, and throws outside parse.)
 const unhandled = []
+const requested = []
 const decoders = { br: 0 }
 const original = zlib.createBrotliDecompress
 let server
@@ -73,6 +74,7 @@ before(async () => {
   })
   installFetchBrotliGuard()
   server = http.createServer((req, res) => {
+    requested.push(req.url)
     if (req.url === '/buffer-br.bin') {
       res.writeHead(200, { 'content-encoding': 'br' })
       return res.end(zlib.brotliCompressSync(triangle))
@@ -95,6 +97,10 @@ after(async () => {
 test('server loader: a model whose external buffer is Brotli-encoded fails its load', async () => {
   const result = await settle(loader().load('model', path.join(dir, 'br.gltf')), 5000)
   assert.equal(result.status, 'rejected', 'the load settles instead of hanging')
+  assert.deepEqual(requested, ['/buffer-br.bin'], 'the external buffer was requested')
+  // the rejection is the refused buffer, not some earlier failure (GLTFLoader replaces the fetch error, so the
+  // Brotli cause itself is asserted in fetchGuard.test.js)
+  assert.match(String(result.error), /Failed to load buffer ".*\/buffer-br\.bin"/)
   assert.equal(decoders.br, 0)
   await new Promise(resolve => setTimeout(resolve, 50))
   assert.deepEqual(unhandled, [])

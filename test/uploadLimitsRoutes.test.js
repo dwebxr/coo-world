@@ -5,6 +5,7 @@ import net from 'node:net'
 import zlib from 'node:zlib'
 import Fastify from 'fastify'
 import compress from '@fastify/compress'
+import { compressOptions } from '../src/server/compressOptions.js'
 
 // the real jwt helpers read JWT_SECRET at import time
 process.env.JWT_SECRET = 'upload-limits-test-secret'
@@ -166,7 +167,7 @@ async function makeApp({
   const c = clock()
   const limits = createUploadLimits({ ...unlimited, ...config }, { now: c.now, leaseTtlMs })
   const app = Fastify()
-  app.register(compress)
+  app.register(compress, compressOptions())
   app.register(uploadRoutes, {
     readJWT,
     getSocket,

@@ -110,16 +110,26 @@ export class ServerLoader extends System {
         ;(async () => {
           try {
             const arrayBuffer = await this.fetchArrayBuffer(url)
-            this.gltfLoader.parse(arrayBuffer, '', glb => {
-              const node = glbToNodes(glb, this.world)
-              const model = {
-                toNodes() {
-                  return node.clone(true)
-                },
-              }
-              this.results.set(key, model)
-              resolve(model)
-            })
+            // parse settles asynchronously (external buffers are fetched), so its errors need their own path
+            this.gltfLoader.parse(
+              arrayBuffer,
+              '',
+              glb => {
+                try {
+                  const node = glbToNodes(glb, this.world)
+                  const model = {
+                    toNodes() {
+                      return node.clone(true)
+                    },
+                  }
+                  this.results.set(key, model)
+                  resolve(model)
+                } catch (err) {
+                  reject(err)
+                }
+              },
+              reject
+            )
           } catch (err) {
             reject(err)
           }
@@ -131,16 +141,25 @@ export class ServerLoader extends System {
         ;(async () => {
           try {
             const arrayBuffer = await this.fetchArrayBuffer(url)
-            this.gltfLoader.parse(arrayBuffer, '', glb => {
-              const factory = createEmoteFactory(glb, url)
-              const emote = {
-                toClip(options) {
-                  return factory.toClip(options)
-                },
-              }
-              this.results.set(key, emote)
-              resolve(emote)
-            })
+            this.gltfLoader.parse(
+              arrayBuffer,
+              '',
+              glb => {
+                try {
+                  const factory = createEmoteFactory(glb, url)
+                  const emote = {
+                    toClip(options) {
+                      return factory.toClip(options)
+                    },
+                  }
+                  this.results.set(key, emote)
+                  resolve(emote)
+                } catch (err) {
+                  reject(err)
+                }
+              },
+              reject
+            )
           } catch (err) {
             reject(err)
           }

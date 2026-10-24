@@ -81,7 +81,16 @@ function guardHeaders(headers) {
   return headers
 }
 
-const FORWARDED = ['onConnect', 'onError', 'onUpgrade', 'onResponseStarted', 'onData', 'onComplete', 'onBodySent']
+const FORWARDED = [
+  'onConnect',
+  'onError',
+  'onUpgrade',
+  'onResponseStarted',
+  'onData',
+  'onComplete',
+  'onBodySent',
+  'onRequestSent',
+]
 
 function guardHandler(handler) {
   const guarded = {

@@ -127,3 +127,48 @@ test('fetch guard: installing twice keeps a single wrapper', () => {
   assert.equal(globalThis[DISPATCHER], first)
   assert.ok(Object.isFrozen(first))
 })
+
+test('fetch guard: handler callbacks are forwarded with their receiver, arguments and return value', () => {
+  const calls = []
+  const fakeInner = {
+    dispatch(opts, handler) {
+      fakeInner.last = { opts, handler }
+      return true
+    },
+    close() {},
+    destroy() {},
+  }
+  const fake = { Headers: class {}, [DISPATCHER]: fakeInner }
+  const wrapper = installFetchBrotliGuard(fake)
+  const handler = {
+    onConnect(...a) {
+      calls.push(['onConnect', this === handler, a])
+    },
+    onRequestSent(...a) {
+      calls.push(['onRequestSent', this === handler, a])
+      return 'sent'
+    },
+    onBodySent(...a) {
+      calls.push(['onBodySent', this === handler, a])
+    },
+    onHeaders() {
+      return 'headers'
+    },
+  }
+  assert.equal(wrapper.dispatch({ headers: { Accept: '*/*' } }, handler), true)
+  const guarded = fakeInner.last.handler
+  assert.deepEqual(fakeInner.last.opts.headers, { Accept: '*/*', 'accept-encoding': 'gzip, deflate' })
+  guarded.onConnect('abort')
+  assert.equal(guarded.onRequestSent(1, 2), 'sent')
+  guarded.onBodySent('chunk')
+  assert.equal(guarded.onHeaders(200, ['content-type', 'text/plain'], null, 'OK'), 'headers')
+  assert.throws(() => guarded.onHeaders(200, ['content-encoding', 'br'], null, 'OK'), BrotliRefusedError)
+  assert.deepEqual(calls, [
+    ['onConnect', true, ['abort']],
+    ['onRequestSent', true, [1, 2]],
+    ['onBodySent', true, ['chunk']],
+  ])
+  // methods the handler lacks stay absent (undici validates optional callbacks when present)
+  assert.equal('onUpgrade' in guarded, false)
+  assert.equal('onData' in guarded, false)
+})

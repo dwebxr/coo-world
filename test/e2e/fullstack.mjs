@@ -179,6 +179,10 @@ async function loadOnly() {
 }
 
 async function probes(admin, watcher) {
+  await step('A0 server-side fetch Brotli guard installed at boot', async () => {
+    ok(server.out.includes('[fetch] brotli guard installed'), 'boot line present')
+  })
+
   await step('A1 observer app starts clean', async () => {
     const from = watcher.mark()
     admin.installApp({ id: 's-observer', script: 'asset://observer.js', model: 'asset://ai.glb' })

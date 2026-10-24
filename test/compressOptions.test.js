@@ -54,13 +54,14 @@ test('compress: gzip, deflate and plain request bodies still work', async t => {
   for (const [payload, encoding] of [
     [zlib.gzipSync(body), 'gzip'],
     [zlib.deflateSync(body), 'deflate'],
+    [body, 'identity'],
     [body, undefined],
   ]) {
     const response = await post(fastify, payload, encoding)
     assert.equal(response.statusCode, 200, encoding ?? 'identity')
     assert.deepEqual(response.json(), { body: { hello: 'world' } })
   }
-  assert.equal(seen.length, 3)
+  assert.equal(seen.length, 4)
 })
 
 test('compress: responses are still Brotli-compressed for clients that ask', async t => {
@@ -76,5 +77,5 @@ test('compress: responses are still Brotli-compressed for clients that ask', asy
 test('compress: each call returns a fresh options object', () => {
   const a = compressOptions()
   a.requestEncodings.push('br')
-  assert.deepEqual(compressOptions().requestEncodings, ['gzip', 'deflate'])
+  assert.deepEqual(compressOptions().requestEncodings, ['gzip', 'deflate', 'identity'])
 })

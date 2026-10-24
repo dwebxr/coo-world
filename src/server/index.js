@@ -1,5 +1,6 @@
 import 'ses'
 import '../core/lockdown'
+import './fetchGuardInstall'
 import './bootstrap'
 
 import fs from 'fs-extra'

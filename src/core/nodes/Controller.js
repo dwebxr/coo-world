@@ -13,6 +13,7 @@ import {
 import { isNumber, isBoolean, isString, isFunction } from 'lodash-es'
 
 import { DEG2RAD } from '../extras/general'
+import { finiteNumber, lengthOk, positionOk } from '../extras/physicsValidate.js'
 
 import { Node } from './Node'
 import { Layers } from '../extras/Layers'
@@ -22,6 +23,7 @@ const warnController = createLogOnce()
 const layers = ['environment', 'prop', 'player', 'tool']
 
 const _v1 = new THREE.Vector3()
+const _v2 = new THREE.Vector3()
 
 const defaults = {
   radius: 0.4,
@@ -64,6 +66,13 @@ export class Controller extends Node {
       this.mesh.node = this
       this.ctx.world.graphics.scene.add(this.mesh)
     }
+    this.controller = null
+    // a capsule or a foot position outside the physics range corrupts the shared scene (a controller placed at 1e30
+    // turns unrelated bodies NaN without touching them), so it gets no controller; teleport still moves the node
+    if (!lengthOk(this._radius) || !lengthOk(this._height) || !positionOk(this.getWorldPosition())) {
+      warnController(this, 'range', '[controller] radius, height or position outside the physics range; no controller')
+      return
+    }
     const desc = new PHYSX.PxCapsuleControllerDesc()
     desc.height = this._height
     desc.radius = this._radius
@@ -72,7 +81,6 @@ export class Controller extends Node {
     desc.material = this.ctx.world.physics.defaultMaterial
     desc.contactOffset = 0.1 // PhysX default = 0.1
     desc.stepOffset = 0.5 // PhysX default = 0.5m
-    this.controller = null
     try {
       if (desc.isValid()) {
         const controller = this.ctx.world.physics.controllerManager.createController(desc)
@@ -176,8 +184,8 @@ export class Controller extends Node {
   }
 
   set radius(value = defaults.radius) {
-    if (!isNumber(value)) {
-      throw new Error('[controller] radius not a number')
+    if (!finiteNumber(value)) {
+      throw new Error('[controller] radius not a finite number')
     }
     this._radius = value
     this.needsRebuild = true
@@ -189,8 +197,8 @@ export class Controller extends Node {
   }
 
   set height(value = defaults.height) {
-    if (!isNumber(value)) {
-      throw new Error('[controller] height not a number')
+    if (!finiteNumber(value)) {
+      throw new Error('[controller] height not a finite number')
     }
     this._height = value
     this.needsRebuild = true
@@ -277,6 +285,10 @@ export class Controller extends Node {
       warnOnce('[controller] teleport ignored a non-finite vector')
       return
     }
+    if (!positionOk(_v1)) {
+      warnOnce('[controller] teleport ignored a position outside the physics range')
+      return
+    }
     writeVec3(this.position, _v1.x, _v1.y, _v1.z)
     if (!this.controller) return
     const px = scratchPxExtVec3()
@@ -290,6 +302,11 @@ export class Controller extends Node {
       return
     }
     if (!this.controller) return
+    const foot = this.controller.getFootPosition()
+    if (!positionOk(_v2.set(foot.x + _v1.x, foot.y + _v1.y, foot.z + _v1.z))) {
+      warnOnce('[controller] move ignored a displacement that leaves the physics range')
+      return
+    }
     const px = scratchPxVec3()
     vec3ToPx(_v1, px)
     const physics = this.ctx.world.physics

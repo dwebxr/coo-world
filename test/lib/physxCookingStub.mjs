@@ -198,6 +198,9 @@ export function makePhysX(options = {}) {
     PxIDENTITYEnum: { PxIdentity: 0 },
     PxRigidBodyFlagEnum: { eKINEMATIC: 1 },
     PxRigidBodyExt: { prototype: { setMassAndUpdateInertia: actor => live(actor) } },
+    // the physics preflight asks PhysX whether a geometry is valid; every stub geometry is (real-wasm tests cover
+    // invalid ones)
+    PxGeometryQuery: { prototype: { isValid: geometry => (live(geometry), true) } },
     PxTransform: class extends Resource {
       constructor() {
         super('transform')

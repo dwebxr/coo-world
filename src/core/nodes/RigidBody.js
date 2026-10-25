@@ -18,6 +18,7 @@ import {
 
 import { Node } from './Node'
 import { callForScript } from '../extras/scriptValues'
+import { finiteNumber, massOk, MAX_PUSH, MIN_MASS, normalizeQuat, positionOk, pushDelta } from '../extras/physicsValidate.js'
 import { isFunction, isNumber, isString } from 'lodash-es'
 
 const _v1 = new THREE.Vector3()
@@ -43,6 +44,10 @@ const defaults = {
 }
 
 let forceModes
+function isMassMode(mode) {
+  return mode === PHYSX.PxForceModeEnum.eFORCE || mode === PHYSX.PxForceModeEnum.eIMPULSE
+}
+
 function getForceMode(mode) {
   if (!forceModes) {
     forceModes = {
@@ -84,6 +89,12 @@ export class RigidBody extends Node {
     this.needsRebuild = false
     if (this.ctx.moving) return // physics ignored when moving apps around
     decomposeMatrix(this.matrixWorld, _v1, _q1, _v2)
+    // an actor outside the physics range corrupts the bodies it is jointed to or touches: no actor (its colliders
+    // keep their shapes for a later mount)
+    if (!positionOk(_v1)) {
+      warnOnce('[rigidbody] no actor outside the physics range')
+      return
+    }
     this.transform = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
     vec3ToPxPos(_v1, this.transform)
     quatToPxRot(_q1, this.transform)
@@ -222,11 +233,16 @@ export class RigidBody extends Node {
   }
 
   set mass(value = defaults.mass) {
-    if (!isNumber(value)) {
-      throw new Error('[rigidbody] mass not a number')
+    if (!finiteNumber(value)) {
+      throw new Error('[rigidbody] mass not a finite number')
     }
     if (value < 0) {
       throw new Error('[rigidbody] mass cannot be less than zero')
+    }
+    // a tiny mass rounds to 0 with an infinite inverse inside PhysX, and a body that hits it goes NaN; 0 itself is
+    // PhysX's infinite mass and stays allowed
+    if (!massOk(value)) {
+      throw new Error(`[rigidbody] mass must be 0 or at least ${MIN_MASS}`)
     }
     this._mass = value
     this.needsRebuild = true
@@ -238,8 +254,8 @@ export class RigidBody extends Node {
   }
 
   set linearDamping(value = defaults.linearDamping) {
-    if (!isNumber(value)) {
-      throw new Error('[rigidbody] linearDamping not a number')
+    if (!finiteNumber(value)) {
+      throw new Error('[rigidbody] linearDamping not a finite number')
     }
     if (value < 0) {
       throw new Error('[rigidbody] linearDamping cannot be less than zero')
@@ -254,8 +270,8 @@ export class RigidBody extends Node {
   }
 
   set angularDamping(value = defaults.angularDamping) {
-    if (!isNumber(value)) {
-      throw new Error('[rigidbody] angularDamping not a number')
+    if (!finiteNumber(value)) {
+      throw new Error('[rigidbody] angularDamping not a finite number')
     }
     if (value < 0) {
       throw new Error('[rigidbody] angularDamping cannot be less than zero')
@@ -328,6 +344,28 @@ export class RigidBody extends Node {
     return this.actor.isSleeping()
   }
 
+  // spends this step's push budget: the summed velocity change of every push to this body within one physics step
+  // stays within MAX_PUSH, so several individually valid pushes cannot overflow together
+  spendPush({ linear, angular }) {
+    const steps = this.ctx?.world?.physics?.steps ?? 0
+    if (this._pushStep !== steps) {
+      this._pushStep = steps
+      this._pushLinear = 0
+      this._pushAngular = 0
+    }
+    const nextLinear = this._pushLinear + linear
+    const nextAngular = this._pushAngular + angular
+    if (!(nextLinear <= MAX_PUSH && nextAngular <= MAX_PUSH)) return false
+    this._pushLinear = nextLinear
+    this._pushAngular = nextAngular
+    return true
+  }
+
+  centerOfMassOffset() {
+    const p = this.actor.getCMassLocalPose?.()?.p
+    return p ? Math.hypot(p.x, p.y, p.z) : 0
+  }
+
   addForce(force, mode) {
     if (!readVec3(force, _v1, '[rigidbody] addForce force must be Vector3')) {
       warnOnce('[rigidbody] addForce ignored a non-finite force')
@@ -335,6 +373,10 @@ export class RigidBody extends Node {
     }
     if (!this.actor) return
     mode = getForceMode(mode)
+    if (!this.spendPush(pushDelta(this.actor, isMassMode(mode), { force: _v1 }))) {
+      warnOnce('[rigidbody] addForce ignored a push beyond the physics range')
+      return
+    }
     const px = scratchPxVec3()
     vec3ToPx(_v1, px)
     this.actor.addForce(px, mode, true)
@@ -348,9 +390,20 @@ export class RigidBody extends Node {
       return
     }
     if (!this.actor?.getLinearVelocity) return
+    if (!positionOk(_v2)) {
+      warnOnce('[rigidbody] addForceAtPos ignored a pos outside the physics range')
+      return
+    }
+    mode = getForceMode(mode)
+    // the lever runs from the centre of mass to the world point; |pos - position| + |centre-of-mass offset| bounds it
+    const p = this.actor.getGlobalPose().p
+    const lever = Math.hypot(_v2.x - p.x, _v2.y - p.y, _v2.z - p.z) + this.centerOfMassOffset()
+    if (!this.spendPush(pushDelta(this.actor, isMassMode(mode), { force: _v1, lever }))) {
+      warnOnce('[rigidbody] addForceAtPos ignored a push beyond the physics range')
+      return
+    }
     if (!this._pv1) this._pv1 = new PHYSX.PxVec3()
     if (!this._pv2) this._pv2 = new PHYSX.PxVec3()
-    mode = getForceMode(mode)
     vec3ToPx(_v1, this._pv1)
     vec3ToPx(_v2, this._pv2)
     PHYSX.PxRigidBodyExt.prototype.addForceAtPos(this.actor, this._pv1, this._pv2, mode, true)
@@ -364,9 +417,20 @@ export class RigidBody extends Node {
       return
     }
     if (!this.actor?.getLinearVelocity) return
+    // PhysX moves the local point into world space first, so a far one overflows before any product we check
+    if (!positionOk(_v2)) {
+      warnOnce('[rigidbody] addForceAtLocalPos ignored a pos outside the physics range')
+      return
+    }
+    mode = getForceMode(mode)
+    // the lever runs from the centre of mass to the local point; |pos| + |centre-of-mass offset| bounds it
+    const lever = _v2.length() + this.centerOfMassOffset()
+    if (!this.spendPush(pushDelta(this.actor, isMassMode(mode), { force: _v1, lever }))) {
+      warnOnce('[rigidbody] addForceAtLocalPos ignored a push beyond the physics range')
+      return
+    }
     if (!this._pv1) this._pv1 = new PHYSX.PxVec3()
     if (!this._pv2) this._pv2 = new PHYSX.PxVec3()
-    mode = getForceMode(mode)
     vec3ToPx(_v1, this._pv1)
     vec3ToPx(_v2, this._pv2)
     PHYSX.PxRigidBodyExt.prototype.addForceAtLocalPos(this.actor, this._pv1, this._pv2, mode, true)
@@ -379,6 +443,10 @@ export class RigidBody extends Node {
     }
     if (!this.actor) return
     mode = getForceMode(mode)
+    if (!this.spendPush(pushDelta(this.actor, isMassMode(mode), { torque: _v1 }))) {
+      warnOnce('[rigidbody] addTorque ignored a push beyond the physics range')
+      return
+    }
     const px = scratchPxVec3()
     vec3ToPx(_v1, px)
     this.actor.addTorque(px, mode, true)
@@ -395,6 +463,10 @@ export class RigidBody extends Node {
   setPosition(vec3) {
     if (!readVec3(vec3, _v1, '[rigidbody] setPosition position must be Vector3')) {
       warnOnce('[rigidbody] setPosition ignored a non-finite position')
+      return
+    }
+    if (!positionOk(_v1)) {
+      warnOnce('[rigidbody] setPosition ignored a position outside the physics range')
       return
     }
     if (!this.actor) return
@@ -415,6 +487,10 @@ export class RigidBody extends Node {
   setQuaternion(quat) {
     if (!readQuat(quat, _q1, '[rigidbody] setQuaternion quaternion must be Quaternion')) {
       warnOnce('[rigidbody] setQuaternion ignored a non-finite quaternion')
+      return
+    }
+    if (!normalizeQuat(_q1)) {
+      warnOnce('[rigidbody] setQuaternion ignored a zero-length quaternion')
       return
     }
     if (!this.actor) return
@@ -493,6 +569,11 @@ export class RigidBody extends Node {
       warnOnce('[rigidbody] setCenterOfMass ignored a non-finite pos')
       return
     }
+    // an offset beyond the physics range makes the body jump or turn NaN
+    if (!positionOk(_v1)) {
+      warnOnce('[rigidbody] setCenterOfMass ignored a pos outside the physics range')
+      return
+    }
     this._centerOfMass ??= new THREE.Vector3()
     writeVec3(this._centerOfMass, _v1.x, _v1.y, _v1.z)
     this.needsRebuild = true
@@ -507,6 +588,14 @@ export class RigidBody extends Node {
     const validQuaternion = readQuat(quaternion, _q1, '[rigidbody] setKinematicTarget quaternion must be Quaternion')
     if (!validPosition || !validQuaternion) {
       warnOnce('[rigidbody] setKinematicTarget ignored a non-finite position or quaternion')
+      return
+    }
+    if (!normalizeQuat(_q1)) {
+      warnOnce('[rigidbody] setKinematicTarget ignored a zero-length quaternion')
+      return
+    }
+    if (!positionOk(_v1)) {
+      warnOnce('[rigidbody] setKinematicTarget ignored a position outside the physics range')
       return
     }
     if (!this.actor?.setKinematicTarget) return

@@ -1,11 +1,13 @@
 import { handlePhysicsFailure } from './physicsFailure.js'
 import { isFiniteF32, warnOnce } from './physxConvert.js'
 
-const cache = new Map() // id -> { id, pmesh, refs }
+const cache = new Map() // id -> { id, pmesh, refs, maxAbs }
 
 class PMeshHandle {
   constructor(item) {
     this.value = item.pmesh
+    // largest |vertex coordinate| per axis, for the physics extent check (physicsValidate.extentOk)
+    this.maxAbs = item.maxAbs
     this.item = item
     this.item.refs++
     this.released = false
@@ -24,6 +26,10 @@ class PMeshHandle {
 }
 
 export function geometryToPxMesh(world, geometry, convex, entity) {
+  if (!geometry) {
+    warnOnce('[physics] mesh has no geometry')
+    return null
+  }
   const id = `${geometry.uuid}_${convex ? 'convex' : 'triangles'}`
 
   let item = cache.get(id)
@@ -32,8 +38,14 @@ export function geometryToPxMesh(world, geometry, convex, entity) {
   }
 
   // Decode the original attribute so normalized and interleaved positions stay intact.
-  const position = geometry.attributes.position
+  const position = geometry?.attributes?.position
+  if (!position) {
+    warnOnce('[physics] mesh has no positions')
+    return null
+  }
   const positions = new Float32Array(position.count * 3)
+  // scanned here rather than read from geometry.boundingBox, which a model file sets from its own accessor min/max
+  const maxAbs = [0, 0, 0]
   for (let i = 0; i < position.count; i++) {
     const x = position.getX(i)
     const y = position.getY(i)
@@ -45,6 +57,9 @@ export function geometryToPxMesh(world, geometry, convex, entity) {
     positions[i * 3] = x
     positions[i * 3 + 1] = y
     positions[i * 3 + 2] = z
+    maxAbs[0] = Math.max(maxAbs[0], Math.abs(x))
+    maxAbs[1] = Math.max(maxAbs[1], Math.abs(y))
+    maxAbs[2] = Math.max(maxAbs[2], Math.abs(z))
   }
 
   let indices
@@ -117,7 +132,7 @@ export function geometryToPxMesh(world, geometry, convex, entity) {
 
   if (!pmesh || pmesh.ptr === 0) return null
 
-  item = { id, pmesh, refs: 0 }
+  item = { id, pmesh, refs: 0, maxAbs }
   cache.set(id, item)
   return new PMeshHandle(item)
 }

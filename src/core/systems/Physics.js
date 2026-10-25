@@ -6,6 +6,7 @@ import { Layers } from '../extras/Layers'
 import { loadPhysX } from '../loadPhysX'
 import { serializeError } from '../extras/serializeError'
 import { briefError } from '../extras/logOnce.js'
+import { positionOk } from '../extras/physicsValidate.js'
 
 const _raycastHit = {
   actor: null,
@@ -295,6 +296,11 @@ export class Physics extends System {
           return
         }
         if (!matrixToPxTransform(matrix, this.transform)) return
+        // an actor outside the physics range corrupts the bodies it is jointed to or touches
+        if (!positionOk(this.transform.p)) {
+          warnOnce('[physics] ignored a move outside the physics range')
+          return
+        }
         // const isKinematic = actor.getRigidBodyFlags?.().isSet(PHYSX.PxRigidBodyFlagEnum.eKINEMATIC)
         // if (isKinematic) {
         //   actor.setKinematicTarget(this.transform)
@@ -481,6 +487,9 @@ export class Physics extends System {
       this.scene.simulate(delta)
       phase = 'fetchResults'
       this.scene.fetchResults(true)
+      // the pushes made since the last step are consumed now, so the per-body push budget (RigidBody.spendPush)
+      // starts over; callbacks dispatched before the next simulate share the next budget
+      this.steps = (this.steps ?? 0) + 1
     } catch (err) {
       handlePhysicsFailure(err, { world: this.world, phase })
       this.world.fatal(`physics ${phase} interrupted`)

@@ -44,6 +44,8 @@ const EXPECTED_MESSAGES = new Set([
   '[player] push ignored a non-finite force',
   '[raycast] ignored a non-finite origin or direction',
   '[overlapSphere] ignored a non-finite origin',
+  // the constructor zero-scale geometry collider skips its physics (Phase 3b-2a)
+  '[collider] scale is outside the physics range; physics skipped',
   CONTROLLER_WARNING,
 ])
 const messageText = line => line.replace(/^\[(warning|warn|error)\] /, '').trim()

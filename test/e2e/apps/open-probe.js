@@ -20,12 +20,13 @@ const commands = {
   async openAsset() {
     world.open('/assets/crash-block.glb')
     world.open('asset://crash-block.glb')
-    // percent-encoded spellings can reach the same files (fastify 5.2 served them; 5.12 answers 404), so they
-    // are rejected as well
+    // percent-encoded spellings can reach the same files (this server answered 200 before @fastify/static 10,
+    // which now checks the raw URL prefix and answers 404), so they are rejected as well
     world.open('/%61ssets/crash-block.glb')
     world.open(base + '/%61ssets/crash-block.glb')
+    const canonical = await fetch(base + '/assets/crash-block.glb')
     const encoded = await fetch(base + '/%61ssets/crash-block.glb')
-    return { encodedStatus: encoded.status }
+    return { canonicalStatus: canonical.status, encodedStatus: encoded.status }
   },
   openPopup() {
     world.open(base + '/status', true)

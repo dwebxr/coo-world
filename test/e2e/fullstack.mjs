@@ -1313,8 +1313,10 @@ async function probes(admin, watcher) {
       const before = openErrors()
       const r = await probeCommand('openAsset')
       ok(r.ok, r.error)
-      // fastify 5.12 / find-my-way 9.10 no longer route /%61ssets/ to the /assets/ files (fastify 5.2 served them
-      // with 200); world.open rejects the spelling either way, for servers and proxies that do decode it
+      // /%61ssets/ still matches the /assets/* route, but @fastify/static 10 checks the raw URL prefix and answers
+      // 404 (8.x served the file with 200); world.open rejects the spelling either way, for servers and proxies
+      // that do decode it
+      eq(r.canonicalStatus, 200, 'the server serves /assets/crash-block.glb')
       eq(r.encodedStatus, 404, 'the server no longer serves /%61ssets/ like /assets/')
       await sleep(800)
       eq(page.url(), urlBefore, 'page url')

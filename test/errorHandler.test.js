@@ -8,7 +8,7 @@ import Fastify from 'fastify'
 import compress from '@fastify/compress'
 import statics from '@fastify/static'
 import { compressOptions } from '../src/server/compressOptions.js'
-import { errorHandler } from '../src/server/errorHandler.js'
+import { errorHandler, loggedPath } from '../src/server/errorHandler.js'
 
 // the same wiring as src/server/index.js: compress, a public static tree at '/', the root error handler
 async function server(t) {
@@ -78,6 +78,28 @@ test('errorHandler: client errors keep their 4xx status and log one line without
       '[http] 415 POST /echo',
     ]
   )
+})
+
+test('errorHandler: an absolute-form target logs its path only, never its credentials or query', async t => {
+  const { logged, port } = await server(t)
+  const r = await raw(port, 'http://alice:secret@127.0.0.1/x/../index.css?authToken=hidden')
+  assert.equal(r.statusCode, 403)
+  assert.deepEqual(
+    logged.map(args => args.join(' ')),
+    ['[http] 403 GET /x/../index.css']
+  )
+})
+
+test('loggedPath: keeps the spelling of the path and drops everything else', () => {
+  assert.equal(loggedPath('//index.css?authToken=t'), '//index.css')
+  assert.equal(loggedPath('/./a#frag'), '/./a')
+  assert.equal(loggedPath('HTTPS://u:p@host:8080//a/./b?q'), '//a/./b')
+  assert.equal(loggedPath('http://u:p@host?authToken=t'), '/')
+  assert.equal(loggedPath('http://u:p@host'), '/')
+  assert.equal(loggedPath('*'), '-')
+  assert.equal(loggedPath('host:443'), '-')
+  assert.equal(loggedPath(undefined), '-')
+  assert.equal(loggedPath('/' + 'a'.repeat(500)).length, 200)
 })
 
 test('errorHandler: a 416 keeps the Content-Range header the error carries', async t => {

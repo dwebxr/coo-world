@@ -369,7 +369,8 @@ for (const name of ['teleport', 'move']) {
     for (const v of vectors()) {
       calls.length = 0
       proxy[name](v)
-      assert.deepEqual(xyz(calls[0].args[0]), [1, 2, 3])
+      // move reads the foot position first (to keep the result inside the physics range)
+      assert.deepEqual(xyz(calls.find(call => call.name !== 'getFootPosition').args[0]), [1, 2, 3])
       assert.deepEqual(xyz(node.position), name === 'move' ? [4, 5, 6] : [1, 2, 3])
     }
     if (name === 'move') {

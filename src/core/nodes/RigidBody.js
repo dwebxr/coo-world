@@ -18,6 +18,7 @@ import {
 
 import { Node } from './Node'
 import { callForScript } from '../extras/scriptValues'
+import { finiteNumber, massOk, MIN_MASS, normalizeQuat, positionOk, pushOk } from '../extras/physicsValidate.js'
 import { isFunction, isNumber, isString } from 'lodash-es'
 
 const _v1 = new THREE.Vector3()
@@ -43,6 +44,10 @@ const defaults = {
 }
 
 let forceModes
+function isMassMode(mode) {
+  return mode === PHYSX.PxForceModeEnum.eFORCE || mode === PHYSX.PxForceModeEnum.eIMPULSE
+}
+
 function getForceMode(mode) {
   if (!forceModes) {
     forceModes = {
@@ -222,11 +227,16 @@ export class RigidBody extends Node {
   }
 
   set mass(value = defaults.mass) {
-    if (!isNumber(value)) {
-      throw new Error('[rigidbody] mass not a number')
+    if (!finiteNumber(value)) {
+      throw new Error('[rigidbody] mass not a finite number')
     }
     if (value < 0) {
       throw new Error('[rigidbody] mass cannot be less than zero')
+    }
+    // a tiny mass rounds to 0 with an infinite inverse inside PhysX, and a body that hits it goes NaN; 0 itself is
+    // PhysX's infinite mass and stays allowed
+    if (!massOk(value)) {
+      throw new Error(`[rigidbody] mass must be 0 or at least ${MIN_MASS}`)
     }
     this._mass = value
     this.needsRebuild = true
@@ -238,8 +248,8 @@ export class RigidBody extends Node {
   }
 
   set linearDamping(value = defaults.linearDamping) {
-    if (!isNumber(value)) {
-      throw new Error('[rigidbody] linearDamping not a number')
+    if (!finiteNumber(value)) {
+      throw new Error('[rigidbody] linearDamping not a finite number')
     }
     if (value < 0) {
       throw new Error('[rigidbody] linearDamping cannot be less than zero')
@@ -254,8 +264,8 @@ export class RigidBody extends Node {
   }
 
   set angularDamping(value = defaults.angularDamping) {
-    if (!isNumber(value)) {
-      throw new Error('[rigidbody] angularDamping not a number')
+    if (!finiteNumber(value)) {
+      throw new Error('[rigidbody] angularDamping not a finite number')
     }
     if (value < 0) {
       throw new Error('[rigidbody] angularDamping cannot be less than zero')
@@ -335,6 +345,10 @@ export class RigidBody extends Node {
     }
     if (!this.actor) return
     mode = getForceMode(mode)
+    if (!pushOk(this.actor, isMassMode(mode), _v1.length())) {
+      warnOnce('[rigidbody] addForce ignored a force too large for this body')
+      return
+    }
     const px = scratchPxVec3()
     vec3ToPx(_v1, px)
     this.actor.addForce(px, mode, true)
@@ -348,9 +362,16 @@ export class RigidBody extends Node {
       return
     }
     if (!this.actor?.getLinearVelocity) return
+    mode = getForceMode(mode)
+    // the lever runs from the body's position to the world point
+    const p = this.actor.getGlobalPose().p
+    const lever = Math.hypot(_v2.x - p.x, _v2.y - p.y, _v2.z - p.z)
+    if (!pushOk(this.actor, isMassMode(mode), _v1.length(), lever * _v1.length())) {
+      warnOnce('[rigidbody] addForceAtPos ignored a force too large for this body')
+      return
+    }
     if (!this._pv1) this._pv1 = new PHYSX.PxVec3()
     if (!this._pv2) this._pv2 = new PHYSX.PxVec3()
-    mode = getForceMode(mode)
     vec3ToPx(_v1, this._pv1)
     vec3ToPx(_v2, this._pv2)
     PHYSX.PxRigidBodyExt.prototype.addForceAtPos(this.actor, this._pv1, this._pv2, mode, true)
@@ -364,9 +385,13 @@ export class RigidBody extends Node {
       return
     }
     if (!this.actor?.getLinearVelocity) return
+    mode = getForceMode(mode)
+    if (!pushOk(this.actor, isMassMode(mode), _v1.length(), _v2.length() * _v1.length())) {
+      warnOnce('[rigidbody] addForceAtLocalPos ignored a force too large for this body')
+      return
+    }
     if (!this._pv1) this._pv1 = new PHYSX.PxVec3()
     if (!this._pv2) this._pv2 = new PHYSX.PxVec3()
-    mode = getForceMode(mode)
     vec3ToPx(_v1, this._pv1)
     vec3ToPx(_v2, this._pv2)
     PHYSX.PxRigidBodyExt.prototype.addForceAtLocalPos(this.actor, this._pv1, this._pv2, mode, true)
@@ -379,6 +404,10 @@ export class RigidBody extends Node {
     }
     if (!this.actor) return
     mode = getForceMode(mode)
+    if (!pushOk(this.actor, isMassMode(mode), 0, _v1.length())) {
+      warnOnce('[rigidbody] addTorque ignored a torque too large for this body')
+      return
+    }
     const px = scratchPxVec3()
     vec3ToPx(_v1, px)
     this.actor.addTorque(px, mode, true)
@@ -415,6 +444,10 @@ export class RigidBody extends Node {
   setQuaternion(quat) {
     if (!readQuat(quat, _q1, '[rigidbody] setQuaternion quaternion must be Quaternion')) {
       warnOnce('[rigidbody] setQuaternion ignored a non-finite quaternion')
+      return
+    }
+    if (!normalizeQuat(_q1)) {
+      warnOnce('[rigidbody] setQuaternion ignored a zero-length quaternion')
       return
     }
     if (!this.actor) return
@@ -493,6 +526,11 @@ export class RigidBody extends Node {
       warnOnce('[rigidbody] setCenterOfMass ignored a non-finite pos')
       return
     }
+    // an offset beyond the physics range makes the body jump or turn NaN
+    if (!positionOk(_v1)) {
+      warnOnce('[rigidbody] setCenterOfMass ignored a pos outside the physics range')
+      return
+    }
     this._centerOfMass ??= new THREE.Vector3()
     writeVec3(this._centerOfMass, _v1.x, _v1.y, _v1.z)
     this.needsRebuild = true
@@ -507,6 +545,10 @@ export class RigidBody extends Node {
     const validQuaternion = readQuat(quaternion, _q1, '[rigidbody] setKinematicTarget quaternion must be Quaternion')
     if (!validPosition || !validQuaternion) {
       warnOnce('[rigidbody] setKinematicTarget ignored a non-finite position or quaternion')
+      return
+    }
+    if (!normalizeQuat(_q1)) {
+      warnOnce('[rigidbody] setKinematicTarget ignored a zero-length quaternion')
       return
     }
     if (!this.actor?.setKinematicTarget) return

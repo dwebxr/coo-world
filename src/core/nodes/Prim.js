@@ -8,6 +8,15 @@ import { getTrianglesFromGeometry } from '../extras/getTrianglesFromGeometry'
 import { getTextureBytesFromMaterial } from '../extras/getTextureBytesFromMaterial'
 import { Layers } from '../extras/Layers'
 import { geometryToPxMesh } from '../extras/geometryToPxMesh'
+import {
+  extentOk,
+  finiteNumber,
+  geometryOk,
+  lengthOk,
+  MIN_MASS,
+  scaleOk,
+  warnPhysicsOnce,
+} from '../extras/physicsValidate.js'
 
 const defaults = {
   type: 'box',
@@ -41,11 +50,15 @@ const defaults = {
 
 const _v1 = new THREE.Vector3()
 const _v2 = new THREE.Vector3()
+const _v3 = new THREE.Vector3()
 const _q1 = new THREE.Quaternion()
 const _m1 = new THREE.Matrix4()
 const _m2 = new THREE.Matrix4()
 const _m3 = new THREE.Matrix4()
 const _defaultScale = new THREE.Vector3(1, 1, 1)
+
+// the same layer names as Collider and Controller
+const layers = ['environment', 'prop', 'player', 'tool']
 
 const types = ['box', 'sphere', 'cylinder', 'cone', 'torus', 'plane']
 
@@ -230,7 +243,13 @@ export class Prim extends Node {
       // essentially lets us use unit-sized geometry and transfers the offset to scale.
       // for example there will only ever be ONE box geometry used, scaling will form its size.
       // but for shapes with varying config, eg cylinder top and bottom radii, these are normalized by ratio.
-      const { size, scaleOffset } = getGeometryConfig(this._type, this._size)
+      const config = getGeometryConfig(this._type, this._size)
+      if (config.invalid) {
+        // no visual and no physics: these sizes divide by zero or lack values
+        warnPhysicsOnce(this, 'config', `[prim] ${this._type} size ${config.invalid}; skipped`)
+        return
+      }
+      const { size, scaleOffset } = config
       this.scaleOffset.fromArray(scaleOffset)
       this.updateMatrixWorldOffset()
 
@@ -298,8 +317,75 @@ export class Prim extends Node {
     const angularDamping = this._angularDamping
     const trigger = this._trigger
 
-    // Create transform
+    // Decompose once. A mirror folds into the scale and every prim shape is symmetric under it, so the pose keeps
+    // the decomposed rotation and the shape uses the absolute scale. Every size is checked before PhysX sees it,
+    // and the actor is created only once the geometry is known to be valid.
     this.matrixWorldOffset.decompose(_v1, _q1, _v2)
+    const absScale = _v3.set(Math.abs(_v2.x), Math.abs(_v2.y), Math.abs(_v2.z))
+
+    let pxGeometry = null
+    let pmesh = null
+
+    if (this._type === 'box') {
+      const hx = 0.5 * absScale.x
+      const hy = 0.5 * absScale.y
+      const hz = 0.5 * absScale.z
+      if (!lengthOk(hx) || !lengthOk(hy) || !lengthOk(hz)) {
+        return this.skipPhysics('size', `box ${absScale.x} x ${absScale.y} x ${absScale.z} is outside the physics range`)
+      }
+      pxGeometry = new PHYSX.PxBoxGeometry(hx, hy, hz)
+    } else if (this._type === 'sphere' && isUniformScale(absScale)) {
+      const [radius] = size
+      if (!lengthOk(radius * absScale.x)) {
+        return this.skipPhysics('size', `sphere radius ${radius * absScale.x} is outside the physics range`)
+      }
+      pxGeometry = new PHYSX.PxSphereGeometry(radius * absScale.x)
+    } else {
+      if (!scaleOk(absScale)) {
+        return this.skipPhysics('scale', `scale ${absScale.x}, ${absScale.y}, ${absScale.z} is outside the physics range`)
+      }
+      // Use convex mesh for cylinder, cone, torus, and plane
+      const threeGeometry = getGeometry(this._type, size)
+
+      // Create convex mesh
+      pmesh = geometryToPxMesh(this.ctx.world, threeGeometry, true, this.ctx.entity)
+      if (pmesh && pmesh.value) {
+        if (!extentOk(pmesh.maxAbs, absScale)) {
+          pmesh.release()
+          return this.skipPhysics('extent', `${this._type} is larger than the physics range`)
+        }
+        // Create scale and its components explicitly so we can free them
+        const _scaleVec = new PHYSX.PxVec3(absScale.x, absScale.y, absScale.z)
+        const _scaleQuat = new PHYSX.PxQuat(0, 0, 0, 1)
+        const _scale = new PHYSX.PxMeshScale(_scaleVec, _scaleQuat)
+        pxGeometry = new PHYSX.PxConvexMeshGeometry(pmesh.value, _scale)
+        // free temporary PhysX objects
+        PHYSX.destroy(_scale)
+        PHYSX.destroy(_scaleVec)
+        PHYSX.destroy(_scaleQuat)
+        this.pmesh = pmesh // Store for cleanup
+      } else {
+        // cooking failed: a box from the unit geometry's own bounds (host-made, so trustworthy) times the scale
+        console.warn(`[prim] Failed to create convex mesh for ${this._type}, falling back to box`)
+        if (!threeGeometry.boundingBox) threeGeometry.computeBoundingBox()
+        const box = threeGeometry.boundingBox
+        const hx = 0.5 * (box.max.x - box.min.x) * absScale.x
+        const hy = 0.5 * (box.max.y - box.min.y) * absScale.y
+        const hz = 0.5 * (box.max.z - box.min.z) * absScale.z
+        if (!lengthOk(hx) || !lengthOk(hy) || !lengthOk(hz)) {
+          return this.skipPhysics('size', `fallback box for ${this._type} is outside the physics range`)
+        }
+        pxGeometry = new PHYSX.PxBoxGeometry(hx, hy, hz)
+      }
+    }
+    if (!geometryOk(pxGeometry)) {
+      PHYSX.destroy(pxGeometry)
+      this.pmesh?.release()
+      this.pmesh = null
+      return this.skipPhysics('invalid', `${this._type} geometry is not valid for physics`)
+    }
+
+    // Create transform
     if (!this._tm) this._tm = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
     vec3ToPxPos(_v1, this._tm)
     quatToPxRot(_q1, this._tm)
@@ -316,41 +402,6 @@ export class Prim extends Node {
       PHYSX.PxRigidBodyExt.prototype.setMassAndUpdateInertia(this.actor, mass)
       this.actor.setLinearDamping(linearDamping)
       this.actor.setAngularDamping(angularDamping)
-    }
-
-    // Create collider shape
-    let pxGeometry = null
-    let pmesh = null
-
-    if (this._type === 'box') {
-      const [width, height, depth] = size
-      pxGeometry = new PHYSX.PxBoxGeometry((width / 2) * _v2.x, (height / 2) * _v2.y, (depth / 2) * _v2.z)
-    } else if (this._type === 'sphere' && isUniformScale(_v2)) {
-      const [radius] = size
-      pxGeometry = new PHYSX.PxSphereGeometry(radius * _v2.x)
-    } else {
-      // Use convex mesh for cylinder, cone, torus, and plane
-      const threeGeometry = getGeometry(this._type, size)
-
-      // Create convex mesh
-      pmesh = geometryToPxMesh(this.ctx.world, threeGeometry, true, this.ctx.entity)
-      if (pmesh && pmesh.value) {
-        // Create scale and its components explicitly so we can free them
-        const _scaleVec = new PHYSX.PxVec3(_v2.x, _v2.y, _v2.z)
-        const _scaleQuat = new PHYSX.PxQuat(0, 0, 0, 1)
-        const _scale = new PHYSX.PxMeshScale(_scaleVec, _scaleQuat)
-        pxGeometry = new PHYSX.PxConvexMeshGeometry(pmesh.value, _scale)
-        // free temporary PhysX objects
-        PHYSX.destroy(_scale)
-        PHYSX.destroy(_scaleVec)
-        PHYSX.destroy(_scaleQuat)
-        this.pmesh = pmesh // Store for cleanup
-      } else {
-        // TODO: think we can remove this? why would this happen?
-        console.warn(`[prim] Failed to create convex mesh for ${this._type}, falling back to box`)
-        const boxSize = this.getColliderSize()
-        pxGeometry = new PHYSX.PxBoxGeometry(boxSize[0] / 2, boxSize[1] / 2, boxSize[2] / 2)
-      }
     }
 
     // Get material
@@ -440,6 +491,11 @@ export class Prim extends Node {
     PHYSX.destroy(pxGeometry)
   }
 
+  // no physics for this prim (its visual stays); a property setter rebuilds it, a transform edit does not
+  skipPhysics(reason, message) {
+    warnPhysicsOnce(this, reason, `[prim] ${message}; physics skipped`)
+  }
+
   unmountPhysics() {
     if (this.actor) {
       this.actorHandle?.destroy()
@@ -469,22 +525,6 @@ export class Prim extends Node {
     } else {
       this.position.copy(position)
       this.quaternion.copy(quaternion)
-    }
-  }
-
-  getColliderSize() {
-    // Returns appropriate collider dimensions
-    switch (this._type) {
-      case 'cylinder':
-        return [this.scale.x * 2, this.scale.y, this.scale.z * 2]
-      case 'cone':
-        return [this.scale.x * 2, this.scale.y, this.scale.z * 2]
-      case 'torus': {
-        const diameter = (this.scale.x + this.scale.x * 0.3) * 2
-        return [diameter, this.scale.x * 0.3 * 2, diameter]
-      }
-      default:
-        return [this.scale.x, this.scale.y, this.scale.z]
     }
   }
 
@@ -588,8 +628,8 @@ export class Prim extends Node {
     if (value === null || value === undefined) {
       value = defaultSizes[this._type].slice()
     }
-    if (!isArray(value)) {
-      throw new Error('[prim] size must be an array')
+    if (!isArray(value) || !value.every(finiteNumber)) {
+      throw new Error('[prim] size must be an array of finite numbers')
     }
     if (isEqual(this._size, value)) return
     this._size = value
@@ -739,8 +779,9 @@ export class Prim extends Node {
   }
 
   set mass(value = defaults.mass) {
-    if (!isNumber(value) || value <= 0) {
-      throw new Error('[prim] mass must be positive number')
+    // below MIN_MASS PhysX rounds the mass to 0 with an infinite inverse, and a body that hits it goes NaN
+    if (!finiteNumber(value) || !(Math.fround(value) >= Math.fround(MIN_MASS))) {
+      throw new Error(`[prim] mass must be a finite number >= ${MIN_MASS}`)
     }
     if (this._mass === value) return
     this._mass = value
@@ -753,7 +794,7 @@ export class Prim extends Node {
   }
 
   set linearDamping(value = defaults.linearDamping) {
-    if (!isNumber(value) || value < 0) {
+    if (!finiteNumber(value) || value < 0) {
       throw new Error('[prim] linearDamping must be non-negative number')
     }
     if (this._linearDamping === value) return
@@ -767,7 +808,7 @@ export class Prim extends Node {
   }
 
   set angularDamping(value = defaults.angularDamping) {
-    if (!isNumber(value) || value < 0) {
+    if (!finiteNumber(value) || value < 0) {
       throw new Error('[prim] angularDamping must be non-negative number')
     }
     if (this._angularDamping === value) return
@@ -781,7 +822,7 @@ export class Prim extends Node {
   }
 
   set staticFriction(value = defaults.staticFriction) {
-    if (!isNumber(value) || value < 0 || value > 1) {
+    if (!finiteNumber(value) || value < 0 || value > 1) {
       throw new Error('[prim] staticFriction must be number between 0 and 1')
     }
     if (this._staticFriction === value) return
@@ -795,7 +836,7 @@ export class Prim extends Node {
   }
 
   set dynamicFriction(value = defaults.dynamicFriction) {
-    if (!isNumber(value) || value < 0 || value > 1) {
+    if (!finiteNumber(value) || value < 0 || value > 1) {
       throw new Error('[prim] dynamicFriction must be number between 0 and 1')
     }
     if (this._dynamicFriction === value) return
@@ -809,7 +850,7 @@ export class Prim extends Node {
   }
 
   set restitution(value = defaults.restitution) {
-    if (!isNumber(value) || value < 0 || value > 1) {
+    if (!finiteNumber(value) || value < 0 || value > 1) {
       throw new Error('[prim] restitution must be number between 0 and 1')
     }
     if (this._restitution === value) return
@@ -823,8 +864,8 @@ export class Prim extends Node {
   }
 
   set layer(value = defaults.layer) {
-    if (!isString(value)) {
-      throw new Error('[prim] layer must be string')
+    if (!layers.includes(value)) {
+      throw new Error(`[prim] invalid layer: ${value}`)
     }
     if (this._layer === value) return
     this._layer = value
@@ -1045,6 +1086,9 @@ export class Prim extends Node {
           return self.layer
         },
         set layer(value) {
+          if (value === 'player') {
+            throw new Error('[prim] layer invalid: player')
+          }
           self.layer = value
         },
         get trigger() {
@@ -1101,9 +1145,18 @@ function isUniformScale(vec3) {
   return vec3.x === vec3.y && vec3.y === vec3.z
 }
 
+// how many numbers each type reads from size (extra ones are ignored)
+const sizeArity = { box: 3, sphere: 1, cylinder: 3, cone: 2, torus: 2, plane: 2 }
+
+// returns { size, scaleOffset }, or { invalid } for sizes that lack values or would divide by zero
 function getGeometryConfig(type, requestedSize) {
   let size
   let scaleOffset
+
+  const arity = sizeArity[type]
+  if (arity && !(requestedSize?.length >= arity && requestedSize.slice(0, arity).every(finiteNumber))) {
+    return { invalid: `needs ${arity} finite numbers` }
+  }
 
   switch (type) {
     case 'box': {
@@ -1122,14 +1175,15 @@ function getGeometryConfig(type, requestedSize) {
 
     case 'cylinder': {
       const [rt, rb, h] = requestedSize
+      if (rt === 0 && rb === 0) return { invalid: 'has zero radii' }
       // Only create different geometry if the taper ratio is different
       // If rt === rb, it's a uniform cylinder - use unit cylinder
       if (rt === rb) {
         size = [1, 1, 1] // Unit cylinder (uniform radius)
         scaleOffset = [rt, h, rt] // Scale X/Z for radius, Y for height
       } else {
-        // Tapered cylinder - normalize by the ratio
-        const maxR = Math.max(rt, rb)
+        // Tapered cylinder - normalize by the ratio (of the magnitudes: a radius may be negative, a mirror)
+        const maxR = Math.max(Math.abs(rt), Math.abs(rb))
         size = [rt / maxR, rb / maxR, 1]
         scaleOffset = [maxR, h, maxR]
       }
@@ -1147,6 +1201,7 @@ function getGeometryConfig(type, requestedSize) {
 
     case 'torus': {
       const [r, tube] = requestedSize
+      if (r === 0) return { invalid: 'has a zero radius' }
       // Only the tube-to-main ratio matters for shape
       // Normalize so main radius is 1
       size = [1, tube / r]

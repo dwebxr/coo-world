@@ -6,6 +6,7 @@ import { Node, getNodeRef } from './Node'
 import { Layers } from '../extras/Layers'
 import { bindRotations } from '../extras/bindRotations'
 import { DEG2RAD, RAD2DEG } from '../extras/general'
+import { finiteNumber, normalizeQuat, warnPhysicsOnce } from '../extras/physicsValidate.js'
 
 const _q1 = new THREE.Quaternion()
 const _q2 = new THREE.Quaternion()
@@ -26,6 +27,11 @@ const defaults = {
 }
 
 const types = ['fixed', 'socket', 'hinge', 'distance']
+
+// a break force or torque is a number >= 0 (Infinity, the default, never breaks); anything else is the default
+function breakValue(value) {
+  return typeof value === 'number' && value >= 0 ? value : Infinity
+}
 
 export class Joint extends Node {
   constructor(data = {}) {
@@ -64,82 +70,90 @@ export class Joint extends Node {
     if (!actor0 && !actor1) return // at least one required
     const frame0 = this.frame0
     const frame1 = this.frame1
+    // every limit, spring and frame is checked before PhysX sees it: an invalid cone, a zero frame rotation or an
+    // out-of-range hinge limit turns the jointed bodies NaN
+    vec3ToPxPos(this.offset0, frame0)
+    vec3ToPxPos(this.offset1, frame1)
+    _q1.copy(this.quaternion0)
+    _q2.copy(this.quaternion1)
+    if (this.type === 'socket' || this.type === 'hinge') {
+      // create rotation to align X-axis with desired axis and apply (this relates to the limit angles)
+      const alignRotation = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), this.axis)
+      _q1.multiply(alignRotation)
+      _q2.multiply(alignRotation)
+    }
+    if (this.type !== 'distance') {
+      if (!normalizeQuat(_q1) || !normalizeQuat(_q2)) {
+        warnPhysicsOnce(this, 'frame', '[joint] a frame rotation has no usable length; joint skipped')
+        this.needsRebuild = false
+        return
+      }
+      quatToPxRot(_q1, frame0)
+      quatToPxRot(_q2, frame1)
+    }
+    const physics = this.ctx.world.physics.physics
 
     if (this.type === 'fixed') {
-      // add offsets to transform
-      vec3ToPxPos(this.offset0, frame0)
-      vec3ToPxPos(this.offset1, frame1)
-      // add orientations to transform (note: dont think fixed joints even need these)
-      quatToPxRot(this.quaternion0, frame0)
-      quatToPxRot(this.quaternion1, frame1)
-      // make joint
-      this.joint = new PHYSX.FixedJointCreate(this.ctx.world.physics.physics, actor0, frame0, actor1, frame1)
+      this.joint = new PHYSX.FixedJointCreate(physics, actor0, frame0, actor1, frame1)
     }
 
     if (this.type === 'socket') {
-      // add offsets to transform
-      vec3ToPxPos(this.offset0, frame0)
-      vec3ToPxPos(this.offset1, frame1)
-      // create rotation to align X-axis with desired axis and apply (this relates to the limit angles)
-      const alignRotation = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), this.axis)
-      quatToPxRot(_q1.copy(this.quaternion0).multiply(alignRotation), frame0)
-      quatToPxRot(_q2.copy(this.quaternion1).multiply(alignRotation), frame1)
-      // make joint
-      this.joint = new PHYSX.SphericalJointCreate(this.ctx.world.physics.physics, actor0, frame0, actor1, frame1)
-      // apply cone limit
-      if (isNumber(this.limitY) && isNumber(this.limitZ)) {
-        let spring
-        if (isNumber(this.limitStiffness) && isNumber(this.limitDamping)) {
-          spring = new PHYSX.PxSpring(this.limitStiffness, this.limitDamping)
-        }
+      this.joint = new PHYSX.SphericalJointCreate(physics, actor0, frame0, actor1, frame1)
+      // apply cone limit (each angle below 180 degrees)
+      if (finiteNumber(this.limitY) && finiteNumber(this.limitZ)) {
+        const spring = this.createSpring()
         const cone = new PHYSX.PxJointLimitCone(this.limitY * DEG2RAD, this.limitZ * DEG2RAD, spring)
-        this.joint.setLimitCone(cone)
-        this.joint.setSphericalJointFlag(PHYSX.PxSphericalJointFlagEnum.eLIMIT_ENABLED, true)
+        if (cone.isValid()) {
+          this.joint.setLimitCone(cone)
+          this.joint.setSphericalJointFlag(PHYSX.PxSphericalJointFlagEnum.eLIMIT_ENABLED, true)
+        } else {
+          warnPhysicsOnce(this, 'limit', '[joint] socket limit is not valid; limit skipped')
+        }
         PHYSX.destroy(cone)
         if (spring) PHYSX.destroy(spring)
       }
     }
 
     if (this.type === 'hinge') {
-      // add offsets to transform
-      vec3ToPxPos(this.offset0, frame0)
-      vec3ToPxPos(this.offset1, frame1)
-      // create rotation to align X-axis with desired axis and apply
-      const alignRotation = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), this.axis)
-      quatToPxRot(_q1.copy(this.quaternion0).multiply(alignRotation), frame0)
-      quatToPxRot(_q2.copy(this.quaternion1).multiply(alignRotation), frame1)
-      // make joint
-      this.joint = new PHYSX.RevoluteJointCreate(this.ctx.world.physics.physics, actor0, frame0, actor1, frame1)
-      // apply limits
-      if (isNumber(this.limitMin) && isNumber(this.limitMax)) {
-        let spring
-        if (isNumber(this.limitStiffness) && isNumber(this.limitDamping)) {
-          spring = new PHYSX.PxSpring(this.limitStiffness, this.limitDamping)
-        }
+      this.joint = new PHYSX.RevoluteJointCreate(physics, actor0, frame0, actor1, frame1)
+      // apply limits: ordered and inside (-360, 360) degrees (PhysX's revolute contract)
+      if (finiteNumber(this.limitMin) && finiteNumber(this.limitMax)) {
+        const inRange = Math.abs(this.limitMin) < 360 && Math.abs(this.limitMax) < 360
+        const spring = this.createSpring()
         const limit = new PHYSX.PxJointAngularLimitPair(this.limitMin * DEG2RAD, this.limitMax * DEG2RAD, spring)
-        this.joint.setLimit(limit)
-        this.joint.setRevoluteJointFlag(PHYSX.PxRevoluteJointFlagEnum.eLIMIT_ENABLED, true)
+        if (inRange && this.limitMin <= this.limitMax && limit.isValid()) {
+          this.joint.setLimit(limit)
+          this.joint.setRevoluteJointFlag(PHYSX.PxRevoluteJointFlagEnum.eLIMIT_ENABLED, true)
+        } else {
+          warnPhysicsOnce(this, 'limit', '[joint] hinge limit is not valid; limit skipped')
+        }
         PHYSX.destroy(limit)
         if (spring) PHYSX.destroy(spring)
       }
     }
 
     if (this.type === 'distance') {
-      // add offsets to transform
-      vec3ToPxPos(this.offset0, frame0)
-      vec3ToPxPos(this.offset1, frame1)
       // create rotation to align X-axis with desired axis and apply
       // const alignRotation = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), this.axis)
       // quatToPxRot(_q1.copy(this.quaternion0).multiply(alignRotation), frame0)
       // quatToPxRot(_q2.copy(this.quaternion1).multiply(alignRotation), frame1)
-      // make joint
-      this.joint = new PHYSX.DistanceJointCreate(this.ctx.world.physics.physics, actor0, frame0, actor1, frame1)
-      // apply limits
-      this.joint.setMinDistance(this.limitMin)
-      this.joint.setMaxDistance(this.limitMax)
-      this.joint.setDistanceJointFlag(PHYSX.PxDistanceJointFlagEnum.eMIN_DISTANCE_ENABLED, true)
-      this.joint.setDistanceJointFlag(PHYSX.PxDistanceJointFlagEnum.eMAX_DISTANCE_ENABLED, true)
-      if (isNumber(this.limitStiffness) && isNumber(this.limitDamping)) {
+      this.joint = new PHYSX.DistanceJointCreate(physics, actor0, frame0, actor1, frame1)
+      // apply limits: each end only when it is set, finite and >= 0, and both only when they are ordered
+      const hasMin = finiteNumber(this.limitMin) && this.limitMin >= 0
+      const hasMax = finiteNumber(this.limitMax) && this.limitMax >= 0
+      if (hasMin && hasMax && this.limitMin > this.limitMax) {
+        warnPhysicsOnce(this, 'limit', '[joint] distance limitMin is above limitMax; limits skipped')
+      } else {
+        if (hasMin) {
+          this.joint.setMinDistance(this.limitMin)
+          this.joint.setDistanceJointFlag(PHYSX.PxDistanceJointFlagEnum.eMIN_DISTANCE_ENABLED, true)
+        }
+        if (hasMax) {
+          this.joint.setMaxDistance(this.limitMax)
+          this.joint.setDistanceJointFlag(PHYSX.PxDistanceJointFlagEnum.eMAX_DISTANCE_ENABLED, true)
+        }
+      }
+      if (this.springOk()) {
         this.joint.setStiffness(this.limitStiffness)
         this.joint.setDamping(this.limitDamping)
         this.joint.setDistanceJointFlag(PHYSX.PxDistanceJointFlagEnum.eSPRING_ENABLED, true)
@@ -149,8 +163,17 @@ export class Joint extends Node {
     if (this.collide) {
       this.joint.setConstraintFlag(PHYSX.PxConstraintFlagEnum.eCOLLISION_ENABLED, true)
     }
-    this.joint.setBreakForce(this.breakForce, this.breakTorque)
+    this.joint.setBreakForce(breakValue(this.breakForce), breakValue(this.breakTorque))
     this.needsRebuild = false
+  }
+
+  springOk() {
+    const ok = value => finiteNumber(value) && value >= 0
+    return ok(this.limitStiffness) && ok(this.limitDamping)
+  }
+
+  createSpring() {
+    return this.springOk() ? new PHYSX.PxSpring(this.limitStiffness, this.limitDamping) : undefined
   }
 
   commit(didMove) {
@@ -199,8 +222,8 @@ export class Joint extends Node {
           return self.type
         },
         set type(value) {
-          if (self.value === value) return
-          if (!types.includes(value)) throw new Error('[joint] invalid type:', value)
+          if (self.type === value) return
+          if (!types.includes(value)) throw new Error(`[joint] invalid type: ${value}`)
           self.type = value
           self.needsRebuild = true
           self.setDirty()

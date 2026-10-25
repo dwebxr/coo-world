@@ -6,14 +6,19 @@ export const MIN_SECRET_LENGTH = 32
 
 const HOW_TO = 'generate one with `openssl rand -hex 32`'
 
+// the secret itself is used as given; only the checks look at a trimmed, lower-cased copy, because a .env can keep
+// spaces inside quotes (`'hyper '`) and case (`HYPER`), and those are no harder to guess
 export function checkJwtSecret(secret, { warn = console.warn } = {}) {
-  if (!secret) {
+  const normalized = String(secret ?? '')
+    .trim()
+    .toLowerCase()
+  if (!normalized) {
     throw new Error(`[envs] JWT_SECRET not set: ${HOW_TO}`)
   }
-  if (PUBLIC_TEMPLATE_SECRETS.includes(secret)) {
+  if (PUBLIC_TEMPLATE_SECRETS.includes(normalized)) {
     throw new Error(`[envs] JWT_SECRET is the public template value, so anyone can forge sign-ins: ${HOW_TO}`)
   }
-  if (secret.length < MIN_SECRET_LENGTH) {
+  if (normalized.length < MIN_SECRET_LENGTH) {
     warn(`[envs] JWT_SECRET is shorter than ${MIN_SECRET_LENGTH} characters: ${HOW_TO}`)
   }
 }

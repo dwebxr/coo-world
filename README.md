@@ -41,6 +41,9 @@ cd my-world
 # Copy example environment settings
 cp .env.example .env
 
+# Set your own JWT secret (the server refuses to start without one)
+sed -i.bak "s/^JWT_SECRET=.*/JWT_SECRET=$(openssl rand -hex 32)/" .env && rm .env.bak
+
 # Install dependencies
 npm install
 

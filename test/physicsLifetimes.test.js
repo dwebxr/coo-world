@@ -375,6 +375,7 @@ probe('physics lifetimes: a native throw mid-mount leaves no temporaries and no 
   for (const [proto, method] of [
     [PHYSX.PxRigidStatic.prototype, 'attachShape'],
     [PHYSX.PxShape.prototype, 'setQueryFilterData'],
+    [PHYSX.PxShapeFlags.prototype, 'raise'],
   ]) {
     let reached = 0
     const primLeak = perCycle(() => {

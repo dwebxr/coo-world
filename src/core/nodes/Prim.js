@@ -433,17 +433,15 @@ export class Prim extends Node {
     const restitution = this._restitution
     const material = this.ctx.world.physics.getMaterial(staticFriction, dynamicFriction, restitution)
 
-    // Create shape flags
+    // Create shape flags and the shape; the flags are destroyed on every exit, a throw from raise() included
     const flags = new PHYSX.PxShapeFlags()
-    if (trigger) {
-      flags.raise(PHYSX.PxShapeFlagEnum.eTRIGGER_SHAPE)
-    } else {
-      flags.raise(PHYSX.PxShapeFlagEnum.eSCENE_QUERY_SHAPE | PHYSX.PxShapeFlagEnum.eSIMULATION_SHAPE)
-    }
-
-    // Create shape
     let shape
     try {
+      if (trigger) {
+        flags.raise(PHYSX.PxShapeFlagEnum.eTRIGGER_SHAPE)
+      } else {
+        flags.raise(PHYSX.PxShapeFlagEnum.eSCENE_QUERY_SHAPE | PHYSX.PxShapeFlagEnum.eSIMULATION_SHAPE)
+      }
       shape = this.ctx.world.physics.physics.createShape(pxGeometry, material, true, flags)
     } finally {
       PHYSX.destroy(flags)

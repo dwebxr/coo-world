@@ -21,6 +21,7 @@ import { Storage } from './Storage'
 import { assets } from './assets'
 import { collections } from './collections'
 import { cleaner } from './cleaner'
+import { errorHandler } from './errorHandler'
 import { escapeHtml } from './escapeHtml'
 import { walletOf } from './solana-gating'
 import { clientIpKeys, createUploadLimits, readUploadLimitsEnv } from './uploadLimits'
@@ -70,6 +71,11 @@ if (!process.env.ASSETS) {
 }
 if (!process.env.ASSETS_BASE_URL) {
   throw new Error(`[envs] ASSETS_BASE_URL must be set`)
+}
+// asset:// URLs resolve to `${ASSETS_BASE_URL}/name` (World.resolveURL), so a trailing slash would turn every
+// asset path into `//name`, which @fastify/static refuses as non-canonical
+if (process.env.ASSETS_BASE_URL.endsWith('/')) {
+  throw new Error(`[envs] ASSETS_BASE_URL must not end with /`)
 }
 if (process.env.ASSETS === 's3' && !process.env.ASSETS_S3_URI) {
   throw new Error(`[envs] ASSETS_S3_URI must be set when using ASSETS=s3`)
@@ -126,10 +132,11 @@ fastify.register(statics, {
   root: path.join(__dirname, 'public'),
   prefix: '/',
   decorateReply: false,
-  setHeaders: res => {
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
-    res.setHeader('Pragma', 'no-cache')
-    res.setHeader('Expires', '0')
+  // Cache-Control stays @fastify/static's default (public, max-age=0: revalidate by ETag), which is what
+  // production has always served: before v10, send overwrote a Cache-Control set here
+  setHeaders: reply => {
+    reply.header('Pragma', 'no-cache')
+    reply.header('Expires', '0')
   },
 })
 if (world.assetsDir) {
@@ -222,10 +229,7 @@ fastify.get('/status', async (request, reply) => {
   }
 })
 
-fastify.setErrorHandler((err, req, reply) => {
-  console.error(err)
-  reply.status(500).send()
-})
+fastify.setErrorHandler(errorHandler)
 
 try {
   await fastify.listen({ port, host: '0.0.0.0' })

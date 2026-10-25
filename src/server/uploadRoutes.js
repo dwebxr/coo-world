@@ -357,10 +357,11 @@ export async function assetRoutes(fastify, { root }) {
     root,
     prefix: '/assets/',
     decorateReply: false,
-    setHeaders: res => {
-      // all assets are hashed & immutable so we can use aggressive caching
-      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable') // 1 year
-      res.setHeader('Expires', new Date(Date.now() + 31536000000).toUTCString()) // older browsers
+    // Cache-Control stays @fastify/static's default (public, max-age=0: revalidate by ETag), which is what
+    // production has always served: before v10, send overwrote the one-year immutable value set here. Default
+    // world assets have unhashed names, so long caching is a separate decision. Expires is inert next to max-age.
+    setHeaders: reply => {
+      reply.header('Expires', new Date(Date.now() + 31536000000).toUTCString())
     },
   })
 }

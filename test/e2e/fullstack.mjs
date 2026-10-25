@@ -1313,7 +1313,9 @@ async function probes(admin, watcher) {
       const before = openErrors()
       const r = await probeCommand('openAsset')
       ok(r.ok, r.error)
-      eq(r.encodedStatus, 200, 'the server serves /%61ssets/ like /assets/')
+      // fastify 5.12 / find-my-way 9.10 no longer route /%61ssets/ to the /assets/ files (fastify 5.2 served them
+      // with 200); world.open rejects the spelling either way, for servers and proxies that do decode it
+      eq(r.encodedStatus, 404, 'the server no longer serves /%61ssets/ like /assets/')
       await sleep(800)
       eq(page.url(), urlBefore, 'page url')
       eq(openErrors(), before + 4, 'four console errors')

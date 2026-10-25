@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import vm from 'node:vm'
 
 // the real lockdown config: scripts and the host share these frozen intrinsics
 import 'ses'
@@ -45,7 +46,8 @@ test('toScriptError: a Compartment-thrown ReferenceError keeps its class, name, 
   const c = new Compartment({})
   let thrown
   try {
-    c.evaluate('(function scriptFn() { undefinedName })')()
+    // assigning an unbound free name throws; reading one gives undefined (see the next test)
+    c.evaluate('(function scriptFn() { undefinedName = 1 })')()
   } catch (err) {
     thrown = err
   }
@@ -57,6 +59,17 @@ test('toScriptError: a Compartment-thrown ReferenceError keeps its class, name, 
   assert.equal(out.message, thrown.message)
   assert.match(out.stack, /scriptFn/)
   assert.equal(out.stack, thrown.stack)
+})
+
+test('Compartment: host top-level lexical bindings stay out of script scope (ses >= 1.12, GHSA-h9w6-f932-gq62)', () => {
+  // a classic-script top-level const is a global lexical binding, not a property of globalThis
+  vm.runInThisContext('const leakedHostBinding = 42')
+  assert.equal(vm.runInThisContext('leakedHostBinding'), 42)
+  const c = new Compartment({})
+  // the scope proxy is opaque: unbound free names read as undefined instead of reaching host lexicals
+  assert.equal(c.evaluate('leakedHostBinding'), undefined)
+  assert.equal(c.evaluate('typeof leakedHostBinding'), 'undefined')
+  assert.equal(c.evaluate('(function () { return someUnboundName })')(), undefined)
 })
 
 test('toScriptError: the constructor comes from an allowlist keyed by name', () => {

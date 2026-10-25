@@ -394,6 +394,15 @@ export class Prim extends Node {
       return this.skipPhysics('invalid', 'geometry is not valid for physics')
     }
 
+    // the geometry is copied into the shape, so it is destroyed on every exit, a throw included
+    try {
+      this.mountActor(pxGeometry, { type, mass, linearDamping, angularDamping, trigger })
+    } finally {
+      PHYSX.destroy(pxGeometry)
+    }
+  }
+
+  mountActor(pxGeometry, { type, mass, linearDamping, angularDamping, trigger }) {
     // Create transform
     if (!this._tm) this._tm = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
     vec3ToPxPos(_v1, this._tm)
@@ -435,7 +444,6 @@ export class Prim extends Node {
       PHYSX.destroy(flags)
       if (!shape || shape.ptr === 0) {
         this.shape = null
-        PHYSX.destroy(pxGeometry)
         this.pmesh?.release()
         this.pmesh = null
         this.actor.release()
@@ -496,8 +504,6 @@ export class Prim extends Node {
       },
     })
 
-    // Clean up
-    PHYSX.destroy(pxGeometry)
   }
 
   // no physics for this prim (its visual stays); a property setter rebuilds it, a transform edit does not

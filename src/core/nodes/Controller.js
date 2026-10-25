@@ -100,21 +100,31 @@ export class Controller extends Node {
 
     const actor = this.controller.getActor()
     const nbShapes = actor.getNbShapes()
+    // PhysX copies the shape flags and filter data, so these temporaries are destroyed right after use
     const shapeBuffer = new PHYSX.PxArray_PxShapePtr(nbShapes)
-    const shapesCount = actor.getShapes(shapeBuffer.begin(), nbShapes, 0)
-    for (let i = 0; i < shapesCount; i++) {
-      const shape = shapeBuffer.get(i)
-      const layer = Layers[this._layer]
-      let pairFlags =
-        PHYSX.PxPairFlagEnum.eNOTIFY_TOUCH_FOUND |
-        PHYSX.PxPairFlagEnum.eNOTIFY_TOUCH_LOST |
-        PHYSX.PxPairFlagEnum.eNOTIFY_CONTACT_POINTS
-      const filterData = new PHYSX.PxFilterData(layer.group, layer.mask, pairFlags, 0)
-      const shapeFlags = new PHYSX.PxShapeFlags()
-      shapeFlags.raise(PHYSX.PxShapeFlagEnum.eSCENE_QUERY_SHAPE | PHYSX.PxShapeFlagEnum.eSIMULATION_SHAPE)
-      shape.setFlags(shapeFlags)
-      shape.setQueryFilterData(filterData)
-      shape.setSimulationFilterData(filterData)
+    try {
+      const shapesCount = actor.getShapes(shapeBuffer.begin(), nbShapes, 0)
+      for (let i = 0; i < shapesCount; i++) {
+        const shape = shapeBuffer.get(i)
+        const layer = Layers[this._layer]
+        let pairFlags =
+          PHYSX.PxPairFlagEnum.eNOTIFY_TOUCH_FOUND |
+          PHYSX.PxPairFlagEnum.eNOTIFY_TOUCH_LOST |
+          PHYSX.PxPairFlagEnum.eNOTIFY_CONTACT_POINTS
+        const filterData = new PHYSX.PxFilterData(layer.group, layer.mask, pairFlags, 0)
+        const shapeFlags = new PHYSX.PxShapeFlags()
+        try {
+          shapeFlags.raise(PHYSX.PxShapeFlagEnum.eSCENE_QUERY_SHAPE | PHYSX.PxShapeFlagEnum.eSIMULATION_SHAPE)
+          shape.setFlags(shapeFlags)
+          shape.setQueryFilterData(filterData)
+          shape.setSimulationFilterData(filterData)
+        } finally {
+          PHYSX.destroy(shapeFlags)
+          PHYSX.destroy(filterData)
+        }
+      }
+    } finally {
+      PHYSX.destroy(shapeBuffer)
     }
     const self = this
     this.actorHandle = this.ctx.world.physics.addActor(actor, {
@@ -158,6 +168,10 @@ export class Controller extends Node {
   unmount() {
     if (this.mesh) {
       this.ctx.world.graphics.scene.remove(this.mesh)
+      // the capsule is built per mount, so its buffers, BVH and material go with it
+      this.mesh.geometry.disposeBoundsTree?.()
+      this.mesh.geometry.dispose()
+      this.mesh.material.dispose()
       this.mesh = null
     }
     this.actorHandle?.destroy()
@@ -187,6 +201,7 @@ export class Controller extends Node {
     if (!finiteNumber(value)) {
       throw new Error('[controller] radius not a finite number')
     }
+    if (this._radius === value) return
     this._radius = value
     this.needsRebuild = true
     this.setDirty()
@@ -200,6 +215,7 @@ export class Controller extends Node {
     if (!finiteNumber(value)) {
       throw new Error('[controller] height not a finite number')
     }
+    if (this._height === value) return
     this._height = value
     this.needsRebuild = true
     this.setDirty()
@@ -213,6 +229,7 @@ export class Controller extends Node {
     if (!isBoolean(value)) {
       throw new Error('[controller] visible not a boolean')
     }
+    if (this._visible === value) return
     this._visible = value
     this.needsRebuild = true
     this.setDirty()
@@ -226,6 +243,7 @@ export class Controller extends Node {
     if (!isLayer(value)) {
       throw new Error(`[controller] invalid layer: ${value}`)
     }
+    if (this._layer === value) return
     this._layer = value
     if (this.controller) {
       // TODO: we could just update the PxFilterData tbh

@@ -152,20 +152,24 @@ export class Collider extends Node {
       warnOnce('[collider] failed to create shape')
       return this.skipPhysics('shape', 'failed to create shape')
     }
+    // the shape and the cooked mesh belong to the node from here (unmount releases them); the temporaries are
+    // destroyed on every exit, a throw included
     this.shape = shape
     this.pmesh = pmesh
-    this.shape.setQueryFilterData(filterData)
-    this.shape.setSimulationFilterData(filterData)
-    PHYSX.destroy(filterData)
-    const pose = new PHYSX.PxTransform()
-    vec3ToPxPos(localPosition, pose)
-    quatToPxRot(localRotation, pose)
-    this.shape.setLocalPose(pose)
-    PHYSX.destroy(pose)
-    this.parent?.addShape?.(this.shape)
-    // console.log('geometry', geometry)
-    // this._geometry = geometry
-    PHYSX.destroy(geometry)
+    let pose
+    try {
+      this.shape.setQueryFilterData(filterData)
+      this.shape.setSimulationFilterData(filterData)
+      pose = new PHYSX.PxTransform()
+      vec3ToPxPos(localPosition, pose)
+      quatToPxRot(localRotation, pose)
+      this.shape.setLocalPose(pose)
+      this.parent?.addShape?.(this.shape)
+    } finally {
+      PHYSX.destroy(filterData)
+      if (pose) PHYSX.destroy(pose)
+      PHYSX.destroy(geometry)
+    }
     this.needsRebuild = false
   }
 
@@ -227,6 +231,7 @@ export class Collider extends Node {
     if (!isType(value)) {
       throw new Error(`[collider] invalid type:`, value)
     }
+    if (this._type === value) return
     this._type = value
     this.needsRebuild = true
     this.setDirty()
@@ -240,6 +245,7 @@ export class Collider extends Node {
     if (!finiteNumber(value) || value < 0) {
       throw new Error('[collider] width must be a finite number >= 0')
     }
+    if (this._width === value) return
     this._width = value
     if ((this.shape || this.physicsSkipped) && this._type === 'box') {
       this.needsRebuild = true
@@ -255,6 +261,7 @@ export class Collider extends Node {
     if (!finiteNumber(value) || value < 0) {
       throw new Error('[collider] height must be a finite number >= 0')
     }
+    if (this._height === value) return
     this._height = value
     if ((this.shape || this.physicsSkipped) && this._type === 'box') {
       this.needsRebuild = true
@@ -270,6 +277,7 @@ export class Collider extends Node {
     if (!finiteNumber(value) || value < 0) {
       throw new Error('[collider] depth must be a finite number >= 0')
     }
+    if (this._depth === value) return
     this._depth = value
     if ((this.shape || this.physicsSkipped) && this._type === 'box') {
       this.needsRebuild = true
@@ -291,6 +299,7 @@ export class Collider extends Node {
     if (!finiteNumber(value) || value < 0) {
       throw new Error('[collider] radius must be a finite number >= 0')
     }
+    if (this._radius === value) return
     this._radius = value
     if ((this.shape || this.physicsSkipped) && this._type === 'sphere') {
       this.needsRebuild = true
@@ -303,7 +312,9 @@ export class Collider extends Node {
   }
 
   set geometry(value = defaults.geometry) {
-    this._geometry = getRef(value)
+    const geometry = getRef(value)
+    if (this._geometry === geometry) return
+    this._geometry = geometry
     this.needsRebuild = true
     this.setDirty()
   }
@@ -316,6 +327,7 @@ export class Collider extends Node {
     if (!isBoolean(value)) {
       throw new Error('[collider] convex not a boolean')
     }
+    if (this._convex === value) return
     this._convex = value
     if (this.shape || this.physicsSkipped) {
       this.needsRebuild = true
@@ -331,6 +343,7 @@ export class Collider extends Node {
     if (!isBoolean(value)) {
       throw new Error('[collider] trigger not a boolean')
     }
+    if (this._trigger === value) return
     this._trigger = value
     if (this.shape || this.physicsSkipped) {
       this.needsRebuild = true
@@ -346,6 +359,7 @@ export class Collider extends Node {
     if (!isLayer(value)) {
       throw new Error(`[collider] invalid layer: ${value}`)
     }
+    if (this._layer === value) return
     this._layer = value
     if (this.shape || this.physicsSkipped) {
       // TODO: we could just update the PxFilterData tbh
@@ -362,6 +376,7 @@ export class Collider extends Node {
     if (!finiteNumber(value) || value < 0) {
       throw new Error('[collider] staticFriction must be a finite number >= 0')
     }
+    if (this._staticFriction === value) return
     this._staticFriction = value
     if (this.shape || this.physicsSkipped) {
       // todo: we could probably just update the PxMaterial tbh
@@ -378,6 +393,7 @@ export class Collider extends Node {
     if (!finiteNumber(value) || value < 0) {
       throw new Error('[collider] dynamicFriction must be a finite number >= 0')
     }
+    if (this._dynamicFriction === value) return
     this._dynamicFriction = value
     if (this.shape || this.physicsSkipped) {
       // todo: we could probably just update the PxMaterial tbh
@@ -394,6 +410,7 @@ export class Collider extends Node {
     if (!finiteNumber(value) || value < 0) {
       throw new Error('[collider] restitution must be a finite number >= 0')
     }
+    if (this._restitution === value) return
     this._restitution = value
     if (this.shape || this.physicsSkipped) {
       // todo: we could probably just update the PxMaterial tbh

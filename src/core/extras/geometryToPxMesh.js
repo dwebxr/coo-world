@@ -1,28 +1,56 @@
 import { handlePhysicsFailure } from './physicsFailure.js'
 import { isFiniteF32, warnOnce } from './physxConvert.js'
 
-const cache = new Map() // id -> { id, pmesh, refs, maxAbs }
+const cache = new Map() // id -> { id, pmesh, refs, maxAbs, size, holders }
+
+// Cooked meshes live in the wasm heap, which only grows and aborts at 2 GB (3.92M triangles cooked to ~700 MB).
+// The production world's largest mesh has ~10k triangles. A mesh's size is its vertices plus triangles (a convex
+// mesh's input points count as vertices); each mesh, each holder (an app) and the process have a budget, so one app
+// cannot take the whole heap and leave later apps' floors without colliders.
+export const MESH_LIMITS = { vertices: 200_000, triangles: 200_000, convexPoints: 50_000, holder: 400_000, process: 2_000_000 }
+let processSize = 0
+const holderSizes = new Map() // holder -> size of the distinct cached meshes it holds
 
 class PMeshHandle {
-  constructor(item) {
+  constructor(item, holder) {
     this.value = item.pmesh
     // largest |vertex coordinate| per axis, for the physics extent check (physicsValidate.extentOk)
     this.maxAbs = item.maxAbs
     this.item = item
+    this.holder = holder
     this.item.refs++
+    this.item.holders.set(holder, (this.item.holders.get(holder) ?? 0) + 1)
+    if (this.item.holders.get(holder) === 1) holderSizes.set(holder, (holderSizes.get(holder) ?? 0) + item.size)
     this.released = false
   }
 
   release() {
     if (this.released) return
+    const count = this.item.holders.get(this.holder) - 1
+    if (count === 0) {
+      this.item.holders.delete(this.holder)
+      const left = holderSizes.get(this.holder) - this.item.size
+      if (left > 0) holderSizes.set(this.holder, left)
+      else holderSizes.delete(this.holder)
+    } else {
+      this.item.holders.set(this.holder, count)
+    }
     this.item.refs--
     if (this.item.refs === 0) {
       if (this.item.pmesh.ptr !== 0) this.item.pmesh.release()
       cache.delete(this.item.id)
+      processSize -= this.item.size
     }
     this.released = true
     this.value = null
   }
+}
+
+// whether `holder` may take a mesh of `size` that it does not hold yet (and, for a new cook, the process too)
+function withinBudget(holder, size, newCook) {
+  if ((holderSizes.get(holder) ?? 0) + size > MESH_LIMITS.holder) return false
+  if (newCook && processSize + size > MESH_LIMITS.process) return false
+  return true
 }
 
 export function geometryToPxMesh(world, geometry, convex, entity) {
@@ -31,10 +59,15 @@ export function geometryToPxMesh(world, geometry, convex, entity) {
     return null
   }
   const id = `${geometry.uuid}_${convex ? 'convex' : 'triangles'}`
+  const holder = entity ?? world
 
   let item = cache.get(id)
   if (item) {
-    return new PMeshHandle(item)
+    if (!item.holders.has(holder) && !withinBudget(holder, item.size, false)) {
+      warnOnce('[physics] mesh skipped: this app holds its whole mesh budget')
+      return null
+    }
+    return new PMeshHandle(item, holder)
   }
 
   // Decode the original attribute so normalized and interleaved positions stay intact.
@@ -43,10 +76,38 @@ export function geometryToPxMesh(world, geometry, convex, entity) {
     warnOnce('[physics] mesh has no positions')
     return null
   }
-  const positions = new Float32Array(position.count * 3)
+  // every count is checked before anything is allocated for it
+  const count = position.count
+  if (!Number.isInteger(count) || count < 0) {
+    warnOnce('[physics] mesh has an invalid vertex count')
+    return null
+  }
+  if (count > (convex ? MESH_LIMITS.convexPoints : MESH_LIMITS.vertices)) {
+    warnOnce('[physics] mesh skipped: too many vertices')
+    return null
+  }
+  let triangleCount = 0
+  if (!convex) {
+    const length = geometry.index?.count
+    if (!Number.isInteger(length) || length % 3 !== 0) {
+      warnOnce('[physics] mesh has an index count that is not whole triangles')
+      return null
+    }
+    triangleCount = length / 3
+    if (triangleCount > MESH_LIMITS.triangles) {
+      warnOnce('[physics] mesh skipped: too many triangles')
+      return null
+    }
+  }
+  const size = count + triangleCount
+  if (!withinBudget(holder, size, true)) {
+    warnOnce('[physics] mesh skipped: the mesh budget is spent')
+    return null
+  }
+  const positions = new Float32Array(count * 3)
   // scanned here rather than read from geometry.boundingBox, which a model file sets from its own accessor min/max
   const maxAbs = [0, 0, 0]
-  for (let i = 0; i < position.count; i++) {
+  for (let i = 0; i < count; i++) {
     const x = position.getX(i)
     const y = position.getY(i)
     const z = position.getZ(i)
@@ -76,6 +137,13 @@ export function geometryToPxMesh(world, geometry, convex, entity) {
       warnOnce('[physics] mesh has unsupported indices')
       return null
     }
+    // every index must name a vertex
+    for (let i = 0; i < indices.length; i++) {
+      if (indices[i] >= count) {
+        warnOnce('[physics] mesh has an index past its vertices')
+        return null
+      }
+    }
     // Some GLBs use Uint8 indices; PhysX requires at least 16 bits.
     if (indices instanceof Uint8Array) indices = new Uint16Array(indices)
   }
@@ -92,7 +160,7 @@ export function geometryToPxMesh(world, geometry, convex, entity) {
     }
 
     desc = convex ? new PHYSX.PxConvexMeshDesc() : new PHYSX.PxTriangleMeshDesc()
-    desc.points.count = position.count
+    desc.points.count = count
     desc.points.stride = 12
     desc.points.data = pointsPtr
 
@@ -132,7 +200,8 @@ export function geometryToPxMesh(world, geometry, convex, entity) {
 
   if (!pmesh || pmesh.ptr === 0) return null
 
-  item = { id, pmesh, refs: 0, maxAbs }
+  item = { id, pmesh, refs: 0, maxAbs, size, holders: new Map() }
   cache.set(id, item)
-  return new PMeshHandle(item)
+  processSize += size
+  return new PMeshHandle(item, holder)
 }

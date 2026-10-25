@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { physxHeap } from './physxHeap.mjs'
 
 export async function makeWorld(B) {
   const world = {
@@ -93,5 +94,8 @@ export async function makeWorld(B) {
     assert.ok(Number.isFinite(p.x) && p.x > 100, 'unrelated body still simulates')
     root.remove(sentinel)
   }
-  return { B, PHYSX, world, physics, entity, root, step, body, move, handleOf, actorOf, healthy, callbacks }
+  // leak tests: liveChunks() counts the wasm heap's live allocations (created on first use)
+  let counter = null
+  const liveChunks = () => (counter ??= physxHeap(PHYSX))()
+  return { B, PHYSX, world, physics, entity, root, step, body, move, handleOf, actorOf, healthy, callbacks, liveChunks }
 }

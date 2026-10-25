@@ -59,17 +59,42 @@ export class Joint extends Node {
     this.limitStiffness = isNumber(data.limitStiffness) ? data.limitStiffness : defaults.limitStiffness
     this.limitDamping = isNumber(data.limitDamping) ? data.limitDamping : defaults.limitDamping
     this.collide = isBoolean(data.collide) ? data.collide : defaults.collide
-
-    this.frame0 = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
-    this.frame1 = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
+    // the bodies this joint is attached to (or waits for), so unmount detaches from exactly those
+    this.attachedBodies = []
   }
 
   mount() {
-    const actor0 = this.body0?.actor
-    const actor1 = this.body1?.actor
-    if (!actor0 && !actor1) return // at least one required
-    const frame0 = this.frame0
-    const frame1 = this.frame1
+    const body0 = this.body0
+    const body1 = this.body1
+    if (!body0 && !body1) return // at least one required
+    // A body node without an actor (removed, skipped or not mounted yet) means wait: that body's next mount mounts
+    // this joint again. Only a null body is the world; an absent actor would make PhysX anchor the other body there.
+    if ((body0 && !body0.actor) || (body1 && !body1.actor)) {
+      for (const body of [body0, body1]) if (body && !body.actor) body.pendingJoints.add(this)
+      this.attachedBodies = [body0, body1].filter(Boolean)
+      return
+    }
+    const actor0 = body0?.actor
+    const actor1 = body1?.actor
+    // PhysX copies the joint frames, so they live for this call only
+    const frame0 = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
+    const frame1 = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
+    try {
+      this.mountJoint(actor0, actor1, frame0, frame1)
+    } finally {
+      PHYSX.destroy(frame0)
+      PHYSX.destroy(frame1)
+    }
+    if (this.joint) {
+      for (const body of [body0, body1]) {
+        body?.pendingJoints.delete(this)
+        body?.joints.add(this)
+      }
+      this.attachedBodies = [body0, body1].filter(Boolean)
+    }
+  }
+
+  mountJoint(actor0, actor1, frame0, frame1) {
     // every limit, spring and frame is checked before PhysX sees it: an invalid cone, a zero frame rotation, a far
     // anchor or an out-of-range hinge limit turns the jointed bodies (and what they touch) NaN
     if (!positionOk(this.offset0) || !positionOk(this.offset1)) {
@@ -108,14 +133,17 @@ export class Joint extends Node {
       if (finiteNumber(this.limitY) && finiteNumber(this.limitZ)) {
         const spring = this.createSpring()
         const cone = new PHYSX.PxJointLimitCone(this.limitY * DEG2RAD, this.limitZ * DEG2RAD, spring)
-        if (cone.isValid()) {
-          this.joint.setLimitCone(cone)
-          this.joint.setSphericalJointFlag(PHYSX.PxSphericalJointFlagEnum.eLIMIT_ENABLED, true)
-        } else {
-          warnPhysicsOnce(this, 'limit', '[joint] socket limit is not valid; limit skipped')
+        try {
+          if (cone.isValid()) {
+            this.joint.setLimitCone(cone)
+            this.joint.setSphericalJointFlag(PHYSX.PxSphericalJointFlagEnum.eLIMIT_ENABLED, true)
+          } else {
+            warnPhysicsOnce(this, 'limit', '[joint] socket limit is not valid; limit skipped')
+          }
+        } finally {
+          PHYSX.destroy(cone)
+          if (spring) PHYSX.destroy(spring)
         }
-        PHYSX.destroy(cone)
-        if (spring) PHYSX.destroy(spring)
       }
     }
 
@@ -126,14 +154,17 @@ export class Joint extends Node {
         const inRange = Math.abs(this.limitMin) < 360 && Math.abs(this.limitMax) < 360
         const spring = this.createSpring()
         const limit = new PHYSX.PxJointAngularLimitPair(this.limitMin * DEG2RAD, this.limitMax * DEG2RAD, spring)
-        if (inRange && this.limitMin <= this.limitMax && limit.isValid()) {
-          this.joint.setLimit(limit)
-          this.joint.setRevoluteJointFlag(PHYSX.PxRevoluteJointFlagEnum.eLIMIT_ENABLED, true)
-        } else {
-          warnPhysicsOnce(this, 'limit', '[joint] hinge limit is not valid; limit skipped')
+        try {
+          if (inRange && this.limitMin <= this.limitMax && limit.isValid()) {
+            this.joint.setLimit(limit)
+            this.joint.setRevoluteJointFlag(PHYSX.PxRevoluteJointFlagEnum.eLIMIT_ENABLED, true)
+          } else {
+            warnPhysicsOnce(this, 'limit', '[joint] hinge limit is not valid; limit skipped')
+          }
+        } finally {
+          PHYSX.destroy(limit)
+          if (spring) PHYSX.destroy(spring)
         }
-        PHYSX.destroy(limit)
-        if (spring) PHYSX.destroy(spring)
       }
     }
 
@@ -196,8 +227,14 @@ export class Joint extends Node {
   }
 
   unmount() {
+    // released while both actors are alive (a rebuilding body unmounts its joints before releasing its actor)
     this.joint?.release()
     this.joint = null
+    for (const body of this.attachedBodies) {
+      body.joints.delete(this)
+      body.pendingJoints.delete(this)
+    }
+    this.attachedBodies = []
   }
 
   copy(source, recursive) {
@@ -244,6 +281,7 @@ export class Joint extends Node {
           if (value != null && (!node || node.name !== 'rigidbody')) {
             throw new Error('[joint] body0 must be a rigidbody')
           }
+          if (self.body0 === node) return
           self.body0 = node
           self.needsRebuild = true
           self.setDirty()
@@ -265,6 +303,7 @@ export class Joint extends Node {
           if (value != null && (!node || node.name !== 'rigidbody')) {
             throw new Error('[joint] body1 must be a rigidbody')
           }
+          if (self.body1 === node) return
           self.body1 = node
           self.needsRebuild = true
           self.setDirty()
@@ -282,7 +321,9 @@ export class Joint extends Node {
           return self.breakForce
         },
         set breakForce(value) {
-          self.breakForce = isNumber(value) ? value : defaults.breakForce
+          const next = isNumber(value) ? value : defaults.breakForce
+          if (self.breakForce === next) return
+          self.breakForce = next
           self.needsRebuild = true
           self.setDirty()
         },
@@ -290,7 +331,9 @@ export class Joint extends Node {
           return self.breakTorque
         },
         set breakTorque(value) {
-          self.breakTorque = isNumber(value) ? value : defaults.breakTorque
+          const next = isNumber(value) ? value : defaults.breakTorque
+          if (self.breakTorque === next) return
+          self.breakTorque = next
           self.needsRebuild = true
           self.setDirty()
         },
@@ -298,6 +341,7 @@ export class Joint extends Node {
           return self.limitY
         },
         set limitY(value) {
+          if (self.limitY === value) return
           self.limitY = value
           self.needsRebuild = true
           self.setDirty()
@@ -309,6 +353,7 @@ export class Joint extends Node {
           return self.limitZ
         },
         set limitZ(value) {
+          if (self.limitZ === value) return
           self.limitZ = value
           self.needsRebuild = true
           self.setDirty()
@@ -317,6 +362,7 @@ export class Joint extends Node {
           return self.limitMin
         },
         set limitMin(value) {
+          if (self.limitMin === value) return
           self.limitMin = value
           self.needsRebuild = true
           self.setDirty()
@@ -325,6 +371,7 @@ export class Joint extends Node {
           return self.limitMax
         },
         set limitMax(value) {
+          if (self.limitMax === value) return
           self.limitMax = value
           self.needsRebuild = true
           self.setDirty()
@@ -333,6 +380,7 @@ export class Joint extends Node {
           return self.limitStiffness
         },
         set limitStiffness(value) {
+          if (self.limitStiffness === value) return
           self.limitStiffness = value
           self.needsRebuild = true
           self.setDirty()
@@ -341,6 +389,7 @@ export class Joint extends Node {
           return self.limitDamping
         },
         set limitDamping(value) {
+          if (self.limitDamping === value) return
           self.limitDamping = value
           self.needsRebuild = true
           self.setDirty()
@@ -349,6 +398,7 @@ export class Joint extends Node {
           return self.collide
         },
         set collide(value) {
+          if (self.collide === value) return
           self.collide = value
           self.needsRebuild = true
           self.setDirty()

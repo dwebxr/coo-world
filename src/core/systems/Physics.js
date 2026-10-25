@@ -262,7 +262,6 @@ export class Physics extends System {
     handle.triggeredHandles = new Set()
     handle.triggeringHandles = new Set()
     const registration = { handle, ptr: actor.ptr, destroyed: false }
-    this.registrations.set(handle, registration)
     if (handle.onInterpolate) {
       handle.interpolation = {
         prev: {
@@ -286,10 +285,12 @@ export class Physics extends System {
       pxToVec3(handle.interpolation.curr.position, pose.p)
       pxToQuat(handle.interpolation.curr.quaternion, pose.q)
     }
-    this.handles.set(actor.ptr, handle)
+    // added to the scene before the handle is published, so a throw here leaves no stale handle behind
     if (!handle.controller) {
       this.scene.addActor(actor)
     }
+    this.registrations.set(handle, registration)
+    this.handles.set(actor.ptr, handle)
     return {
       move: matrix => {
         if (this.ignoreSetGlobalPose) {

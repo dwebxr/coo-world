@@ -107,17 +107,19 @@ export class Collider extends Node {
       if (!extentOk(owned.pmesh.maxAbs, _v3.set(Math.abs(_v2.x), Math.abs(_v2.y), Math.abs(_v2.z)))) {
         return ['extent', 'mesh is larger than the physics range']
       }
-      const scaleVec = new PHYSX.PxVec3(_v2.x, _v2.y, _v2.z)
-      const scaleQuat = new PHYSX.PxQuat(0, 0, 0, 1)
-      const scale = new PHYSX.PxMeshScale(scaleVec, scaleQuat)
+      // each temporary is destroyed if it was created, whichever constructor throws
+      let scaleVec, scaleQuat, scale
       try {
+        scaleVec = new PHYSX.PxVec3(_v2.x, _v2.y, _v2.z)
+        scaleQuat = new PHYSX.PxQuat(0, 0, 0, 1)
+        scale = new PHYSX.PxMeshScale(scaleVec, scaleQuat)
         owned.geometry = isConvex
           ? new PHYSX.PxConvexMeshGeometry(owned.pmesh.value, scale)
           : new PHYSX.PxTriangleMeshGeometry(owned.pmesh.value, scale)
       } finally {
-        PHYSX.destroy(scale)
-        PHYSX.destroy(scaleVec)
-        PHYSX.destroy(scaleQuat)
+        if (scale) PHYSX.destroy(scale)
+        if (scaleVec) PHYSX.destroy(scaleVec)
+        if (scaleQuat) PHYSX.destroy(scaleQuat)
       }
     }
     if (!geometryOk(owned.geometry)) return ['invalid', 'geometry is not valid for physics']

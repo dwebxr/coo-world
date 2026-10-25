@@ -410,6 +410,40 @@ probe('physics lifetimes: a native throw mid-mount leaves no temporaries and no 
     root.remove(body)
   })
   assert.ok(convexLeak < 0.5, `convex mesh after a geometry throw: ${convexLeak} chunks per throw`)
+  // the mesh scale's own constructor throwing, after its vector and quaternion exist: a convex collider and a convex
+  // (tapered cylinder) prim
+  const scaleThrow = make => {
+    let reached = 0
+    const leak = perCycle(() => {
+      const Original = PHYSX.PxMeshScale
+      PHYSX.PxMeshScale = function () {
+        PHYSX.PxMeshScale = Original
+        reached++
+        throw new Error('injected PxMeshScale failure')
+      }
+      const node = make()
+      try {
+        root.add(node)
+      } catch {
+        // the collider throws to its caller; the prim logs
+      }
+      PHYSX.PxMeshScale = Original
+      root.remove(node)
+    })
+    return { leak, reached }
+  }
+  const colliderScale = scaleThrow(() => {
+    const geometry = new B.THREE.BufferGeometry()
+    geometry.setAttribute('position', new B.THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1 + ++cycle * 1e-3], 3))
+    const node = new B.RigidBody({ type: 'static' })
+    node.add(new B.Collider({ type: 'geometry', geometry, convex: true }))
+    return node
+  })
+  const primScale = scaleThrow(() => new B.Prim({ type: 'cylinder', size: [0.5, 1, 1], physics: 'static', opacity: 0 }))
+  for (const [label, { leak, reached }] of [['collider', colliderScale], ['prim', primScale]]) {
+    assert.ok(reached >= 40, `${label}: the PxMeshScale fault was injected (${reached})`)
+    assert.ok(leak < 0.5, `${label}: ${leak} chunks per PxMeshScale throw`)
+  }
 })
 
 probe('physics lifetimes: the mesh budget counts the index array, not index.count', ({ B, root }) => {

@@ -366,15 +366,17 @@ export class Prim extends Node {
         // Create scale and its components explicitly so we can free them; the cooked mesh handle is the node's from
         // here (unmountPhysics releases it), so a throw below cannot strand it
         this.pmesh = pmesh
-        const _scaleVec = new PHYSX.PxVec3(absScale.x, absScale.y, absScale.z)
-        const _scaleQuat = new PHYSX.PxQuat(0, 0, 0, 1)
-        const _scale = new PHYSX.PxMeshScale(_scaleVec, _scaleQuat)
+        // each temporary is destroyed if it was created, whichever constructor throws
+        let _scaleVec, _scaleQuat, _scale
         try {
+          _scaleVec = new PHYSX.PxVec3(absScale.x, absScale.y, absScale.z)
+          _scaleQuat = new PHYSX.PxQuat(0, 0, 0, 1)
+          _scale = new PHYSX.PxMeshScale(_scaleVec, _scaleQuat)
           pxGeometry = new PHYSX.PxConvexMeshGeometry(pmesh.value, _scale)
         } finally {
-          PHYSX.destroy(_scale)
-          PHYSX.destroy(_scaleVec)
-          PHYSX.destroy(_scaleQuat)
+          if (_scale) PHYSX.destroy(_scale)
+          if (_scaleVec) PHYSX.destroy(_scaleVec)
+          if (_scaleQuat) PHYSX.destroy(_scaleQuat)
         }
       } else {
         // cooking failed: a box from the unit geometry's own bounds (host-made, so trustworthy) times the scale

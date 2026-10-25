@@ -390,6 +390,10 @@ export class RigidBody extends Node {
       return
     }
     if (!this.actor?.getLinearVelocity) return
+    if (!positionOk(_v2)) {
+      warnOnce('[rigidbody] addForceAtPos ignored a pos outside the physics range')
+      return
+    }
     mode = getForceMode(mode)
     // the lever runs from the centre of mass to the world point; |pos - position| + |centre-of-mass offset| bounds it
     const p = this.actor.getGlobalPose().p
@@ -413,6 +417,11 @@ export class RigidBody extends Node {
       return
     }
     if (!this.actor?.getLinearVelocity) return
+    // PhysX moves the local point into world space first, so a far one overflows before any product we check
+    if (!positionOk(_v2)) {
+      warnOnce('[rigidbody] addForceAtLocalPos ignored a pos outside the physics range')
+      return
+    }
     mode = getForceMode(mode)
     // the lever runs from the centre of mass to the local point; |pos| + |centre-of-mass offset| bounds it
     const lever = _v2.length() + this.centerOfMassOffset()

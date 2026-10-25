@@ -477,8 +477,6 @@ export class Physics extends System {
 
   postFixedUpdate(delta) {
     if (this.world.fatalError) return
-    // pushes are budgeted per body and step (RigidBody.spendPush)
-    this.steps = (this.steps ?? 0) + 1
     const pending = this.pendingCallbacks
     this.pendingCallbacks = []
     this.dispatchCallbacks(pending)
@@ -489,6 +487,9 @@ export class Physics extends System {
       this.scene.simulate(delta)
       phase = 'fetchResults'
       this.scene.fetchResults(true)
+      // the pushes made since the last step are consumed now, so the per-body push budget (RigidBody.spendPush)
+      // starts over; callbacks dispatched before the next simulate share the next budget
+      this.steps = (this.steps ?? 0) + 1
     } catch (err) {
       handlePhysicsFailure(err, { world: this.world, phase })
       this.world.fatal(`physics ${phase} interrupted`)

@@ -366,6 +366,15 @@ function hostile({ B, root, step, body }, name) {
       check = () => assert.deepEqual([torus.handle ?? null, torus.actor ?? null], [null, null])
       break
     }
+    // fix-diff round 2 (Codex)
+    case 'a tiny force at a far local point on a rotated body': {
+      const node = body('RigidBody', { position: [0, 0, 0] })
+      node.getProxy().setQuaternion(new B.THREE.Quaternion().setFromAxisAngle(V(0, 0, 1), Math.PI / 4))
+      touching(2.5)
+      node.getProxy().addForceAtLocalPos(V(0, 1e-35, 0), V(3e38, 0, 0), 'impulse')
+      self = node
+      break
+    }
     default:
       throw new Error(`unknown case ${name}`)
   }
@@ -406,6 +415,7 @@ for (const name of [
   'dynamic mirrored cone',
   'collider with a zero or huge local quaternion',
   'visible prims with a float32-overflowing ratio or a sparse size',
+  'a tiny force at a far local point on a rotated body',
 ]) {
   probe(`real PhysX inputs: ${name}`, hostile, name)
 }
@@ -578,4 +588,42 @@ probe('real PhysX inputs: distance joint limits apply only the ends that are set
   assert.ok(separation({}) > 2.5, 'no limits: no constraint')
   assert.ok(separation({ limitMin: 5, limitMax: 1 }) > 2.5, 'reversed limits are skipped')
   assert.ok(separation({ limitMax: 1 }) < 1.2, 'max only: the bodies are pulled within it')
+})
+
+probe('real PhysX inputs: the push budget sums every push in a step and starts over after it', ({ B, step, body }) => {
+  const V = (x, y, z) => new B.THREE.Vector3(x, y, z)
+  // copy at once: getLinearVelocity returns a shared temporary
+  const speed = node => {
+    const { x, y, z } = node.actor.getLinearVelocity()
+    return Math.hypot(x, y, z)
+  }
+  const node = body('RigidBody', { position: [0, 0, 0], linearDamping: 0, angularDamping: 0 })
+  const proxy = node.getProxy()
+  // three velocity changes of 4e5 m/s: each inside the 1e6 budget, the third would take the sum above it
+  for (let i = 0; i < 3; i++) proxy.addForce(V(4e5, 0, 0), 'velocityChange')
+  step(1)
+  const first = speed(node)
+  assert.ok(first > 7e5 && first < 9e5, `two of the three pushes applied: ${first}`)
+  // the next step has a fresh budget
+  proxy.addForce(V(-4e5, 0, 0), 'velocityChange')
+  step(1)
+  const second = speed(node)
+  assert.ok(second > 3e5 && second < 5e5, `the push after the step applied: ${second}`)
+})
+
+probe('real PhysX inputs: a force at a point counts the centre-of-mass lever toward the angular budget', ({ B, step, body }) => {
+  const V = (x, y, z) => new B.THREE.Vector3(x, y, z)
+  const spin = node => {
+    const { x, y, z } = node.actor.getAngularVelocity()
+    return Math.hypot(x, y, z)
+  }
+  for (const [i, method] of ['addForceAtPos', 'addForceAtLocalPos'].entries()) {
+    const node = body('RigidBody', { position: [i * 50, 0, 0], linearDamping: 0, angularDamping: 0 })
+    node.getProxy().setCenterOfMass(V(0, 1e6, 0))
+    node.clean()
+    // 1e5 N·s is inside the linear budget; with the centre of mass 1e6 m away the torque is 1e11, far above it
+    node.getProxy()[method](V(1e5, 0, 0), V(i * 50, 0, 0), 'impulse')
+    step(1)
+    assert.equal(spin(node), 0, `${method}: the push is ignored`)
+  }
 })

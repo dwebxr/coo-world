@@ -363,16 +363,21 @@ export class Prim extends Node {
           pmesh.release()
           return this.skipPhysics('extent', 'shape is larger than the physics range')
         }
-        // Create scale and its components explicitly so we can free them
-        const _scaleVec = new PHYSX.PxVec3(absScale.x, absScale.y, absScale.z)
-        const _scaleQuat = new PHYSX.PxQuat(0, 0, 0, 1)
-        const _scale = new PHYSX.PxMeshScale(_scaleVec, _scaleQuat)
-        pxGeometry = new PHYSX.PxConvexMeshGeometry(pmesh.value, _scale)
-        // free temporary PhysX objects
-        PHYSX.destroy(_scale)
-        PHYSX.destroy(_scaleVec)
-        PHYSX.destroy(_scaleQuat)
-        this.pmesh = pmesh // Store for cleanup
+        // Create scale and its components explicitly so we can free them; the cooked mesh handle is the node's from
+        // here (unmountPhysics releases it), so a throw below cannot strand it
+        this.pmesh = pmesh
+        // each temporary is destroyed if it was created, whichever constructor throws
+        let _scaleVec, _scaleQuat, _scale
+        try {
+          _scaleVec = new PHYSX.PxVec3(absScale.x, absScale.y, absScale.z)
+          _scaleQuat = new PHYSX.PxQuat(0, 0, 0, 1)
+          _scale = new PHYSX.PxMeshScale(_scaleVec, _scaleQuat)
+          pxGeometry = new PHYSX.PxConvexMeshGeometry(pmesh.value, _scale)
+        } finally {
+          if (_scale) PHYSX.destroy(_scale)
+          if (_scaleVec) PHYSX.destroy(_scaleVec)
+          if (_scaleQuat) PHYSX.destroy(_scaleQuat)
+        }
       } else {
         // cooking failed: a box from the unit geometry's own bounds (host-made, so trustworthy) times the scale
         console.warn(`[prim] Failed to create convex mesh for ${this._type}, falling back to box`)
@@ -394,6 +399,15 @@ export class Prim extends Node {
       return this.skipPhysics('invalid', 'geometry is not valid for physics')
     }
 
+    // the geometry is copied into the shape, so it is destroyed on every exit, a throw included
+    try {
+      this.mountActor(pxGeometry, { type, mass, linearDamping, angularDamping, trigger })
+    } finally {
+      PHYSX.destroy(pxGeometry)
+    }
+  }
+
+  mountActor(pxGeometry, { type, mass, linearDamping, angularDamping, trigger }) {
     // Create transform
     if (!this._tm) this._tm = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
     vec3ToPxPos(_v1, this._tm)
@@ -419,23 +433,20 @@ export class Prim extends Node {
     const restitution = this._restitution
     const material = this.ctx.world.physics.getMaterial(staticFriction, dynamicFriction, restitution)
 
-    // Create shape flags
+    // Create shape flags and the shape; the flags are destroyed on every exit, a throw from raise() included
     const flags = new PHYSX.PxShapeFlags()
-    if (trigger) {
-      flags.raise(PHYSX.PxShapeFlagEnum.eTRIGGER_SHAPE)
-    } else {
-      flags.raise(PHYSX.PxShapeFlagEnum.eSCENE_QUERY_SHAPE | PHYSX.PxShapeFlagEnum.eSIMULATION_SHAPE)
-    }
-
-    // Create shape
     let shape
     try {
+      if (trigger) {
+        flags.raise(PHYSX.PxShapeFlagEnum.eTRIGGER_SHAPE)
+      } else {
+        flags.raise(PHYSX.PxShapeFlagEnum.eSCENE_QUERY_SHAPE | PHYSX.PxShapeFlagEnum.eSIMULATION_SHAPE)
+      }
       shape = this.ctx.world.physics.physics.createShape(pxGeometry, material, true, flags)
     } finally {
       PHYSX.destroy(flags)
       if (!shape || shape.ptr === 0) {
         this.shape = null
-        PHYSX.destroy(pxGeometry)
         this.pmesh?.release()
         this.pmesh = null
         this.actor.release()
@@ -456,9 +467,12 @@ export class Prim extends Node {
       pairFlags |= PHYSX.PxPairFlagEnum.eNOTIFY_CONTACT_POINTS
     }
     const filterData = new PHYSX.PxFilterData(layer.group, layer.mask, pairFlags, 0)
-    this.shape.setQueryFilterData(filterData)
-    this.shape.setSimulationFilterData(filterData)
-    PHYSX.destroy(filterData)
+    try {
+      this.shape.setQueryFilterData(filterData)
+      this.shape.setSimulationFilterData(filterData)
+    } finally {
+      PHYSX.destroy(filterData)
+    }
 
     // const position = _v1.copy(this.position).multiply(this.parent.scale)
     // const pose = new PHYSX.PxTransform()
@@ -496,8 +510,6 @@ export class Prim extends Node {
       },
     })
 
-    // Clean up
-    PHYSX.destroy(pxGeometry)
   }
 
   // no physics for this prim (its visual stays); a property setter rebuilds it, a transform edit does not

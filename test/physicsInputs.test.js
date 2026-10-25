@@ -44,6 +44,7 @@ class PxTransform {
 }
 const velocity = { ptr: 4, x: 4, y: 5, z: 6 }
 const physics = {
+  destroy() {},
   PxVec3,
   PxExtendedVec3: PxVec3,
   PxTransform,
@@ -685,10 +686,20 @@ for (const name of ['active', 'add', 'remove', 'clone', 'clean']) {
       child.needsRebuild = false
       child.actorHandle = { move: native('move') }
     }
+    if (name === 'clone') {
+      // constructing a node allocates no native any more (Phase 3b-2b): its scratch is created on demand while
+      // mounted, so a clone never reaches PhysX
+      injected = new Error('native boom')
+      try {
+        assert.doesNotThrow(() => proxy.clone(true))
+      } finally {
+        injected = null
+      }
+      return
+    }
     expectIntrinsic(() => {
       if (name === 'active') proxy.active = false
       else if (name === 'add' || name === 'remove') proxy[name](child.getProxy())
-      else if (name === 'clone') proxy.clone(true)
       else proxy.clean()
     })
   })

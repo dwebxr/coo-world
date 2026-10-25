@@ -1,4 +1,5 @@
 import * as THREE from '../extras/three'
+import { handlePhysicsFailure } from '../extras/physicsFailure.js'
 import {
   decomposeMatrix,
   vec3ToPx,
@@ -79,7 +80,11 @@ export class RigidBody extends Node {
     this.onTriggerEnter = data.onTriggerEnter
     this.onTriggerLeave = data.onTriggerLeave
 
-    this._tm = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
+    // native scratch is allocated on demand and destroyed in unmount, so no PhysX object outlives the node's mount
+    this._tm = null
+    // joints attached to this body, and joints waiting for it to have an actor (see Joint.mount)
+    this.joints = new Set()
+    this.pendingJoints = new Set()
 
     this.tempVec3 = new THREE.Vector3()
     this.tempQuat = new THREE.Quaternion()
@@ -95,29 +100,14 @@ export class RigidBody extends Node {
       warnOnce('[rigidbody] no actor outside the physics range')
       return
     }
-    this.transform = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
-    vec3ToPxPos(_v1, this.transform)
-    quatToPxRot(_q1, this.transform)
-    if (this._type === 'static') {
-      this.actor = this.ctx.world.physics.physics.createRigidStatic(this.transform)
-    } else if (this._type === 'kinematic') {
-      this.actor = this.ctx.world.physics.physics.createRigidDynamic(this.transform)
-      this.actor.setRigidBodyFlag(PHYSX.PxRigidBodyFlagEnum.eKINEMATIC, true)
-      // this.actor.setMass(this.mass)
-      PHYSX.PxRigidBodyExt.prototype.setMassAndUpdateInertia(this.actor, this._mass)
-      // this.untrack = this.ctx.world.physics.track(this.actor, this.onPhysicsMovement)
-    } else if (this._type === 'dynamic') {
-      this.actor = this.ctx.world.physics.physics.createRigidDynamic(this.transform)
-      // this.actor.setMass(this.mass)
-      PHYSX.PxRigidBodyExt.prototype.setMassAndUpdateInertia(this.actor, this._mass)
-      // this.untrack = this.ctx.world.physics.track(this.actor, this.onPhysicsMovement)
-      if (this._centerOfMass) {
-        const pose = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
-        vec3ToPxPos(this._centerOfMass, pose)
-        this.actor.setCMassLocalPose(pose)
-      }
-      this.actor.setLinearDamping(this._linearDamping)
-      this.actor.setAngularDamping(this._angularDamping)
+    // PhysX copies the creation transform and the centre-of-mass pose, so both are destroyed right after use
+    const transform = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
+    try {
+      vec3ToPxPos(_v1, transform)
+      quatToPxRot(_q1, transform)
+      this.createActor(transform)
+    } finally {
+      PHYSX.destroy(transform)
     }
     for (const shape of this.shapes) {
       this.actor.attachShape(shape)
@@ -146,6 +136,19 @@ export class RigidBody extends Node {
         return self._onTriggerLeave
       },
     })
+    // joints detached by this body's rebuild, or waiting for it to have an actor. A joint can belong to another app,
+    // so its failure is contained to that app instead of crashing this one.
+    for (const joint of [...this.pendingJoints]) {
+      this.pendingJoints.delete(joint)
+      if (!joint.mounted || joint.joint) continue
+      try {
+        joint.mount()
+      } catch (err) {
+        handlePhysicsFailure(err, { entity: joint.ctx?.entity, world: this.ctx.world, phase: 'Joint.mount' })
+        console.error('[joint] mount failed')
+        console.error(err)
+      }
+    }
   }
 
   commit(didMove) {
@@ -175,7 +178,42 @@ export class RigidBody extends Node {
     }
   }
 
+  createActor(transform) {
+    if (this._type === 'static') {
+      this.actor = this.ctx.world.physics.physics.createRigidStatic(transform)
+    } else if (this._type === 'kinematic') {
+      this.actor = this.ctx.world.physics.physics.createRigidDynamic(transform)
+      this.actor.setRigidBodyFlag(PHYSX.PxRigidBodyFlagEnum.eKINEMATIC, true)
+      // this.actor.setMass(this.mass)
+      PHYSX.PxRigidBodyExt.prototype.setMassAndUpdateInertia(this.actor, this._mass)
+      // this.untrack = this.ctx.world.physics.track(this.actor, this.onPhysicsMovement)
+    } else if (this._type === 'dynamic') {
+      this.actor = this.ctx.world.physics.physics.createRigidDynamic(transform)
+      // this.actor.setMass(this.mass)
+      PHYSX.PxRigidBodyExt.prototype.setMassAndUpdateInertia(this.actor, this._mass)
+      // this.untrack = this.ctx.world.physics.track(this.actor, this.onPhysicsMovement)
+      if (this._centerOfMass) {
+        const pose = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
+        try {
+          vec3ToPxPos(this._centerOfMass, pose)
+          this.actor.setCMassLocalPose(pose)
+        } finally {
+          PHYSX.destroy(pose)
+        }
+      }
+      this.actor.setLinearDamping(this._linearDamping)
+      this.actor.setAngularDamping(this._angularDamping)
+    }
+  }
+
   unmount() {
+    // a rebuild releases the actor, and PhysX drops its constraints with it: detach the joints first, while both actors
+    // are alive, and mount them again once the new actor exists
+    for (const joint of [...this.joints]) {
+      joint.unmount()
+      this.pendingJoints.add(joint)
+      joint.attachedBodies = [this]
+    }
     if (this.actor) {
       // this.untrack?.()
       // this.untrack = null
@@ -183,6 +221,11 @@ export class RigidBody extends Node {
       this.actorHandle = null
       this.actor.release()
       this.actor = null
+    }
+    // scratch allocated by setKinematicTarget and addForceAt(Local)Pos
+    for (const key of ['_tm', '_pv1', '_pv2']) {
+      if (this[key]) PHYSX.destroy(this[key])
+      this[key] = null
     }
   }
 
@@ -244,6 +287,7 @@ export class RigidBody extends Node {
     if (!massOk(value)) {
       throw new Error(`[rigidbody] mass must be 0 or at least ${MIN_MASS}`)
     }
+    if (this._mass === value) return
     this._mass = value
     this.needsRebuild = true
     this.setDirty()
@@ -260,6 +304,7 @@ export class RigidBody extends Node {
     if (value < 0) {
       throw new Error('[rigidbody] linearDamping cannot be less than zero')
     }
+    if (this._linearDamping === value) return
     this._linearDamping = value
     this.needsRebuild = true
     this.setDirty()
@@ -276,6 +321,7 @@ export class RigidBody extends Node {
     if (value < 0) {
       throw new Error('[rigidbody] angularDamping cannot be less than zero')
     }
+    if (this._angularDamping === value) return
     this._angularDamping = value
     this.needsRebuild = true
     this.setDirty()
@@ -574,6 +620,8 @@ export class RigidBody extends Node {
       warnOnce('[rigidbody] setCenterOfMass ignored a pos outside the physics range')
       return
     }
+    const com = this._centerOfMass
+    if (com && com.x === _v1.x && com.y === _v1.y && com.z === _v1.z) return
     this._centerOfMass ??= new THREE.Vector3()
     writeVec3(this._centerOfMass, _v1.x, _v1.y, _v1.z)
     this.needsRebuild = true
@@ -600,6 +648,7 @@ export class RigidBody extends Node {
     }
     if (!this.actor?.setKinematicTarget) return
     if (!this.actor.getRigidBodyFlags().isSet(PHYSX.PxRigidBodyFlagEnum.eKINEMATIC)) return
+    if (!this._tm) this._tm = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
     vec3ToPxPos(_v1, this._tm)
     quatToPxRot(_q1, this._tm)
     this.actor?.setKinematicTarget(this._tm)

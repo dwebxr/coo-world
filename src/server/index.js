@@ -22,6 +22,7 @@ import { assets } from './assets'
 import { collections } from './collections'
 import { cleaner } from './cleaner'
 import { errorHandler } from './errorHandler'
+import { checkJwtSecret } from './jwtSecret'
 import { escapeHtml } from './escapeHtml'
 import { walletOf } from './solana-gating'
 import { clientIpKeys, createUploadLimits, readUploadLimitsEnv } from './uploadLimits'
@@ -39,9 +40,7 @@ if (!process.env.WORLD) {
 if (!process.env.PORT) {
   throw new Error('[envs] PORT not set')
 }
-if (!process.env.JWT_SECRET) {
-  throw new Error('[envs] JWT_SECRET not set')
-}
+checkJwtSecret(process.env.JWT_SECRET)
 if (!process.env.ADMIN_CODE) {
   console.warn('[envs] ADMIN_CODE not set - all users will have admin permissions!')
 }

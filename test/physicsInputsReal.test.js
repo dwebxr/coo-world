@@ -622,8 +622,39 @@ probe('real PhysX inputs: a force at a point counts the centre-of-mass lever tow
     node.getProxy().setCenterOfMass(V(0, 1e6, 0))
     node.clean()
     // 1e5 N·s is inside the linear budget; with the centre of mass 1e6 m away the torque is 1e11, far above it
-    node.getProxy()[method](V(1e5, 0, 0), V(i * 50, 0, 0), 'impulse')
+    // at the body's own origin: the ordinary lever is 0, so only the centre-of-mass offset can exceed the budget
+    node.getProxy()[method](V(1e5, 0, 0), method === 'addForceAtPos' ? V(i * 50, 0, 0) : V(0, 0, 0), 'impulse')
     step(1)
     assert.equal(spin(node), 0, `${method}: the push is ignored`)
   }
+})
+
+probe('real PhysX inputs: a push from a callback dispatched before the step shares the step budget', ({ B, root, step, body }) => {
+  const V = (x, y, z) => new B.THREE.Vector3(x, y, z)
+  const speed = node => {
+    const { x, y, z } = node.actor.getLinearVelocity()
+    return Math.hypot(x, y, z)
+  }
+  const a = body('RigidBody', { position: [0, 0, 0], linearDamping: 0, angularDamping: 0 })
+  const b = body('RigidBody', { position: [1.9, 0, 0] })
+  const proxy = a.getProxy()
+  a.onContactStart = () => {}
+  a.onContactEnd = () => proxy.addForce(V(0, 4e5, 0), 'velocityChange')
+  step(1) // the boxes overlap, so the contact starts
+  proxy.setLinearVelocity(V(0, 0, 0))
+  proxy.addForce(V(0, 4e5, 0), 'velocityChange')
+  proxy.addForce(V(0, 4e5, 0), 'velocityChange')
+  // removing b queues a's contact end, dispatched at the start of the next step, before simulate
+  root.remove(b)
+  step(1)
+  const v = speed(a)
+  assert.ok(v > 7e5 && v < 9e5, `the callback's push exceeds the shared budget and is ignored: ${v}`)
+})
+
+probe('real PhysX inputs: a tiny force at a far world point is ignored', ({ B, step, body }) => {
+  const node = body('RigidBody', { position: [0, 0, 0], linearDamping: 0, angularDamping: 0 })
+  node.getProxy().addForceAtPos(new B.THREE.Vector3(0, 1e-3, 0), new B.THREE.Vector3(2e6, 0, 0), 'impulse')
+  step(1)
+  const { x, y, z } = node.actor.getAngularVelocity()
+  assert.equal(Math.hypot(x, y, z), 0)
 })

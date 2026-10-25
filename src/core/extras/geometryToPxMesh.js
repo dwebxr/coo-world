@@ -86,10 +86,25 @@ export function geometryToPxMesh(world, geometry, convex, entity) {
     warnOnce('[physics] mesh skipped: too many vertices')
     return null
   }
+  // the index representation is validated first, and its array's own length is the one count used for the limits,
+  // the budget and the cook (index.count can disagree with it)
+  let indices
   let triangleCount = 0
   if (!convex) {
-    const length = geometry.index?.count
-    if (!Number.isInteger(length) || length % 3 !== 0) {
+    const index = geometry.index
+    indices = index?.array
+    if (
+      !index ||
+      index.itemSize !== 1 ||
+      index.normalized ||
+      index.isInterleavedBufferAttribute ||
+      !(indices instanceof Uint8Array || indices instanceof Uint16Array || indices instanceof Uint32Array)
+    ) {
+      warnOnce('[physics] mesh has unsupported indices')
+      return null
+    }
+    const length = indices.length
+    if (length % 3 !== 0) {
       warnOnce('[physics] mesh has an index count that is not whole triangles')
       return null
     }
@@ -123,20 +138,7 @@ export function geometryToPxMesh(world, geometry, convex, entity) {
     maxAbs[2] = Math.max(maxAbs[2], Math.abs(z))
   }
 
-  let indices
   if (!convex) {
-    const index = geometry.index
-    indices = index?.array
-    if (
-      !index ||
-      index.itemSize !== 1 ||
-      index.normalized ||
-      index.isInterleavedBufferAttribute ||
-      !(indices instanceof Uint8Array || indices instanceof Uint16Array || indices instanceof Uint32Array)
-    ) {
-      warnOnce('[physics] mesh has unsupported indices')
-      return null
-    }
     // every index must name a vertex
     for (let i = 0; i < indices.length; i++) {
       if (indices[i] >= count) {

@@ -77,14 +77,17 @@ function cycles({ B, root, body, liveChunks }, name) {
     case 'Joint of each type, fresh nodes': {
       const a = body('RigidBody', { position: [0, 0, 0] })
       const b = body('RigidBody', { position: [3, 0, 0] })
-      const types = ['fixed', 'socket', 'hinge', 'distance']
-      leak = perCycle(i => {
-        const node = new B.Joint({ type: types[i % 4], limitY: 30, limitZ: 30, limitMin: -10, limitMax: 10, limitStiffness: 10, limitDamping: 1 })
-        node.body0 = a
-        node.body1 = b
-        root.add(node)
-        root.remove(node)
-      })
+      // each type on its own, so one leaking type cannot hide in an average
+      const leaks = ['fixed', 'socket', 'hinge', 'distance'].map(type =>
+        perCycle(() => {
+          const node = new B.Joint({ type, limitY: 30, limitZ: 30, limitMin: -10, limitMax: 10, limitStiffness: 10, limitDamping: 1 })
+          node.body0 = a
+          node.body1 = b
+          root.add(node)
+          root.remove(node)
+        })
+      )
+      leak = Math.max(...leaks)
       break
     }
     case 'Prim box, the same node remounted': {
@@ -138,8 +141,8 @@ probe('physics lifetimes: an unchanged value does not rebuild', ({ B, root }) =>
     rb.angularDamping = 0.2
     rb.getProxy().setCenterOfMass(new B.THREE.Vector3(0, 0, 0))
     collider.width = 1
-    collider.staticFriction = collider.staticFriction
-    collider.layer = collider.layer
+    collider.staticFriction = 0.6
+    collider.layer = 'environment'
     collider.trigger = false
     controller.radius = 0.4
     controller.height = 1
@@ -347,24 +350,126 @@ probe('physics lifetimes: a native throw mid-mount leaves no temporaries and no 
   const colliderLeak = perCycle(() => {
     const rb = collider()
     failOnce(PHYSX.PxShape.prototype, 'setLocalPose')
-    assert.throws(() => root.add(rb), /injected setLocalPose failure/)
+    assert.throws(() => root.add(rb), /injected setLocalPose failure/, 'collider setLocalPose throws')
     root.remove(rb)
   })
   assert.ok(colliderLeak < 0.5, `collider temporaries: ${colliderLeak} chunks per throw`)
-  // Physics.addActor: scene.addActor throws, so no handle is published
+  // Physics.addActor: scene.addActor throws, so neither the handle nor its registration is published
   const handles = physics.handles.size
-  const registrations = physics.registrations.size
+  let attempted = null
+  const addActor = physics.addActor
+  physics.addActor = function (actor, handle) {
+    attempted = handle
+    return addActor.call(this, actor, handle)
+  }
   const rb = collider()
   failOnce(PHYSX.PxScene.prototype, 'addActor')
-  assert.throws(() => root.add(rb), /injected addActor failure/)
+  assert.throws(() => root.add(rb), /injected addActor failure/, 'scene.addActor throws')
+  physics.addActor = addActor
+  assert.ok(attempted, 'addActor was reached')
   assert.equal(physics.handles.size, handles, 'no stale handle')
-  assert.equal(physics.registrations.size, registrations, 'no stale registration')
-  // Prim: attachShape throws after the geometry was built (Prim logs mount failures instead of throwing)
-  const primLeak = perCycle(() => {
-    const node = new B.Prim({ type: 'box', size: [1, 1, 1], physics: 'static', opacity: 0 })
-    failOnce(PHYSX.PxRigidActor.prototype, 'attachShape')
-    root.add(node)
-    root.remove(node)
+  assert.equal(physics.registrations.has(attempted), false, 'no stale registration')
+  root.remove(rb)
+  // Prim: the static actor's own attachShape and the shape's setQueryFilterData throw after the geometry and the
+  // filter data exist (Prim logs mount failures instead of throwing); each injection must actually be reached
+  for (const [proto, method] of [
+    [PHYSX.PxRigidStatic.prototype, 'attachShape'],
+    [PHYSX.PxShape.prototype, 'setQueryFilterData'],
+  ]) {
+    let reached = 0
+    const primLeak = perCycle(() => {
+      const node = new B.Prim({ type: 'box', size: [1, 1, 1], physics: 'static', opacity: 0 })
+      const original = proto[method]
+      proto[method] = function () {
+        proto[method] = original
+        reached++
+        throw new Error(`injected ${method} failure`)
+      }
+      root.add(node)
+      proto[method] = original
+      root.remove(node)
+    })
+    assert.ok(reached >= 40, `prim ${method}: the fault was injected (${reached})`)
+    assert.ok(primLeak < 0.5, `prim ${method}: ${primLeak} chunks per throw`)
+  }
+  // a convex collider whose geometry constructor throws after its mesh was cooked: the mesh handle is released
+  let cycle = 0
+  const convexLeak = perCycle(() => {
+    // a fresh geometry each time, so every cycle cooks a new mesh
+    const geometry = new B.THREE.BufferGeometry()
+    geometry.setAttribute('position', new B.THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1 + ++cycle * 1e-3], 3))
+    const body = new B.RigidBody({ type: 'static' })
+    body.add(new B.Collider({ type: 'geometry', geometry, convex: true }))
+    const Original = PHYSX.PxConvexMeshGeometry
+    PHYSX.PxConvexMeshGeometry = function () {
+      PHYSX.PxConvexMeshGeometry = Original
+      throw new Error('injected PxConvexMeshGeometry failure')
+    }
+    assert.throws(() => root.add(body), /injected PxConvexMeshGeometry failure/, 'convex geometry throws')
+    PHYSX.PxConvexMeshGeometry = Original
+    root.remove(body)
   })
-  assert.ok(primLeak < 0.5, `prim geometry: ${primLeak} chunks per throw`)
+  assert.ok(convexLeak < 0.5, `convex mesh after a geometry throw: ${convexLeak} chunks per throw`)
 })
+
+probe('physics lifetimes: the mesh budget counts the index array, not index.count', ({ B, root }) => {
+  // index.count says one triangle; the array holds 200 001
+  const geometry = new B.THREE.BufferGeometry()
+  geometry.setAttribute('position', new B.THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0], 3))
+  const index = new B.THREE.BufferAttribute(new Uint32Array(200_001 * 3).map((_, i) => i % 3), 1)
+  Object.defineProperty(index, 'count', { value: 3 })
+  geometry.setIndex(index)
+  const rb = new B.RigidBody({ type: 'static' })
+  const collider = new B.Collider({ type: 'geometry', geometry })
+  rb.add(collider)
+  root.add(rb)
+  assert.equal(collider.shape, null, 'refused: too many triangles')
+})
+
+probe('physics lifetimes: joint bookkeeping survives failures and body swaps', ({ B, PHYSX, root, body, physics }) => {
+  const constraints = () => physics.scene.getNbConstraints()
+  const fixed = (a, b) => {
+    const joint = new B.Joint({ type: 'fixed' })
+    joint.body0 = a
+    joint.body1 = b
+    return joint
+  }
+  // a joint whose configuration throws during a body rebuild is released and waits, not left unregistered
+  const a = body('RigidBody', { position: [0, 0, 0] })
+  const b = body('RigidBody', { position: [3, 0, 0] })
+  const joint = fixed(a, b)
+  root.add(joint)
+  assert.equal(constraints(), 1)
+  const original = PHYSX.PxFixedJoint.prototype.setBreakForce
+  PHYSX.PxFixedJoint.prototype.setBreakForce = function () {
+    PHYSX.PxFixedJoint.prototype.setBreakForce = original
+    throw new Error('injected setBreakForce failure')
+  }
+  a.mass = 2
+  a.clean() // the re-mount fails and is contained (logged), the rebuild completes
+  PHYSX.PxFixedJoint.prototype.setBreakForce = original
+  assert.equal(constraints(), 0, 'the half-configured joint was released')
+  assert.equal(joint.joint, null)
+  b.mass = 2
+  b.clean() // the next rebuild of either body mounts it again
+  assert.equal(constraints(), 1, 'the joint mounts again on the next rebuild')
+  root.remove(joint)
+  assert.equal(constraints(), 0)
+  // replacing a body while the joint waits leaves no registration on the old body
+  const waitingA = new B.RigidBody({ type: 'dynamic' })
+  waitingA.add(new B.Collider({ type: 'box', width: 1, height: 1, depth: 1 }))
+  const waitingB = new B.RigidBody({ type: 'dynamic', position: [3, 0, 0] })
+  waitingB.add(new B.Collider({ type: 'box', width: 1, height: 1, depth: 1 }))
+  const swap = fixed(waitingA, waitingB)
+  root.add(swap)
+  assert.ok(waitingA.pendingJoints.has(swap), 'waits for the first body')
+  const c = body('RigidBody', { position: [0, 5, 0] })
+  swap.getProxy().body0 = c.getProxy()
+  root.add(waitingB)
+  swap.clean()
+  assert.equal(constraints(), 1, 'mounted against the new body')
+  root.remove(swap)
+  assert.equal(waitingA.pendingJoints.has(swap), false, 'no stale registration on the replaced body')
+  assert.equal(constraints(), 0)
+})
+

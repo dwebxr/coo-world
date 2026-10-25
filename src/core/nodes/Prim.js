@@ -363,16 +363,19 @@ export class Prim extends Node {
           pmesh.release()
           return this.skipPhysics('extent', 'shape is larger than the physics range')
         }
-        // Create scale and its components explicitly so we can free them
+        // Create scale and its components explicitly so we can free them; the cooked mesh handle is the node's from
+        // here (unmountPhysics releases it), so a throw below cannot strand it
+        this.pmesh = pmesh
         const _scaleVec = new PHYSX.PxVec3(absScale.x, absScale.y, absScale.z)
         const _scaleQuat = new PHYSX.PxQuat(0, 0, 0, 1)
         const _scale = new PHYSX.PxMeshScale(_scaleVec, _scaleQuat)
-        pxGeometry = new PHYSX.PxConvexMeshGeometry(pmesh.value, _scale)
-        // free temporary PhysX objects
-        PHYSX.destroy(_scale)
-        PHYSX.destroy(_scaleVec)
-        PHYSX.destroy(_scaleQuat)
-        this.pmesh = pmesh // Store for cleanup
+        try {
+          pxGeometry = new PHYSX.PxConvexMeshGeometry(pmesh.value, _scale)
+        } finally {
+          PHYSX.destroy(_scale)
+          PHYSX.destroy(_scaleVec)
+          PHYSX.destroy(_scaleQuat)
+        }
       } else {
         // cooking failed: a box from the unit geometry's own bounds (host-made, so trustworthy) times the scale
         console.warn(`[prim] Failed to create convex mesh for ${this._type}, falling back to box`)
@@ -464,9 +467,12 @@ export class Prim extends Node {
       pairFlags |= PHYSX.PxPairFlagEnum.eNOTIFY_CONTACT_POINTS
     }
     const filterData = new PHYSX.PxFilterData(layer.group, layer.mask, pairFlags, 0)
-    this.shape.setQueryFilterData(filterData)
-    this.shape.setSimulationFilterData(filterData)
-    PHYSX.destroy(filterData)
+    try {
+      this.shape.setQueryFilterData(filterData)
+      this.shape.setSimulationFilterData(filterData)
+    } finally {
+      PHYSX.destroy(filterData)
+    }
 
     // const position = _v1.copy(this.position).multiply(this.parent.scale)
     // const pose = new PHYSX.PxTransform()

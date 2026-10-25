@@ -66,12 +66,13 @@ export class Joint extends Node {
   mount() {
     const body0 = this.body0
     const body1 = this.body1
+    // the previous bodies may have been replaced by a proxy setter since the last mount
+    this.detachFromBodies()
     if (!body0 && !body1) return // at least one required
     // A body node without an actor (removed, skipped or not mounted yet) means wait: that body's next mount mounts
     // this joint again. Only a null body is the world; an absent actor would make PhysX anchor the other body there.
     if ((body0 && !body0.actor) || (body1 && !body1.actor)) {
-      for (const body of [body0, body1]) if (body && !body.actor) body.pendingJoints.add(this)
-      this.attachedBodies = [body0, body1].filter(Boolean)
+      this.waitFor([body0, body1])
       return
     }
     const actor0 = body0?.actor
@@ -81,17 +82,34 @@ export class Joint extends Node {
     const frame1 = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
     try {
       this.mountJoint(actor0, actor1, frame0, frame1)
+    } catch (err) {
+      // a joint that failed half-way is released, and waits for the next rebuild of either body
+      this.joint?.release()
+      this.joint = null
+      this.waitFor([body0, body1])
+      throw err
     } finally {
       PHYSX.destroy(frame0)
       PHYSX.destroy(frame1)
     }
     if (this.joint) {
-      for (const body of [body0, body1]) {
-        body?.pendingJoints.delete(this)
-        body?.joints.add(this)
-      }
+      for (const body of [body0, body1]) body?.joints.add(this)
       this.attachedBodies = [body0, body1].filter(Boolean)
     }
+  }
+
+  // registered as waiting on each body: a body's mount mounts this joint again
+  waitFor(bodies) {
+    this.attachedBodies = bodies.filter(Boolean)
+    for (const body of this.attachedBodies) body.pendingJoints.add(this)
+  }
+
+  detachFromBodies() {
+    for (const body of this.attachedBodies) {
+      body.joints.delete(this)
+      body.pendingJoints.delete(this)
+    }
+    this.attachedBodies = []
   }
 
   mountJoint(actor0, actor1, frame0, frame1) {
@@ -230,11 +248,7 @@ export class Joint extends Node {
     // released while both actors are alive (a rebuilding body unmounts its joints before releasing its actor)
     this.joint?.release()
     this.joint = null
-    for (const body of this.attachedBodies) {
-      body.joints.delete(this)
-      body.pendingJoints.delete(this)
-    }
-    this.attachedBodies = []
+    this.detachFromBodies()
   }
 
   copy(source, recursive) {

@@ -6,6 +6,7 @@
 //   --world: an existing world directory to copy (eg the local 5-app world); without it the server
 //            bootstraps the default world from src/world
 // Requires the four builds (see .github/workflows/e2e.yml). Logs and screenshots go to test/e2e/out/.
+import http from 'node:http'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import Database from 'better-sqlite3'
@@ -1313,11 +1314,18 @@ async function probes(admin, watcher) {
       const before = openErrors()
       const r = await probeCommand('openAsset')
       ok(r.ok, r.error)
-      // /%61ssets/ still matches the /assets/* route, but @fastify/static 10 checks the raw URL prefix and answers
-      // 404 (8.x served the file with 200); world.open rejects the spelling either way, for servers and proxies
-      // that do decode it
       eq(r.canonicalStatus, 200, 'the server serves /assets/crash-block.glb')
-      eq(r.encodedStatus, 404, 'the server no longer serves /%61ssets/ like /assets/')
+      // /%61ssets/ still matches the /assets/* route, but @fastify/static 10 checks the raw URL prefix and answers
+      // 404 (8.x served the file with 200). Sent from Node with the path as is: a browser may decode %61 first
+      // (WebKit on Linux does). world.open rejects the spelling either way, for servers and proxies that decode it
+      const encodedStatus = await new Promise((resolve, reject) => {
+        const req = http.get({ host: '127.0.0.1', port: server.port, path: '/%61ssets/crash-block.glb' }, res => {
+          res.resume()
+          resolve(res.statusCode)
+        })
+        req.on('error', reject)
+      })
+      eq(encodedStatus, 404, 'the server no longer serves /%61ssets/ like /assets/')
       await sleep(800)
       eq(page.url(), urlBefore, 'page url')
       eq(openErrors(), before + 4, 'four console errors')

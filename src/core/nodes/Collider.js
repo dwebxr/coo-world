@@ -7,7 +7,16 @@ import { getRef, Node, resolveValueRef, secureRef } from './Node'
 
 import { Layers } from '../extras/Layers'
 import { geometryToPxMesh } from '../extras/geometryToPxMesh'
-import { extentOk, finiteNumber, geometryOk, lengthOk, scaleOk, warnPhysicsOnce } from '../extras/physicsValidate.js'
+import {
+  extentOk,
+  finiteNumber,
+  geometryOk,
+  lengthOk,
+  normalizeQuat,
+  positionOk,
+  scaleOk,
+  warnPhysicsOnce,
+} from '../extras/physicsValidate.js'
 
 const defaults = {
   type: 'box',
@@ -27,7 +36,9 @@ const defaults = {
 const _v1 = new THREE.Vector3()
 const _v2 = new THREE.Vector3()
 const _v3 = new THREE.Vector3()
+const _v4 = new THREE.Vector3()
 const _q1 = new THREE.Quaternion()
+const _q2 = new THREE.Quaternion()
 
 const types = ['box', 'sphere', 'geometry']
 const layers = ['environment', 'prop', 'player', 'tool']
@@ -55,18 +66,24 @@ export class Collider extends Node {
     this.physicsSkipped = null
     let geometry
     let pmesh
-    // every length, scale and extent is checked before PhysX sees it (physicsValidate.js)
+    // every length, scale, extent and the local pose are checked before PhysX sees them (physicsValidate.js)
+    if (!this.parent) return this.skipPhysics('parent', 'has no parent')
+    const localPosition = _v4.copy(this.position).multiply(this.parent.scale)
+    const localRotation = _q2.copy(this.quaternion)
+    if (!positionOk(localPosition) || !normalizeQuat(localRotation)) {
+      return this.skipPhysics('pose', 'local pose is outside the physics range')
+    }
     if (this._type === 'box') {
       const hx = this._width / 2
       const hy = this._height / 2
       const hz = this._depth / 2
       if (!lengthOk(hx) || !lengthOk(hy) || !lengthOk(hz)) {
-        return this.skipPhysics('size', `box ${this._width} x ${this._height} x ${this._depth} is outside the physics range`)
+        return this.skipPhysics('size', 'box size is outside the physics range')
       }
       geometry = new PHYSX.PxBoxGeometry(hx, hy, hz)
     } else if (this._type === 'sphere') {
       if (!lengthOk(this._radius)) {
-        return this.skipPhysics('size', `sphere radius ${this._radius} is outside the physics range`)
+        return this.skipPhysics('size', 'sphere radius is outside the physics range')
       }
       geometry = new PHYSX.PxSphereGeometry(this._radius)
     } else if (this._type === 'geometry') {
@@ -78,7 +95,7 @@ export class Collider extends Node {
       this.matrixWorld.decompose(_v1, _q1, _v2)
       // a triangle mesh may be mirrored; a mirrored convex mesh is invalid
       if (!scaleOk(_v2, !isConvex)) {
-        return this.skipPhysics('scale', `scale ${_v2.x}, ${_v2.y}, ${_v2.z} is outside the physics range`)
+        return this.skipPhysics('scale', 'scale is outside the physics range')
       }
       pmesh = geometryToPxMesh(this.ctx.world, this._geometry, isConvex, this.ctx.entity)
       if (!pmesh) return this.skipPhysics('cook', 'failed to generate collider pmesh')
@@ -103,7 +120,7 @@ export class Collider extends Node {
     if (!geometryOk(geometry)) {
       PHYSX.destroy(geometry)
       pmesh?.release()
-      return this.skipPhysics('invalid', `${this._type} geometry is not valid for physics`)
+      return this.skipPhysics('invalid', 'geometry is not valid for physics')
     }
     const material = this.ctx.world.physics.getMaterial(this._staticFriction, this._dynamicFriction, this._restitution)
     const flags = new PHYSX.PxShapeFlags()
@@ -140,12 +157,9 @@ export class Collider extends Node {
     this.shape.setQueryFilterData(filterData)
     this.shape.setSimulationFilterData(filterData)
     PHYSX.destroy(filterData)
-    // const parentWorldScale = _v2
-    // this.parent.matrixWorld.decompose(_v1, _q1, parentWorldScale)
-    const position = _v1.copy(this.position).multiply(this.parent.scale)
     const pose = new PHYSX.PxTransform()
-    vec3ToPxPos(position, pose)
-    quatToPxRot(this.quaternion, pose)
+    vec3ToPxPos(localPosition, pose)
+    quatToPxRot(localRotation, pose)
     this.shape.setLocalPose(pose)
     PHYSX.destroy(pose)
     this.parent?.addShape?.(this.shape)

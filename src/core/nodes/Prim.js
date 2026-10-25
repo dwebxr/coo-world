@@ -14,6 +14,7 @@ import {
   geometryOk,
   lengthOk,
   MIN_MASS,
+  positionOk,
   scaleOk,
   warnPhysicsOnce,
 } from '../extras/physicsValidate.js'
@@ -322,6 +323,14 @@ export class Prim extends Node {
     // and the actor is created only once the geometry is known to be valid.
     this.matrixWorldOffset.decompose(_v1, _q1, _v2)
     const absScale = _v3.set(Math.abs(_v2.x), Math.abs(_v2.y), Math.abs(_v2.z))
+    if (!positionOk(_v1)) {
+      return this.skipPhysics('position', 'position is outside the physics range')
+    }
+    // a mirror (decompose puts it in a negative x) is exact for the static shape, but a moving prim's actor pose is
+    // copied back into the node without it, so its visual would flip away from its collider
+    if (_v2.x < 0 && type !== 'static') {
+      return this.skipPhysics('mirror', 'a mirrored prim only has static physics')
+    }
 
     let pxGeometry = null
     let pmesh = null
@@ -331,18 +340,18 @@ export class Prim extends Node {
       const hy = 0.5 * absScale.y
       const hz = 0.5 * absScale.z
       if (!lengthOk(hx) || !lengthOk(hy) || !lengthOk(hz)) {
-        return this.skipPhysics('size', `box ${absScale.x} x ${absScale.y} x ${absScale.z} is outside the physics range`)
+        return this.skipPhysics('size', 'box size is outside the physics range')
       }
       pxGeometry = new PHYSX.PxBoxGeometry(hx, hy, hz)
     } else if (this._type === 'sphere' && isUniformScale(absScale)) {
       const [radius] = size
       if (!lengthOk(radius * absScale.x)) {
-        return this.skipPhysics('size', `sphere radius ${radius * absScale.x} is outside the physics range`)
+        return this.skipPhysics('size', 'sphere radius is outside the physics range')
       }
       pxGeometry = new PHYSX.PxSphereGeometry(radius * absScale.x)
     } else {
       if (!scaleOk(absScale)) {
-        return this.skipPhysics('scale', `scale ${absScale.x}, ${absScale.y}, ${absScale.z} is outside the physics range`)
+        return this.skipPhysics('scale', 'scale is outside the physics range')
       }
       // Use convex mesh for cylinder, cone, torus, and plane
       const threeGeometry = getGeometry(this._type, size)
@@ -352,7 +361,7 @@ export class Prim extends Node {
       if (pmesh && pmesh.value) {
         if (!extentOk(pmesh.maxAbs, absScale)) {
           pmesh.release()
-          return this.skipPhysics('extent', `${this._type} is larger than the physics range`)
+          return this.skipPhysics('extent', 'shape is larger than the physics range')
         }
         // Create scale and its components explicitly so we can free them
         const _scaleVec = new PHYSX.PxVec3(absScale.x, absScale.y, absScale.z)
@@ -373,7 +382,7 @@ export class Prim extends Node {
         const hy = 0.5 * (box.max.y - box.min.y) * absScale.y
         const hz = 0.5 * (box.max.z - box.min.z) * absScale.z
         if (!lengthOk(hx) || !lengthOk(hy) || !lengthOk(hz)) {
-          return this.skipPhysics('size', `fallback box for ${this._type} is outside the physics range`)
+          return this.skipPhysics('size', 'fallback box is outside the physics range')
         }
         pxGeometry = new PHYSX.PxBoxGeometry(hx, hy, hz)
       }
@@ -382,7 +391,7 @@ export class Prim extends Node {
       PHYSX.destroy(pxGeometry)
       this.pmesh?.release()
       this.pmesh = null
-      return this.skipPhysics('invalid', `${this._type} geometry is not valid for physics`)
+      return this.skipPhysics('invalid', 'geometry is not valid for physics')
     }
 
     // Create transform
@@ -628,7 +637,8 @@ export class Prim extends Node {
     if (value === null || value === undefined) {
       value = defaultSizes[this._type].slice()
     }
-    if (!isArray(value) || !value.every(finiteNumber)) {
+    // a loop over every index, because every() skips the holes of a sparse array such as new Array(3)
+    if (!isArray(value) || !allFinite(value, value.length)) {
       throw new Error('[prim] size must be an array of finite numbers')
     }
     if (isEqual(this._size, value)) return
@@ -1145,6 +1155,11 @@ function isUniformScale(vec3) {
   return vec3.x === vec3.y && vec3.y === vec3.z
 }
 
+function allFinite(values, count) {
+  for (let i = 0; i < count; i++) if (!finiteNumber(values[i])) return false
+  return true
+}
+
 // how many numbers each type reads from size (extra ones are ignored)
 const sizeArity = { box: 3, sphere: 1, cylinder: 3, cone: 2, torus: 2, plane: 2 }
 
@@ -1154,8 +1169,8 @@ function getGeometryConfig(type, requestedSize) {
   let scaleOffset
 
   const arity = sizeArity[type]
-  if (arity && !(requestedSize?.length >= arity && requestedSize.slice(0, arity).every(finiteNumber))) {
-    return { invalid: `needs ${arity} finite numbers` }
+  if (arity && !(requestedSize?.length >= arity && allFinite(requestedSize, arity))) {
+    return { invalid: 'lacks values' }
   }
 
   switch (type) {
@@ -1222,6 +1237,10 @@ function getGeometryConfig(type, requestedSize) {
     }
   }
 
+  // a ratio such as tube / r can leave float32 even when both inputs are finite (torus [1e-6, 1e38])
+  if (!allFinite(size, size.length) || !allFinite(scaleOffset, scaleOffset.length)) {
+    return { invalid: 'gives a shape outside float32' }
+  }
   return { size, scaleOffset }
 }
 

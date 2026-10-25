@@ -269,6 +269,103 @@ function hostile({ B, root, step, body }, name) {
       }
       break
     }
+    // code review round 1 (Codex)
+    case 'mass 0.3 and an impulse that overflows only after float32 rounding': {
+      const node = body('RigidBody', { position: [0, 0, 0], mass: 0.3 })
+      touching(2.5)
+      node.getProxy().addForce(V(1.0208470936572454e38, 0, 0), 'impulse')
+      self = node
+      break
+    }
+    case 'four pushes of 3e38 in one step, each mode': {
+      const nodes = ['force', 'impulse', 'acceleration', 'velocityChange'].map((mode, i) => {
+        const node = body('RigidBody', { position: [0, 0, i * 10] })
+        for (let k = 0; k < 4; k++) node.getProxy().addForce(V(3e38, 0, 0), mode)
+        return node
+      })
+      touching(2.5)
+      check = () => assert.ok(nodes.every(node => finitePose(node.actor)), 'every pushed body finite')
+      break
+    }
+    case 'force at a point with a far centre of mass': {
+      const node = body('RigidBody', { position: [0, 0, 0] })
+      node.getProxy().setCenterOfMass(V(0, 1e6, 0))
+      node.clean()
+      touching(2.5)
+      node.getProxy().addForceAtPos(V(1e38, 0, 0), V(0, 0, 0), 'impulse')
+      node.getProxy().addForceAtLocalPos(V(1e38, 0, 0), V(0, 0, 0), 'impulse')
+      self = node
+      break
+    }
+    case 'fixed joint to the world with a 3e38 offset': {
+      const a = body('RigidBody', { position: [0, 0, 0] })
+      const node = new B.Joint({ type: 'fixed' })
+      node.body0 = a
+      node.offset0.set(3e38, 0, 0)
+      root.add(node)
+      touching(2.5)
+      self = a
+      check = () => assert.equal(node.joint ?? null, null)
+      break
+    }
+    case 'jointed bodies moved to 3e38 by setPosition, node position and kinematic target': {
+      const make = (type, x) => {
+        const a = body('RigidBody', { type, position: [x, 0, 0] })
+        const b = body('RigidBody', { position: [x + 3, 0, 0] })
+        const node = new B.Joint({ type: 'fixed' })
+        node.body0 = a
+        node.body1 = b
+        node.offset0.set(1.5, 0, 0)
+        node.offset1.set(-1.5, 0, 0)
+        root.add(node)
+        return { a, b }
+      }
+      const one = make('dynamic', 0)
+      const two = make('dynamic', 20)
+      const three = make('kinematic', 40)
+      one.a.getProxy().setPosition(V(3e38, 0, 0))
+      two.a.position.x = 3e38
+      two.a.clean()
+      three.a.getProxy().setKinematicTarget(V(3e38, 0, 0), new B.THREE.Quaternion())
+      touching(4.5)
+      check = () =>
+        assert.ok([one, two, three].every(({ a, b }) => finitePose(a.actor) && finitePose(b.actor)), 'jointed bodies finite')
+      break
+    }
+    case 'dynamic mirrored cone': {
+      const node = prim({ type: 'cone', size: [1, -2] })
+      touching()
+      check = () => assert.equal(node.actor ?? null, null)
+      break
+    }
+    case 'collider with a zero or huge local quaternion': {
+      const zero = new B.RigidBody({ type: 'static' })
+      const c0 = new B.Collider({ type: 'box', width: 1, height: 1, depth: 1 })
+      c0.quaternion.set(0, 0, 0, 0)
+      zero.add(c0)
+      root.add(zero)
+      const huge = new B.RigidBody({ type: 'static', position: [0, 0, 10] })
+      const c1 = new B.Collider({ type: 'box', width: 1, height: 1, depth: 1 })
+      c1.quaternion.set(1e30, 0, 0, 1e30)
+      huge.add(c1)
+      root.add(huge)
+      touching()
+      check = () => {
+        assert.equal(c0.shape, null, 'zero quaternion skips')
+        assert.ok(c1.shape, 'a huge finite quaternion is normalised')
+        const q = c1.shape.getLocalPose().q
+        assert.ok(Math.abs(Math.hypot(q.x, q.y, q.z, q.w) - 1) < 1e-5, 'unit local rotation')
+      }
+      break
+    }
+    case 'visible prims with a float32-overflowing ratio or a sparse size': {
+      const torus = new B.Prim({ type: 'torus', size: [1e-6, 1e38], physics: 'dynamic' })
+      root.add(torus)
+      assert.throws(() => new B.Prim({ type: 'box', size: new Array(3) }), /size must be an array of finite numbers/)
+      touching()
+      check = () => assert.deepEqual([torus.handle ?? null, torus.actor ?? null], [null, null])
+      break
+    }
     default:
       throw new Error(`unknown case ${name}`)
   }
@@ -301,6 +398,14 @@ for (const name of [
   'hinge limit [1e30, 1e31] degrees, spinning about the axis',
   'socket with an invalid cone [0, 0]',
   'fixed joint with a zero frame rotation',
+  'mass 0.3 and an impulse that overflows only after float32 rounding',
+  'four pushes of 3e38 in one step, each mode',
+  'force at a point with a far centre of mass',
+  'fixed joint to the world with a 3e38 offset',
+  'jointed bodies moved to 3e38 by setPosition, node position and kinematic target',
+  'dynamic mirrored cone',
+  'collider with a zero or huge local quaternion',
+  'visible prims with a float32-overflowing ratio or a sparse size',
 ]) {
   probe(`real PhysX inputs: ${name}`, hostile, name)
 }
@@ -444,4 +549,33 @@ probe('real PhysX inputs: a skipped collider does not re-cook on moves and mount
   sphere.radius = 1
   sphere.clean()
   assert.ok(sphere.shape, 'the fixed radius mounts')
+})
+
+probe('real PhysX inputs: distance joint limits apply only the ends that are set', ({ B, root, step, body }) => {
+  const separation = data => {
+    const a = body('RigidBody', { position: [0, 0, 0] })
+    const b = body('RigidBody', { position: [3, 0, 0] })
+    const node = new B.Joint({ type: 'distance', ...data })
+    node.body0 = a
+    node.body1 = b
+    root.add(node)
+    step(60)
+    // getGlobalPose returns one shared temporary, so copy each position before the next call
+    const at = node => {
+      const { x, y, z } = node.actor.getGlobalPose().p
+      return { x, y, z }
+    }
+    const pa = at(a)
+    const pb = at(b)
+    const d = Math.hypot(pb.x - pa.x, pb.y - pa.y, pb.z - pa.z)
+    root.remove(node)
+    root.remove(a)
+    root.remove(b)
+    return d
+  }
+  // a new PhysX distance joint enables the max limit at 0; it must not pull the bodies together
+  assert.ok(separation({ limitMin: 2 }) > 2.5, 'min only: the bodies stay apart')
+  assert.ok(separation({}) > 2.5, 'no limits: no constraint')
+  assert.ok(separation({ limitMin: 5, limitMax: 1 }) > 2.5, 'reversed limits are skipped')
+  assert.ok(separation({ limitMax: 1 }) < 1.2, 'max only: the bodies are pulled within it')
 })

@@ -62,22 +62,28 @@ export function normalizeQuat(quat) {
   return true
 }
 
-// how hard one call can push a body: in the force and impulse modes the velocity change is |F| times the inverse
-// mass, and through a lever |r| * |F| times the inverse inertia; the acceleration and velocity-change modes are
-// velocities already. Each must stay finite in float32, or the body turns NaN and spreads it to what it touches.
-export function pushOk(actor, massModes, forceLength, torqueLength = 0) {
-  if (!actor?.getInvMass) return true
+// how hard a body can be pushed within one physics step, summed over every call: a velocity change of at most
+// MAX_PUSH m/s (and rad/s). Per-call finiteness is not enough: four pushes of 3e38 each pass it and overflow
+// together, and float32 rounding of the operands overflows before the product does.
+export const MAX_PUSH = 1e6
+
+const f32Length = vector => Math.hypot(Math.fround(vector.x), Math.fround(vector.y), Math.fround(vector.z))
+
+// the velocity change one call causes. In the force and impulse modes PhysX scales by the inverse mass (and, for
+// the torque a lever makes, by the inverse inertia); force and acceleration act over a step shorter than a second,
+// so treating them like impulse and velocity change only overestimates. `lever` is the distance from the centre
+// of mass to the point of application (0 for a plain force); `torque` is a torque vector instead of a force.
+export function pushDelta(actor, massModes, { force = null, lever = 0, torque = null }) {
+  if (!actor?.getInvMass) return { linear: 0, angular: 0 }
   const invMass = massModes ? actor.getInvMass() : 1
-  if (!Number.isFinite(Math.fround(forceLength * invMass))) return false
-  if (torqueLength) {
-    let invInertia = 1
-    if (massModes) {
-      const tensor = actor.getMassSpaceInvInertiaTensor()
-      invInertia = Math.max(tensor.x, tensor.y, tensor.z)
-    }
-    if (!Number.isFinite(Math.fround(torqueLength * invInertia))) return false
+  let invInertia = 1
+  if (massModes) {
+    const tensor = actor.getMassSpaceInvInertiaTensor()
+    invInertia = Math.max(tensor.x, tensor.y, tensor.z)
   }
-  return true
+  const forceLength = force ? f32Length(force) : 0
+  const torqueLength = torque ? f32Length(torque) : Math.fround(lever) * forceLength
+  return { linear: forceLength * invMass, angular: torqueLength * invInertia }
 }
 
 export function geometryOk(pxGeometry) {

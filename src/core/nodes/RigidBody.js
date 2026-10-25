@@ -18,7 +18,7 @@ import {
 
 import { Node } from './Node'
 import { callForScript } from '../extras/scriptValues'
-import { finiteNumber, massOk, MIN_MASS, normalizeQuat, positionOk, pushOk } from '../extras/physicsValidate.js'
+import { finiteNumber, massOk, MAX_PUSH, MIN_MASS, normalizeQuat, positionOk, pushDelta } from '../extras/physicsValidate.js'
 import { isFunction, isNumber, isString } from 'lodash-es'
 
 const _v1 = new THREE.Vector3()
@@ -89,6 +89,12 @@ export class RigidBody extends Node {
     this.needsRebuild = false
     if (this.ctx.moving) return // physics ignored when moving apps around
     decomposeMatrix(this.matrixWorld, _v1, _q1, _v2)
+    // an actor outside the physics range corrupts the bodies it is jointed to or touches: no actor (its colliders
+    // keep their shapes for a later mount)
+    if (!positionOk(_v1)) {
+      warnOnce('[rigidbody] no actor outside the physics range')
+      return
+    }
     this.transform = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
     vec3ToPxPos(_v1, this.transform)
     quatToPxRot(_q1, this.transform)
@@ -338,6 +344,28 @@ export class RigidBody extends Node {
     return this.actor.isSleeping()
   }
 
+  // spends this step's push budget: the summed velocity change of every push to this body within one physics step
+  // stays within MAX_PUSH, so several individually valid pushes cannot overflow together
+  spendPush({ linear, angular }) {
+    const steps = this.ctx?.world?.physics?.steps ?? 0
+    if (this._pushStep !== steps) {
+      this._pushStep = steps
+      this._pushLinear = 0
+      this._pushAngular = 0
+    }
+    const nextLinear = this._pushLinear + linear
+    const nextAngular = this._pushAngular + angular
+    if (!(nextLinear <= MAX_PUSH && nextAngular <= MAX_PUSH)) return false
+    this._pushLinear = nextLinear
+    this._pushAngular = nextAngular
+    return true
+  }
+
+  centerOfMassOffset() {
+    const p = this.actor.getCMassLocalPose?.()?.p
+    return p ? Math.hypot(p.x, p.y, p.z) : 0
+  }
+
   addForce(force, mode) {
     if (!readVec3(force, _v1, '[rigidbody] addForce force must be Vector3')) {
       warnOnce('[rigidbody] addForce ignored a non-finite force')
@@ -345,8 +373,8 @@ export class RigidBody extends Node {
     }
     if (!this.actor) return
     mode = getForceMode(mode)
-    if (!pushOk(this.actor, isMassMode(mode), _v1.length())) {
-      warnOnce('[rigidbody] addForce ignored a force too large for this body')
+    if (!this.spendPush(pushDelta(this.actor, isMassMode(mode), { force: _v1 }))) {
+      warnOnce('[rigidbody] addForce ignored a push beyond the physics range')
       return
     }
     const px = scratchPxVec3()
@@ -363,11 +391,11 @@ export class RigidBody extends Node {
     }
     if (!this.actor?.getLinearVelocity) return
     mode = getForceMode(mode)
-    // the lever runs from the body's position to the world point
+    // the lever runs from the centre of mass to the world point; |pos - position| + |centre-of-mass offset| bounds it
     const p = this.actor.getGlobalPose().p
-    const lever = Math.hypot(_v2.x - p.x, _v2.y - p.y, _v2.z - p.z)
-    if (!pushOk(this.actor, isMassMode(mode), _v1.length(), lever * _v1.length())) {
-      warnOnce('[rigidbody] addForceAtPos ignored a force too large for this body')
+    const lever = Math.hypot(_v2.x - p.x, _v2.y - p.y, _v2.z - p.z) + this.centerOfMassOffset()
+    if (!this.spendPush(pushDelta(this.actor, isMassMode(mode), { force: _v1, lever }))) {
+      warnOnce('[rigidbody] addForceAtPos ignored a push beyond the physics range')
       return
     }
     if (!this._pv1) this._pv1 = new PHYSX.PxVec3()
@@ -386,8 +414,10 @@ export class RigidBody extends Node {
     }
     if (!this.actor?.getLinearVelocity) return
     mode = getForceMode(mode)
-    if (!pushOk(this.actor, isMassMode(mode), _v1.length(), _v2.length() * _v1.length())) {
-      warnOnce('[rigidbody] addForceAtLocalPos ignored a force too large for this body')
+    // the lever runs from the centre of mass to the local point; |pos| + |centre-of-mass offset| bounds it
+    const lever = _v2.length() + this.centerOfMassOffset()
+    if (!this.spendPush(pushDelta(this.actor, isMassMode(mode), { force: _v1, lever }))) {
+      warnOnce('[rigidbody] addForceAtLocalPos ignored a push beyond the physics range')
       return
     }
     if (!this._pv1) this._pv1 = new PHYSX.PxVec3()
@@ -404,8 +434,8 @@ export class RigidBody extends Node {
     }
     if (!this.actor) return
     mode = getForceMode(mode)
-    if (!pushOk(this.actor, isMassMode(mode), 0, _v1.length())) {
-      warnOnce('[rigidbody] addTorque ignored a torque too large for this body')
+    if (!this.spendPush(pushDelta(this.actor, isMassMode(mode), { torque: _v1 }))) {
+      warnOnce('[rigidbody] addTorque ignored a push beyond the physics range')
       return
     }
     const px = scratchPxVec3()
@@ -424,6 +454,10 @@ export class RigidBody extends Node {
   setPosition(vec3) {
     if (!readVec3(vec3, _v1, '[rigidbody] setPosition position must be Vector3')) {
       warnOnce('[rigidbody] setPosition ignored a non-finite position')
+      return
+    }
+    if (!positionOk(_v1)) {
+      warnOnce('[rigidbody] setPosition ignored a position outside the physics range')
       return
     }
     if (!this.actor) return
@@ -549,6 +583,10 @@ export class RigidBody extends Node {
     }
     if (!normalizeQuat(_q1)) {
       warnOnce('[rigidbody] setKinematicTarget ignored a zero-length quaternion')
+      return
+    }
+    if (!positionOk(_v1)) {
+      warnOnce('[rigidbody] setKinematicTarget ignored a position outside the physics range')
       return
     }
     if (!this.actor?.setKinematicTarget) return

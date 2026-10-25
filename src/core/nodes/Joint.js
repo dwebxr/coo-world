@@ -6,7 +6,7 @@ import { Node, getNodeRef } from './Node'
 import { Layers } from '../extras/Layers'
 import { bindRotations } from '../extras/bindRotations'
 import { DEG2RAD, RAD2DEG } from '../extras/general'
-import { finiteNumber, normalizeQuat, warnPhysicsOnce } from '../extras/physicsValidate.js'
+import { finiteNumber, normalizeQuat, positionOk, warnPhysicsOnce } from '../extras/physicsValidate.js'
 
 const _q1 = new THREE.Quaternion()
 const _q2 = new THREE.Quaternion()
@@ -70,8 +70,13 @@ export class Joint extends Node {
     if (!actor0 && !actor1) return // at least one required
     const frame0 = this.frame0
     const frame1 = this.frame1
-    // every limit, spring and frame is checked before PhysX sees it: an invalid cone, a zero frame rotation or an
-    // out-of-range hinge limit turns the jointed bodies NaN
+    // every limit, spring and frame is checked before PhysX sees it: an invalid cone, a zero frame rotation, a far
+    // anchor or an out-of-range hinge limit turns the jointed bodies (and what they touch) NaN
+    if (!positionOk(this.offset0) || !positionOk(this.offset1)) {
+      warnPhysicsOnce(this, 'offset', '[joint] an offset is outside the physics range; joint skipped')
+      this.needsRebuild = false
+      return
+    }
     vec3ToPxPos(this.offset0, frame0)
     vec3ToPxPos(this.offset1, frame1)
     _q1.copy(this.quaternion0)
@@ -138,6 +143,9 @@ export class Joint extends Node {
       // quatToPxRot(_q1.copy(this.quaternion0).multiply(alignRotation), frame0)
       // quatToPxRot(_q2.copy(this.quaternion1).multiply(alignRotation), frame1)
       this.joint = new PHYSX.DistanceJointCreate(physics, actor0, frame0, actor1, frame1)
+      // a new distance joint starts with the max limit enabled at 0, so both flags are cleared first
+      this.joint.setDistanceJointFlag(PHYSX.PxDistanceJointFlagEnum.eMIN_DISTANCE_ENABLED, false)
+      this.joint.setDistanceJointFlag(PHYSX.PxDistanceJointFlagEnum.eMAX_DISTANCE_ENABLED, false)
       // apply limits: each end only when it is set, finite and >= 0, and both only when they are ordered
       const hasMin = finiteNumber(this.limitMin) && this.limitMin >= 0
       const hasMax = finiteNumber(this.limitMax) && this.limitMax >= 0

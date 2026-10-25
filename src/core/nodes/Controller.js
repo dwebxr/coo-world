@@ -74,14 +74,14 @@ export class Controller extends Node {
       return
     }
     const desc = new PHYSX.PxCapsuleControllerDesc()
-    desc.height = this._height
-    desc.radius = this._radius
-    desc.climbingMode = PHYSX.PxCapsuleClimbingModeEnum.eCONSTRAINED
-    desc.slopeLimit = Math.cos(60 * DEG2RAD) // 60 degrees
-    desc.material = this.ctx.world.physics.defaultMaterial
-    desc.contactOffset = 0.1 // PhysX default = 0.1
-    desc.stepOffset = 0.5 // PhysX default = 0.5m
     try {
+      desc.height = this._height
+      desc.radius = this._radius
+      desc.climbingMode = PHYSX.PxCapsuleClimbingModeEnum.eCONSTRAINED
+      desc.slopeLimit = Math.cos(60 * DEG2RAD) // 60 degrees
+      desc.material = this.ctx.world.physics.defaultMaterial
+      desc.contactOffset = 0.1 // PhysX default = 0.1
+      desc.stepOffset = 0.5 // PhysX default = 0.5m
       if (desc.isValid()) {
         const controller = this.ctx.world.physics.controllerManager.createController(desc)
         if (controller?.ptr) this.controller = controller
@@ -111,16 +111,17 @@ export class Controller extends Node {
           PHYSX.PxPairFlagEnum.eNOTIFY_TOUCH_FOUND |
           PHYSX.PxPairFlagEnum.eNOTIFY_TOUCH_LOST |
           PHYSX.PxPairFlagEnum.eNOTIFY_CONTACT_POINTS
-        const filterData = new PHYSX.PxFilterData(layer.group, layer.mask, pairFlags, 0)
-        const shapeFlags = new PHYSX.PxShapeFlags()
+        let filterData, shapeFlags
         try {
+          filterData = new PHYSX.PxFilterData(layer.group, layer.mask, pairFlags, 0)
+          shapeFlags = new PHYSX.PxShapeFlags()
           shapeFlags.raise(PHYSX.PxShapeFlagEnum.eSCENE_QUERY_SHAPE | PHYSX.PxShapeFlagEnum.eSIMULATION_SHAPE)
           shape.setFlags(shapeFlags)
           shape.setQueryFilterData(filterData)
           shape.setSimulationFilterData(filterData)
         } finally {
-          PHYSX.destroy(shapeFlags)
-          PHYSX.destroy(filterData)
+          if (shapeFlags) PHYSX.destroy(shapeFlags)
+          if (filterData) PHYSX.destroy(filterData)
         }
       }
     } finally {

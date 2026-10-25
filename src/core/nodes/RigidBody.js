@@ -102,9 +102,9 @@ export class RigidBody extends Node {
     }
     // PhysX copies the creation transform and the centre-of-mass pose, so both are destroyed right after use
     const transform = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
-    vec3ToPxPos(_v1, transform)
-    quatToPxRot(_q1, transform)
     try {
+      vec3ToPxPos(_v1, transform)
+      quatToPxRot(_q1, transform)
       this.createActor(transform)
     } finally {
       PHYSX.destroy(transform)
@@ -194,8 +194,8 @@ export class RigidBody extends Node {
       // this.untrack = this.ctx.world.physics.track(this.actor, this.onPhysicsMovement)
       if (this._centerOfMass) {
         const pose = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
-        vec3ToPxPos(this._centerOfMass, pose)
         try {
+          vec3ToPxPos(this._centerOfMass, pose)
           this.actor.setCMassLocalPose(pose)
         } finally {
           PHYSX.destroy(pose)

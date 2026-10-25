@@ -78,9 +78,10 @@ export class Joint extends Node {
     const actor0 = body0?.actor
     const actor1 = body1?.actor
     // PhysX copies the joint frames, so they live for this call only
-    const frame0 = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
-    const frame1 = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
+    let frame0, frame1
     try {
+      frame0 = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
+      frame1 = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
       this.mountJoint(actor0, actor1, frame0, frame1)
     } catch (err) {
       // a joint that failed half-way is released, and waits for the next rebuild of either body
@@ -89,8 +90,8 @@ export class Joint extends Node {
       this.waitFor([body0, body1])
       throw err
     } finally {
-      PHYSX.destroy(frame0)
-      PHYSX.destroy(frame1)
+      if (frame0) PHYSX.destroy(frame0)
+      if (frame1) PHYSX.destroy(frame1)
     }
     if (this.joint) {
       for (const body of [body0, body1]) body?.joints.add(this)
@@ -149,9 +150,10 @@ export class Joint extends Node {
       this.joint = new PHYSX.SphericalJointCreate(physics, actor0, frame0, actor1, frame1)
       // apply cone limit (each angle below 180 degrees)
       if (finiteNumber(this.limitY) && finiteNumber(this.limitZ)) {
-        const spring = this.createSpring()
-        const cone = new PHYSX.PxJointLimitCone(this.limitY * DEG2RAD, this.limitZ * DEG2RAD, spring)
+        let spring, cone
         try {
+          spring = this.createSpring()
+          cone = new PHYSX.PxJointLimitCone(this.limitY * DEG2RAD, this.limitZ * DEG2RAD, spring)
           if (cone.isValid()) {
             this.joint.setLimitCone(cone)
             this.joint.setSphericalJointFlag(PHYSX.PxSphericalJointFlagEnum.eLIMIT_ENABLED, true)
@@ -159,7 +161,7 @@ export class Joint extends Node {
             warnPhysicsOnce(this, 'limit', '[joint] socket limit is not valid; limit skipped')
           }
         } finally {
-          PHYSX.destroy(cone)
+          if (cone) PHYSX.destroy(cone)
           if (spring) PHYSX.destroy(spring)
         }
       }
@@ -170,9 +172,10 @@ export class Joint extends Node {
       // apply limits: ordered and inside (-360, 360) degrees (PhysX's revolute contract)
       if (finiteNumber(this.limitMin) && finiteNumber(this.limitMax)) {
         const inRange = Math.abs(this.limitMin) < 360 && Math.abs(this.limitMax) < 360
-        const spring = this.createSpring()
-        const limit = new PHYSX.PxJointAngularLimitPair(this.limitMin * DEG2RAD, this.limitMax * DEG2RAD, spring)
+        let spring, limit
         try {
+          spring = this.createSpring()
+          limit = new PHYSX.PxJointAngularLimitPair(this.limitMin * DEG2RAD, this.limitMax * DEG2RAD, spring)
           if (inRange && this.limitMin <= this.limitMax && limit.isValid()) {
             this.joint.setLimit(limit)
             this.joint.setRevoluteJointFlag(PHYSX.PxRevoluteJointFlagEnum.eLIMIT_ENABLED, true)
@@ -180,7 +183,7 @@ export class Joint extends Node {
             warnPhysicsOnce(this, 'limit', '[joint] hinge limit is not valid; limit skipped')
           }
         } finally {
-          PHYSX.destroy(limit)
+          if (limit) PHYSX.destroy(limit)
           if (spring) PHYSX.destroy(spring)
         }
       }

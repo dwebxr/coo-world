@@ -508,3 +508,60 @@ probe('physics lifetimes: joint bookkeeping survives failures and body swaps', (
   assert.equal(constraints(), 0)
 })
 
+
+// Constructors are plain writable module properties, so a throwing constructor can be injected; native property
+// accessors are defined non-configurable around the original getter/setter functions, so throws from them (the
+// creation-transform and centre-of-mass population, the controller descriptor setters) cannot be injected here and
+// are covered by the same allocate-inside-try pattern, checked by review.
+probe('physics lifetimes: a throwing constructor mid-mount leaves no earlier temporary behind', ({ B, PHYSX, root, body, liveChunks }) => {
+  const throwOn = (name, nth) => {
+    const Original = PHYSX[name]
+    let calls = 0
+    let reached = false
+    PHYSX[name] = function (...args) {
+      if (++calls === nth) {
+        reached = true
+        PHYSX[name] = Original
+        throw new Error(`injected ${name} failure`)
+      }
+      return new Original(...args)
+    }
+    return () => {
+      PHYSX[name] = Original
+      return reached
+    }
+  }
+  const perCycle = (fn, n = 40) => {
+    for (let i = 0; i < 5; i++) fn()
+    const start = liveChunks()
+    for (let i = 0; i < n; i++) fn()
+    return (liveChunks() - start) / n
+  }
+  const a = body('RigidBody', { position: [0, 0, 0] })
+  const b = body('RigidBody', { position: [3, 0, 0] })
+  const cases = [
+    // the controller's shape flags, after its filter data exists
+    ['PxShapeFlags', 1, () => new B.Controller({ radius: 0.4, height: 1 })],
+    // the second joint frame, after the first exists
+    ['PxTransform', 2, () => Object.assign(new B.Joint({ type: 'fixed' }), { body0: a, body1: b })],
+    // the cone and the angular limit, after their spring exists
+    ['PxJointLimitCone', 1, () => Object.assign(new B.Joint({ type: 'socket', limitY: 30, limitZ: 30, limitStiffness: 10, limitDamping: 1 }), { body0: a, body1: b })],
+    ['PxJointAngularLimitPair', 1, () => Object.assign(new B.Joint({ type: 'hinge', limitMin: -10, limitMax: 10, limitStiffness: 10, limitDamping: 1 }), { body0: a, body1: b })],
+  ]
+  for (const [name, nth, make] of cases) {
+    let reachedAll = true
+    const leak = perCycle(() => {
+      const node = make()
+      const restore = throwOn(name, nth)
+      try {
+        root.add(node)
+      } catch {
+        // the throw reaches the caller; what matters is what it leaves behind
+      }
+      reachedAll = restore() && reachedAll
+      root.remove(node)
+    })
+    assert.ok(reachedAll, `${name}: the fault was injected every cycle`)
+    assert.ok(leak < 0.5, `${name}: ${leak} chunks per throw`)
+  }
+})

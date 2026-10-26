@@ -8,6 +8,8 @@ import { serializeError } from '../extras/serializeError'
 
 const vec2 = new THREE.Vector2()
 const CLEAN_RETRY_CAP = 10
+// a Model with no instances is released after this long (world time), so a visible toggle or an LOD switch keeps it
+const MODEL_IDLE_SECONDS = 10
 
 /**
  * Stage System
@@ -23,6 +25,9 @@ export class Stage extends System {
     super(world)
     this.scene = new THREE.Scene()
     this.models = new Map() // id -> Model
+    // id -> the material a Model renders with; it outlives the Model, so a rebuilt Model reuses it and scripts' material
+    // proxies (and their edits) stay valid. Bounded by the loaded models' materials and the prim material cap.
+    this.linkedMaterials = new Map()
     this.octree = new LooseOctree({
       scene: this.scene,
       center: new THREE.Vector3(0, 0, 0),
@@ -151,10 +156,30 @@ export class Stage extends System {
   insertLinked({ geometry, material, uberShader, castShadow, receiveShadow, node, matrix }) {
     const id = `${geometry.uuid}/${material.uuid}/${uberShader}/${castShadow}/${receiveShadow}`
     if (!this.models.has(id)) {
-      const model = new Model(this, geometry, material, uberShader, castShadow, receiveShadow)
+      const model = new Model(
+        this,
+        id,
+        geometry,
+        this.linkedMaterial(id, material, uberShader),
+        uberShader,
+        castShadow,
+        receiveShadow
+      )
       this.models.set(id, model)
     }
     return this.models.get(id).create(node, matrix)
+  }
+
+  // the uber-shader hook is installed once per material, when it is first created (a rebuilt Model must not wrap it
+  // again: the wrapped hook re-declares the instance attributes and the shader fails to compile)
+  linkedMaterial(id, raw, uberShader) {
+    let material = this.linkedMaterials.get(id)
+    if (!material) {
+      material = this.createMaterial({ raw })
+      if (uberShader) installUberShader(material.raw)
+      this.linkedMaterials.set(id, material)
+    }
+    return material
   }
 
   insertSingle({ geometry, material, castShadow, receiveShadow, node, matrix }) {
@@ -183,6 +208,10 @@ export class Stage extends System {
       destroy: () => {
         this.scene.remove(mesh)
         this.octree.remove(sItem)
+        // the material and its textures were cloned for this mesh only (GPU textures are shared per Source and
+        // refcounted by three, so disposing a clone frees nothing another material uses)
+        material.raw.dispose()
+        for (const texture of material.textures) texture.dispose()
       },
     }
   }
@@ -292,6 +321,7 @@ export class Stage extends System {
     }
     material.raw = raw
     material.proxy = proxy
+    material.textures = textures
     return material
   }
 
@@ -337,12 +367,14 @@ export class Stage extends System {
 
   destroy() {
     this.models.clear()
+    this.linkedMaterials.clear()
   }
 }
 
 class Model {
-  constructor(stage, geometry, material, uberShader, castShadow, receiveShadow) {
-    material = stage.createMaterial({ raw: material })
+  constructor(stage, id, geometry, material, uberShader, castShadow, receiveShadow) {
+    this.id = id
+    this.idleSince = null
 
     this.stage = stage
     this.geometry = geometry.clone() // important since uber shader needs unique buffer attributes
@@ -373,61 +405,10 @@ class Model {
     this.iMesh.getEntity = this.getEntity.bind(this)
     this.items = [] // { idx, node, matrix, color }
     this.dirty = true
-
-    // uber shader extends to support more per-instance properties like emissive, emissiveItensity and anything else in the future
-    if (this.uberShader) {
-      const prev = this.material.raw.onBeforeCompile
-      // see: https://claude.ai/chat/b73be3e5-bb52-4da2-a47e-fbbf4f3eb54b
-      this.material.raw.onBeforeCompile = function (shader) {
-        prev?.(shader)
-        shader.vertexShader = shader.vertexShader.replace(
-          `#include <color_pars_vertex>`,
-          `
-          #include <color_pars_vertex>
-          #ifdef USE_UBER_SHADER
-            attribute vec3 instanceEmissive;
-            attribute float instanceEmissiveIntensity;
-            varying vec3 vInstanceEmissive;
-          #endif
-          `
-        )
-        shader.vertexShader = shader.vertexShader.replace(
-          `#include <color_vertex>`,
-          `
-          #include <color_vertex>
-          #ifdef USE_UBER_SHADER
-            vInstanceEmissive = instanceEmissive * instanceEmissiveIntensity;
-          #endif
-          `
-        )
-        shader.fragmentShader = shader.fragmentShader.replace(
-          `#include <color_pars_fragment>`,
-          `
-          #include <color_pars_fragment>
-          #ifdef USE_UBER_SHADER
-            varying vec3 vInstanceEmissive;
-          #endif
-          `
-        )
-        shader.fragmentShader = shader.fragmentShader.replace(
-          `vec3 totalEmissiveRadiance = emissive;`,
-          `
-          vec3 totalEmissiveRadiance = emissive;
-          #ifdef USE_UBER_SHADER
-            totalEmissiveRadiance = vInstanceEmissive;
-          #endif
-          `
-        )
-        // console.log(this)
-        // console.log(shader.vertexShader)
-        // console.log(shader.fragmentShader)
-      }
-      this.material.raw.defines.USE_UBER_SHADER = ''
-      this.material.raw.needsUpdate = true
-    }
   }
 
   create(node, matrix) {
+    this.idleSince = null
     const item = {
       idx: this.items.length,
       node,
@@ -511,6 +492,11 @@ class Model {
   }
 
   clean() {
+    if (!this.items.length) {
+      const now = this.stage.world.time ?? 0
+      this.idleSince ??= now
+      if (now - this.idleSince >= MODEL_IDLE_SECONDS) return this.release()
+    }
     if (!this.dirty) return
     const size = this.iMesh.instanceMatrix.array.length / 16
     const count = this.items.length
@@ -551,6 +537,16 @@ class Model {
     this.dirty = false
   }
 
+  // releases what only this Model used: its instanced mesh, its geometry clone and the BVH. The material stays in
+  // stage.linkedMaterials for a later Model with the same id.
+  release() {
+    if (this.iMesh.parent) this.stage.scene.remove(this.iMesh)
+    this.iMesh.dispose()
+    this.geometry.disposeBoundsTree?.()
+    this.geometry.dispose()
+    this.stage.models.delete(this.id)
+  }
+
   getEntity(instanceId) {
     console.warn('TODO: remove if you dont ever see this')
     return this.items[instanceId]?.node.ctx.entity
@@ -564,4 +560,57 @@ class Model {
       return geometry.attributes.position.count / 3
     }
   }
+}
+
+// uber shader extends to support more per-instance properties like emissive, emissiveIntensity and anything else in the
+// future; installed once per linked material (Stage.linkedMaterial)
+function installUberShader(raw) {
+  const prev = raw.onBeforeCompile
+  // see: https://claude.ai/chat/b73be3e5-bb52-4da2-a47e-fbbf4f3eb54b
+  raw.onBeforeCompile = function (shader) {
+    prev?.(shader)
+    shader.vertexShader = shader.vertexShader.replace(
+      `#include <color_pars_vertex>`,
+      `
+        #include <color_pars_vertex>
+        #ifdef USE_UBER_SHADER
+          attribute vec3 instanceEmissive;
+          attribute float instanceEmissiveIntensity;
+          varying vec3 vInstanceEmissive;
+        #endif
+        `
+    )
+    shader.vertexShader = shader.vertexShader.replace(
+      `#include <color_vertex>`,
+      `
+        #include <color_vertex>
+        #ifdef USE_UBER_SHADER
+          vInstanceEmissive = instanceEmissive * instanceEmissiveIntensity;
+        #endif
+        `
+    )
+    shader.fragmentShader = shader.fragmentShader.replace(
+      `#include <color_pars_fragment>`,
+      `
+        #include <color_pars_fragment>
+        #ifdef USE_UBER_SHADER
+          varying vec3 vInstanceEmissive;
+        #endif
+        `
+    )
+    shader.fragmentShader = shader.fragmentShader.replace(
+      `vec3 totalEmissiveRadiance = emissive;`,
+      `
+        vec3 totalEmissiveRadiance = emissive;
+        #ifdef USE_UBER_SHADER
+          totalEmissiveRadiance = vInstanceEmissive;
+        #endif
+        `
+    )
+    // console.log(this)
+    // console.log(shader.vertexShader)
+    // console.log(shader.fragmentShader)
+  }
+  raw.defines.USE_UBER_SHADER = ''
+  raw.needsUpdate = true
 }

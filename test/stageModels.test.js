@@ -320,7 +320,12 @@ probe(
       root.remove(held.node)
       for (let i = 4000; i < 6000; i++) watch(rendered(size(i)))
       assert.equal(heldDisposed, 0, `${type}: still held by the other mesh`)
-      assert.equal(mounted(size(9000)).geometry, held.geometry, `${type}: the same geometry`)
+      const third = mounted(size(9000))
+      assert.equal(third.geometry, held.geometry, `${type}: the same geometry`)
+      root.remove(sharer.node)
+      root.remove(third.node)
+      for (let i = 6000; i < 8000; i++) watch(rendered(size(i)))
+      assert.equal(heldDisposed, 1, `${type}: released by its last mesh, then evicted`)
     }
     // a linked mesh keeps its Model, and the material edit kept under it, through churn and a visibility toggle, and
     // through a deactivation long enough for its geometry to be evicted (the geometry made again has the same id)
@@ -340,27 +345,55 @@ probe(
     root.add(linked)
     assert.equal(linked.material, proxy, 'the same material proxy after eviction')
     assert.equal(linked.material.color.getHexString(), 'ff0000', 'the edit survives eviction')
-    // a failed insert (the octree throws) leaves nothing rendering and releases the geometry; so does a second mount
-    const children = world.stage.scene.children.length
-    const insert = world.stage.octree.insert
+    // a failed insert (the octree takes the item, then throws) leaves nothing rendering or in the octree, disposes the
+    // material an unlinked mesh cloned, and releases the geometry; so does a second mount
+    const stage = world.stage
+    const children = stage.scene.children.length
+    const octreeItems = node => [...node.items, ...node.children.flatMap(octreeItems)]
+    const insert = stage.octree.insert
+    const createMaterial = stage.createMaterial
     for (const options of [{ linked: false }, { linked: true }, { visible: false }]) {
-      world.stage.octree.insert = () => {
+      const label = JSON.stringify(options)
+      const cloned = []
+      stage.createMaterial = (...args) => {
+        const created = createMaterial.apply(stage, args)
+        let disposals = 0
+        created.raw.addEventListener('dispose', () => disposals++)
+        cloned.push(() => disposals)
+        return created
+      }
+      stage.octree.insert = item => {
+        insert.call(stage.octree, item)
         throw new Error('octree')
       }
       const failing = new B.Mesh({ type: 'box', width: 30, geometry: placeholder, material, ...options })
       assert.throws(() => root.add(failing), /octree/)
-      world.stage.octree.insert = insert
-      assert.equal(world.stage.scene.children.length, children, `${JSON.stringify(options)}: nothing left in the scene`)
-      assert.equal(failing.handle ?? failing.sItem ?? failing.shared ?? null, null, 'nothing kept by the node')
-      const models = [...world.stage.models.values()].filter(model => model.items.some(item => item.node === failing))
-      assert.equal(models.length, 0, 'no instance left in a Model')
+      stage.octree.insert = insert
+      stage.createMaterial = createMaterial
+      assert.equal(stage.scene.children.length, children, `${label}: nothing left in the scene`)
+      assert.equal(
+        failing.handle ?? failing.sItem ?? failing.shared ?? null,
+        null,
+        `${label}: nothing kept by the node`
+      )
+      const models = [...stage.models.values()].filter(model => model.items.some(item => item.node === failing))
+      assert.equal(models.length, 0, `${label}: no instance left in a Model`)
+      const stray = octreeItems(stage.octree.root).filter(item => item.node === failing)
+      assert.equal(stray.length, 0, `${label}: nothing left in the octree`)
+      if (!options.linked && options.visible !== false) {
+        assert.deepEqual(
+          cloned.map(disposals => disposals()),
+          [1],
+          `${label}: the cloned material is disposed`
+        )
+      }
     }
     const twice = mounted({ type: 'box', width: 31 })
     let twiceDisposed = 0
     twice.geometry.addEventListener('dispose', () => twiceDisposed++)
     twice.node.mount()
     root.remove(twice.node)
-    assert.equal(world.stage.scene.children.length, children, 'a second mount left nothing behind')
+    assert.equal(stage.scene.children.length, children, 'a second mount left nothing behind')
     for (let i = 0; i < 2000; i++) rendered({ type: 'box', width: 40 + i / 1000 })
     assert.equal(twiceDisposed, 1, 'its geometry was released, so it could be evicted')
     // a Number object (its toString could mint keys) and non-finite sizes are refused

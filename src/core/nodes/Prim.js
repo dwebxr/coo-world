@@ -8,6 +8,7 @@ import { getTrianglesFromGeometry } from '../extras/getTrianglesFromGeometry'
 import { getTextureBytesFromMaterial } from '../extras/getTextureBytesFromMaterial'
 import { Layers } from '../extras/Layers'
 import { geometryToPxMesh } from '../extras/geometryToPxMesh'
+import { quantizeRadiusRatio, quantizeTubeRatio } from '../extras/primQuantize.js'
 import {
   extentOk,
   finiteNumber,
@@ -57,6 +58,9 @@ const _m1 = new THREE.Matrix4()
 const _m2 = new THREE.Matrix4()
 const _m3 = new THREE.Matrix4()
 const _defaultScale = new THREE.Vector3(1, 1, 1)
+
+// skips that depend on the prim's transform, retried when it moves
+const TRANSFORM_SKIPS = new Set(['size', 'scale', 'extent', 'position', 'mirror'])
 
 // the same layer names as Collider and Controller
 const layers = ['environment', 'prop', 'player', 'tool']
@@ -128,10 +132,38 @@ const getGeometry = (type, size) => {
 // Material cache - reuse materials with identical properties
 const materialCache = new Map()
 
-// Create material with specific properties
+// The cache keys are finite: metalness and roughness in 0.05 steps (opacity is quantised by the caller), at most
+// TEXTURE_LIMIT distinct texture strings and MATERIAL_LIMIT materials per process. Beyond a cap a prim gets a fixed
+// fallback (no texture, or the default metalness/roughness and no texture), the same in every process.
+const MATERIAL_LIMIT = 1024
+const TEXTURE_LIMIT = 256
+const textures = new Set()
+let regularMaterials = 0
+const step20 = value => Math.round(value * 20) / 20
+
+// Create material with specific properties; material._textureUrl is the texture it actually carries
 const getMaterial = props => {
-  // Create a cache key from material properties
-  const cacheKey = `${props.metalness}_${props.roughness}_${props.opacity}_${props.texture}_${props.doubleside}`
+  let texture = props.texture ?? null
+  if (texture && !textures.has(texture)) {
+    if (textures.size >= TEXTURE_LIMIT) {
+      warnOnce('[prim] texture limit reached; rendering untextured')
+      texture = null
+    } else {
+      textures.add(texture)
+    }
+  }
+  let metalness = step20(props.metalness)
+  let roughness = step20(props.roughness)
+  let cacheKey = `${metalness}_${roughness}_${props.opacity}_${texture}_${props.doubleside}`
+  let fallback = false
+  if (!materialCache.has(cacheKey) && regularMaterials >= MATERIAL_LIMIT) {
+    warnOnce('[prim] material limit reached; using the default material')
+    metalness = defaults.metalness
+    roughness = defaults.roughness
+    texture = null
+    cacheKey = `fallback_${props.opacity}_${props.doubleside}`
+    fallback = true
+  }
 
   // Check cache first
   if (materialCache.has(cacheKey)) {
@@ -142,8 +174,8 @@ const getMaterial = props => {
     color: 0xffffff,
     emissive: 0x000000,
     emissiveIntensity: 0,
-    metalness: props.metalness,
-    roughness: props.roughness,
+    metalness,
+    roughness,
     opacity: props.opacity,
     transparent: props.opacity < 1,
     side: props.doubleside ? THREE.DoubleSide : THREE.FrontSide,
@@ -155,8 +187,10 @@ const getMaterial = props => {
     polygonOffsetUnits: Math.random(),
   })
 
+  material._textureUrl = texture
   // Cache the material
   materialCache.set(cacheKey, material)
+  if (!fallback) regularMaterials++
 
   return material
 }
@@ -274,9 +308,9 @@ export class Prim extends Node {
           doubleside: this._doubleside,
         })
 
-        if (this._texture && !material._texApplied) {
+        if (material._textureUrl && !material._texApplied) {
           const n = ++this.n
-          await applyTexture(material, this._texture, loader)
+          await applyTexture(material, material._textureUrl, loader)
           if (n !== this.n) return // remounted or destroyed
         }
 
@@ -310,6 +344,20 @@ export class Prim extends Node {
   }
 
   mountPhysics(size) {
+    // the size and the transform-dependent skip are kept for a retry when the prim moves (commit -> retryPhysics);
+    // a mesh held by an extent skip is released after this attempt has taken its own handle
+    this.physicsSize = size
+    this.physicsSkip = null
+    const held = this.heldPmesh
+    this.heldPmesh = null
+    try {
+      this.mountPhysicsChecked(size)
+    } finally {
+      held?.release()
+    }
+  }
+
+  mountPhysicsChecked(size) {
     if (!PHYSX) return
 
     const type = this._physics // 'static' | 'kinematic' | 'dynamic'
@@ -360,7 +408,8 @@ export class Prim extends Node {
       pmesh = geometryToPxMesh(this.ctx.world, threeGeometry, true, this.ctx.entity)
       if (pmesh && pmesh.value) {
         if (!extentOk(pmesh.maxAbs, absScale)) {
-          pmesh.release()
+          // kept so a retry at another scale does not cook it again
+          this.heldPmesh = pmesh
           return this.skipPhysics('extent', 'shape is larger than the physics range')
         }
         // Create scale and its components explicitly so we can free them; the cooked mesh handle is the node's from
@@ -515,6 +564,33 @@ export class Prim extends Node {
   // no physics for this prim (its visual stays); a property setter rebuilds it, a transform edit does not
   skipPhysics(reason, message) {
     warnPhysicsOnce(this, reason, `[prim] ${message}; physics skipped`)
+    if (TRANSFORM_SKIPS.has(reason)) this.physicsSkip = { reason, key: this.physicsKey(), n: this.n }
+  }
+
+  // the signed decomposed scale the physics checks depend on (position is checked on its own)
+  physicsKey() {
+    this.matrixWorldOffset.decompose(_v1, _q1, _v2)
+    return `${Math.fround(_v2.x)},${Math.fround(_v2.y)},${Math.fround(_v2.z)}`
+  }
+
+  // a prim whose physics was skipped for its transform tries again once the transform changed; only for the current
+  // mount (Prim.mount awaits a texture before mountPhysics) and never while an actor exists
+  retryPhysics() {
+    const skip = this.physicsSkip
+    if (!skip || skip.n !== this.n || this.actor || this.ctx.moving || !this._physics) return
+    if (skip.reason === 'position') {
+      this.matrixWorldOffset.decompose(_v1, _q1, _v2)
+      if (!positionOk(_v1)) return
+    } else if (this.physicsKey() === skip.key) {
+      return
+    }
+    try {
+      this.mountPhysics(this.physicsSize)
+    } catch (err) {
+      handlePhysicsFailure(err, { entity: this.ctx.entity, world: this.ctx.world, phase: 'Prim.retryPhysics' })
+      console.error('[prim] physics retry failed')
+      console.error(err)
+    }
   }
 
   unmountPhysics() {
@@ -535,6 +611,8 @@ export class Prim extends Node {
       this.pmesh.release()
       this.pmesh = null
     }
+    this.heldPmesh?.release()
+    this.heldPmesh = null
   }
 
   onInterpolate = (position, quaternion) => {
@@ -563,11 +641,13 @@ export class Prim extends Node {
       if (this.actorHandle) {
         this.actorHandle.move(this.matrixWorldOffset)
       }
+      this.retryPhysics()
     }
   }
 
   unmount() {
     this.n++
+    this.physicsSkip = null
     if (this.handle) {
       this.handle.destroy()
       this.handle = null
@@ -1209,9 +1289,10 @@ function getGeometryConfig(type, requestedSize) {
         size = [1, 1, 1] // Unit cylinder (uniform radius)
         scaleOffset = [rt, h, rt] // Scale X/Z for radius, Y for height
       } else {
-        // Tapered cylinder - normalize by the ratio (of the magnitudes: a radius may be negative, a mirror)
+        // Tapered cylinder - normalize by the ratio (of the magnitudes: a radius may be negative, a mirror), snapped
+        // to a 1/64 grid so the cache keys are finite and every process builds the same shape
         const maxR = Math.max(Math.abs(rt), Math.abs(rb))
-        size = [rt / maxR, rb / maxR, 1]
+        size = [quantizeRadiusRatio(rt / maxR), quantizeRadiusRatio(rb / maxR), 1]
         scaleOffset = [maxR, h, maxR]
       }
       break
@@ -1229,9 +1310,11 @@ function getGeometryConfig(type, requestedSize) {
     case 'torus': {
       const [r, tube] = requestedSize
       if (r === 0) return { invalid: 'has a zero radius' }
-      // Only the tube-to-main ratio matters for shape
-      // Normalize so main radius is 1
-      size = [1, tube / r]
+      // Only the tube-to-main ratio matters for shape: normalized so the main radius is 1 and snapped to a log2 grid
+      // of 1/8 octave (finite cache keys, the same shape in every process)
+      const ratio = quantizeTubeRatio(tube / r)
+      if (ratio === null) return { invalid: 'has a tube ratio outside 2^-10..2^10' }
+      size = [1, ratio]
       scaleOffset = [r, r, r]
       break
     }

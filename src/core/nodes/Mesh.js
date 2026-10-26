@@ -24,32 +24,47 @@ const defaults = {
 
 const types = ['box', 'sphere', 'geometry']
 
-// Box and sphere geometries are cached by their dimensions, least recently used first out past GEOMETRY_LIMIT entries
-// each, so a script that keeps changing a size cannot grow them (or the Models keyed by their uuids) without bound. An
-// evicted geometry is disposed; three uploads it again if an unlinked mesh still renders it.
-const GEOMETRY_LIMIT = 1024
-const cached = (cache, key, create) => {
-  let geometry = cache.get(key)
-  if (geometry) {
-    cache.delete(key)
-  } else {
-    geometry = create()
+// Box and sphere geometries are shared by size. A mounted mesh holds its geometry, so while it is in use it keeps its
+// identity (the linked Model, and the material edits kept under its uuid); at most GEOMETRY_IDLE_LIMIT unused ones stay
+// cached, least recently released first out and disposed then, so a script that keeps changing a size cannot grow the
+// cache (or the Models keyed by geometry uuids) without bound. Nothing renders an evicted geometry.
+const GEOMETRY_IDLE_LIMIT = 1024
+class SharedGeometries {
+  constructor(create) {
+    this.create = create
+    this.used = new Map()
+    this.idle = new Map()
   }
-  cache.set(key, geometry)
-  if (cache.size > GEOMETRY_LIMIT) {
-    const [oldest, evicted] = cache.entries().next().value
-    cache.delete(oldest)
-    evicted.dispose()
+
+  acquire(key) {
+    let entry = this.used.get(key)
+    if (!entry) {
+      entry = this.idle.get(key)
+      if (entry) {
+        this.idle.delete(key)
+      } else {
+        entry = { key, geometry: this.create(key), users: 0 }
+      }
+      this.used.set(key, entry)
+    }
+    entry.users++
+    return entry
   }
-  return geometry
+
+  release(entry) {
+    if (--entry.users > 0) return
+    this.used.delete(entry.key)
+    this.idle.set(entry.key, entry)
+    if (this.idle.size > GEOMETRY_IDLE_LIMIT) {
+      const [oldest, evicted] = this.idle.entries().next().value
+      this.idle.delete(oldest)
+      evicted.geometry.dispose()
+    }
+  }
 }
 
-const boxes = new Map()
-const getBox = (width, height, depth) =>
-  cached(boxes, `${width},${height},${depth}`, () => new THREE.BoxGeometry(width, height, depth))
-
-const spheres = new Map()
-const getSphere = radius => cached(spheres, `${radius}`, () => new THREE.SphereGeometry(radius, 16, 12))
+const boxes = new SharedGeometries(key => new THREE.BoxGeometry(...key.split(',').map(Number)))
+const spheres = new SharedGeometries(key => new THREE.SphereGeometry(Number(key), 16, 12))
 
 // a primitive finite number: a Number object could mint cache keys through its own toString
 const finiteNumber = value => typeof value === 'number' && Number.isFinite(value)
@@ -77,12 +92,23 @@ export class Mesh extends Node {
     if (!this._geometry) return
     let geometry
     if (this._type === 'box') {
-      geometry = getBox(this._width, this._height, this._depth)
+      this.shared = { cache: boxes, entry: boxes.acquire(`${this._width},${this._height},${this._depth}`) }
+      geometry = this.shared.entry.geometry
     } else if (this._type === 'sphere') {
-      geometry = getSphere(this._radius)
+      this.shared = { cache: spheres, entry: spheres.acquire(`${this._radius}`) }
+      geometry = this.shared.entry.geometry
     } else if (this._type === 'geometry') {
       geometry = this._geometry
     }
+    try {
+      this.insertGeometry(geometry)
+    } catch (err) {
+      this.releaseShared()
+      throw err
+    }
+  }
+
+  insertGeometry(geometry) {
     if (this._visible) {
       this.handle = this.ctx.world.stage.insert({
         geometry,
@@ -128,6 +154,13 @@ export class Mesh extends Node {
       this.sItem = null
     }
     this.handle = null
+    this.releaseShared()
+  }
+
+  releaseShared() {
+    if (!this.shared) return
+    this.shared.cache.release(this.shared.entry)
+    this.shared = null
   }
 
   copy(source, recursive) {

@@ -729,9 +729,10 @@ export class Prim extends Node {
     if (value === null || value === undefined) {
       value = defaultSizes[this._type].slice()
     }
-    // the length read once, and bounded: an array proxy could report any length, or a different one each time
-    const length = isArray(value) ? value.length : 0
-    if (!isArray(value) || !(length <= MAX_SIZE_VALUES)) {
+    // the length read once, and a primitive integer within bounds: an array proxy could report any length, a different
+    // one each time, or an object whose valueOf answers differently on every comparison
+    const length = isArray(value) ? value.length : undefined
+    if (!Number.isInteger(length) || length < 0 || length > MAX_SIZE_VALUES) {
       throw new Error('[prim] size must be an array of finite numbers')
     }
     // a plain copy first and the checks on the copy: the script's array could carry its own iterator or index getters

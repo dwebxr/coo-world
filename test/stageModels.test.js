@@ -181,11 +181,13 @@ probe('stage: prim geometry and material keys stay bounded', async ({ B, world, 
   copy[1] = 2
   Object.defineProperty(copy, 0, { get: () => reads++ })
   assert.deepEqual(kept.size, [1, 0.5, 1])
-  // a proxy reporting a huge (or changing) length is refused before anything is copied
-  assert.throws(
-    () => new B.Prim({ type: 'box', size: new Proxy([1, 1, 1], { get: (t, k) => (k === 'length' ? 1e9 : t[k]) }) }),
-    /size must be an array of finite numbers/
-  )
+  // a proxy reporting a huge length, or a length object whose valueOf answers 3 to the check and 10000 afterwards, is
+  // refused before anything is copied
+  let asked = 0
+  for (const length of [1e9, { valueOf: () => (asked++ ? 10000 : 3) }]) {
+    const size = new Proxy([1, 1, 1], { get: (t, k) => (k === 'length' ? length : k in t ? t[k] : 1) })
+    assert.throws(() => new B.Prim({ type: 'box', size }), /size must be an array of finite numbers/)
+  }
   // textures are first come: at most 256 distinct texture strings get one
   world.loader = { get: () => new B.THREE.Texture(), load: async () => new B.THREE.Texture() }
   const textured = []
@@ -262,38 +264,68 @@ probe('stage: kept materials come back under the limit when a burst of live vari
 })
 
 probe(
-  'mesh: box and sphere geometries are cached up to a bound, and only primitive finite sizes are taken',
+  'mesh: box and sphere geometries are shared while in use, and at most 1024 unused ones stay cached',
   ({ B, world, root }) => {
     world.time = 0
     world.setupMaterial = () => {}
     world.stage = new B.Stage(world)
     const material = new B.THREE.MeshStandardMaterial()
     const placeholder = new B.THREE.BufferGeometry()
-    // an unlinked mesh renders the cached geometry itself (a linked Model clones it)
+    // an unlinked mesh renders the shared geometry itself (a linked Model clones it)
+    const mounted = options => {
+      const node = new B.Mesh({ geometry: placeholder, material, linked: false, ...options })
+      root.add(node)
+      return { node, geometry: world.stage.scene.children.at(-1).geometry }
+    }
     const rendered = options => {
-      const mesh = new B.Mesh({ geometry: placeholder, material, linked: false, ...options })
-      root.add(mesh)
-      const geometry = world.stage.scene.children.at(-1).geometry
-      root.remove(mesh)
+      const { node, geometry } = mounted(options)
+      root.remove(node)
       return geometry
     }
     for (const [type, field] of [
       ['box', 'width'],
       ['sphere', 'radius'],
     ]) {
-      const first = rendered({ type, [field]: 1 })
-      assert.equal(rendered({ type, [field]: 1 }), first, `${type}: the same size reuses its geometry`)
+      const size = i => ({ type, [field]: 1 + i / 1000 })
+      const seen = new Set()
       let disposed = 0
-      first.addEventListener('dispose', () => disposed++)
-      // 2000 other sizes: the first and the 975 oldest of them are evicted and disposed, the newest 1024 are kept
-      for (let i = 1; i <= 2000; i++) {
-        rendered({ type, [field]: 1 + i / 1000 }).addEventListener('dispose', () => disposed++)
+      const watch = geometry => {
+        if (!seen.has(geometry)) {
+          seen.add(geometry)
+          geometry.addEventListener('dispose', () => disposed++)
+        }
+        return geometry
       }
-      assert.equal(disposed, 2001 - 1024, `${type}: ${disposed} disposed`)
-      assert.notEqual(rendered({ type, [field]: 1 }), first, `${type}: an evicted size gets a new geometry`)
-      const recent = rendered({ type, [field]: 3 })
-      assert.equal(rendered({ type, [field]: 3 }), recent, `${type}: a recent size is still cached`)
+      // a mesh that stays mounted keeps its geometry through any churn
+      const held = mounted(size(9000))
+      watch(held.geometry)
+      // least recently released first out: 1024 unused sizes fill the cache; touching the oldest makes the next one
+      // the oldest, so one more size evicts that one and keeps the touched one
+      const geometries = []
+      for (let i = 0; i < 1024; i++) geometries.push(watch(rendered(size(i))))
+      assert.equal(disposed, 0, `${type}: 1024 unused sizes stay cached`)
+      assert.equal(rendered(size(0)), geometries[0], `${type}: the same size reuses its geometry`)
+      watch(rendered(size(1024)))
+      assert.equal(disposed, 1, `${type}: one evicted`)
+      assert.equal(rendered(size(0)), geometries[0], `${type}: the touched size survives`)
+      assert.notEqual(watch(rendered(size(1))), geometries[1], `${type}: the next oldest was evicted`)
+      // 2000 more sizes: the cache keeps 1024 unused geometries plus the mounted one, and disposes the rest
+      for (let i = 2000; i < 4000; i++) watch(rendered(size(i)))
+      assert.equal(seen.size - disposed, 1024 + 1, `${type}: ${seen.size - disposed} geometries kept`)
+      assert.equal(mounted(size(9000)).geometry, held.geometry, `${type}: the mounted size kept its geometry`)
     }
+    // a linked mesh keeps its Model, and the material edit kept under it, through churn and a visibility toggle
+    const linked = new B.Mesh({ type: 'box', width: 7, geometry: placeholder, material })
+    root.add(linked)
+    const proxy = linked.material
+    proxy.color = 'red'
+    for (let i = 0; i < 2000; i++) rendered({ type: 'box', width: 10 + i / 1000 })
+    linked.visible = false
+    linked.commit(false)
+    linked.visible = true
+    linked.commit(false)
+    assert.equal(linked.material, proxy, 'the same material proxy')
+    assert.equal(linked.material.color.getHexString(), 'ff0000', 'the edit survives')
     // a Number object (its toString could mint keys) and non-finite sizes are refused
     for (const field of ['width', 'height', 'depth', 'radius']) {
       for (const value of [new Number(1), { valueOf: () => 1 }, NaN, Infinity, '1']) {

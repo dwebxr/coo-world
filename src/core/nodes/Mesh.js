@@ -24,13 +24,14 @@ const defaults = {
 
 const types = ['box', 'sphere', 'geometry']
 
-// Box and sphere geometries are shared by size. A mounted mesh holds its geometry, so while it is in use it keeps its
-// identity (the linked Model, and the material edits kept under its uuid); at most GEOMETRY_IDLE_LIMIT unused ones stay
-// cached, least recently released first out and disposed then, so a script that keeps changing a size cannot grow the
-// cache (or the Models keyed by geometry uuids) without bound. Nothing renders an evicted geometry.
+// Box and sphere geometries are shared by size. A mounted mesh holds its geometry, so nothing renders an evicted one;
+// at most GEOMETRY_IDLE_LIMIT unused ones stay cached, least recently released first out and disposed then, so a script
+// that keeps changing a size cannot grow the cache without bound. A geometry's uuid is its shape and size, so one made
+// again after eviction keeps the linked Model and the material edits kept under that id.
 const GEOMETRY_IDLE_LIMIT = 1024
 class SharedGeometries {
-  constructor(create) {
+  constructor(shape, create) {
+    this.shape = shape
     this.create = create
     this.used = new Map()
     this.idle = new Map()
@@ -44,6 +45,7 @@ class SharedGeometries {
         this.idle.delete(key)
       } else {
         entry = { key, geometry: this.create(key), users: 0 }
+        entry.geometry.uuid = `mesh-${this.shape}:${key}`
       }
       this.used.set(key, entry)
     }
@@ -63,8 +65,8 @@ class SharedGeometries {
   }
 }
 
-const boxes = new SharedGeometries(key => new THREE.BoxGeometry(...key.split(',').map(Number)))
-const spheres = new SharedGeometries(key => new THREE.SphereGeometry(Number(key), 16, 12))
+const boxes = new SharedGeometries('box', key => new THREE.BoxGeometry(...key.split(',').map(Number)))
+const spheres = new SharedGeometries('sphere', key => new THREE.SphereGeometry(Number(key), 16, 12))
 
 // a primitive finite number: a Number object could mint cache keys through its own toString
 const finiteNumber = value => typeof value === 'number' && Number.isFinite(value)
@@ -88,6 +90,8 @@ export class Mesh extends Node {
   }
 
   mount() {
+    // a second mount replaces the first, so neither its insertion nor its geometry user is left behind
+    if (this.handle || this.sItem || this.shared) this.unmount()
     this.needsRebuild = false
     if (!this._geometry) return
     let geometry
@@ -120,14 +124,20 @@ export class Mesh extends Node {
         node: this,
       })
     } else {
-      this.sItem = {
+      const sItem = {
         matrix: this.matrixWorld,
         geometry,
         material: this._material,
         getEntity: () => this.ctx.entity,
         node: this,
       }
-      this.ctx.world.stage.octree.insert(this.sItem)
+      try {
+        this.ctx.world.stage.octree.insert(sItem)
+      } catch (err) {
+        this.ctx.world.stage.octree.remove(sItem)
+        throw err
+      }
+      this.sItem = sItem
     }
   }
 

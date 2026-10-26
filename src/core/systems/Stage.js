@@ -222,7 +222,16 @@ export class Stage extends System {
       node,
     }
     this.scene.add(mesh)
-    this.octree.insert(sItem)
+    // a failed insert (a non-finite matrix) takes the mesh and its cloned material back out, so nothing renders a
+    // geometry its node no longer holds
+    try {
+      this.octree.insert(sItem)
+    } catch (err) {
+      this.octree.remove(sItem)
+      this.scene.remove(mesh)
+      disposeMaterial(material)
+      throw err
+    }
     return {
       material: material.proxy,
       move: matrix => {
@@ -453,7 +462,14 @@ class Model {
       getEntity: () => this.items[item.idx]?.node.ctx.entity,
       node,
     }
-    this.stage.octree.insert(sItem)
+    try {
+      this.stage.octree.insert(sItem)
+    } catch (err) {
+      // the instance is taken back out, so the Model can still go idle
+      this.stage.octree.remove(sItem)
+      this.destroy(item)
+      throw err
+    }
     return {
       material: this.material.proxy,
       move: matrix => {

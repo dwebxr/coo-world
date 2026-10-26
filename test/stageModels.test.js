@@ -312,9 +312,18 @@ probe(
       // 2000 more sizes: the cache keeps 1024 unused geometries plus the mounted one, and disposes the rest
       for (let i = 2000; i < 4000; i++) watch(rendered(size(i)))
       assert.equal(seen.size - disposed, 1024 + 1, `${type}: ${seen.size - disposed} geometries kept`)
-      assert.equal(mounted(size(9000)).geometry, held.geometry, `${type}: the mounted size kept its geometry`)
+      // two meshes share it: removing one leaves it held by the other through churn, removing both releases it
+      const sharer = mounted(size(9000))
+      assert.equal(sharer.geometry, held.geometry, `${type}: the mounted size kept its geometry`)
+      let heldDisposed = 0
+      held.geometry.addEventListener('dispose', () => heldDisposed++)
+      root.remove(held.node)
+      for (let i = 4000; i < 6000; i++) watch(rendered(size(i)))
+      assert.equal(heldDisposed, 0, `${type}: still held by the other mesh`)
+      assert.equal(mounted(size(9000)).geometry, held.geometry, `${type}: the same geometry`)
     }
-    // a linked mesh keeps its Model, and the material edit kept under it, through churn and a visibility toggle
+    // a linked mesh keeps its Model, and the material edit kept under it, through churn and a visibility toggle, and
+    // through a deactivation long enough for its geometry to be evicted (the geometry made again has the same id)
     const linked = new B.Mesh({ type: 'box', width: 7, geometry: placeholder, material })
     root.add(linked)
     const proxy = linked.material
@@ -326,6 +335,34 @@ probe(
     linked.commit(false)
     assert.equal(linked.material, proxy, 'the same material proxy')
     assert.equal(linked.material.color.getHexString(), 'ff0000', 'the edit survives')
+    root.remove(linked)
+    for (let i = 0; i < 2000; i++) rendered({ type: 'box', width: 20 + i / 1000 })
+    root.add(linked)
+    assert.equal(linked.material, proxy, 'the same material proxy after eviction')
+    assert.equal(linked.material.color.getHexString(), 'ff0000', 'the edit survives eviction')
+    // a failed insert (the octree throws) leaves nothing rendering and releases the geometry; so does a second mount
+    const children = world.stage.scene.children.length
+    const insert = world.stage.octree.insert
+    for (const options of [{ linked: false }, { linked: true }, { visible: false }]) {
+      world.stage.octree.insert = () => {
+        throw new Error('octree')
+      }
+      const failing = new B.Mesh({ type: 'box', width: 30, geometry: placeholder, material, ...options })
+      assert.throws(() => root.add(failing), /octree/)
+      world.stage.octree.insert = insert
+      assert.equal(world.stage.scene.children.length, children, `${JSON.stringify(options)}: nothing left in the scene`)
+      assert.equal(failing.handle ?? failing.sItem ?? failing.shared ?? null, null, 'nothing kept by the node')
+      const models = [...world.stage.models.values()].filter(model => model.items.some(item => item.node === failing))
+      assert.equal(models.length, 0, 'no instance left in a Model')
+    }
+    const twice = mounted({ type: 'box', width: 31 })
+    let twiceDisposed = 0
+    twice.geometry.addEventListener('dispose', () => twiceDisposed++)
+    twice.node.mount()
+    root.remove(twice.node)
+    assert.equal(world.stage.scene.children.length, children, 'a second mount left nothing behind')
+    for (let i = 0; i < 2000; i++) rendered({ type: 'box', width: 40 + i / 1000 })
+    assert.equal(twiceDisposed, 1, 'its geometry was released, so it could be evicted')
     // a Number object (its toString could mint keys) and non-finite sizes are refused
     for (const field of ['width', 'height', 'depth', 'radius']) {
       for (const value of [new Number(1), { valueOf: () => 1 }, NaN, Infinity, '1']) {

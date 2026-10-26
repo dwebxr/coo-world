@@ -132,13 +132,14 @@ const getGeometry = (type, size) => {
 // Material cache - reuse materials with identical properties
 const materialCache = new Map()
 
-// The cache keys are finite: metalness and roughness in 0.05 steps (opacity is quantised by the caller), at most
-// TEXTURE_LIMIT distinct texture strings and MATERIAL_LIMIT materials per process. Beyond a cap a prim gets a fixed
-// fallback (no texture, or the default metalness/roughness and no texture), the same in every process.
-const MATERIAL_LIMIT = 1024
+// The cache keys are finite. Untextured materials form a fixed palette: metalness and roughness in 0.05 steps, opacity
+// in 0.05 steps (quantised by the caller) and doubleside, at most 21 x 21 x 21 x 2 keys, so every process builds the
+// same material for the same prim whatever came before. Textures are first come: at most TEXTURE_LIMIT texture strings
+// and TEXTURED_LIMIT textured materials per process; beyond them a prim renders untextured with one warning.
+const TEXTURED_LIMIT = 1024
 const TEXTURE_LIMIT = 256
 const textures = new Set()
-let regularMaterials = 0
+let texturedMaterials = 0
 const step20 = value => Math.round(value * 20) / 20
 
 // Create material with specific properties; material._textureUrl is the texture it actually carries
@@ -152,17 +153,13 @@ const getMaterial = props => {
       textures.add(texture)
     }
   }
-  let metalness = step20(props.metalness)
-  let roughness = step20(props.roughness)
+  const metalness = step20(props.metalness)
+  const roughness = step20(props.roughness)
   let cacheKey = `${metalness}_${roughness}_${props.opacity}_${texture}_${props.doubleside}`
-  let fallback = false
-  if (!materialCache.has(cacheKey) && regularMaterials >= MATERIAL_LIMIT) {
-    warnOnce('[prim] material limit reached; using the default material')
-    metalness = defaults.metalness
-    roughness = defaults.roughness
+  if (texture && !materialCache.has(cacheKey) && texturedMaterials >= TEXTURED_LIMIT) {
+    warnOnce('[prim] textured material limit reached; rendering untextured')
     texture = null
-    cacheKey = `fallback_${props.opacity}_${props.doubleside}`
-    fallback = true
+    cacheKey = `${metalness}_${roughness}_${props.opacity}_${texture}_${props.doubleside}`
   }
 
   // Check cache first
@@ -190,7 +187,7 @@ const getMaterial = props => {
   material._textureUrl = texture
   // Cache the material
   materialCache.set(cacheKey, material)
-  if (!fallback) regularMaterials++
+  if (texture) texturedMaterials++
 
   return material
 }
@@ -570,7 +567,8 @@ export class Prim extends Node {
   // the signed decomposed scale the physics checks depend on (position is checked on its own)
   physicsKey() {
     this.matrixWorldOffset.decompose(_v1, _q1, _v2)
-    return `${Math.fround(_v2.x)},${Math.fround(_v2.y)},${Math.fround(_v2.z)}`
+    // exact values: any change can change what the checks decide, so none is rounded away
+    return `${_v2.x},${_v2.y},${_v2.z}`
   }
 
   // a prim whose physics was skipped for its transform tries again once the transform changed; only for the current

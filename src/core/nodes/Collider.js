@@ -202,7 +202,8 @@ export class Collider extends Node {
     this.matrixWorld.decompose(_v1, _q1, _v2)
     const local = this.parent ? _v4.copy(this.position).multiply(this.parent.scale) : _v4.copy(this.position)
     const q = this.quaternion
-    return [_v2.x, _v2.y, _v2.z, local.x, local.y, local.z, q.x, q.y, q.z, q.w].map(Math.fround).join(',')
+    // exact values: any change can change what the checks decide, so none is rounded away
+    return [_v2.x, _v2.y, _v2.z, local.x, local.y, local.z, q.x, q.y, q.z, q.w].join(',')
   }
 
   commit(didMove) {

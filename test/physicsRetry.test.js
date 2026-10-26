@@ -56,31 +56,45 @@ probe('physics retry: a collider skipped for its scale or extent mounts once the
   huge.clean()
   assert.ok(huge.shape, 'mounted at the smaller scale')
   assert.equal(huge.heldPmesh, null, 'the held mesh is released once a shape owns one')
+  // a scale change smaller than a float32 step still retries: 3 x 333333.35 is just past the 1e6 extent in float32,
+  // 3 x 333333.34 is not (both scales round to the same float32)
+  const edge = new B.THREE.BufferGeometry()
+  edge.setAttribute('position', new B.THREE.Float32BufferAttribute([0, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0, 1], 3))
+  const boundary = new B.Collider({ type: 'geometry', geometry: edge, convex: true })
+  boundary.scale.set(333333.35, 1, 1)
+  rb.add(boundary)
+  assert.equal(boundary.physicsSkipped, 'extent')
+  boundary.scale.set(333333.34, 1, 1)
+  boundary.clean()
+  assert.ok(boundary.shape, 'mounted after a sub-float32 scale change')
 })
 
-probe('physics retry: a prim and a rigid body skipped outside the range mount when moved back', ({ B, root, physics }) => {
-  const prim = new B.Prim({ type: 'box', size: [1, 1, 1], physics: 'static', opacity: 0, position: [2e6, 0, 0] })
-  root.add(prim)
-  assert.equal(prim.actor ?? null, null, 'no prim actor outside the range')
-  prim.position.x = 0
-  prim.clean()
-  assert.ok(prim.actor, 'the prim mounts once it is back inside')
-  const rb = new B.RigidBody({ type: 'dynamic', position: [2e6, 0, 0] })
-  rb.add(new B.Collider({ type: 'box', width: 1, height: 1, depth: 1 }))
-  root.add(rb)
-  assert.equal(rb.actor ?? null, null, 'no rigid body actor outside the range')
-  // a joint waiting for that body
-  const other = new B.RigidBody({ type: 'dynamic', position: [3, 0, 0] })
-  other.add(new B.Collider({ type: 'box', width: 1, height: 1, depth: 1 }))
-  root.add(other)
-  const joint = new B.Joint({ type: 'fixed' })
-  joint.body0 = rb
-  joint.body1 = other
-  root.add(joint)
-  assert.equal(physics.scene.getNbConstraints(), 0, 'the joint waits')
-  rb.position.x = 0
-  rb.clean()
-  assert.ok(rb.actor, 'the body mounts once it is back inside')
-  assert.equal(rb.actor.getNbShapes(), 1, 'with its collider shape')
-  assert.equal(physics.scene.getNbConstraints(), 1, 'and the waiting joint')
-})
+probe(
+  'physics retry: a prim and a rigid body skipped outside the range mount when moved back',
+  ({ B, root, physics }) => {
+    const prim = new B.Prim({ type: 'box', size: [1, 1, 1], physics: 'static', opacity: 0, position: [2e6, 0, 0] })
+    root.add(prim)
+    assert.equal(prim.actor ?? null, null, 'no prim actor outside the range')
+    prim.position.x = 0
+    prim.clean()
+    assert.ok(prim.actor, 'the prim mounts once it is back inside')
+    const rb = new B.RigidBody({ type: 'dynamic', position: [2e6, 0, 0] })
+    rb.add(new B.Collider({ type: 'box', width: 1, height: 1, depth: 1 }))
+    root.add(rb)
+    assert.equal(rb.actor ?? null, null, 'no rigid body actor outside the range')
+    // a joint waiting for that body
+    const other = new B.RigidBody({ type: 'dynamic', position: [3, 0, 0] })
+    other.add(new B.Collider({ type: 'box', width: 1, height: 1, depth: 1 }))
+    root.add(other)
+    const joint = new B.Joint({ type: 'fixed' })
+    joint.body0 = rb
+    joint.body1 = other
+    root.add(joint)
+    assert.equal(physics.scene.getNbConstraints(), 0, 'the joint waits')
+    rb.position.x = 0
+    rb.clean()
+    assert.ok(rb.actor, 'the body mounts once it is back inside')
+    assert.equal(rb.actor.getNbShapes(), 1, 'with its collider shape')
+    assert.equal(physics.scene.getNbConstraints(), 1, 'and the waiting joint')
+  }
+)

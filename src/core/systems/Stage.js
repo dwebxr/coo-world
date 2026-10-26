@@ -10,6 +10,9 @@ const vec2 = new THREE.Vector2()
 const CLEAN_RETRY_CAP = 10
 // a Model with no instances is released after this long (world time), so a visible toggle or an LOD switch keeps it
 const MODEL_IDLE_SECONDS = 10
+// linked materials kept beyond their Model; past this, the oldest ones whose Model is gone are disposed (geometry
+// variants such as a box Mesh's changing width would otherwise add one per variant)
+const LINKED_MATERIAL_LIMIT = 2048
 
 /**
  * Stage System
@@ -178,8 +181,21 @@ export class Stage extends System {
       material = this.createMaterial({ raw })
       if (uberShader) installUberShader(material.raw)
       this.linkedMaterials.set(id, material)
+      this.trimLinkedMaterials()
     }
     return material
+  }
+
+  // oldest first (Map order); a material whose Model still exists is kept, so the bound is the limit or the live
+  // Models, whichever is larger
+  trimLinkedMaterials() {
+    if (this.linkedMaterials.size <= LINKED_MATERIAL_LIMIT) return
+    for (const [id, material] of this.linkedMaterials) {
+      if (this.linkedMaterials.size <= LINKED_MATERIAL_LIMIT) break
+      if (this.models.has(id)) continue
+      disposeMaterial(material)
+      this.linkedMaterials.delete(id)
+    }
   }
 
   insertSingle({ geometry, material, castShadow, receiveShadow, node, matrix }) {
@@ -210,8 +226,7 @@ export class Stage extends System {
         this.octree.remove(sItem)
         // the material and its textures were cloned for this mesh only (GPU textures are shared per Source and
         // refcounted by three, so disposing a clone frees nothing another material uses)
-        material.raw.dispose()
-        for (const texture of material.textures) texture.dispose()
+        disposeMaterial(material)
       },
     }
   }
@@ -366,6 +381,8 @@ export class Stage extends System {
   }
 
   destroy() {
+    for (const model of [...this.models.values()]) model.release()
+    for (const material of this.linkedMaterials.values()) disposeMaterial(material)
     this.models.clear()
     this.linkedMaterials.clear()
   }
@@ -613,4 +630,10 @@ function installUberShader(raw) {
   }
   raw.defines.USE_UBER_SHADER = ''
   raw.needsUpdate = true
+}
+
+// a material made by Stage.createMaterial: its raw clone and the texture clones it carries
+function disposeMaterial(material) {
+  material.raw.dispose()
+  for (const texture of material.textures) texture.dispose()
 }

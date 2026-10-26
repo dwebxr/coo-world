@@ -26,6 +26,7 @@ export async function bundleRealPhysx({ sourceRoot = process.env.REAL_PHYSX_SOUR
           export { RigidBody } from './src/core/nodes/RigidBody.js'
           export { Collider } from './src/core/nodes/Collider.js'
           export { Prim } from './src/core/nodes/Prim.js'
+          export { Mesh } from './src/core/nodes/Mesh.js'
           export { Controller } from './src/core/nodes/Controller.js'
           export { Joint } from './src/core/nodes/Joint.js'
           export { NodeClient } from './src/core/systems/NodeClient.js'

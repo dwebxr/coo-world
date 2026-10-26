@@ -8,6 +8,7 @@ import { getTrianglesFromGeometry } from '../extras/getTrianglesFromGeometry'
 import { getTextureBytesFromMaterial } from '../extras/getTextureBytesFromMaterial'
 import { Layers } from '../extras/Layers'
 import { geometryToPxMesh } from '../extras/geometryToPxMesh'
+import { quantizeRadiusRatio, quantizeTubeRatio } from '../extras/primQuantize.js'
 import {
   extentOk,
   finiteNumber,
@@ -57,6 +58,9 @@ const _m1 = new THREE.Matrix4()
 const _m2 = new THREE.Matrix4()
 const _m3 = new THREE.Matrix4()
 const _defaultScale = new THREE.Vector3(1, 1, 1)
+
+// skips that depend on the prim's transform, retried when it moves
+const TRANSFORM_SKIPS = new Set(['size', 'scale', 'extent', 'position', 'mirror'])
 
 // the same layer names as Collider and Controller
 const layers = ['environment', 'prop', 'player', 'tool']
@@ -128,10 +132,37 @@ const getGeometry = (type, size) => {
 // Material cache - reuse materials with identical properties
 const materialCache = new Map()
 
-// Create material with specific properties
+// The cache keys are finite. Untextured materials form a fixed palette: metalness and roughness in 0.05 steps, opacity
+// in 0.05 steps (quantised by the caller) and doubleside, at most 21 x 21 x 21 x 2 keys, so every process builds the
+// same material for the same prim whatever came before. Textures are first come: at most TEXTURE_LIMIT texture strings
+// and TEXTURED_LIMIT textured materials per process; beyond them a prim renders untextured with one warning.
+const TEXTURED_LIMIT = 1024
+const TEXTURE_LIMIT = 256
+const textures = new Set()
+let texturedMaterials = 0
+const step20 = value => Math.round(value * 20) / 20
+
+// Create material with specific properties; material._textureUrl is the texture it actually carries
 const getMaterial = props => {
-  // Create a cache key from material properties
-  const cacheKey = `${props.metalness}_${props.roughness}_${props.opacity}_${props.texture}_${props.doubleside}`
+  // canonical primitive parts only, so the key space is exactly the palette (an empty texture is no texture)
+  let texture = typeof props.texture === 'string' && props.texture !== '' ? props.texture : null
+  const doubleside = props.doubleside === true
+  if (texture && !textures.has(texture)) {
+    if (textures.size >= TEXTURE_LIMIT) {
+      warnOnce('[prim] texture limit reached; rendering untextured')
+      texture = null
+    } else {
+      textures.add(texture)
+    }
+  }
+  const metalness = step20(props.metalness)
+  const roughness = step20(props.roughness)
+  let cacheKey = `${metalness}_${roughness}_${props.opacity}_${texture}_${doubleside}`
+  if (texture && !materialCache.has(cacheKey) && texturedMaterials >= TEXTURED_LIMIT) {
+    warnOnce('[prim] textured material limit reached; rendering untextured')
+    texture = null
+    cacheKey = `${metalness}_${roughness}_${props.opacity}_${texture}_${doubleside}`
+  }
 
   // Check cache first
   if (materialCache.has(cacheKey)) {
@@ -142,11 +173,11 @@ const getMaterial = props => {
     color: 0xffffff,
     emissive: 0x000000,
     emissiveIntensity: 0,
-    metalness: props.metalness,
-    roughness: props.roughness,
+    metalness,
+    roughness,
     opacity: props.opacity,
     transparent: props.opacity < 1,
-    side: props.doubleside ? THREE.DoubleSide : THREE.FrontSide,
+    side: doubleside ? THREE.DoubleSide : THREE.FrontSide,
     shadowSide: THREE.BackSide, // fix csm shadow banding
 
     // fight z-fighting with fire (especially for AI generated objects)
@@ -155,8 +186,10 @@ const getMaterial = props => {
     polygonOffsetUnits: Math.random(),
   })
 
+  material._textureUrl = texture
   // Cache the material
   materialCache.set(cacheKey, material)
+  if (texture) texturedMaterials++
 
   return material
 }
@@ -274,9 +307,9 @@ export class Prim extends Node {
           doubleside: this._doubleside,
         })
 
-        if (this._texture && !material._texApplied) {
+        if (material._textureUrl && !material._texApplied) {
           const n = ++this.n
-          await applyTexture(material, this._texture, loader)
+          await applyTexture(material, material._textureUrl, loader)
           if (n !== this.n) return // remounted or destroyed
         }
 
@@ -310,6 +343,20 @@ export class Prim extends Node {
   }
 
   mountPhysics(size) {
+    // the size and the transform-dependent skip are kept for a retry when the prim moves (commit -> retryPhysics);
+    // a mesh held by an extent skip is released after this attempt has taken its own handle
+    this.physicsSize = size
+    this.physicsSkip = null
+    const held = this.heldPmesh
+    this.heldPmesh = null
+    try {
+      this.mountPhysicsChecked(size)
+    } finally {
+      held?.release()
+    }
+  }
+
+  mountPhysicsChecked(size) {
     if (!PHYSX) return
 
     const type = this._physics // 'static' | 'kinematic' | 'dynamic'
@@ -360,7 +407,8 @@ export class Prim extends Node {
       pmesh = geometryToPxMesh(this.ctx.world, threeGeometry, true, this.ctx.entity)
       if (pmesh && pmesh.value) {
         if (!extentOk(pmesh.maxAbs, absScale)) {
-          pmesh.release()
+          // kept so a retry at another scale does not cook it again
+          this.heldPmesh = pmesh
           return this.skipPhysics('extent', 'shape is larger than the physics range')
         }
         // Create scale and its components explicitly so we can free them; the cooked mesh handle is the node's from
@@ -509,12 +557,39 @@ export class Prim extends Node {
         return self._onTriggerLeave
       },
     })
-
   }
 
   // no physics for this prim (its visual stays); a property setter rebuilds it, a transform edit does not
   skipPhysics(reason, message) {
     warnPhysicsOnce(this, reason, `[prim] ${message}; physics skipped`)
+    if (TRANSFORM_SKIPS.has(reason)) this.physicsSkip = { reason, key: this.physicsKey(), n: this.n }
+  }
+
+  // the signed decomposed scale the physics checks depend on (position is checked on its own)
+  physicsKey() {
+    this.matrixWorldOffset.decompose(_v1, _q1, _v2)
+    // exact values: any change can change what the checks decide, so none is rounded away
+    return `${_v2.x},${_v2.y},${_v2.z}`
+  }
+
+  // a prim whose physics was skipped for its transform tries again once the transform changed; only for the current
+  // mount (Prim.mount awaits a texture before mountPhysics) and never while an actor exists
+  retryPhysics() {
+    const skip = this.physicsSkip
+    if (!skip || skip.n !== this.n || this.actor || this.ctx.moving || !this._physics) return
+    if (skip.reason === 'position') {
+      this.matrixWorldOffset.decompose(_v1, _q1, _v2)
+      if (!positionOk(_v1)) return
+    } else if (this.physicsKey() === skip.key) {
+      return
+    }
+    try {
+      this.mountPhysics(this.physicsSize)
+    } catch (err) {
+      handlePhysicsFailure(err, { entity: this.ctx.entity, world: this.ctx.world, phase: 'Prim.retryPhysics' })
+      console.error('[prim] physics retry failed')
+      console.error(err)
+    }
   }
 
   unmountPhysics() {
@@ -535,6 +610,8 @@ export class Prim extends Node {
       this.pmesh.release()
       this.pmesh = null
     }
+    this.heldPmesh?.release()
+    this.heldPmesh = null
   }
 
   onInterpolate = (position, quaternion) => {
@@ -563,11 +640,13 @@ export class Prim extends Node {
       if (this.actorHandle) {
         this.actorHandle.move(this.matrixWorldOffset)
       }
+      this.retryPhysics()
     }
   }
 
   unmount() {
     this.n++
+    this.physicsSkip = null
     if (this.handle) {
       this.handle.destroy()
       this.handle = null
@@ -641,18 +720,30 @@ export class Prim extends Node {
     this.setDirty()
   }
 
+  // a copy, so a script cannot change (or put getters on) the array the geometry is built from
   get size() {
-    return this._size
+    return this._size.slice()
   }
 
   set size(value) {
     if (value === null || value === undefined) {
       value = defaultSizes[this._type].slice()
     }
-    // a loop over every index, because every() skips the holes of a sparse array such as new Array(3)
-    if (!isArray(value) || !allFinite(value, value.length)) {
+    // the length read once, and a primitive integer within bounds: an array proxy could report any length, a different
+    // one each time, or an object whose valueOf answers differently on every comparison
+    const length = isArray(value) ? value.length : undefined
+    if (!Number.isInteger(length) || length < 0 || length > MAX_SIZE_VALUES) {
       throw new Error('[prim] size must be an array of finite numbers')
     }
+    // a plain copy first and the checks on the copy: the script's array could carry its own iterator or index getters
+    // and hand different values to the checks and to the geometry (a loop over every index, because every() would
+    // skip the holes of a sparse array such as new Array(3))
+    const copy = []
+    for (let i = 0; i < length; i++) copy.push(value[i])
+    if (!allFinite(copy, copy.length)) {
+      throw new Error('[prim] size must be an array of finite numbers')
+    }
+    value = copy
     if (isEqual(this._size, value)) return
     this._size = value
     this.needsRebuild = true
@@ -690,7 +781,8 @@ export class Prim extends Node {
   }
 
   set castShadow(value = defaults.castShadow) {
-    if (!isBoolean(value)) {
+    // primitives only: a Boolean object could carry its own toString and mint render keys
+    if (typeof value !== 'boolean') {
       throw new Error('[prim] castShadow not a boolean')
     }
     if (this._castShadow === value) return
@@ -704,7 +796,8 @@ export class Prim extends Node {
   }
 
   set receiveShadow(value = defaults.receiveShadow) {
-    if (!isBoolean(value)) {
+    // primitives only: a Boolean object could carry its own toString and mint render keys
+    if (typeof value !== 'boolean') {
       throw new Error('[prim] receiveShadow not a boolean')
     }
     if (this._receiveShadow === value) return
@@ -731,7 +824,8 @@ export class Prim extends Node {
   }
 
   set metalness(value = defaults.metalness) {
-    if (!isNumber(value) || value < 0 || value > 1) {
+    // a primitive: a Number object could change its value between this check and the material key
+    if (!finiteNumber(value) || value < 0 || value > 1) {
       throw new Error('[prim] metalness must be number between 0 and 1')
     }
     if (this._metalness === value) return
@@ -745,7 +839,8 @@ export class Prim extends Node {
   }
 
   set roughness(value = defaults.roughness) {
-    if (!isNumber(value) || value < 0 || value > 1) {
+    // a primitive: a Number object could change its value between this check and the material key
+    if (!finiteNumber(value) || value < 0 || value > 1) {
       throw new Error('[prim] roughness must be number between 0 and 1')
     }
     if (this._roughness === value) return
@@ -759,7 +854,8 @@ export class Prim extends Node {
   }
 
   set opacity(value = defaults.opacity) {
-    if (!isNumber(value) || value < 0 || value > 1) {
+    // a primitive: a Number object could change its value between this check and the material key
+    if (!finiteNumber(value) || value < 0 || value > 1) {
       throw new Error('[prim] opacity must be number between 0 and 1')
     }
     if (this._opacity === value) return
@@ -773,7 +869,8 @@ export class Prim extends Node {
   }
 
   set texture(value = defaults.texture) {
-    if (value !== null && !isString(value)) {
+    // primitives only: a String object could carry its own toString and mint cache keys
+    if (value !== null && typeof value !== 'string') {
       throw new Error('[prim] texture must be string or null')
     }
     if (this._texture === value) return
@@ -975,7 +1072,8 @@ export class Prim extends Node {
   }
 
   set doubleside(value = defaults.doubleside) {
-    if (!isBoolean(value)) {
+    // primitives only: a Boolean object could carry its own toString and mint cache keys
+    if (typeof value !== 'boolean') {
       throw new Error('[prim] doubleside must be boolean')
     }
     if (this._doubleside === value) return
@@ -1172,7 +1270,8 @@ function allFinite(values, count) {
   return true
 }
 
-// how many numbers each type reads from size (extra ones are ignored)
+// how many numbers each type reads from size (extra ones are ignored, up to MAX_SIZE_VALUES in all)
+const MAX_SIZE_VALUES = 16
 const sizeArity = { box: 3, sphere: 1, cylinder: 3, cone: 2, torus: 2, plane: 2 }
 
 // returns { size, scaleOffset }, or { invalid } for sizes that lack values or would divide by zero
@@ -1209,9 +1308,10 @@ function getGeometryConfig(type, requestedSize) {
         size = [1, 1, 1] // Unit cylinder (uniform radius)
         scaleOffset = [rt, h, rt] // Scale X/Z for radius, Y for height
       } else {
-        // Tapered cylinder - normalize by the ratio (of the magnitudes: a radius may be negative, a mirror)
+        // Tapered cylinder - normalize by the ratio (of the magnitudes: a radius may be negative, a mirror), snapped
+        // to a 1/64 grid so the cache keys are finite and every process builds the same shape
         const maxR = Math.max(Math.abs(rt), Math.abs(rb))
-        size = [rt / maxR, rb / maxR, 1]
+        size = [quantizeRadiusRatio(rt / maxR), quantizeRadiusRatio(rb / maxR), 1]
         scaleOffset = [maxR, h, maxR]
       }
       break
@@ -1229,9 +1329,11 @@ function getGeometryConfig(type, requestedSize) {
     case 'torus': {
       const [r, tube] = requestedSize
       if (r === 0) return { invalid: 'has a zero radius' }
-      // Only the tube-to-main ratio matters for shape
-      // Normalize so main radius is 1
-      size = [1, tube / r]
+      // Only the tube-to-main ratio matters for shape: normalized so the main radius is 1 and snapped to a log2 grid
+      // of 1/8 octave (finite cache keys, the same shape in every process)
+      const ratio = quantizeTubeRatio(tube / r)
+      if (ratio === null) return { invalid: 'has a tube ratio outside 2^-10..2^10' }
+      size = [1, ratio]
       scaleOffset = [r, r, r]
       break
     }

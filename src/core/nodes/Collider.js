@@ -41,6 +41,8 @@ const _q1 = new THREE.Quaternion()
 const _q2 = new THREE.Quaternion()
 
 const types = ['box', 'sphere', 'geometry']
+// skips that depend on the collider's transform, retried when it moves
+const TRANSFORM_SKIPS = new Set(['scale', 'extent', 'pose'])
 const layers = ['environment', 'prop', 'player', 'tool']
 
 export class Collider extends Node {
@@ -72,15 +74,26 @@ export class Collider extends Node {
       return this.skipPhysics('pose', 'local pose is outside the physics range')
     }
     // what this call owns until it hands it to the node: the cooked mesh handle and the geometry are released on every
-    // exit, a throw included (the shape and the mesh handle belong to the node once assigned; unmount releases them)
+    // exit, a throw included (the shape and the mesh handle belong to the node once assigned; unmount releases them).
+    // A mesh held by an earlier extent skip is released after this attempt has taken its own handle.
     const owned = { pmesh: null, geometry: null }
+    const held = this.heldPmesh
+    this.heldPmesh = null
     try {
       const skip = this.buildGeometry(owned)
-      if (skip) return this.skipPhysics(...skip)
+      if (skip) {
+        // an extent skip keeps its cooked mesh, so a retry at another scale does not cook it again
+        if (skip[0] === 'extent') {
+          this.heldPmesh = owned.pmesh
+          owned.pmesh = null
+        }
+        return this.skipPhysics(...skip)
+      }
       this.createShapeFrom(owned, localPosition, localRotation)
     } finally {
       owned.pmesh?.release()
       if (owned.geometry) PHYSX.destroy(owned.geometry)
+      held?.release()
     }
   }
 
@@ -179,8 +192,18 @@ export class Collider extends Node {
     this.shape = null
     this.pmesh = null
     this.physicsSkipped = reason
+    this.skipKey = TRANSFORM_SKIPS.has(reason) ? this.transformKey() : null
     this.needsRebuild = false
     warnPhysicsOnce(this, reason, `[collider] ${message}; physics skipped`)
+  }
+
+  // the decomposed world scale and the local pose the transform-dependent checks look at
+  transformKey() {
+    this.matrixWorld.decompose(_v1, _q1, _v2)
+    const local = this.parent ? _v4.copy(this.position).multiply(this.parent.scale) : _v4.copy(this.position)
+    const q = this.quaternion
+    // exact values: any change can change what the checks decide, so none is rounded away
+    return [_v2.x, _v2.y, _v2.z, local.x, local.y, local.z, q.x, q.y, q.z, q.w].join(',')
   }
 
   commit(didMove) {
@@ -189,8 +212,10 @@ export class Collider extends Node {
       this.mount()
       return
     }
-    if (didMove) {
-      // ...
+    // a collider skipped for its transform tries again once that transform changed: mount() directly, since there is
+    // no shape to release and an unmount would drop the held mesh
+    if (didMove && TRANSFORM_SKIPS.has(this.physicsSkipped) && !this.ctx.moving && this.transformKey() !== this.skipKey) {
+      this.mount()
     }
   }
 
@@ -204,6 +229,8 @@ export class Collider extends Node {
     this.shape = null
     this.pmesh?.release()
     this.pmesh = null
+    this.heldPmesh?.release()
+    this.heldPmesh = null
   }
 
   copy(source, recursive) {

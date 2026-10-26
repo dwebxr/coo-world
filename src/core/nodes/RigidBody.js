@@ -92,12 +92,15 @@ export class RigidBody extends Node {
 
   mount() {
     this.needsRebuild = false
+    this.physicsSkipped = null
     if (this.ctx.moving) return // physics ignored when moving apps around
     decomposeMatrix(this.matrixWorld, _v1, _q1, _v2)
     // an actor outside the physics range corrupts the bodies it is jointed to or touches: no actor (its colliders
     // keep their shapes for a later mount)
     if (!positionOk(_v1)) {
       warnOnce('[rigidbody] no actor outside the physics range')
+      // retried by commit once the body is back inside the range
+      this.physicsSkipped = 'position'
       return
     }
     // PhysX copies the creation transform and the centre-of-mass pose, so both are destroyed right after use
@@ -159,6 +162,10 @@ export class RigidBody extends Node {
     }
     if (didMove) {
       this.actorHandle?.move(this.matrixWorld)
+      if (this.physicsSkipped === 'position' && !this.actor && !this.ctx.moving) {
+        decomposeMatrix(this.matrixWorld, _v1, _q1, _v2)
+        if (positionOk(_v1)) this.mount()
+      }
     }
   }
 
@@ -222,6 +229,7 @@ export class RigidBody extends Node {
       this.actor.release()
       this.actor = null
     }
+    this.physicsSkipped = null
     // scratch allocated by setKinematicTarget and addForceAt(Local)Pos
     for (const key of ['_tm', '_pv1', '_pv2']) {
       if (this[key]) PHYSX.destroy(this[key])

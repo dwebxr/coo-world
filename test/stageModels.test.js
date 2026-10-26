@@ -175,3 +175,56 @@ probe('stage: prim geometry and material keys stay bounded', async ({ B, world, 
   }
   assert.ok(withMap <= 256 && withMap > 200, `${withMap} textured models`)
 })
+
+probe('stage: kept materials come back under the limit when a burst of live variants expires', ({ B, world }) => {
+  world.time = 0
+  world.setupMaterial = () => {}
+  const stage = new B.Stage(world)
+  stage.linkedMaterialLimit = 16
+  const material = new B.THREE.MeshStandardMaterial()
+  const handles = []
+  for (let i = 0; i < 24; i++) {
+    handles.push(
+      stage.insertLinked({
+        geometry: new B.THREE.BoxGeometry(1, 1, 1 + i),
+        material,
+        uberShader: true,
+        castShadow: true,
+        receiveShadow: true,
+        node: {},
+        matrix: new B.THREE.Matrix4(),
+      })
+    )
+  }
+  assert.equal(stage.linkedMaterials.size, 24, 'all in use, none trimmed')
+  for (const handle of handles) handle.destroy()
+  stage.update()
+  world.time = 11
+  stage.update()
+  assert.equal(stage.models.size, 0)
+  assert.ok(stage.linkedMaterials.size <= 16, `${stage.linkedMaterials.size} kept after the burst expired`)
+  // boxed flags and numbers cannot mint keys
+  const shadows = stage.insertLinked({
+    geometry: new B.THREE.BoxGeometry(1, 1, 1),
+    material,
+    uberShader: true,
+    castShadow: new Boolean(true),
+    receiveShadow: true,
+    node: {},
+    matrix: new B.THREE.Matrix4(),
+  })
+  assert.ok(
+    [...stage.models.keys()].every(id => !id.includes('[object')),
+    'canonical flags in the key'
+  )
+  shadows.destroy()
+  for (const [field, value] of [
+    ['metalness', new Number(0.5)],
+    ['roughness', new Number(0.5)],
+    ['opacity', new Number(0.5)],
+    ['castShadow', new Boolean(true)],
+    ['receiveShadow', new Boolean(false)],
+  ]) {
+    assert.throws(() => new B.Prim({ type: 'box', size: [1, 1, 1], [field]: value }), undefined, field)
+  }
+})

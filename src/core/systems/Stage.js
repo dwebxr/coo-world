@@ -160,6 +160,10 @@ export class Stage extends System {
   }
 
   insertLinked({ geometry, material, uberShader, castShadow, receiveShadow, node, matrix }) {
+    // canonical flags, so a boxed boolean cannot mint Model or material keys through its own toString
+    uberShader = uberShader === true
+    castShadow = castShadow === true
+    receiveShadow = receiveShadow === true
     const id = `${geometry.uuid}/${material.uuid}/${uberShader}/${castShadow}/${receiveShadow}`
     if (!this.models.has(id)) {
       const model = new Model(
@@ -566,6 +570,8 @@ class Model {
     this.geometry.disposeBoundsTree?.()
     this.geometry.dispose()
     this.stage.models.delete(this.id)
+    // its material is now trimmable, so a burst of variants that all expired comes back under the limit
+    this.stage.trimLinkedMaterials()
   }
 
   getEntity(instanceId) {

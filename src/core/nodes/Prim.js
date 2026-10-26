@@ -769,7 +769,8 @@ export class Prim extends Node {
   }
 
   set castShadow(value = defaults.castShadow) {
-    if (!isBoolean(value)) {
+    // primitives only: a Boolean object could carry its own toString and mint render keys
+    if (typeof value !== 'boolean') {
       throw new Error('[prim] castShadow not a boolean')
     }
     if (this._castShadow === value) return
@@ -783,7 +784,8 @@ export class Prim extends Node {
   }
 
   set receiveShadow(value = defaults.receiveShadow) {
-    if (!isBoolean(value)) {
+    // primitives only: a Boolean object could carry its own toString and mint render keys
+    if (typeof value !== 'boolean') {
       throw new Error('[prim] receiveShadow not a boolean')
     }
     if (this._receiveShadow === value) return
@@ -810,7 +812,8 @@ export class Prim extends Node {
   }
 
   set metalness(value = defaults.metalness) {
-    if (!isNumber(value) || value < 0 || value > 1) {
+    // a primitive: a Number object could change its value between this check and the material key
+    if (!finiteNumber(value) || value < 0 || value > 1) {
       throw new Error('[prim] metalness must be number between 0 and 1')
     }
     if (this._metalness === value) return
@@ -824,7 +827,8 @@ export class Prim extends Node {
   }
 
   set roughness(value = defaults.roughness) {
-    if (!isNumber(value) || value < 0 || value > 1) {
+    // a primitive: a Number object could change its value between this check and the material key
+    if (!finiteNumber(value) || value < 0 || value > 1) {
       throw new Error('[prim] roughness must be number between 0 and 1')
     }
     if (this._roughness === value) return
@@ -838,7 +842,8 @@ export class Prim extends Node {
   }
 
   set opacity(value = defaults.opacity) {
-    if (!isNumber(value) || value < 0 || value > 1) {
+    // a primitive: a Number object could change its value between this check and the material key
+    if (!finiteNumber(value) || value < 0 || value > 1) {
       throw new Error('[prim] opacity must be number between 0 and 1')
     }
     if (this._opacity === value) return

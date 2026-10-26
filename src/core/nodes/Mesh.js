@@ -1,5 +1,5 @@
 import * as THREE from '../extras/three'
-import { isBoolean, isNumber } from 'lodash-es'
+import { isBoolean } from 'lodash-es'
 
 import { Node, resolveValueRef, secureRef } from './Node'
 import { getTrianglesFromGeometry } from '../extras/getTrianglesFromGeometry'
@@ -24,23 +24,35 @@ const defaults = {
 
 const types = ['box', 'sphere', 'geometry']
 
-let boxes = {}
-const getBox = (width, height, depth) => {
-  const key = `${width},${height},${depth}`
-  if (!boxes[key]) {
-    boxes[key] = new THREE.BoxGeometry(width, height, depth)
+// Box and sphere geometries are cached by their dimensions, least recently used first out past GEOMETRY_LIMIT entries
+// each, so a script that keeps changing a size cannot grow them (or the Models keyed by their uuids) without bound. An
+// evicted geometry is disposed; three uploads it again if an unlinked mesh still renders it.
+const GEOMETRY_LIMIT = 1024
+const cached = (cache, key, create) => {
+  let geometry = cache.get(key)
+  if (geometry) {
+    cache.delete(key)
+  } else {
+    geometry = create()
   }
-  return boxes[key]
+  cache.set(key, geometry)
+  if (cache.size > GEOMETRY_LIMIT) {
+    const [oldest, evicted] = cache.entries().next().value
+    cache.delete(oldest)
+    evicted.dispose()
+  }
+  return geometry
 }
 
-let spheres = {}
-const getSphere = radius => {
-  const key = radius
-  if (!spheres[key]) {
-    spheres[key] = new THREE.SphereGeometry(radius, 16, 12)
-  }
-  return spheres[key]
-}
+const boxes = new Map()
+const getBox = (width, height, depth) =>
+  cached(boxes, `${width},${height},${depth}`, () => new THREE.BoxGeometry(width, height, depth))
+
+const spheres = new Map()
+const getSphere = radius => cached(spheres, `${radius}`, () => new THREE.SphereGeometry(radius, 16, 12))
+
+// a primitive finite number: a Number object could mint cache keys through its own toString
+const finiteNumber = value => typeof value === 'number' && Number.isFinite(value)
 
 export class Mesh extends Node {
   constructor(data = {}) {
@@ -166,7 +178,7 @@ export class Mesh extends Node {
   }
 
   set width(value = defaults.width) {
-    if (!isNumber(value)) {
+    if (!finiteNumber(value)) {
       throw new Error('[mesh] width not a number')
     }
     if (this._width === value) return
@@ -182,7 +194,7 @@ export class Mesh extends Node {
   }
 
   set height(value = defaults.height) {
-    if (!isNumber(value)) {
+    if (!finiteNumber(value)) {
       throw new Error('[mesh] height not a number')
     }
     if (this._height === value) return
@@ -198,7 +210,7 @@ export class Mesh extends Node {
   }
 
   set depth(value = defaults.depth) {
-    if (!isNumber(value)) {
+    if (!finiteNumber(value)) {
       throw new Error('[mesh] depth not a number')
     }
     if (this._depth === value) return
@@ -220,7 +232,7 @@ export class Mesh extends Node {
   }
 
   set radius(value = defaults.radius) {
-    if (!isNumber(value)) {
+    if (!finiteNumber(value)) {
       throw new Error('[mesh] radius not a number')
     }
     if (this._radius === value) return

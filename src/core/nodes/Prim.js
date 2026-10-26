@@ -720,18 +720,29 @@ export class Prim extends Node {
     this.setDirty()
   }
 
+  // a copy, so a script cannot change (or put getters on) the array the geometry is built from
   get size() {
-    return this._size
+    return this._size.slice()
   }
 
   set size(value) {
     if (value === null || value === undefined) {
       value = defaultSizes[this._type].slice()
     }
-    // a loop over every index, because every() skips the holes of a sparse array such as new Array(3)
-    if (!isArray(value) || !allFinite(value, value.length)) {
+    // the length read once, and bounded: an array proxy could report any length, or a different one each time
+    const length = isArray(value) ? value.length : 0
+    if (!isArray(value) || !(length <= MAX_SIZE_VALUES)) {
       throw new Error('[prim] size must be an array of finite numbers')
     }
+    // a plain copy first and the checks on the copy: the script's array could carry its own iterator or index getters
+    // and hand different values to the checks and to the geometry (a loop over every index, because every() would
+    // skip the holes of a sparse array such as new Array(3))
+    const copy = []
+    for (let i = 0; i < length; i++) copy.push(value[i])
+    if (!allFinite(copy, copy.length)) {
+      throw new Error('[prim] size must be an array of finite numbers')
+    }
+    value = copy
     if (isEqual(this._size, value)) return
     this._size = value
     this.needsRebuild = true
@@ -1258,7 +1269,8 @@ function allFinite(values, count) {
   return true
 }
 
-// how many numbers each type reads from size (extra ones are ignored)
+// how many numbers each type reads from size (extra ones are ignored, up to MAX_SIZE_VALUES in all)
+const MAX_SIZE_VALUES = 16
 const sizeArity = { box: 3, sphere: 1, cylinder: 3, cone: 2, torus: 2, plane: 2 }
 
 // returns { size, scaleOffset }, or { invalid } for sizes that lack values or would divide by zero

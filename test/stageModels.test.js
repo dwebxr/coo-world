@@ -160,6 +160,32 @@ probe('stage: prim geometry and material keys stay bounded', async ({ B, world, 
     () => new B.Prim({ type: 'box', size: [1, 1, 1], doubleside: new Boolean(true) }),
     /doubleside must be boolean/
   )
+  // a size whose own iterator hands out other values (objects whose valueOf changes on every read) than its indices:
+  // the prim keeps a plain copy of the indexed values, so 600 of them share one geometry
+  const before = keys().geometries
+  let reads = 0
+  for (let i = 0; i < 600; i++) {
+    const size = [1, 1, 1]
+    size[Symbol.iterator] = function* () {
+      yield 1
+      yield { valueOf: () => 0.001 + reads++ * 0.37 }
+      yield 1
+    }
+    root.add(new B.Prim({ type: 'cylinder', size }))
+  }
+  assert.ok(keys().geometries <= before + 1, `${keys().geometries - before} new geometry keys`)
+  assert.equal(reads, 0, 'the iterator was never used')
+  // the size read back is a copy: changing it (or putting a getter on it) does not reach the prim
+  const kept = new B.Prim({ type: 'cylinder', size: [1, 0.5, 1] })
+  const copy = kept.size
+  copy[1] = 2
+  Object.defineProperty(copy, 0, { get: () => reads++ })
+  assert.deepEqual(kept.size, [1, 0.5, 1])
+  // a proxy reporting a huge (or changing) length is refused before anything is copied
+  assert.throws(
+    () => new B.Prim({ type: 'box', size: new Proxy([1, 1, 1], { get: (t, k) => (k === 'length' ? 1e9 : t[k]) }) }),
+    /size must be an array of finite numbers/
+  )
   // textures are first come: at most 256 distinct texture strings get one
   world.loader = { get: () => new B.THREE.Texture(), load: async () => new B.THREE.Texture() }
   const textured = []
@@ -203,21 +229,27 @@ probe('stage: kept materials come back under the limit when a burst of live vari
   stage.update()
   assert.equal(stage.models.size, 0)
   assert.ok(stage.linkedMaterials.size <= 16, `${stage.linkedMaterials.size} kept after the burst expired`)
-  // boxed flags and numbers cannot mint keys
-  const shadows = stage.insertLinked({
-    geometry: new B.THREE.BoxGeometry(1, 1, 1),
-    material,
-    uberShader: true,
-    castShadow: new Boolean(true),
-    receiveShadow: true,
-    node: {},
-    matrix: new B.THREE.Matrix4(),
-  })
-  assert.ok(
-    [...stage.models.keys()].every(id => !id.includes('[object')),
-    'canonical flags in the key'
-  )
-  shadows.destroy()
+  // flags whose toString changes on every call cannot mint Models: 50 of them on one geometry make a single Model
+  const geometry = new B.THREE.BoxGeometry(1, 1, 1)
+  let calls = 0
+  const flag = () => ({ toString: () => `true-${calls++}`, valueOf: () => true })
+  const flagged = []
+  for (let i = 0; i < 50; i++) {
+    flagged.push(
+      stage.insertLinked({
+        geometry,
+        material,
+        uberShader: flag(),
+        castShadow: flag(),
+        receiveShadow: flag(),
+        node: {},
+        matrix: new B.THREE.Matrix4(),
+      })
+    )
+  }
+  assert.equal(stage.models.size, 1, `${stage.models.size} Models`)
+  assert.equal(calls, 0, 'the flags were never stringified')
+  for (const handle of flagged) handle.destroy()
   for (const [field, value] of [
     ['metalness', new Number(0.5)],
     ['roughness', new Number(0.5)],
@@ -228,3 +260,45 @@ probe('stage: kept materials come back under the limit when a burst of live vari
     assert.throws(() => new B.Prim({ type: 'box', size: [1, 1, 1], [field]: value }), undefined, field)
   }
 })
+
+probe(
+  'mesh: box and sphere geometries are cached up to a bound, and only primitive finite sizes are taken',
+  ({ B, world, root }) => {
+    world.time = 0
+    world.setupMaterial = () => {}
+    world.stage = new B.Stage(world)
+    const material = new B.THREE.MeshStandardMaterial()
+    const placeholder = new B.THREE.BufferGeometry()
+    // an unlinked mesh renders the cached geometry itself (a linked Model clones it)
+    const rendered = options => {
+      const mesh = new B.Mesh({ geometry: placeholder, material, linked: false, ...options })
+      root.add(mesh)
+      const geometry = world.stage.scene.children.at(-1).geometry
+      root.remove(mesh)
+      return geometry
+    }
+    for (const [type, field] of [
+      ['box', 'width'],
+      ['sphere', 'radius'],
+    ]) {
+      const first = rendered({ type, [field]: 1 })
+      assert.equal(rendered({ type, [field]: 1 }), first, `${type}: the same size reuses its geometry`)
+      let disposed = 0
+      first.addEventListener('dispose', () => disposed++)
+      // 2000 other sizes: the first and the 975 oldest of them are evicted and disposed, the newest 1024 are kept
+      for (let i = 1; i <= 2000; i++) {
+        rendered({ type, [field]: 1 + i / 1000 }).addEventListener('dispose', () => disposed++)
+      }
+      assert.equal(disposed, 2001 - 1024, `${type}: ${disposed} disposed`)
+      assert.notEqual(rendered({ type, [field]: 1 }), first, `${type}: an evicted size gets a new geometry`)
+      const recent = rendered({ type, [field]: 3 })
+      assert.equal(rendered({ type, [field]: 3 }), recent, `${type}: a recent size is still cached`)
+    }
+    // a Number object (its toString could mint keys) and non-finite sizes are refused
+    for (const field of ['width', 'height', 'depth', 'radius']) {
+      for (const value of [new Number(1), { valueOf: () => 1 }, NaN, Infinity, '1']) {
+        assert.throws(() => new B.Mesh({ type: 'box', [field]: value }), /not a number/, `${field} ${String(value)}`)
+      }
+    }
+  }
+)

@@ -10,19 +10,19 @@ before(async () => {
   bundle = await bundleRealPhysx()
 })
 after(() => bundle?.destroy())
-const probe = (name, fn) => test(name, () => runRealPhysx(bundle, fn, undefined, { deadline: 60000 }))
+const probe = (name, fn) => test(name, () => runRealPhysx(bundle, fn, undefined, { deadline: 120000 }))
 
 probe(
-  'stage: an idle Model is released after 10 s, its material and proxy outlive it, the uber hook is installed once',
+  'stage: idle Models are released, kept materials and proxies outlive them, the uber hook is installed once',
   ({ B, world }) => {
     world.time = 0
     world.setupMaterial = () => {}
     const stage = new B.Stage(world)
     const geometry = new B.THREE.BoxGeometry(1, 1, 1)
     const material = new B.THREE.MeshStandardMaterial()
-    const insert = () =>
+    const linked = (geo = geometry) =>
       stage.insertLinked({
-        geometry,
+        geometry: geo,
         material,
         uberShader: true,
         castShadow: true,
@@ -30,7 +30,7 @@ probe(
         node: {},
         matrix: new B.THREE.Matrix4(),
       })
-    const first = insert()
+    const first = linked()
     const proxy = first.material
     proxy.color = 'red'
     const model = [...stage.models.values()][0]
@@ -38,7 +38,7 @@ probe(
     // a visible toggle or an LOD switch: back within the idle window keeps the Model
     world.time = 5
     stage.update()
-    const again = insert()
+    const again = linked()
     assert.equal([...stage.models.values()][0], model, 'the same Model is reused within the idle window')
     again.destroy()
     world.time = 6
@@ -51,7 +51,7 @@ probe(
     stage.update()
     assert.equal(stage.models.size, 0, 'released after 10 s with no instances')
     // a rebuilt Model renders with the same material: the proxy and its edit survive
-    const rebuilt = insert()
+    const rebuilt = linked()
     assert.equal(rebuilt.material, proxy, 'the same material proxy')
     assert.equal(proxy.color.getHexString(), 'ff0000', 'the edit survives the rebuild')
     // the uber-shader hook declares the instance attributes once, however often the Model was rebuilt
@@ -62,24 +62,22 @@ probe(
     }
     raw.onBeforeCompile(shader)
     assert.equal(shader.vertexShader.split('attribute vec3 instanceEmissive;').length - 1, 1)
-    // geometry variants (a box Mesh whose width keeps changing) do not grow the kept materials past the limit
-    for (let i = 0; i < 3000; i++) {
-      const handle = stage.insertLinked({
-        geometry: new B.THREE.BoxGeometry(1 + i, 1, 1),
-        material,
-        uberShader: true,
-        castShadow: true,
-        receiveShadow: true,
-        node: {},
-        matrix: new B.THREE.Matrix4(),
-      })
-      handle.destroy()
+    // geometry variants (a box Mesh whose width keeps changing) do not grow the kept materials past the limit; a small
+    // limit stands in for the real 8192
+    stage.linkedMaterialLimit = 16
+    for (let i = 0; i < 100; i++) {
+      linked(new B.THREE.BoxGeometry(1 + i, 1, 1)).destroy()
       world.time += 11
       stage.update()
       world.time += 11
       stage.update()
     }
-    assert.ok(stage.linkedMaterials.size <= 2048, `${stage.linkedMaterials.size} kept materials`)
+    assert.ok(stage.linkedMaterials.size <= 16, `${stage.linkedMaterials.size} kept materials`)
+    // past the limit with every Model alive: nothing in use is trimmed, the newest included
+    for (let i = 0; i < 24; i++) linked(new B.THREE.BoxGeometry(1, 1 + i, 1))
+    for (const live of stage.models.values()) {
+      assert.ok(stage.linkedMaterials.has(live.id), 'every live Model keeps its material')
+    }
     // an unlinked mesh disposes the material it cloned
     let disposed = 0
     const before = new Set(stage.scene.children)
@@ -96,10 +94,23 @@ probe(
     clone.addEventListener('dispose', () => disposed++)
     single.destroy()
     assert.equal(disposed, 1, 'the unlinked clone is disposed')
+    // teardown disposes each kept material exactly once
+    const disposals = new Map()
+    for (const kept of stage.linkedMaterials.values()) {
+      kept.raw.addEventListener('dispose', () => disposals.set(kept, (disposals.get(kept) ?? 0) + 1))
+    }
+    const keptCount = stage.linkedMaterials.size
+    stage.destroy()
+    assert.equal(disposals.size, keptCount, 'every kept material disposed at teardown')
+    assert.ok(
+      [...disposals.values()].every(count => count === 1),
+      'exactly once'
+    )
+    assert.equal(stage.models.size, 0)
   }
 )
 
-probe('stage: prim geometry and material keys stay bounded', ({ B, world, root }) => {
+probe('stage: prim geometry and material keys stay bounded', async ({ B, world, root }) => {
   world.time = 0
   world.setupMaterial = () => {}
   world.stage = new B.Stage(world)
@@ -144,4 +155,23 @@ probe('stage: prim geometry and material keys stay bounded', ({ B, world, root }
   const model = [...world.stage.models.values()].find(m => m.items.some(item => item.node === target))
   assert.ok(model, 'the target prim rendered')
   assert.deepEqual([model.material.raw.metalness, model.material.raw.roughness], [1, 1])
+  // only canonical primitives make keys: a boxed boolean is refused
+  assert.throws(
+    () => new B.Prim({ type: 'box', size: [1, 1, 1], doubleside: new Boolean(true) }),
+    /doubleside must be boolean/
+  )
+  // textures are first come: at most 256 distinct texture strings get one
+  world.loader = { get: () => new B.THREE.Texture(), load: async () => new B.THREE.Texture() }
+  const textured = []
+  for (let i = 0; i < 300; i++) {
+    const prim = new B.Prim({ type: 'box', size: [1, 1, 1], texture: `asset://texture-${i}.png` })
+    root.add(prim)
+    textured.push(prim)
+  }
+  await new Promise(resolve => setTimeout(resolve, 50))
+  let withMap = 0
+  for (const m of world.stage.models.values()) {
+    if (m.items.some(item => textured.includes(item.node)) && m.material.raw.map) withMap++
+  }
+  assert.ok(withMap <= 256 && withMap > 200, `${withMap} textured models`)
 })

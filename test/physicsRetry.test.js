@@ -67,6 +67,14 @@ probe('physics retry: a collider skipped for its scale or extent mounts once the
   boundary.scale.set(333333.34, 1, 1)
   boundary.clean()
   assert.ok(boundary.shape, 'mounted after a sub-float32 scale change')
+  // the same for a prim: a torus [1, 2] reaches 3 from its centre
+  const torus = new B.Prim({ type: 'torus', size: [1, 2], physics: 'static', opacity: 0 })
+  torus.scale.set(333333.35, 333333.35, 333333.35)
+  root.add(torus)
+  assert.equal(torus.actor ?? null, null, 'skipped for its extent')
+  torus.scale.set(333333.34, 333333.34, 333333.34)
+  torus.clean()
+  assert.ok(torus.actor, 'the prim mounts after a sub-float32 scale change')
 })
 
 probe(

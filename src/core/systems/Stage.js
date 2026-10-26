@@ -12,7 +12,9 @@ const CLEAN_RETRY_CAP = 10
 const MODEL_IDLE_SECONDS = 10
 // linked materials kept beyond their Model; past this, the oldest ones whose Model is gone are disposed (geometry
 // variants such as a box Mesh's changing width would otherwise add one per variant)
-const LINKED_MATERIAL_LIMIT = 2048
+// (a normal world creates a few hundred); a script that still holds the proxy of an evicted material keeps editing a
+// material nothing renders, which only a churn of thousands of variants can cause
+const LINKED_MATERIAL_LIMIT = 8192
 
 /**
  * Stage System
@@ -31,6 +33,7 @@ export class Stage extends System {
     // id -> the material a Model renders with; it outlives the Model, so a rebuilt Model reuses it and scripts' material
     // proxies (and their edits) stay valid. Bounded by the loaded models' materials and the prim material cap.
     this.linkedMaterials = new Map()
+    this.linkedMaterialLimit = LINKED_MATERIAL_LIMIT
     this.octree = new LooseOctree({
       scene: this.scene,
       center: new THREE.Vector3(0, 0, 0),
@@ -169,6 +172,8 @@ export class Stage extends System {
         receiveShadow
       )
       this.models.set(id, model)
+      // after the new Model is registered, so its own material is never the one trimmed
+      this.trimLinkedMaterials()
     }
     return this.models.get(id).create(node, matrix)
   }
@@ -181,7 +186,6 @@ export class Stage extends System {
       material = this.createMaterial({ raw })
       if (uberShader) installUberShader(material.raw)
       this.linkedMaterials.set(id, material)
-      this.trimLinkedMaterials()
     }
     return material
   }
@@ -189,9 +193,9 @@ export class Stage extends System {
   // oldest first (Map order); a material whose Model still exists is kept, so the bound is the limit or the live
   // Models, whichever is larger
   trimLinkedMaterials() {
-    if (this.linkedMaterials.size <= LINKED_MATERIAL_LIMIT) return
+    if (this.linkedMaterials.size <= this.linkedMaterialLimit) return
     for (const [id, material] of this.linkedMaterials) {
-      if (this.linkedMaterials.size <= LINKED_MATERIAL_LIMIT) break
+      if (this.linkedMaterials.size <= this.linkedMaterialLimit) break
       if (this.models.has(id)) continue
       disposeMaterial(material)
       this.linkedMaterials.delete(id)

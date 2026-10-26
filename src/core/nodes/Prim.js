@@ -144,7 +144,9 @@ const step20 = value => Math.round(value * 20) / 20
 
 // Create material with specific properties; material._textureUrl is the texture it actually carries
 const getMaterial = props => {
-  let texture = props.texture ?? null
+  // canonical primitive parts only, so the key space is exactly the palette (an empty texture is no texture)
+  let texture = typeof props.texture === 'string' && props.texture !== '' ? props.texture : null
+  const doubleside = props.doubleside === true
   if (texture && !textures.has(texture)) {
     if (textures.size >= TEXTURE_LIMIT) {
       warnOnce('[prim] texture limit reached; rendering untextured')
@@ -155,11 +157,11 @@ const getMaterial = props => {
   }
   const metalness = step20(props.metalness)
   const roughness = step20(props.roughness)
-  let cacheKey = `${metalness}_${roughness}_${props.opacity}_${texture}_${props.doubleside}`
+  let cacheKey = `${metalness}_${roughness}_${props.opacity}_${texture}_${doubleside}`
   if (texture && !materialCache.has(cacheKey) && texturedMaterials >= TEXTURED_LIMIT) {
     warnOnce('[prim] textured material limit reached; rendering untextured')
     texture = null
-    cacheKey = `${metalness}_${roughness}_${props.opacity}_${texture}_${props.doubleside}`
+    cacheKey = `${metalness}_${roughness}_${props.opacity}_${texture}_${doubleside}`
   }
 
   // Check cache first
@@ -175,7 +177,7 @@ const getMaterial = props => {
     roughness,
     opacity: props.opacity,
     transparent: props.opacity < 1,
-    side: props.doubleside ? THREE.DoubleSide : THREE.FrontSide,
+    side: doubleside ? THREE.DoubleSide : THREE.FrontSide,
     shadowSide: THREE.BackSide, // fix csm shadow banding
 
     // fight z-fighting with fire (especially for AI generated objects)
@@ -555,7 +557,6 @@ export class Prim extends Node {
         return self._onTriggerLeave
       },
     })
-
   }
 
   // no physics for this prim (its visual stays); a property setter rebuilds it, a transform edit does not
@@ -851,7 +852,8 @@ export class Prim extends Node {
   }
 
   set texture(value = defaults.texture) {
-    if (value !== null && !isString(value)) {
+    // primitives only: a String object could carry its own toString and mint cache keys
+    if (value !== null && typeof value !== 'string') {
       throw new Error('[prim] texture must be string or null')
     }
     if (this._texture === value) return
@@ -1053,7 +1055,8 @@ export class Prim extends Node {
   }
 
   set doubleside(value = defaults.doubleside) {
-    if (!isBoolean(value)) {
+    // primitives only: a Boolean object could carry its own toString and mint cache keys
+    if (typeof value !== 'boolean') {
       throw new Error('[prim] doubleside must be boolean')
     }
     if (this._doubleside === value) return

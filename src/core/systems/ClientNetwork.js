@@ -300,8 +300,22 @@ export class ClientNetwork extends System {
     this.tokenBalance.onTokenBalance(data)
   }
 
+  // EVM ウォレット (SIWE): サーバーの nonce と検証結果を evm-integration に中継
+  onEvmNonce = data => {
+    this.world.emit('evm:nonce', data)
+  }
+
+  onEvmWalletStatus = data => {
+    this.world.emit('evm:walletStatus', data)
+  }
+
+  onEvmTipIntent = data => {
+    this.world.emit('evm:tipIntent', data)
+  }
+
   disposeWallet(reason) {
     this.world.solana?.dispose(reason)
+    this.world.evm?.dispose(reason)
     this.tokenBalance.dispose()
   }
 

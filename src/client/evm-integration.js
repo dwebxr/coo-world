@@ -1,0 +1,492 @@
+import { isEvmAddress, isEvmSignature, parseEvmChainIds, sameEvmAddress } from '../core/extras/evmChains'
+import { encodeTransfer, isTxHash } from '../core/extras/evmAbi'
+import { KNOWN_CHAINS, explorerTxUrl, parseTipAmount, parseTipTokens } from '../core/extras/evmTokens'
+
+// EVM ウォレット (EIP-1193 / EIP-6963) の所有証明。依存ライブラリなし。
+// 流れと世代管理は solana-integration.js と同じ。状態は Solana と独立で、ビルド権限には関与しない
+
+// nonce / 検証結果を待つ上限 (サーバーのクールダウンは 5 秒)
+const NONCE_WAIT_MS = 15000
+const ACK_WAIT_MS = 15000
+const INTENT_WAIT_MS = 10000
+// 発見したウォレットの保持上限と、受け入れるアイコンの大きさ
+const MAX_PROVIDERS = 16
+const MAX_ICON_LENGTH = 64 * 1024
+const INJECTED_ID = 'injected'
+
+// solana-integration.js と同じく、ビルド時の process.env と実行時の globalThis.env (/env.js) の両方を見る
+const resolveEnv = key => {
+  const fromBuild = typeof process !== 'undefined' ? process.env?.[key] : undefined
+  const fromRuntime = typeof globalThis !== 'undefined' ? globalThis.env?.[key] : undefined
+  return fromBuild ?? fromRuntime
+}
+
+const buildConfig = () => {
+  const chainIds = parseEvmChainIds(resolveEnv('PUBLIC_EVM_CHAIN_IDS'))
+  // 投げゼニのチェーンは SIWE と同じ先頭チェーン
+  const tipTokens = chainIds.length ? parseTipTokens(resolveEnv('PUBLIC_EVM_TIP_TOKENS'), chainIds[0]) : []
+  return { chainIds, tipTokens }
+}
+
+export const isEvmConfigured = () => buildConfig().chainIds.length > 0
+
+// personal_sign には UTF-8 の 16 進表現を渡す (ウォレットは復号して全文を表示する)
+const utf8ToHex = text => {
+  let hex = '0x'
+  for (const byte of new TextEncoder().encode(text)) hex += byte.toString(16).padStart(2, '0')
+  return hex
+}
+
+const failureMessage = (reason, error) => {
+  if (error?.code === 4001) return 'Request rejected in the wallet.'
+  if (reason === 'nonce_expired') return 'Signature expired. Please sign again.'
+  return 'Could not verify your EVM wallet. Please sign again.'
+}
+
+export function createEvmIntegration(world) {
+  const config = buildConfig()
+  if (!config.chainIds.length) return null
+
+  const win = typeof window !== 'undefined' ? window : null
+  const discovered = new Map()
+  let generation = 0
+  let nextAttempt = 0
+  let active = null
+  let provider = null
+  let disposed = false
+  let status = 'disconnected'
+  let address = null
+  let verified = false
+  // 最後に選ばれたウォレット。パネルが作り直されても再署名は同じウォレットで行う
+  let selectedId = null
+  let nextIntent = 0
+  let tipping = false
+
+  const getState = () => ({ status, address, verified })
+  const publish = () => world.emit('evm:state', getState())
+  const current = run => !disposed && !world.fatalError && active === run && generation === run.generation
+  const send = (name, data) => {
+    try {
+      return world.network.send(name, data) === true
+    } catch {
+      return false
+    }
+  }
+  const clearAttempt = () => {
+    if (!active) return
+    for (const cleanup of active.cleanups) cleanup()
+    active.cleanups.clear()
+    active = null
+  }
+
+  // プロバイダーを待つ前に必ず同期で無効化する
+  const invalidate = reason => {
+    generation++
+    clearAttempt()
+    verified = false
+    if (reason !== 'attempt' && reason !== 'failure') address = null
+    status = address ? 'unverified' : 'disconnected'
+  }
+
+  const fail = (run, error) => {
+    if (!current(run)) return
+    const reason = run.reason
+    invalidate('failure')
+    status = address ? 'unverified' : 'disconnected'
+    // サーバーとの試行を始めていたら取り下げる。検証結果が待ち時間の後に届いた場合でも、
+    // サーバーだけが検証済みのまま残らない (失敗済みならサーバー側は何もしない)
+    if (run.id) send('revokeEvmWallet', {})
+    publish()
+    world.emit('toast', failureMessage(reason, error))
+  }
+
+  // EIP-6963: 拡張機能ごとに 1 つずつ名乗り出る。中身は信頼せず、形だけ確かめて保持する
+  const onAnnounce = event => {
+    const detail = event?.detail
+    const info = detail?.info
+    const announced = detail?.provider
+    if (disposed || !info || typeof info.uuid !== 'string' || !info.uuid || info.uuid.length > 128) return
+    if (typeof announced?.request !== 'function') return
+    const known = discovered.get(info.uuid)
+    // 既知の uuid の名乗り直しはすべて無視する (最初の紐付けを固定する)。同じ provider なら何も変わらず、
+    // 別の provider で既存の名前とアイコンを乗っ取る announce は捨てられる
+    if (known) return
+    if (discovered.size >= MAX_PROVIDERS) return
+    const icon =
+      typeof info.icon === 'string' && info.icon.startsWith('data:image/') && info.icon.length <= MAX_ICON_LENGTH
+        ? info.icon
+        : null
+    const name = typeof info.name === 'string' && info.name.trim() ? info.name.trim().slice(0, 64) : 'Wallet'
+    discovered.set(info.uuid, { id: info.uuid, name, icon, provider: announced })
+    world.emit('evm:providers')
+  }
+
+  const getProviders = () => {
+    const list = [...discovered.values()].map(({ id, name, icon }) => ({ id, name, icon }))
+    if (!list.length && typeof win?.ethereum?.request === 'function') {
+      list.push({ id: INJECTED_ID, name: 'Browser wallet', icon: null })
+    }
+    return list
+  }
+
+  const pickProvider = requested => {
+    const id = requested ?? selectedId
+    if (id && discovered.has(id)) return discovered.get(id).provider
+    if (discovered.size === 1 && (!id || id === INJECTED_ID)) return [...discovered.values()][0].provider
+    if ((!id || id === INJECTED_ID) && !discovered.size) return win?.ethereum ?? null
+    return null
+  }
+
+  // クールダウンの再送を含め、nonce 待ちは合計 15 秒まで
+  const waitForNonce = run =>
+    new Promise(resolve => {
+      let retried = false
+      let retryTimer
+      const finish = value => {
+        clearTimeout(timer)
+        clearTimeout(retryTimer)
+        world.off('evm:nonce', onNonce)
+        run.cleanups.delete(cancel)
+        resolve(value)
+      }
+      const cancel = () => finish(null)
+      const onNonce = data => {
+        if (!current(run) || data?.attempt !== run.id) return
+        if ('retryAfterMs' in data) {
+          if (retried || !Number.isFinite(data.retryAfterMs) || data.retryAfterMs <= 0 || data.retryAfterMs > 5000) {
+            return finish(null)
+          }
+          retried = true
+          retryTimer = setTimeout(() => {
+            if (!current(run) || !send('requestEvmNonce', { address, attempt: run.id })) finish(null)
+          }, data.retryAfterMs)
+          return
+        }
+        if (
+          typeof data.nonce !== 'string' ||
+          data.nonce.length !== 64 ||
+          !/^[a-f0-9]{64}$/.test(data.nonce) ||
+          typeof data.message !== 'string'
+        ) {
+          return finish(null)
+        }
+        const length = new TextEncoder().encode(data.message).length
+        if (!length || length > 1024) return finish(null)
+        finish({ nonce: data.nonce, message: data.message })
+      }
+      const timer = setTimeout(cancel, NONCE_WAIT_MS)
+      run.cleanups.add(cancel)
+      world.on('evm:nonce', onNonce)
+    })
+
+  const waitForAck = run =>
+    new Promise(resolve => {
+      const finish = value => {
+        clearTimeout(timer)
+        run.ack = null
+        run.cleanups.delete(cancel)
+        resolve(value)
+      }
+      const cancel = () => finish(null)
+      const timer = setTimeout(cancel, ACK_WAIT_MS)
+      run.ack = finish
+      run.cleanups.add(cancel)
+    })
+
+  // このゲートを通った status だけが状態を変える
+  const onWalletStatus = data => {
+    if (disposed || world.fatalError || typeof data?.verified !== 'boolean') return
+    if (Object.prototype.hasOwnProperty.call(data, 'attempt')) {
+      if (!Number.isInteger(data.attempt) || data.attempt < 1 || data.attempt > 0x7fffffff) return
+      if (!active || !current(active) || data.attempt !== active.id) return
+      // サーバーは EIP-55、ウォレットは小文字のことが多い。大文字小文字を無視して比べる
+      if (data.verified && !sameEvmAddress(data.wallet, address)) return
+      if (!data.verified && typeof data.reason === 'string') active.reason = data.reason
+    } else if (data.verified) {
+      return
+    }
+    verified = data.verified
+    if (verified) {
+      // 表示はサーバーが付けたチェックサム形にそろえる
+      address = data.wallet
+      status = 'verified'
+    } else if (!active || status === 'verified') {
+      status = address ? 'unverified' : 'disconnected'
+    }
+    active?.ack?.(data)
+    publish()
+  }
+
+  const onAccountsChanged = accounts => {
+    if (disposed || !provider) return
+    const next = Array.isArray(accounts) ? accounts[0] : undefined
+    // アカウント取得中の通知は覚えておき、取得結果と食い違えば (取り消しの空配列を含む) その試行をやめる
+    if (!address) {
+      if (active && current(active) && active.id === null) active.accountEvent = isEvmAddress(next) ? next : null
+      return
+    }
+    // 接続直後に同じアカウントで通知するウォレットがある
+    if (sameEvmAddress(next, address)) return
+    localDisconnect()
+    publish()
+    world.emit('toast', 'Wallet account changed. Reconnect and sign again.')
+  }
+
+  const detachProvider = () => {
+    try {
+      provider?.removeListener?.('accountsChanged', onAccountsChanged)
+    } catch {
+      // プロバイダー側の例外でもローカルの破棄を進める
+    }
+    provider = null
+  }
+
+  const localDisconnect = () => {
+    invalidate('disconnect')
+    send('revokeEvmWallet', {})
+    const previous = provider
+    detachProvider()
+    return previous
+  }
+
+  const disconnect = () => {
+    const previous = localDisconnect()
+    publish()
+    // サイトへの接続許可も best effort で取り消す (未対応のウォレットは無視)。await しない
+    try {
+      Promise.resolve(
+        previous?.request?.({ method: 'wallet_revokePermissions', params: [{ eth_accounts: {} }] })
+      ).catch(() => {})
+    } catch {
+      // ウォレット側の後始末は best effort
+    }
+    return true
+  }
+
+  const connect = async providerId => {
+    if (disposed || world.fatalError) return null
+    invalidate('attempt')
+    const run = { generation, id: null, cleanups: new Set(), reason: null, accountEvent: undefined }
+    active = run
+    status = 'connecting'
+    publish()
+    try {
+      detachProvider()
+      const chosen = pickProvider(providerId)
+      if (typeof chosen?.request !== 'function') throw new Error('wallet unavailable')
+      provider = chosen
+      if (providerId) selectedId = providerId
+      provider.on?.('accountsChanged', onAccountsChanged)
+      const accounts = await chosen.request({ method: 'eth_requestAccounts' })
+      if (!current(run)) return null
+      const account = Array.isArray(accounts) ? accounts[0] : null
+      if (!isEvmAddress(account) || nextAttempt === 0x7fffffff) throw new Error('invalid wallet attempt')
+      if (run.accountEvent !== undefined && !sameEvmAddress(run.accountEvent, account)) {
+        throw new Error('account changed while connecting')
+      }
+      address = account
+      run.id = ++nextAttempt
+      status = 'signing'
+      publish()
+      const nonceWait = waitForNonce(run)
+      if (!send('requestEvmNonce', { address, attempt: run.id })) throw new Error('send refused')
+      const challenge = await nonceWait
+      if (!current(run)) return null
+      if (!challenge) throw new Error('nonce unavailable')
+      const signature = await chosen.request({
+        method: 'personal_sign',
+        params: [utf8ToHex(challenge.message), account],
+      })
+      if (!current(run)) return null
+      if (!isEvmSignature(signature)) throw new Error('invalid signature')
+      const ackWait = waitForAck(run)
+      if (!send('requestEvmVerify', { address: account, signature, nonce: challenge.nonce, attempt: run.id })) {
+        throw new Error('send refused')
+      }
+      const ack = await ackWait
+      if (!current(run)) return null
+      if (!ack?.verified || !verified) throw new Error('verification unavailable')
+      clearAttempt()
+      return address
+    } catch (error) {
+      fail(run, error)
+      return null
+    }
+  }
+
+  const setReceiveTips = enabled => {
+    if (disposed || !verified || !config.tipTokens.length || typeof enabled !== 'boolean') return false
+    return send('setEvmTipReceive', { enabled })
+  }
+
+  const waitForIntent = id =>
+    new Promise(resolve => {
+      const finish = value => {
+        clearTimeout(timer)
+        world.off('evm:tipIntent', onIntent)
+        resolve(value)
+      }
+      const onIntent = data => {
+        if (data?.id === id) finish(data)
+      }
+      const timer = setTimeout(() => finish(null), INTENT_WAIT_MS)
+      world.on('evm:tipIntent', onIntent)
+    })
+
+  const switchChain = async (wallet, chainId) => {
+    const hex = `0x${chainId.toString(16)}`
+    const currentChain = await wallet.request({ method: 'eth_chainId' })
+    if (typeof currentChain === 'string' && /^0x[0-9a-fA-F]+$/.test(currentChain) && Number(currentChain) === chainId)
+      return
+    try {
+      await wallet.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: hex }] })
+    } catch (error) {
+      // 4902: ウォレットがこのチェーンを知らない。組み込みのチェーンに限り追加を提案する
+      const known = KNOWN_CHAINS[chainId]
+      if (error?.code !== 4902 || !known) throw error
+      await wallet.request({
+        method: 'wallet_addEthereumChain',
+        params: [
+          {
+            chainId: known.chainId,
+            chainName: known.chainName,
+            nativeCurrency: { ...known.nativeCurrency },
+            rpcUrls: [...known.rpcUrls],
+            blockExplorerUrls: [...known.blockExplorerUrls],
+          },
+        ],
+      })
+      await wallet.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: hex }] })
+    }
+    const after = await wallet.request({ method: 'eth_chainId' })
+    if (typeof after !== 'string' || !/^0x[0-9a-fA-F]+$/.test(after) || Number(after) !== chainId) {
+      throw new Error('wrong chain')
+    }
+  }
+
+  // 投げゼニ: 受取人のアドレスはサーバーの tip intent から受け取り、ウォレットから直接送る。
+  // 送金先は intent の受取人だけ。金額はクライアントでも解析して intent と一致するときだけ送る。
+  // 戻り値は { ok: true, txHash, explorerUrl } か { ok: false, reason }
+  const tip = async ({ playerId, token, amount } = {}) => {
+    if (disposed || world.fatalError) return { ok: false, reason: 'unavailable' }
+    if (!verified || !address || !provider) return { ok: false, reason: 'not_verified' }
+    if (tipping) return { ok: false, reason: 'busy' }
+    const info = config.tipTokens.find(entry => entry.symbol === token)
+    if (!info || typeof playerId !== 'string') return { ok: false, reason: 'bad_token' }
+    let units
+    try {
+      units = parseTipAmount(amount, info)
+    } catch (error) {
+      return { ok: false, reason: error?.message === 'below minimum' ? 'below_minimum' : 'bad_amount' }
+    }
+    tipping = true
+    const startedAt = generation
+    const wallet = provider
+    const from = address
+    const stillCurrent = () =>
+      !disposed && !world.fatalError && verified && generation === startedAt && provider === wallet
+    // 自分の切替の通知が遅れて届くウォレットもあるので、目的のチェーン以外への変更だけを数える
+    let chainMoved = false
+    const onChainChanged = next => {
+      if (typeof next !== 'string' || !/^0x[0-9a-fA-F]+$/.test(next) || Number(next) !== config.chainIds[0]) {
+        chainMoved = true
+      }
+    }
+    try {
+      if (nextIntent === 0x7fffffff) nextIntent = 0
+      const id = ++nextIntent
+      const intentWait = waitForIntent(id)
+      if (!send('requestEvmTipIntent', { id, to: playerId, token: info.symbol, amount })) {
+        return { ok: false, reason: 'unavailable' }
+      }
+      const intent = await intentWait
+      if (!stillCurrent()) return { ok: false, reason: 'cancelled' }
+      if (!intent) return { ok: false, reason: 'timeout' }
+      if (intent.ok !== true)
+        return { ok: false, reason: typeof intent.reason === 'string' ? intent.reason : 'refused' }
+      const chainId = config.chainIds[0]
+      if (
+        intent.to !== playerId ||
+        intent.chainId !== chainId ||
+        !isEvmAddress(intent.recipient) ||
+        sameEvmAddress(intent.recipient, from) ||
+        !sameEvmAddress(intent.token?.address, info.address) ||
+        intent.token?.decimals !== info.decimals ||
+        intent.units !== units.toString()
+      ) {
+        return { ok: false, reason: 'mismatch' }
+      }
+      // ウォレットの今のアカウントが検証済みアドレスであること
+      const accounts = await wallet.request({ method: 'eth_accounts' })
+      if (!stillCurrent()) return { ok: false, reason: 'cancelled' }
+      if (!Array.isArray(accounts) || !sameEvmAddress(accounts[0], from)) return { ok: false, reason: 'wrong_account' }
+      await switchChain(wallet, chainId)
+      // 確認した後にウォレットがチェーンを変えたら送らない。送る tx にも chainId を入れ、
+      // 違うチェーンならウォレット側で拒否させる (EIP-1193 の eth_sendTransaction の chainId)
+      wallet.on?.('chainChanged', onChainChanged)
+      if (!stillCurrent()) return { ok: false, reason: 'cancelled' }
+      if (chainMoved) return { ok: false, reason: 'chain_changed' }
+      const txHash = await wallet.request({
+        method: 'eth_sendTransaction',
+        params: [
+          {
+            from,
+            to: info.address,
+            data: encodeTransfer(intent.recipient, units),
+            value: '0x0',
+            chainId: `0x${chainId.toString(16)}`,
+          },
+        ],
+      })
+      if (!isTxHash(txHash)) return { ok: false, reason: 'bad_tx' }
+      // 送信中に切り替わった場合、どのチェーンに出たか分からないのでリンクは出さない
+      if (chainMoved) return { ok: true, txHash, explorerUrl: null, warning: 'chain_changed' }
+      return { ok: true, txHash, explorerUrl: explorerTxUrl(chainId, txHash) }
+    } catch (error) {
+      return { ok: false, reason: error?.code === 4001 ? 'rejected' : 'failed' }
+    } finally {
+      try {
+        wallet.removeListener?.('chainChanged', onChainChanged)
+      } catch {
+        // プロバイダー側の例外は無視
+      }
+      tipping = false
+    }
+  }
+
+  const dispose = reason => {
+    if (disposed) return
+    disposed = true
+    invalidate(reason)
+    detachProvider()
+    world.off('evm:walletStatus', onWalletStatus)
+    win?.removeEventListener?.('eip6963:announceProvider', onAnnounce)
+    discovered.clear()
+    // 接続が終わったことを表示にも伝える (パネルが検証済みのまま残らないように)
+    publish()
+  }
+
+  world.on('evm:walletStatus', onWalletStatus)
+  win?.addEventListener?.('eip6963:announceProvider', onAnnounce)
+  try {
+    win?.dispatchEvent?.(new Event('eip6963:requestProvider'))
+  } catch {
+    // 発見できなくても window.ethereum へのフォールバックが残る
+  }
+
+  world.evm = {
+    getConfig: () => ({ chainIds: [...config.chainIds] }),
+    getTipTokens: () => config.tipTokens.map(({ symbol, decimals, min }) => ({ symbol, decimals, min })),
+    setReceiveTips,
+    tip,
+    getState,
+    getProviders,
+    connect,
+    disconnect,
+    dispose,
+    isConnected: () => !!address,
+    isVerified: () => verified,
+    getAddress: () => address,
+  }
+  return world.evm
+}

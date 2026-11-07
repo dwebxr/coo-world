@@ -23,7 +23,7 @@ const other = 'socket-other'
 
 test('sanitizeName: strings are kept and truncated to 64 characters', () => {
   assert.equal(sanitizeName('Alice'), 'Alice')
-  assert.equal(sanitizeName(''), '')
+  assert.equal(sanitizeName(' Bob '), ' Bob ')
   assert.equal(sanitizeName('a'.repeat(64)), 'a'.repeat(64))
   assert.equal(sanitizeName('a'.repeat(70)), 'a'.repeat(64))
 })
@@ -782,4 +782,18 @@ test('sanitizeSpawn: only a complete bounded pose is accepted, copied and normal
   ]) {
     assert.equal(sanitizeSpawn(bad), null)
   }
+})
+
+test('sanitizeName: blank or invisible-only names are refused so a user message cannot pass as a system one', () => {
+  // spaces and invisible characters, built from code points so the source stays readable
+  const invisible = [0x034f, 0x200b, 0x200e, 0x200f, 0x3164, 0xfeff, 0x2060, 0x00a0, 0xfe0f, 0xe0061, 0x2800].map(c =>
+    String.fromCodePoint(c)
+  )
+  for (const v of ['', ' ', '\t\n', ...invisible, ` ${invisible[6]} `, invisible[2] + invisible[3]]) {
+    assert.equal(sanitizeName(v), undefined, JSON.stringify(v))
+  }
+  assert.equal(sanitizeName(`${invisible[1]}A`), `${invisible[1]}A`, 'a visible character keeps the name')
+  // A blank name in a self-modify is dropped, not applied.
+  assert.equal(sanitizePlayerSelfModify({ name: ' ' }, 'socket'), null)
+  assert.deepEqual(sanitizePlayerSelfModify({ name: '\u200b', m: 1 }, 'socket'), { id: 'socket', m: 1 })
 })

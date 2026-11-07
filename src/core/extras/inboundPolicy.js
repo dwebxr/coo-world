@@ -6,6 +6,11 @@ import { strictDecode } from './strictDecode.js'
 export const INBOUND_BYTE_LIMITS = Object.freeze({
   tokenBalanceRequest: 64,
   requestBuilderRecheck: 16,
+  requestEvmNonce: 128,
+  requestEvmVerify: 512,
+  revokeEvmWallet: 16,
+  setEvmTipReceive: 32,
+  requestEvmTipIntent: 192,
   entityEvent: 64 * 1024,
   blueprintAdded: 64 * 1024,
   blueprintModified: 64 * 1024,

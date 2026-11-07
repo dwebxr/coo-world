@@ -39,6 +39,14 @@ const names = [
   'tokenBalanceRequest',
   'tokenBalance',
   'requestBuilderRecheck',
+  'requestEvmNonce',
+  'evmNonce',
+  'requestEvmVerify',
+  'evmWalletStatus',
+  'revokeEvmWallet',
+  'setEvmTipReceive',
+  'requestEvmTipIntent',
+  'evmTipIntent',
 ]
 
 const byName = {}

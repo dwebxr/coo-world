@@ -26,6 +26,10 @@ import {
 } from '../../src/core/extras/entityModifyPolicy.js'
 import { readInboundPacket } from '../../src/server/inboundDecode.js'
 import * as solanaGating from '../../src/server/solana-gating.js'
+import * as evmGating from '../../src/server/evm-gating.js'
+import { parseTipAmount } from '../../src/core/extras/evmTokens.js'
+import { createEvmRpcs } from '../../src/server/evmRpc.js'
+import { createEvmHoldingService } from '../../src/server/evmHoldings.js'
 import { grantTokenRank, persistRank, revokeTokenRank } from '../../src/server/rankGrants.js'
 import { createSolanaRpc } from '../../src/server/solanaRpc.js'
 import { createTokenBalanceService } from '../../src/server/tokenBalance.js'
@@ -48,6 +52,14 @@ const names = [
   'onRequestBuilderRecheck',
   'onTokenBalanceRequest',
   'onRevokeBuilderByToken',
+  'invalidateEvmWallet',
+  'currentEvm',
+  'onRequestEvmNonce',
+  'onRequestEvmVerify',
+  'onRevokeEvmWallet',
+  'onSetEvmTipReceive',
+  'onRequestEvmTipIntent',
+  'evmHolding',
   'markBlueprintDirty',
   'markAppDirty',
   'markAppDeleted',
@@ -99,6 +111,10 @@ function networkClass(context) {
     process: { env: {} },
     console,
     solanaGating,
+    evmGating,
+    parseTipAmount,
+    createEvmRpcs,
+    createEvmHoldingService,
     grantTokenRank,
     persistRank,
     revokeTokenRank,
@@ -121,10 +137,10 @@ export const Socket = vm.runInNewContext(`(${socketSource.slice(socketSource.ind
   writePacket,
 })
 
-export function makeNetwork(log = () => {}, { context, tokenBalanceService } = {}) {
+export function makeNetwork(log = () => {}, { context, tokenBalanceService, evmHoldings } = {}) {
   const Network = networkClass(context)
   const network = new Network()
-  network.init({ tokenBalanceService })
+  network.init({ tokenBalanceService, evmHoldings })
   network.isServer = true
   network.id = 0
   network.sockets = new Map()
@@ -205,6 +221,7 @@ export function connectionMethod(context) {
     Socket,
     briefError,
     solanaGating,
+    evmGating,
     ...context,
   })
 }

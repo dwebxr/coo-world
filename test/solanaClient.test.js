@@ -128,6 +128,8 @@ test('client: status gate and ack deadline', async t => {
   t.mock.timers.tick(1)
   assert.equal(await run.promise, null)
   assert.equal(h.solana.getState().status, 'unverified')
+  // The verify request was sent, so a success the server sends after the deadline must not leave it verified.
+  assert.equal(requests(h.world, 'RevokeBuilderByToken').length, 1, 'timed-out verification withdrawn')
   h.status(run.attempt)
   assert.equal(h.events.length, 0)
   const accepted = await h.verify()
@@ -189,6 +191,8 @@ test('client: refused or throwing sends fail attempts', async t => {
       assert.equal(h.solana.getState().status, 'unverified')
       assert.equal(h.world.listenerCount('solana:builderNonce'), 0)
       assert.equal(h.world.toasts.length, 1)
+      // a verify request that was never sent must not be withdrawn (that would also drop a builder rank)
+      assert.equal(requests(h.world, 'RevokeBuilderByToken').length, 0)
     }
   }
 })
@@ -245,6 +249,8 @@ test('client: nonce deadline, one cooldown retry, no prompt timeout', async t =>
   t.mock.timers.tick(10000)
   assert.equal(await a.promise, null)
   assert.equal(h.world.listenerCount('solana:builderNonce'), 0)
+  // Failures before the verify request leave the server unverified: no revoke (it would also drop a rank).
+  assert.equal(requests(h.world, 'RevokeBuilderByToken').length, 0)
   const b = await h.start()
   h.challenge(b.attempt, { retryAfterMs: 1 })
   t.mock.timers.tick(1)

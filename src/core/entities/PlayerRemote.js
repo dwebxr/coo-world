@@ -214,6 +214,11 @@ export class PlayerRemote extends Entity {
       this.data.rank = data.rank
       this.world.emit('rank', { playerId: this.data.id, rank: this.data.rank })
     }
+    // 投げゼニを受け取れるか (サーバーだけが設定する真偽値。アドレスは含まない)
+    if (Object.prototype.hasOwnProperty.call(data, 'evmTips')) {
+      this.data.evmTips = data.evmTips === true
+      this.world.emit('evmTips', { playerId: this.data.id, evmTips: this.data.evmTips })
+    }
     if (avatarChanged) {
       this.applyAvatar()
     }

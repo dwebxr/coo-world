@@ -392,6 +392,44 @@ try {
       }
     }
 
+    // 5. iPhone Brave adds an undeletable `call` to Function.prototype.apply. The cleanup before lockdown swaps
+    //    that apply for a clean one, so lockdown completes and the app starts (its socket is held: drawing and
+    //    a clean, frozen Function.prototype are enough here)
+    {
+      const consoleLines = []
+      const { context, probe } = await fresh({ error: 500, slow: 60000 }, async p => {
+        p.on('console', m => consoleLines.push(m.text()))
+        await p.routeWebSocket(/\/ws/, () => {})
+        await p.addInitScript(() => {
+          Object.defineProperty(Function.prototype.apply, 'call', {
+            value: Function.prototype.call,
+            configurable: false,
+            writable: false,
+            enumerable: false,
+          })
+        })
+      })
+      try {
+        await probe.waitForFunction(() => !!document.getElementById('root')?.firstChild, null, {
+          timeout: 30000 * TIMEOUT_SCALE,
+        })
+        await sleep(2000)
+        ok(await probe.evaluate(() => !document.querySelector('.boot-error')), 'no failure message')
+        const state = await probe.evaluate(() => ({
+          frozen: Object.isFrozen(Function.prototype),
+          braveCall: Object.hasOwn(Function.prototype.apply, 'call'),
+          max: Math.max.apply(null, [1, 5, 3]),
+        }))
+        eq(JSON.stringify(state), JSON.stringify({ frozen: true, braveCall: false, max: 5 }), 'locked down and clean')
+        ok(
+          consoleLines.some(line => line.includes('[lockdown] replaced Function.prototype methods')),
+          'replacement reported'
+        )
+      } finally {
+        await context.close()
+      }
+    }
+
     // 4. nothing is drawn at the slow mark (the app script arrives late), then the app draws: the message in the
     //    middle moves to the bottom notice, with no error from the watchdog itself
     {

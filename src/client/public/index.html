@@ -31,22 +31,62 @@
       window.PARTICLES_PATH = '{particlesPath}'
     </script>
     <script>
-      // Boot watchdog: if the world does not start (a script error before it is ready, or a blocked script),
-      // show why instead of a black screen. Runs before the app (and before SES lockdown); the app calls
-      // window.__worldBoot.ready() once the local player is in, which removes the message.
+      // Boot watchdog: if the world does not start, say why instead of leaving a black screen. It runs before
+      // the app (and before SES lockdown); the app calls window.__worldBoot.ready() once the local player is
+      // in, which stops it and removes any message.
+      // - Nothing drawn yet (the app script failed or was blocked): a message in the middle, 8 s after a
+      //   startup error or at 60 s.
+      // - The app is running but slow: a notice at the bottom at 60 s, never in the way.
+      // - Errors from scripts of another origin ("Script error.", eg added by the browser) are not treated as a
+      //   startup failure on their own. Tests may shorten the waits with window.__worldBootTimings.
       ;(function () {
+        var timing = window.__worldBootTimings || {}
+        var ERROR_WAIT = timing.error || 8000
+        var SLOW_WAIT = timing.slow || 60000
         var ready = false
+        var dismissed = false
         var firstError = null
+        var opaqueError = false
         var box = null
+        var timers = []
+        // SES logs each intrinsic property it removes ("Removing intrinsics.%ArrayPrototype%.x") just before it
+        // deletes it. When lockdown fails on a property a browser script added, the last one names it (WebKit's
+        // own message only says "Unable to delete property.")
+        var lastRemoval = ''
+        try {
+          var warn = console.warn
+          console.warn = function () {
+            var first = arguments[0]
+            if (!ready && typeof first === 'string' && first.indexOf('Removing ') === 0) lastRemoval = first
+            return warn.apply(console, arguments)
+          }
+        } catch (err) {
+          // keep the original console
+        }
+        var later = function (run, ms) {
+          timers.push(setTimeout(run, ms))
+        }
+        var stop = function () {
+          for (var i = 0; i < timers.length; i++) clearTimeout(timers[i])
+          timers = []
+        }
+        var remove = function () {
+          if (box && box.parentNode) box.parentNode.removeChild(box)
+          box = null
+        }
+        var started = function () {
+          var root = document.getElementById('root')
+          return !!(root && root.firstChild)
+        }
         var text = function (value) {
           if (!value) return ''
           if (typeof value === 'string') return value
           return String(value.message || value)
         }
-        var show = function (title, detail) {
-          if (ready || box) return
+        var show = function (kind, title, detail) {
+          if (ready || dismissed || box) return
           box = document.createElement('div')
-          box.className = 'boot-error'
+          box.className = 'boot-error ' + kind
           box.setAttribute('role', 'alert')
           var heading = document.createElement('div')
           heading.className = 'boot-error-title'
@@ -75,37 +115,57 @@
           close.type = 'button'
           close.textContent = 'Close'
           close.onclick = function () {
-            if (box) box.parentNode.removeChild(box)
-            box = null
+            dismissed = true
+            stop()
+            remove()
           }
           row.appendChild(reload)
           row.appendChild(close)
           box.appendChild(row)
+          // keys stay in the message: the game's controls listen on window and would take Tab and Enter
+          var keep = function (event) {
+            event.stopPropagation()
+          }
+          box.addEventListener('keydown', keep)
+          box.addEventListener('keyup', keep)
           document.body.appendChild(box)
+          if (kind === 'blocking') reload.focus()
         }
-        var check = function () {
-          if (ready) return
-          if (firstError) show('This browser could not start the world.', firstError)
-          else show('The world has not started yet.', '')
+        var detail = function () {
+          if (firstError) return lastRemoval ? firstError + '\n(' + lastRemoval + ')' : firstError
+          return opaqueError
+            ? 'Script error. (from a script of another origin, for example one added by the browser)'
+            : ''
         }
-        // an error while loading may be harmless: wait a few seconds, and say nothing if the world comes up
-        var onError = function (detail) {
-          if (ready || firstError) return
-          firstError = detail || 'Unknown error'
-          setTimeout(check, 8000)
+        // 8 s after a startup error: only when nothing was drawn (a running app may still recover)
+        var afterError = function () {
+          if (!started()) show('blocking', 'This browser could not start the world.', detail())
+        }
+        var whenSlow = function () {
+          if (!started()) show('blocking', 'The world did not start.', detail())
+          else show('notice', 'The world is taking long to start.', detail())
         }
         window.addEventListener('error', function (event) {
-          onError(text(event.error) || event.message)
+          if (ready || dismissed) return
+          if (!event.error && /^Script error\.?$/.test(event.message || '')) {
+            opaqueError = true
+            return
+          }
+          if (firstError) return
+          firstError = text(event.error) || event.message || 'Unknown error'
+          later(afterError, ERROR_WAIT)
         })
         window.addEventListener('unhandledrejection', function (event) {
-          onError(text(event.reason))
+          if (ready || dismissed || firstError) return
+          firstError = text(event.reason) || 'Unhandled rejection'
+          later(afterError, ERROR_WAIT)
         })
-        setTimeout(check, 60000)
+        later(whenSlow, SLOW_WAIT)
         window.__worldBoot = {
           ready: function () {
             ready = true
-            if (box && box.parentNode) box.parentNode.removeChild(box)
-            box = null
+            stop()
+            remove()
           },
         }
       })()

@@ -193,8 +193,6 @@ a {
 .boot-error {
   position: fixed;
   left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
   z-index: 100000;
   width: min(32rem, calc(100vw - 2rem));
   max-height: calc(100vh - 2rem);
@@ -207,6 +205,17 @@ a {
   font-family: 'Rubik', sans-serif;
   font-size: 0.9375rem;
   line-height: 1.5;
+}
+/* nothing was drawn: in the middle */
+.boot-error.blocking {
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+/* the app runs but is slow: at the bottom, out of the way */
+.boot-error.notice {
+  bottom: 1rem;
+  transform: translateX(-50%);
+  font-size: 0.875rem;
 }
 .boot-error-title {
   font-size: 1.0625rem;

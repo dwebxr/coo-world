@@ -69,7 +69,7 @@ try {
     },
   })
   browser = await launchBrowser(ENGINE)
-  const { page, pageErrors, errorLines } = await openWorld(browser, server.url, {
+  const { page, consoleLines, pageErrors, errorLines } = await openWorld(browser, server.url, {
     viewport: { width: 800, height: 600 },
     onPage: h => (handles = h),
   })
@@ -297,30 +297,105 @@ try {
   })
 
   await step('boot watchdog: a world that cannot start says why instead of staying black', async () => {
-    // the main page above came up, so its watchdog stood down
+    // the main page came up: no message, and a later error does not bring one (8 s default wait)
     ok(await page.evaluate(() => !document.querySelector('.boot-error')), 'no message on a page that started')
-    // a second page whose app script fails at startup (same origin, like a lockdown failure or a script broken
-    // by a content blocker): the app bundle is replaced by one that throws
-    const context = await browser.newContext()
-    try {
-      const blocked = await context.newPage()
-      await blocked.route(/\.js(\?|$)/, route =>
-        route.request().url().includes('/env.js')
-          ? route.continue()
-          : route.fulfill({ contentType: 'text/javascript', body: "throw new Error('boot probe failure')" })
-      )
-      await blocked.goto(server.url, { waitUntil: 'domcontentloaded' })
-      const box = blocked.locator('.boot-error')
-      await box.waitFor({ state: 'visible', timeout: 30000 })
-      ok((await box.locator('.boot-error-title').textContent()) === 'This browser could not start the world.', 'title')
-      const detail = await box.locator('.boot-error-detail').textContent()
-      await blocked.screenshot({ path: path.join(OUT, `extras-${ENGINE}-boot-error.png`) })
-      ok(detail.includes('boot probe failure'), `cause shown: ${detail}`)
-      ok((await box.textContent()).includes('Brave Shields'), 'content blocker hint')
+    const linesBefore = consoleLines.length
+    await page.evaluate(() =>
+      setTimeout(() => {
+        throw new Error('late error after ready')
+      })
+    )
+    await sleep(9000)
+    ok(await page.evaluate(() => !document.querySelector('.boot-error')), 'no message for an error after ready')
+    // the deliberate error is not a failure of this run: drop its page error and its console report (SES
+    // prints it with its stack), keep anything else logged meanwhile
+    pageErrors.splice(0, pageErrors.length, ...pageErrors.filter(line => !line.includes('late error after ready')))
+    const probeLine = line =>
+      /late error after ready|SES_UNCAUGHT_EXCEPTION: \(Error#\d+\)/.test(line) || /^\[error\]\s+(at |@)/.test(line)
+    const kept = consoleLines.slice(linesBefore).filter(line => !probeLine(line))
+    consoleLines.splice(linesBefore, consoleLines.length - linesBefore, ...kept)
+
+    const fresh = async (timings, prepare) => {
+      const context = await browser.newContext()
+      const probe = await context.newPage()
+      await probe.addInitScript(t => {
+        window.__worldBootTimings = t
+      }, timings)
+      await prepare?.(probe)
+      await probe.goto(server.url, { waitUntil: 'domcontentloaded' })
+      return { context, probe }
+    }
+    const closeStaysClosed = async probe => {
+      const box = probe.locator('.boot-error')
       await box.getByRole('button', { name: 'Close' }).click()
-      ok(await blocked.evaluate(() => !document.querySelector('.boot-error')), 'closable')
-    } finally {
-      await context.close()
+      await sleep(2500)
+      ok(await probe.evaluate(() => !document.querySelector('.boot-error')), 'closed for good')
+    }
+
+    // 1. SES lockdown fails (an undeletable property on an intrinsic, as a script added by the browser could
+    //    leave): nothing is drawn, so the message comes in the middle with the cause, and Reload has focus
+    {
+      const { context, probe } = await fresh({ error: 500, slow: 60000 }, p =>
+        p.addInitScript(() => {
+          Object.defineProperty(Array.prototype, '__bootProbe', { value: 1, configurable: false })
+        })
+      )
+      try {
+        const box = probe.locator('.boot-error.blocking')
+        await box.waitFor({ state: 'visible', timeout: 30000 })
+        eq(await box.locator('.boot-error-title').textContent(), 'This browser could not start the world.', 'title')
+        const detail = await box.locator('.boot-error-detail').textContent()
+        await probe.screenshot({ path: path.join(OUT, `extras-${ENGINE}-boot-error.png`) })
+        // Chromium names the property, WebKit says "Unable to delete property."; SES's last removal names it too
+        ok(/delete property/i.test(detail), `cause shown: ${detail}`)
+        ok(detail.includes('__bootProbe'), `culprit named: ${detail}`)
+        ok((await box.textContent()).includes('Brave Shields'), 'content blocker hint')
+        eq(await probe.evaluate(() => document.activeElement?.textContent), 'Reload', 'Reload has focus')
+        await closeStaysClosed(probe)
+      } finally {
+        await context.close()
+      }
+    }
+
+    // 2. the app script is blocked (no error at all) and an error comes from another origin ("Script error."):
+    //    that error alone is not a failure; at the slow mark the page says the world did not start
+    {
+      const { context, probe } = await fresh({ error: 300, slow: 3000 }, async p => {
+        await p.route(/\.js(\?|$)/, route =>
+          route.request().url().includes('/env.js') ? route.continue() : route.abort()
+        )
+        await p.addInitScript(() => {
+          window.addEventListener('DOMContentLoaded', () =>
+            window.dispatchEvent(new ErrorEvent('error', { message: 'Script error.' }))
+          )
+        })
+      })
+      try {
+        await sleep(1500)
+        ok(await probe.evaluate(() => !document.querySelector('.boot-error')), 'no failure from Script error. alone')
+        const box = probe.locator('.boot-error.blocking')
+        await box.waitFor({ state: 'visible', timeout: 15000 })
+        eq(await box.locator('.boot-error-title').textContent(), 'The world did not start.', 'blocked title')
+        ok((await box.locator('.boot-error-detail').textContent()).includes('another origin'), 'opaque detail')
+        await closeStaysClosed(probe)
+      } finally {
+        await context.close()
+      }
+    }
+
+    // 3. the app runs but has not finished at the slow mark (its socket never answers): a notice at the bottom,
+    //    out of the way, removed when the world is ready
+    {
+      const { context, probe } = await fresh({ slow: 5000 }, p => p.routeWebSocket(/\/ws/, () => {}))
+      try {
+        const notice = probe.locator('.boot-error.notice')
+        await notice.waitFor({ state: 'visible', timeout: 30000 })
+        eq(await notice.locator('.boot-error-title').textContent(), 'The world is taking long to start.', 'notice')
+        await probe.evaluate(() => window.__worldBoot.ready())
+        ok(await probe.evaluate(() => !document.querySelector('.boot-error')), 'removed when ready')
+      } finally {
+        await context.close()
+      }
     }
   })
 

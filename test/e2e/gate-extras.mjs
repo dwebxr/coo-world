@@ -296,6 +296,34 @@ try {
     return `${players} players, agent exit ${agent.exitCode}`
   })
 
+  await step('boot watchdog: a world that cannot start says why instead of staying black', async () => {
+    // the main page above came up, so its watchdog stood down
+    ok(await page.evaluate(() => !document.querySelector('.boot-error')), 'no message on a page that started')
+    // a second page whose app script fails at startup (same origin, like a lockdown failure or a script broken
+    // by a content blocker): the app bundle is replaced by one that throws
+    const context = await browser.newContext()
+    try {
+      const blocked = await context.newPage()
+      await blocked.route(/\.js(\?|$)/, route =>
+        route.request().url().includes('/env.js')
+          ? route.continue()
+          : route.fulfill({ contentType: 'text/javascript', body: "throw new Error('boot probe failure')" })
+      )
+      await blocked.goto(server.url, { waitUntil: 'domcontentloaded' })
+      const box = blocked.locator('.boot-error')
+      await box.waitFor({ state: 'visible', timeout: 30000 })
+      ok((await box.locator('.boot-error-title').textContent()) === 'This browser could not start the world.', 'title')
+      const detail = await box.locator('.boot-error-detail').textContent()
+      await blocked.screenshot({ path: path.join(OUT, `extras-${ENGINE}-boot-error.png`) })
+      ok(detail.includes('boot probe failure'), `cause shown: ${detail}`)
+      ok((await box.textContent()).includes('Brave Shields'), 'content blocker hint')
+      await box.getByRole('button', { name: 'Close' }).click()
+      ok(await blocked.evaluate(() => !document.querySelector('.boot-error')), 'closable')
+    } finally {
+      await context.close()
+    }
+  })
+
   record(
     errorLines().length === 0 && pageErrors.length === 0,
     'browser: no console or page errors',

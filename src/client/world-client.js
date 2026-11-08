@@ -44,6 +44,8 @@ export function Client({ wsUrl, onSetup }) {
       }
       const config = { viewport, ui, wsUrl, baseEnvironment }
       onSetup?.(world, config)
+      // the boot watchdog in index.html stops waiting once the local player is in
+      world.on('ready', () => globalThis.__worldBoot?.ready?.())
       world.init(config)
 
       // Solana統合を初期化 (tokenMint 未設定時は no-op で world.solana を生やさない)

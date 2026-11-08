@@ -30,6 +30,86 @@
     <script>
       window.PARTICLES_PATH = '{particlesPath}'
     </script>
+    <script>
+      // Boot watchdog: if the world does not start (a script error before it is ready, or a blocked script),
+      // show why instead of a black screen. Runs before the app (and before SES lockdown); the app calls
+      // window.__worldBoot.ready() once the local player is in, which removes the message.
+      ;(function () {
+        var ready = false
+        var firstError = null
+        var box = null
+        var text = function (value) {
+          if (!value) return ''
+          if (typeof value === 'string') return value
+          return String(value.message || value)
+        }
+        var show = function (title, detail) {
+          if (ready || box) return
+          box = document.createElement('div')
+          box.className = 'boot-error'
+          box.setAttribute('role', 'alert')
+          var heading = document.createElement('div')
+          heading.className = 'boot-error-title'
+          heading.textContent = title
+          box.appendChild(heading)
+          var hint = document.createElement('div')
+          hint.className = 'boot-error-hint'
+          hint.textContent =
+            'If you use a content blocker (for example Brave Shields), turn it off for this site and reload, or open the page in another browser.'
+          box.appendChild(hint)
+          if (detail) {
+            var pre = document.createElement('pre')
+            pre.className = 'boot-error-detail'
+            pre.textContent = detail.slice(0, 600)
+            box.appendChild(pre)
+          }
+          var row = document.createElement('div')
+          row.className = 'boot-error-actions'
+          var reload = document.createElement('button')
+          reload.type = 'button'
+          reload.textContent = 'Reload'
+          reload.onclick = function () {
+            location.reload()
+          }
+          var close = document.createElement('button')
+          close.type = 'button'
+          close.textContent = 'Close'
+          close.onclick = function () {
+            if (box) box.parentNode.removeChild(box)
+            box = null
+          }
+          row.appendChild(reload)
+          row.appendChild(close)
+          box.appendChild(row)
+          document.body.appendChild(box)
+        }
+        var check = function () {
+          if (ready) return
+          if (firstError) show('This browser could not start the world.', firstError)
+          else show('The world has not started yet.', '')
+        }
+        // an error while loading may be harmless: wait a few seconds, and say nothing if the world comes up
+        var onError = function (detail) {
+          if (ready || firstError) return
+          firstError = detail || 'Unknown error'
+          setTimeout(check, 8000)
+        }
+        window.addEventListener('error', function (event) {
+          onError(text(event.error) || event.message)
+        })
+        window.addEventListener('unhandledrejection', function (event) {
+          onError(text(event.reason))
+        })
+        setTimeout(check, 60000)
+        window.__worldBoot = {
+          ready: function () {
+            ready = true
+            if (box && box.parentNode) box.parentNode.removeChild(box)
+            box = null
+          },
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

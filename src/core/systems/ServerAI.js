@@ -5,6 +5,7 @@ import { OpenAI } from 'openai'
 
 import { System } from './System'
 import { hashFile } from '../utils-server'
+import { anthropicEffort, anthropicRequest, readAnthropicText } from '../extras/anthropicRequest'
 
 const prefix = `app.remove(app.get('Block'))
 `
@@ -31,7 +32,7 @@ export class ServerAI extends System {
         this.client = new OpenAIClient(this.apiKey, this.model, this.effort)
       }
       if (this.provider === 'anthropic') {
-        this.client = new AnthropicClient(this.apiKey, this.model)
+        this.client = new AnthropicClient(this.apiKey, this.model, anthropicEffort(process.env.AI_EFFORT))
       }
       if (this.provider === 'xai') {
         this.client = new XAIClient(this.apiKey, this.model)
@@ -61,18 +62,26 @@ export class ServerAI extends System {
       return
     }
     if (action.name === 'create') {
-      this.create(action)
+      this.background('create', () => this.create(action))
     } else if (action.name === 'edit') {
-      this.edit(action)
+      this.background('edit', () => this.edit(action))
     } else if (action.name === 'fix') {
-      this.fix(action)
+      this.background('fix', () => this.fix(action))
     }
+  }
+
+  // AI の呼び出しは待たずに走らせる。失敗 (API の拒否、廃止されたモデル、通信の失敗) は未処理の
+  // 拒否にせず、ここでログに出す
+  background(name, run) {
+    Promise.resolve()
+      .then(run)
+      .catch(err => console.error(`[ai] ${name} failed: ${err?.message ?? err}`))
   }
 
   async create({ blueprintId, appId, prompt }) {
     console.log('[ai] creating...')
     // classify prompt to a short descriptive name for the app
-    this.classify({ blueprintId, prompt })
+    this.background('classify', () => this.classify({ blueprintId, prompt }))
     // send prompt to ai to generate code
     const startAt = performance.now()
     let output = await this.client.create(prompt)
@@ -257,34 +266,33 @@ class OpenAIClient {
 }
 
 class AnthropicClient {
-  constructor(apiKey, model) {
+  constructor(apiKey, model, effort) {
     this.client = new Anthropic({ apiKey })
     this.model = model
-    this.maxTokens = 8192
+    this.effort = effort
+    // 考える分も max_tokens に数えられるので、本文 (スクリプト) の分と合わせて取る。
+    // ストリーミングなしで SDK が受け付ける範囲 (16000)
+    this.maxTokens = 16000
+  }
+
+  async ask({ system, content, effort = this.effort, maxTokens = this.maxTokens }) {
+    const params = anthropicRequest({ model: this.model, effort, maxTokens, system, content })
+    const resp = await this.client.beta.messages.create(params)
+    return readAnthropicText(resp)
   }
 
   async create(prompt) {
-    const resp = await this.client.messages.create({
-      model: this.model,
-      max_tokens: this.maxTokens,
+    return this.ask({
       system: `
         ${docs}
         ===============
         You are an artist and code generator. Always respond with raw code only, never use markdown code blocks or any other formatting.`,
-      messages: [
-        {
-          role: 'user',
-          content: `Respond with the javascript needed to generate the following:\n\n"${prompt}"`,
-        },
-      ],
+      content: `Respond with the javascript needed to generate the following:\n\n"${prompt}"`,
     })
-    return resp.content[0].text
   }
 
   async edit(code, prompt) {
-    const resp = await this.client.messages.create({
-      model: this.model,
-      max_tokens: this.maxTokens,
+    return this.ask({
       system: `
         ${docs}
         ===============
@@ -292,20 +300,12 @@ class AnthropicClient {
         Here is the existing script that you will be working with:
         ===============
         ${code}`,
-      messages: [
-        {
-          role: 'user',
-          content: `Please edit the code above to satisfy the following request:\n\n"${prompt}"`,
-        },
-      ],
+      content: `Please edit the code above to satisfy the following request:\n\n"${prompt}"`,
     })
-    return resp.content[0].text
   }
 
   async fix(code, error) {
-    const resp = await this.client.messages.create({
-      model: this.model,
-      max_tokens: this.maxTokens,
+    return this.ask({
       system: `
         ${docs}
         ===============
@@ -313,29 +313,18 @@ class AnthropicClient {
         Here is the existing script that you will be working with:
         ===============
         ${code}`,
-      messages: [
-        {
-          role: 'user',
-          content: `This code has an error please fix it:\n\n"${JSON.stringify(error, null, 2)}"`,
-        },
-      ],
+      content: `This code has an error please fix it:\n\n"${JSON.stringify(error, null, 2)}"`,
     })
-    return resp.content[0].text
   }
 
+  // 短い名前を付けるだけなので、考える量を減らす
   async classify(prompt) {
-    const resp = await this.client.messages.create({
-      model: this.model,
-      max_tokens: this.maxTokens,
+    return this.ask({
       system: `You are a classifier. We will give you a prompt that a user has entered to generate a 3D object and your job is respond with a short name for the object. For example if someone prompts "a cool gamer desk with neon lights" you would respond with something like "Gamer Desk" because it is a short descriptive name that captures the essence of the object.`,
-      messages: [
-        {
-          role: 'user',
-          content: `Please classify the following prompt:\n\n"${prompt}"`,
-        },
-      ],
+      content: `Please classify the following prompt:\n\n"${prompt}"`,
+      effort: 'low',
+      maxTokens: 4096,
     })
-    return resp.content[0].text
   }
 }
 

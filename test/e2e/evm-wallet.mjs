@@ -5,7 +5,7 @@ import path from 'node:path'
 import { privateKeyToAccount } from 'viem/accounts'
 import { parseSiweMessage } from 'viem/siwe'
 
-import { arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
+import { TIMEOUT_SCALE, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
 import { launchBrowser, saveArtifacts } from './lib/browser.mjs'
 import { startServer } from './lib/server.mjs'
 import { WireClient } from './lib/ws.mjs'
@@ -114,7 +114,7 @@ try {
   browser = await launchBrowser(ENGINE)
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
   page = await context.newPage()
-  page.setDefaultTimeout(30000)
+  page.setDefaultTimeout(30000 * TIMEOUT_SCALE)
   page.on('console', m => consoleLines.push(`[${m.type()}] ${m.text()}`))
   page.on('pageerror', e => pageErrors.push(String(e)))
   const signed = []
@@ -145,18 +145,18 @@ try {
   })
   const openWorld = async () => {
     await page.goto(server.url, { waitUntil: 'domcontentloaded' })
-    await page.waitForSelector('.sidebar', { timeout: 180000 })
+    await page.waitForSelector('.sidebar', { timeout: 180000 * TIMEOUT_SCALE })
     await page.waitForFunction(() => window.world?.ui?.state?.active === true && !!window.world.evm, null, {
-      timeout: 60000,
+      timeout: 60000 * TIMEOUT_SCALE,
     })
     await page.locator('#solana-wallet-panel').waitFor({ state: 'visible' })
   }
-  const text = selector => page.locator(selector).textContent({ timeout: 15000 })
+  const text = selector => page.locator(selector).textContent({ timeout: 15000 * TIMEOUT_SCALE })
   const waitText = (selector, value) =>
     page.waitForFunction(
       ({ selector, value }) => document.querySelector(selector)?.textContent === value,
       { selector, value },
-      { timeout: 30000 }
+      { timeout: 30000 * TIMEOUT_SCALE }
     )
 
   await step('browser: both chains show as tabs and Solana is the default', async () => {

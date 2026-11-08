@@ -9,7 +9,7 @@ import path from 'node:path'
 import { keccak256, toHex } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
-import { REPO_ROOT, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
+import { REPO_ROOT, TIMEOUT_SCALE, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
 import { launchBrowser, saveArtifacts } from './lib/browser.mjs'
 import { installAsset, startServer } from './lib/server.mjs'
 import { WireClient } from './lib/ws.mjs'
@@ -89,7 +89,7 @@ async function gateResult(wire, timeout = 10000) {
 async function openWallet(account, name) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
   const page = await context.newPage()
-  page.setDefaultTimeout(30000)
+  page.setDefaultTimeout(30000 * TIMEOUT_SCALE)
   const entry = { page, account, consoleLines: [], pageErrors: [], sent: [] }
   pages.push(entry)
   page.on('console', m => entry.consoleLines.push(`[${m.type()}] ${m.text()}`))
@@ -123,15 +123,15 @@ async function openWallet(account, name) {
     })()`,
   })
   await page.goto(server.url, { waitUntil: 'domcontentloaded' })
-  await page.waitForSelector('.sidebar', { timeout: 180000 })
+  await page.waitForSelector('.sidebar', { timeout: 180000 * TIMEOUT_SCALE })
   await page.waitForFunction(() => window.world?.ui?.state?.active === true && !!window.world.evm, null, {
-    timeout: 60000,
+    timeout: 60000 * TIMEOUT_SCALE,
   })
   await page.evaluate(name => window.world.entities.player.setName(name), name)
   await page.locator('#solana-wallet-panel').waitFor({ state: 'visible' })
   await page.getByRole('button', { name: 'Connect Wallet', exact: true }).click()
   await page.waitForFunction(() => document.querySelector('.evm-wallet-status')?.textContent === 'Verified', null, {
-    timeout: 30000,
+    timeout: 30000 * TIMEOUT_SCALE,
   })
   return entry
 }
@@ -220,7 +220,9 @@ try {
     await recipient.page.getByLabel(/Receive tips/).click()
     await recipient.page.waitForFunction(() => document.querySelector('.evm-wallet-tips input')?.checked === true)
     await sender.page.evaluate(() => window.world.ui.togglePane('players'))
-    await sender.page.getByRole('button', { name: 'Tip Bob' }).waitFor({ state: 'visible', timeout: 30000 })
+    await sender.page
+      .getByRole('button', { name: 'Tip Bob' })
+      .waitFor({ state: 'visible', timeout: 30000 * TIMEOUT_SCALE })
     const data = await sender.page.evaluate(() =>
       JSON.stringify([...window.world.entities.players.values()].map(player => player.data))
     )
@@ -238,7 +240,10 @@ try {
     await page.getByLabel('Amount').fill('100')
     await page.getByRole('button', { name: 'Next', exact: true }).click()
     await page.getByRole('button', { name: 'Send tip', exact: true }).click()
-    await page.getByRole('status').filter({ hasText: 'Sent 100 JPYC to Bob.' }).waitFor({ timeout: 30000 })
+    await page
+      .getByRole('status')
+      .filter({ hasText: 'Sent 100 JPYC to Bob.' })
+      .waitFor({ timeout: 30000 * TIMEOUT_SCALE })
     await page.screenshot({ path: `${PREFIX}-tip-sent.png` })
     const href = await page.getByRole('link', { name: 'View transaction' }).getAttribute('href')
     ok(href.startsWith('https://polygonscan.com/tx/0x'), 'explorer link')
@@ -260,7 +265,9 @@ try {
     await sleep(1100)
     await recipient.page.getByLabel(/Receive tips/).click()
     await recipient.page.waitForFunction(() => document.querySelector('.evm-wallet-tips input')?.checked === false)
-    await sender.page.getByRole('button', { name: 'Tip Bob' }).waitFor({ state: 'detached', timeout: 30000 })
+    await sender.page
+      .getByRole('button', { name: 'Tip Bob' })
+      .waitFor({ state: 'detached', timeout: 30000 * TIMEOUT_SCALE })
     // the form the sender already opened keeps the result of the tip that was sent
     ok(
       await sender.page.getByRole('status').filter({ hasText: 'Sent 100 JPYC to Bob.' }).isVisible(),

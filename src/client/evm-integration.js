@@ -1,6 +1,7 @@
 import { isEvmAddress, isEvmSignature, parseEvmChainIds, sameEvmAddress } from '../core/extras/evmChains'
 import { encodeTransfer, isTxHash } from '../core/extras/evmAbi'
 import { KNOWN_CHAINS, explorerTxUrl, parseTipAmount, parseTipTokens } from '../core/extras/evmTokens'
+import { WALLET_LINKS } from '../core/extras/walletLinks'
 
 // EVM ウォレット (EIP-1193 / EIP-6963) の所有証明。依存ライブラリなし。
 // 流れと世代管理は solana-integration.js と同じ。状態は Solana と独立で、ビルド権限には関与しない
@@ -13,6 +14,10 @@ const INTENT_WAIT_MS = 10000
 const MAX_PROVIDERS = 16
 const MAX_ICON_LENGTH = 64 * 1024
 const INJECTED_ID = 'injected'
+// WalletConnect (Reown): an extra wallet entry, loaded only when picked (src/client/walletconnect.js)
+const WALLETCONNECT_ID = 'walletconnect'
+const WALLETCONNECT_ICON =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%233b99fc'/%3E%3Cpath d='M9.6 12.4a9.1 9.1 0 0 1 12.8 0l.4.4a.4.4 0 0 1 0 .6l-1.5 1.5a.2.2 0 0 1-.3 0l-.6-.6a6.4 6.4 0 0 0-8.8 0l-.7.6a.2.2 0 0 1-.3 0l-1.5-1.5a.4.4 0 0 1 0-.6zm15.9 2.9 1.3 1.3a.4.4 0 0 1 0 .6l-6 5.9a.5.5 0 0 1-.6 0l-4.2-4.2a.1.1 0 0 0-.2 0l-4.2 4.2a.5.5 0 0 1-.6 0l-6-5.9a.4.4 0 0 1 0-.6l1.3-1.3a.5.5 0 0 1 .6 0l4.2 4.2a.1.1 0 0 0 .2 0l4.2-4.2a.5.5 0 0 1 .6 0l4.2 4.2a.1.1 0 0 0 .2 0l4.2-4.2a.5.5 0 0 1 .6 0z' fill='%23fff'/%3E%3C/svg%3E"
 
 // solana-integration.js と同じく、ビルド時の process.env と実行時の globalThis.env (/env.js) の両方を見る
 const resolveEnv = key => {
@@ -25,7 +30,10 @@ const buildConfig = () => {
   const chainIds = parseEvmChainIds(resolveEnv('PUBLIC_EVM_CHAIN_IDS'))
   // 投げゼニのチェーンは SIWE と同じ先頭チェーン
   const tipTokens = chainIds.length ? parseTipTokens(resolveEnv('PUBLIC_EVM_TIP_TOKENS'), chainIds[0]) : []
-  return { chainIds, tipTokens }
+  // Reown のプロジェクト ID (公開値)。形が違えば WalletConnect は出さない
+  const projectId = resolveEnv('PUBLIC_WALLETCONNECT_PROJECT_ID')
+  const walletConnectProjectId = typeof projectId === 'string' && /^[0-9a-f]{32}$/i.test(projectId) ? projectId : null
+  return { chainIds, tipTokens, walletConnectProjectId }
 }
 
 export const isEvmConfigured = () => buildConfig().chainIds.length > 0
@@ -37,15 +45,25 @@ const utf8ToHex = text => {
   return hex
 }
 
-const failureMessage = (reason, error) => {
+const failureMessage = (reason, error, viaWalletConnect = false) => {
+  if (error?.walletConnectLoad) return 'WalletConnect could not load. Reload the page and try again.'
+  if (error?.message === 'relay_unreachable')
+    return 'Could not reach WalletConnect. Check your connection and try again.'
+  if (error?.code === 4901)
+    return 'The wallet did not connect on the sign-in network. Choose it in the wallet and try again.'
   if (error?.code === 4001) return 'Request rejected in the wallet.'
   if (reason === 'nonce_expired') return 'Signature expired. Please sign again.'
+  // the server cannot tell a smart-contract wallet's signature from a wrong one
+  if (viaWalletConnect && reason === 'signature_invalid') {
+    return 'Signature not accepted. Smart-contract wallets are not supported yet.'
+  }
   return 'Could not verify your EVM wallet. Please sign again.'
 }
 
 const isTipTicket = value => typeof value === 'string' && /^[0-9a-f]{32}$/.test(value)
 
-export function createEvmIntegration(world) {
+// loadWalletConnect: replaced in tests; in the browser it loads src/client/walletconnect.js on demand
+export function createEvmIntegration(world, { loadWalletConnect = () => import('./walletconnect.js') } = {}) {
   const config = buildConfig()
   if (!config.chainIds.length) return null
 
@@ -63,6 +81,12 @@ export function createEvmIntegration(world) {
   let selectedId = null
   let nextIntent = 0
   let tipping = false
+  // WalletConnect: the adapter once loaded, and its last status for the panel ({ state, uri?, qr?, method? })
+  let walletConnect = null
+  let walletConnectLoading = null
+  let walletConnectStatus = null
+  // the wallet app the player tapped to connect (a WALLET_LINKS id), for "Open wallet" if the wallet sends no link
+  let walletConnectChoice = null
 
   const getState = () => ({ status, address, verified })
   const publish = () => world.emit('evm:state', getState())
@@ -90,16 +114,28 @@ export function createEvmIntegration(world) {
     status = address ? 'unverified' : 'disconnected'
   }
 
+  const setWalletConnectStatus = value => {
+    walletConnectStatus = value ?? null
+    // a new pairing link: the wallet tapped for an earlier one says nothing about who takes this one
+    if (walletConnectStatus?.state === 'uri') walletConnectChoice = null
+    world.emit('evm:walletconnect', walletConnectStatus)
+  }
+
   const fail = (run, error) => {
     if (!current(run)) return
     const reason = run.reason
+    const viaWalletConnect = !!provider?.isWalletConnect || !!error?.walletConnectLoad
+    // close the WalletConnect steps whatever stage they reached (also a load that never produced a wallet)
+    if (viaWalletConnect || (walletConnectStatus && walletConnectStatus.state !== 'idle')) {
+      setWalletConnectStatus({ state: 'idle' })
+    }
     invalidate('failure')
     status = address ? 'unverified' : 'disconnected'
     // サーバーとの試行を始めていたら取り下げる。検証結果が待ち時間の後に届いた場合でも、
     // サーバーだけが検証済みのまま残らない (失敗済みならサーバー側は何もしない)
     if (run.id) send('revokeEvmWallet', {})
     publish()
-    world.emit('toast', failureMessage(reason, error))
+    world.emit('toast', failureMessage(reason, error, viaWalletConnect))
   }
 
   // EIP-6963: 拡張機能ごとに 1 つずつ名乗り出る。中身は信頼せず、形だけ確かめて保持する
@@ -128,7 +164,34 @@ export function createEvmIntegration(world) {
     if (!list.length && typeof win?.ethereum?.request === 'function') {
       list.push({ id: INJECTED_ID, name: 'Browser wallet', icon: null })
     }
+    if (config.walletConnectProjectId)
+      list.push({ id: WALLETCONNECT_ID, name: 'WalletConnect', icon: WALLETCONNECT_ICON })
     return list
+  }
+
+  // the adapter is created once and kept: its session survives a new attempt (and a reload, in storage)
+  const ensureWalletConnect = async () => {
+    if (walletConnect) return walletConnect
+    walletConnectLoading ??= (async () => {
+      let module
+      try {
+        module = await loadWalletConnect()
+      } catch {
+        throw Object.assign(new Error('WalletConnect could not load'), { walletConnectLoad: true })
+      }
+      return module.createWalletConnectProvider({
+        projectId: config.walletConnectProjectId,
+        chainId: config.chainIds[0],
+        origin: win?.location?.origin,
+        onStatus: setWalletConnectStatus,
+      })
+    })()
+    try {
+      walletConnect = await walletConnectLoading
+      return walletConnect
+    } finally {
+      walletConnectLoading = null
+    }
   }
 
   const pickProvider = requested => {
@@ -253,6 +316,7 @@ export function createEvmIntegration(world) {
 
   const disconnect = () => {
     const previous = localDisconnect()
+    if (previous?.isWalletConnect) setWalletConnectStatus({ state: 'idle' })
     publish()
     // サイトへの接続許可も best effort で取り消す (未対応のウォレットは無視)。await しない
     try {
@@ -274,7 +338,21 @@ export function createEvmIntegration(world) {
     publish()
     try {
       detachProvider()
-      const chosen = pickProvider(providerId)
+      const wanted = providerId ?? selectedId
+      let chosen
+      if (wanted === WALLETCONNECT_ID && config.walletConnectProjectId) {
+        if (!walletConnect) setWalletConnectStatus({ state: 'loading' })
+        chosen = await ensureWalletConnect()
+        if (!current(run)) return null
+        // a new attempt, a disconnect or dispose stops a connection still waiting for the wallet, and its
+        // steps leave the panel (also when the new attempt is another wallet)
+        run.cleanups.add(() => {
+          chosen.cancel()
+          setWalletConnectStatus({ state: 'idle' })
+        })
+      } else {
+        chosen = pickProvider(providerId)
+      }
       if (typeof chosen?.request !== 'function') throw new Error('wallet unavailable')
       provider = chosen
       if (providerId) selectedId = providerId
@@ -479,6 +557,28 @@ export function createEvmIntegration(world) {
     return send('evmTip', { ticket, txHash })
   }
 
+  // the panel's Cancel while WalletConnect waits for the wallet: stop this attempt, without a toast
+  const cancelConnect = () => {
+    if (disposed || !active || !current(active)) return false
+    const run = active
+    invalidate('attempt')
+    // given up while signing: withdraw the server attempt too, as a failure would. The wallet stays attached
+    // then (as after a failure), so Sign uses it again and Disconnect ends its session.
+    if (run.id) send('revokeEvmWallet', {})
+    if (!address) detachProvider()
+    setWalletConnectStatus({ state: 'idle' })
+    publish()
+    return true
+  }
+
+  // the link that opens the connected wallet app, for "Open wallet": the wallet's own (validated by the
+  // adapter), else the one the player tapped to connect
+  const getWalletConnectRedirect = () =>
+    walletConnect?.walletRedirect() ?? WALLET_LINKS.find(wallet => wallet.id === walletConnectChoice)?.universal ?? null
+  const setWalletConnectChoice = id => {
+    walletConnectChoice = WALLET_LINKS.some(wallet => wallet.id === id) ? id : null
+  }
+
   const dispose = reason => {
     if (disposed) return
     disposed = true
@@ -512,7 +612,11 @@ export function createEvmIntegration(world) {
     getState,
     getProviders,
     connect,
+    cancelConnect,
     disconnect,
+    getWalletConnectStatus: () => walletConnectStatus,
+    getWalletConnectRedirect,
+    setWalletConnectChoice,
     dispose,
     isConnected: () => !!address,
     isVerified: () => verified,

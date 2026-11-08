@@ -161,6 +161,21 @@ PUBLIC_EVM_CHAIN_IDS=137
 - Verification lasts for the connection and is never stored or shown to other players
 - When both Solana and EVM are enabled the panel shows a tab for each
 
+### WalletConnect (phones and other devices)
+
+```bash
+PUBLIC_WALLETCONNECT_PROJECT_ID=0123456789abcdef0123456789abcdef   # from dashboard.reown.com
+```
+
+- Adds a **WalletConnect** button next to the browser wallets, so a phone browser without a wallet (Safari, Chrome, Brave) can sign in with a wallet app
+  - On a desktop it shows a QR code to scan with the wallet app
+  - On a phone it links to MetaMask, Trust Wallet or Rainbow (Android also offers any other wallet). The app asks to connect, then to sign the same sign-in message
+- The WalletConnect code (about 410 KB) loads only when the button is pressed, and only then does the page talk to Reown's relay
+- The project id is public by design (it is sent to browsers). In the Reown dashboard, allow only your page's domain
+- Reown's own terms and plan limits apply; check them at reown.com before you rely on it. Telemetry to Reown is turned off
+- Same rules as browser wallets: externally owned accounts only, so a smart-contract wallet's signature is refused with a message saying so
+- The sign-in network only: a wallet that connects without that network is disconnected again with a message
+
 ### Tips (JPYC / USDC)
 
 ```bash

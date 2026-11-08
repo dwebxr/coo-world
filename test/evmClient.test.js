@@ -8,6 +8,7 @@ import { packetMethodById } from '../src/core/packets.js'
 import { isEvmAddress, isEvmSignature, parseEvmChainIds, sameEvmAddress } from '../src/core/extras/evmChains.js'
 import { encodeTransfer, isTxHash } from '../src/core/extras/evmAbi.js'
 import { KNOWN_CHAINS, explorerTxUrl, parseTipAmount, parseTipTokens } from '../src/core/extras/evmTokens.js'
+import { WALLET_LINKS } from '../src/core/extras/walletLinks.js'
 
 const deps = {
   isEvmAddress,
@@ -20,6 +21,7 @@ const deps = {
   explorerTxUrl,
   parseTipAmount,
   parseTipTokens,
+  WALLET_LINKS,
 }
 
 const checksummed = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
@@ -67,7 +69,7 @@ function makeWindow({ announced = [], ethereum } = {}) {
   return win
 }
 
-function setup(t, { env = { PUBLIC_EVM_CHAIN_IDS: '137' }, provider = makeProvider(), win } = {}) {
+function setup(t, { env = { PUBLIC_EVM_CHAIN_IDS: '137' }, provider = makeProvider(), win, options } = {}) {
   const world = clientWorld()
   world.entities.player = { data: { id: 'player', rank: Ranks.VISITOR } }
   world.chat = { add() {} }
@@ -78,7 +80,7 @@ function setup(t, { env = { PUBLIC_EVM_CHAIN_IDS: '137' }, provider = makeProvid
     window: win ?? makeWindow({ ethereum: provider }),
     ...deps,
   })
-  const evm = create(world)
+  const evm = create(world, options)
   t.after(() => {
     world.network.ws = null
     world.network.destroy()
@@ -703,4 +705,229 @@ test('evm tips: an account switch during the send still reports the transaction 
     .map(([method]) => method)
     .filter(method => method === 'onRevokeEvmWallet' || method === 'onEvmTip')
   assert.deepEqual(order, ['onRevokeEvmWallet', 'onEvmTip'])
+})
+
+// --- WalletConnect (loaded on demand; a fake adapter stands in for src/client/walletconnect.js) ---
+
+const PROJECT_ID = 'a'.repeat(32)
+const wcEnv = { PUBLIC_EVM_CHAIN_IDS: '137', PUBLIC_WALLETCONNECT_PROJECT_ID: PROJECT_ID }
+
+function fakeWalletConnect() {
+  const adapter = new EventEmitter()
+  adapter.isWalletConnect = true
+  adapter.cancelled = 0
+  adapter.calls = []
+  adapter.redirect = null
+  adapter.handlers = {
+    eth_requestAccounts: () => [lower],
+    personal_sign: () => signature,
+  }
+  adapter.request = async ({ method, params }) => {
+    adapter.calls.push(method)
+    if (adapter.handlers[method]) return adapter.handlers[method](params)
+    throw Object.assign(new Error(`unsupported ${method}`), { code: 4200 })
+  }
+  adapter.cancel = () => {
+    adapter.cancelled++
+    adapter.onCancel?.()
+  }
+  adapter.walletRedirect = () => adapter.redirect
+  const loader = {
+    loads: 0,
+    fail: false,
+    load: async () => {
+      loader.loads++
+      if (loader.fail) throw new Error('chunk 404')
+      return {
+        createWalletConnectProvider: async opts => {
+          adapter.options = opts
+          return adapter
+        },
+      }
+    },
+  }
+  return { adapter, loader }
+}
+
+function wcSetup(t, env = wcEnv) {
+  const { adapter, loader } = fakeWalletConnect()
+  // no injected wallet: WalletConnect is the only way in (a phone browser)
+  const h = setup(t, { env, win: makeWindow(), options: { loadWalletConnect: loader.load } })
+  h.adapter = adapter
+  h.loader = loader
+  h.toasts = []
+  h.world.on('toast', text => h.toasts.push(text))
+  h.wcStatuses = []
+  h.world.on('evm:walletconnect', status => h.wcStatuses.push(status))
+  return h
+}
+
+test('walletconnect: listed last with its icon only when a valid project id is configured', async t => {
+  const h = wcSetup(t)
+  assert.deepEqual(
+    h.evm.getProviders().map(p => p.id),
+    ['walletconnect']
+  )
+  assert.match(h.evm.getProviders()[0].icon, /^data:image\/svg\+xml,/)
+  for (const bad of ['', 'not-an-id', 'a'.repeat(31), 'g'.repeat(32)]) {
+    const other = wcSetup(t, { PUBLIC_EVM_CHAIN_IDS: '137', PUBLIC_WALLETCONNECT_PROJECT_ID: bad })
+    assert.deepEqual(other.evm.getProviders(), [], JSON.stringify(bad))
+  }
+  assert.equal(h.loader.loads, 0, 'nothing loads until it is picked')
+})
+
+test('walletconnect: picking it loads the adapter once and verifies through SIWE like any wallet', async t => {
+  const h = wcSetup(t)
+  const run = await h.start('walletconnect')
+  assert.equal(h.loader.loads, 1)
+  assert.equal(h.adapter.options.projectId, PROJECT_ID)
+  assert.equal(h.adapter.options.chainId, 137)
+  assert.equal(h.wcStatuses[0].state, 'loading')
+  h.challenge(run.attempt)
+  await flush()
+  h.status(run.attempt)
+  assert.equal(await run.promise, checksummed)
+  assert.deepEqual(h.adapter.calls, ['eth_requestAccounts', 'personal_sign'])
+  assert.equal(h.evm.isVerified(), true)
+  // the Sign button re-signs with the same wallet, without loading again
+  const again = await h.start()
+  assert.equal(h.loader.loads, 1)
+  h.challenge(again.attempt)
+  await flush()
+  h.status(again.attempt)
+  assert.equal(await again.promise, checksummed)
+})
+
+test('walletconnect: a failed load, an unreachable relay and a wrong chain each say what happened', async t => {
+  const h = wcSetup(t)
+  h.loader.fail = true
+  await h.evm.connect('walletconnect')
+  assert.equal(h.toasts.at(-1), 'WalletConnect could not load. Reload the page and try again.')
+  assert.equal(h.wcStatuses.at(-1).state, 'idle')
+  h.loader.fail = false
+  h.adapter.handlers.eth_requestAccounts = () => {
+    throw Object.assign(new Error('relay_unreachable'), { code: -32000 })
+  }
+  await h.evm.connect('walletconnect')
+  assert.equal(h.toasts.at(-1), 'Could not reach WalletConnect. Check your connection and try again.')
+  h.adapter.handlers.eth_requestAccounts = () => {
+    throw Object.assign(new Error('wrong chain'), { code: 4901 })
+  }
+  await h.evm.connect('walletconnect')
+  assert.match(h.toasts.at(-1), /did not connect on the sign-in network/)
+})
+
+test('walletconnect: a refused signature suggests a smart-contract wallet only for WalletConnect', async t => {
+  const h = wcSetup(t)
+  const run = await h.start('walletconnect')
+  h.challenge(run.attempt)
+  await flush()
+  h.world.network.onEvmWalletStatus({ attempt: run.attempt, verified: false, reason: 'signature_invalid' })
+  assert.equal(await run.promise, null)
+  assert.equal(h.toasts.at(-1), 'Signature not accepted. Smart-contract wallets are not supported yet.')
+})
+
+test('walletconnect: Cancel and dispose stop a connection still waiting for the wallet, without a toast', async t => {
+  const h = wcSetup(t)
+  let rejectWait
+  h.adapter.handlers.eth_requestAccounts = () =>
+    new Promise((resolve, reject) => {
+      rejectWait = reject
+    })
+  h.adapter.onCancel = () => rejectWait?.(Object.assign(new Error('Connection cancelled.'), { code: 4001 }))
+  const pending = h.evm.connect('walletconnect')
+  await flush()
+  assert.equal(h.evm.cancelConnect(), true)
+  assert.equal(await pending, null)
+  assert.equal(h.adapter.cancelled, 1)
+  assert.deepEqual(h.toasts, [])
+  assert.equal(h.evm.getState().status, 'disconnected')
+  assert.equal(h.wcStatuses.at(-1).state, 'idle')
+  assert.equal(h.evm.cancelConnect(), false, 'nothing to cancel')
+
+  const second = h.evm.connect('walletconnect')
+  await flush()
+  h.evm.dispose('test')
+  assert.equal(await second, null)
+  assert.equal(h.adapter.cancelled, 2)
+  assert.deepEqual(h.toasts, [])
+})
+
+test('walletconnect: "Open wallet" uses the wallet link, else the wallet the player tapped', async t => {
+  const h = wcSetup(t)
+  assert.equal(h.evm.getWalletConnectRedirect(), null)
+  const run = await h.start('walletconnect')
+  h.challenge(run.attempt)
+  await flush()
+  h.status(run.attempt)
+  await run.promise
+  h.evm.setWalletConnectChoice('trust')
+  assert.equal(h.evm.getWalletConnectRedirect(), 'https://link.trustwallet.com')
+  h.evm.setWalletConnectChoice('evil')
+  assert.equal(h.evm.getWalletConnectRedirect(), null)
+  h.adapter.redirect = 'metamask://'
+  assert.equal(h.evm.getWalletConnectRedirect(), 'metamask://')
+  // the session ending on the phone disconnects here
+  h.adapter.emit('accountsChanged', [])
+  assert.equal(h.evm.isVerified(), false)
+})
+
+test('walletconnect: a new pairing link forgets the wallet tapped for an earlier one', async t => {
+  const h = wcSetup(t)
+  const run = await h.start('walletconnect')
+  h.evm.setWalletConnectChoice('trust')
+  assert.equal(h.evm.getWalletConnectRedirect(), 'https://link.trustwallet.com')
+  h.adapter.options.onStatus({ state: 'uri', uri: `wc:${'ab'.repeat(32)}@2?x` })
+  assert.equal(h.evm.getWalletConnectRedirect(), null, 'another wallet may take this link')
+  h.evm.setWalletConnectChoice('rainbow')
+  h.evm.setWalletConnectChoice(null)
+  assert.equal(h.evm.getWalletConnectRedirect(), null, '"Other wallet" clears it')
+  h.evm.cancelConnect()
+  await run.promise
+})
+
+test('walletconnect: switching to another wallet mid-pairing takes the WalletConnect steps off the panel', async t => {
+  const { adapter, loader } = fakeWalletConnect()
+  // a desktop with an extension and WalletConnect
+  const h = setup(t, { env: wcEnv, options: { loadWalletConnect: loader.load } })
+  const statuses = []
+  h.world.on('evm:walletconnect', status => statuses.push(status))
+  adapter.handlers.eth_requestAccounts = () => new Promise(() => {})
+  const pairing = h.evm.connect('walletconnect')
+  await flush()
+  adapter.options.onStatus({ state: 'uri', uri: `wc:${'ab'.repeat(32)}@2?x` })
+  assert.equal(h.evm.getWalletConnectStatus().state, 'uri')
+  const injected = await h.start('injected')
+  assert.equal(adapter.cancelled, 1, 'the pairing is given up')
+  assert.equal(h.evm.getWalletConnectStatus().state, 'idle', 'its QR leaves the panel')
+  assert.equal(statuses.at(-1).state, 'idle')
+  h.challenge(injected.attempt)
+  await flush()
+  h.status(injected.attempt)
+  assert.equal(await injected.promise, checksummed)
+  assert.equal(await Promise.race([pairing, flush().then(() => 'pending')]), 'pending', 'the old run stays silent')
+})
+
+test('walletconnect: Cancel while the sign-in waits in the wallet withdraws the server attempt', async t => {
+  const h = wcSetup(t)
+  h.adapter.handlers.personal_sign = () => new Promise(() => {})
+  let revoked = 0
+  h.adapter.handlers.wallet_revokePermissions = () => {
+    revoked++
+    return null
+  }
+  const run = await h.start('walletconnect')
+  h.challenge(run.attempt)
+  await flush()
+  assert.equal(h.evm.getState().status, 'signing')
+  assert.equal(h.evm.cancelConnect(), true)
+  assert.equal(requests(h.world, 'RevokeEvmWallet').length, 1)
+  assert.equal(h.evm.getState().status, 'unverified', 'Sign is offered again with the same wallet')
+  assert.equal(h.wcStatuses.at(-1).state, 'idle')
+  assert.deepEqual(h.toasts, [])
+  // Disconnect still reaches the WalletConnect session
+  h.evm.disconnect()
+  await flush()
+  assert.equal(revoked, 1, 'the WalletConnect session is ended too')
+  assert.equal(h.evm.getState().status, 'disconnected')
 })

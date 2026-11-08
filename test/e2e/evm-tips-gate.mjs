@@ -215,7 +215,8 @@ async function openPage(account, name) {
     })()`,
   })
   await page.goto(server.url, { waitUntil: 'domcontentloaded' })
-  await page.waitForSelector('.sidebar', { timeout: 180000 * TIMEOUT_SCALE })
+  // unscaled like the other suites: a page that has not drawn its UI by then will not
+  await page.waitForSelector('.sidebar', { timeout: 180000 })
   await page.waitForFunction(() => window.world?.ui?.state?.active === true && !!window.world.evm, null, {
     timeout: 60000 * TIMEOUT_SCALE,
   })

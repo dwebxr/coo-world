@@ -103,12 +103,13 @@ try {
       const from = wire.mark()
       wire.send('requestEvmVerify', {
         address: account.address,
-        signature: `0x${'cd'.repeat(600)}`,
+        // past the 8704-byte cap (contract account signatures go up to 4096 bytes)
+        signature: `0x${'cd'.repeat(4400)}`,
         nonce: data.nonce,
         attempt: 1,
       })
       await waitUntil(() => server.count('requestEvmVerify from client') > 0, { message: 'drop log' })
-      ok(/requestEvmVerify from client \S+ dropped: \d+ bytes over the 512 byte limit/.test(server.out), 'size drop')
+      ok(/requestEvmVerify from client \S+ dropped: \d+ bytes over the 8704 byte limit/.test(server.out), 'size drop')
       await sleep(300)
       ok(!wire.since(from).some(m => m.method === 'onEvmWalletStatus'), 'no reply for a dropped packet')
     } finally {

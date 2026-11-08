@@ -1,4 +1,4 @@
-import { isEvmAddress, isEvmSignature, parseEvmChainIds, sameEvmAddress } from '../core/extras/evmChains'
+import { isEvmAddress, isEvmSigninSignature, parseEvmChainIds, sameEvmAddress } from '../core/extras/evmChains'
 import { encodeTransfer, isTxHash } from '../core/extras/evmAbi'
 import { KNOWN_CHAINS, explorerTxUrl, parseTipAmount, parseTipTokens } from '../core/extras/evmTokens'
 import { WALLET_LINKS } from '../core/extras/walletLinks'
@@ -45,7 +45,7 @@ const utf8ToHex = text => {
   return hex
 }
 
-const failureMessage = (reason, error, viaWalletConnect = false) => {
+const failureMessage = (reason, error) => {
   if (error?.walletConnectLoad) return 'WalletConnect could not load. Reload the page and try again.'
   if (error?.message === 'relay_unreachable')
     return 'Could not reach WalletConnect. Check your connection and try again.'
@@ -53,10 +53,12 @@ const failureMessage = (reason, error, viaWalletConnect = false) => {
     return 'The wallet did not connect on the sign-in network. Choose it in the wallet and try again.'
   if (error?.code === 4001) return 'Request rejected in the wallet.'
   if (reason === 'nonce_expired') return 'Signature expired. Please sign again.'
-  // the server cannot tell a smart-contract wallet's signature from a wrong one
-  if (viaWalletConnect && reason === 'signature_invalid') {
-    return 'Signature not accepted. Smart-contract wallets are not supported yet.'
+  // not an ordinary wallet's signature, and this world cannot check smart-contract wallets (no RPC)
+  if (reason === 'contract_unsupported') {
+    return 'Signature not accepted. Smart-contract wallets are not supported in this world.'
   }
+  if (reason === 'unavailable') return "Could not check the wallet's signature right now. Please try again."
+  if (reason === 'signature_invalid') return 'Signature not accepted. Please sign again.'
   return 'Could not verify your EVM wallet. Please sign again.'
 }
 
@@ -135,7 +137,7 @@ export function createEvmIntegration(world, { loadWalletConnect = () => import('
     // サーバーだけが検証済みのまま残らない (失敗済みならサーバー側は何もしない)
     if (run.id) send('revokeEvmWallet', {})
     publish()
-    world.emit('toast', failureMessage(reason, error, viaWalletConnect))
+    world.emit('toast', failureMessage(reason, error))
   }
 
   // EIP-6963: 拡張機能ごとに 1 つずつ名乗り出る。中身は信頼せず、形だけ確かめて保持する
@@ -378,7 +380,7 @@ export function createEvmIntegration(world, { loadWalletConnect = () => import('
         params: [utf8ToHex(challenge.message), account],
       })
       if (!current(run)) return null
-      if (!isEvmSignature(signature)) throw new Error('invalid signature')
+      if (!isEvmSigninSignature(signature)) throw new Error('invalid signature')
       const ackWait = waitForAck(run)
       if (!send('requestEvmVerify', { address: account, signature, nonce: challenge.nonce, attempt: run.id })) {
         throw new Error('send refused')

@@ -1,11 +1,14 @@
 // Links to open phone wallets for WalletConnect. No dependencies: used by the wallet panel (main bundle)
 // and by src/client/walletconnect.js (loaded on demand).
 
-// Wallets offered on phones, by their universal links: <universal>/wc?uri=<encoded wc: uri>
+// Wallets offered on phones, by their universal links: <universal>/wc?uri=<encoded wc: uri> (the form Reown's
+// AppKit builds). HashPort Wallet and Myna Wallet hold JPYC; their links are the ones in Reown's wallet registry
+// (explorer-api.walletconnect.com, 2026-11-08). Myna Wallet is a smart-contract account: its sign-in needs the
+// server's contract check (EVM_RPC_URL_<chainId>).
 export const WALLET_LINKS = Object.freeze([
   Object.freeze({ id: 'metamask', name: 'MetaMask', universal: 'https://metamask.app.link' }),
-  Object.freeze({ id: 'trust', name: 'Trust Wallet', universal: 'https://link.trustwallet.com' }),
-  Object.freeze({ id: 'rainbow', name: 'Rainbow', universal: 'https://rnbwapp.com' }),
+  Object.freeze({ id: 'hashport', name: 'HashPort Wallet', universal: 'https://link.wallet.hashport.com' }),
+  Object.freeze({ id: 'myna', name: 'Myna Wallet', universal: 'https://prd-api.mynawallet.jp/deeplink' }),
 ])
 
 export const walletConnectLink = (universal, uri) => `${universal}/wc?uri=${encodeURIComponent(uri)}`

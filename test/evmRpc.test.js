@@ -104,6 +104,40 @@ test('evm rpc: a JSON-RPC error answer is an RpcError with the code only; transp
   }
 })
 
+test("evm rpc: a JSON-RPC error on the chain check is not the caller's RpcError", async () => {
+  // a node that refuses eth_chainId: the caller asked for eth_call, so an RpcError would wrongly read as
+  // "the node refused (or reverted) my call"
+  const { fetch } = fakeFetch(request =>
+    request.method === 'eth_chainId' ? { error: { code: -32000, message: 'header not found' } } : { result: '0x01' }
+  )
+  const rpc = createEvmRpc({ url: 'https://rpc.example', chainId: 137, fetch })
+  const err = await rpc.call('eth_call', [{ data: '0x00' }, 'latest']).catch(err => err)
+  assert.ok(err instanceof Error)
+  assert.equal(err instanceof RpcError, false)
+  assert.equal(err.message, 'RPC chain unknown')
+})
+
+test('evm rpc: an RpcError says whether the call reverted, without keeping the node text', async () => {
+  const cases = [
+    [{ code: 3, message: 'execution reverted', data: '0x08c379a0' }, true],
+    [{ code: -32000, message: 'execution reverted: SignatureValidator: invalid signature' }, true],
+    [{ code: -32015, message: 'VM execution error.', data: 'Reverted 0x' }, true],
+    [{ code: -32000, message: 'missing trie node abc (path ) secret-host' }, false],
+    [{ code: -32005, message: 'rate limited' }, false],
+    [{ code: -32602, message: 'invalid params' }, false],
+  ]
+  for (const [error, reverted] of cases) {
+    const { fetch } = fakeFetch((request, n) => (n === 1 ? { result: '0x89' } : { error }))
+    const rpc = createEvmRpc({ url: 'https://rpc.example', chainId: 137, fetch })
+    const err = await rpc.call('eth_call', [{ data: '0x00' }, 'latest']).catch(err => err)
+    assert.ok(err instanceof RpcError)
+    assert.equal(err.code, error.code)
+    assert.equal(err.reverted, reverted, error.message)
+    assert.equal(JSON.stringify(err).includes('secret-host'), false)
+    assert.equal(err.message, 'RPC error response')
+  }
+})
+
 test('evm rpc: an aborted signal stops the request', async () => {
   const { fetch } = fakeFetch(() => ({ result: '0x89' }))
   const rpc = createEvmRpc({ url: 'https://rpc.example', chainId: 137, fetch })

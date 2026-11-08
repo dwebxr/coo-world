@@ -7,7 +7,8 @@ export const INBOUND_BYTE_LIMITS = Object.freeze({
   tokenBalanceRequest: 64,
   requestBuilderRecheck: 16,
   requestEvmNonce: 128,
-  requestEvmVerify: 512,
+  // a contract account's signature can be up to 4096 bytes (8194 hex characters) plus the other fields
+  requestEvmVerify: 8704,
   revokeEvmWallet: 16,
   setEvmTipReceive: 32,
   requestEvmTipIntent: 192,

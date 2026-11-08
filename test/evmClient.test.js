@@ -5,14 +5,14 @@ import { Ranks } from '../src/core/extras/ranks.js'
 import { clientWorld, loadClient } from './lib/clientHarness.mjs'
 import { strictDecode } from '../src/core/extras/strictDecode.js'
 import { packetMethodById } from '../src/core/packets.js'
-import { isEvmAddress, isEvmSignature, parseEvmChainIds, sameEvmAddress } from '../src/core/extras/evmChains.js'
+import { isEvmAddress, isEvmSigninSignature, parseEvmChainIds, sameEvmAddress } from '../src/core/extras/evmChains.js'
 import { encodeTransfer, isTxHash } from '../src/core/extras/evmAbi.js'
 import { KNOWN_CHAINS, explorerTxUrl, parseTipAmount, parseTipTokens } from '../src/core/extras/evmTokens.js'
 import { WALLET_LINKS } from '../src/core/extras/walletLinks.js'
 
 const deps = {
   isEvmAddress,
-  isEvmSignature,
+  isEvmSigninSignature,
   parseEvmChainIds,
   sameEvmAddress,
   encodeTransfer,
@@ -192,8 +192,45 @@ test('evm client: wallet rejections and server reasons produce specific toasts',
     'Signature expired. Please sign again.',
   ])
   assert.equal(requests(h.world, 'RevokeEvmWallet').length, 2)
+  // the server's other reasons, each with its own message; an unknown one gets the general message
+  for (const [reason, toast] of [
+    ['signature_invalid', 'Signature not accepted. Please sign again.'],
+    ['contract_unsupported', 'Signature not accepted. Smart-contract wallets are not supported in this world.'],
+    ['unavailable', "Could not check the wallet's signature right now. Please try again."],
+    ['something_new', 'Could not verify your EVM wallet. Please sign again.'],
+  ]) {
+    const run = await h.start()
+    h.challenge(run.attempt)
+    await flush()
+    h.world.network.onEvmWalletStatus({ attempt: run.attempt, verified: false, reason })
+    assert.equal(await run.promise, null)
+    assert.equal(h.world.toasts.at(-1), toast, reason)
+  }
   // A later success after the failures still works.
   await h.verify()
+})
+
+test('evm client: a contract account signature (longer than 65 bytes) is sent; an oversized one is not', async t => {
+  for (const [bytes, sent] of [
+    [1024, true],
+    [4096, true],
+    [4097, false],
+  ]) {
+    const h = setup(t)
+    h.provider.signature = `0x${'ab'.repeat(bytes)}`
+    const run = await h.start()
+    h.challenge(run.attempt)
+    await flush()
+    const verify = requests(h.world, 'RequestEvmVerify')
+    assert.equal(verify.length, sent ? 1 : 0, `${bytes} bytes`)
+    if (sent) {
+      assert.equal(verify[0][1].signature, h.provider.signature)
+      h.status(run.attempt)
+      assert.equal(await run.promise, checksummed)
+    } else {
+      assert.equal(await run.promise, null)
+    }
+  }
 })
 
 test('evm client: nonce cooldown retries once; malformed or late nonces fail closed', async t => {
@@ -228,14 +265,16 @@ test('evm client: nonce cooldown retries once; malformed or late nonces fail clo
 
 test('evm client: a malformed wallet signature is never sent', async t => {
   const h = setup(t)
-  h.provider.signature = '0x1234'
-  const run = await h.start()
-  h.challenge(run.attempt)
-  assert.equal(await run.promise, null)
+  for (const bad of ['0x123', 'abcd', '0x', 42]) {
+    h.provider.signature = bad
+    const run = await h.start()
+    h.challenge(run.attempt)
+    assert.equal(await run.promise, null, String(bad))
+  }
   assert.equal(requests(h.world, 'RequestEvmVerify').length, 0)
   h.provider.accounts = ['not-an-address']
   assert.equal(await h.evm.connect(), null)
-  assert.equal(requests(h.world, 'RequestEvmNonce').length, 1)
+  assert.equal(requests(h.world, 'RequestEvmNonce').length, 4)
 })
 
 test('evm client: accountsChanged keeps the same account, disconnects on a switch or revoke', async t => {
@@ -817,14 +856,14 @@ test('walletconnect: a failed load, an unreachable relay and a wrong chain each 
   assert.match(h.toasts.at(-1), /did not connect on the sign-in network/)
 })
 
-test('walletconnect: a refused signature suggests a smart-contract wallet only for WalletConnect', async t => {
+test('walletconnect: a smart-contract wallet in a world that cannot check it is told so', async t => {
   const h = wcSetup(t)
   const run = await h.start('walletconnect')
   h.challenge(run.attempt)
   await flush()
-  h.world.network.onEvmWalletStatus({ attempt: run.attempt, verified: false, reason: 'signature_invalid' })
+  h.world.network.onEvmWalletStatus({ attempt: run.attempt, verified: false, reason: 'contract_unsupported' })
   assert.equal(await run.promise, null)
-  assert.equal(h.toasts.at(-1), 'Signature not accepted. Smart-contract wallets are not supported yet.')
+  assert.equal(h.toasts.at(-1), 'Signature not accepted. Smart-contract wallets are not supported in this world.')
 })
 
 test('walletconnect: Cancel and dispose stop a connection still waiting for the wallet, without a toast', async t => {
@@ -861,8 +900,8 @@ test('walletconnect: "Open wallet" uses the wallet link, else the wallet the pla
   await flush()
   h.status(run.attempt)
   await run.promise
-  h.evm.setWalletConnectChoice('trust')
-  assert.equal(h.evm.getWalletConnectRedirect(), 'https://link.trustwallet.com')
+  h.evm.setWalletConnectChoice('hashport')
+  assert.equal(h.evm.getWalletConnectRedirect(), 'https://link.wallet.hashport.com')
   h.evm.setWalletConnectChoice('evil')
   assert.equal(h.evm.getWalletConnectRedirect(), null)
   h.adapter.redirect = 'metamask://'
@@ -875,11 +914,11 @@ test('walletconnect: "Open wallet" uses the wallet link, else the wallet the pla
 test('walletconnect: a new pairing link forgets the wallet tapped for an earlier one', async t => {
   const h = wcSetup(t)
   const run = await h.start('walletconnect')
-  h.evm.setWalletConnectChoice('trust')
-  assert.equal(h.evm.getWalletConnectRedirect(), 'https://link.trustwallet.com')
+  h.evm.setWalletConnectChoice('hashport')
+  assert.equal(h.evm.getWalletConnectRedirect(), 'https://link.wallet.hashport.com')
   h.adapter.options.onStatus({ state: 'uri', uri: `wc:${'ab'.repeat(32)}@2?x` })
   assert.equal(h.evm.getWalletConnectRedirect(), null, 'another wallet may take this link')
-  h.evm.setWalletConnectChoice('rainbow')
+  h.evm.setWalletConnectChoice('myna')
   h.evm.setWalletConnectChoice(null)
   assert.equal(h.evm.getWalletConnectRedirect(), null, '"Other wallet" clears it')
   h.evm.cancelConnect()

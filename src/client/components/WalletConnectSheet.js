@@ -143,7 +143,7 @@ export function WalletConnectSheet({ world }) {
                   Other wallet
                 </a>
               )}
-              <div className='wc-note'>If the app is not installed, the link opens its store page.</div>
+              <div className='wc-note'>Install the wallet app first if you do not have it.</div>
             </>
           )}
           {showQr && status.qr && <img className='wc-qr' src={status.qr} alt='WalletConnect QR code' />}

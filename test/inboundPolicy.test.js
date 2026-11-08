@@ -219,3 +219,44 @@ test('admit: logging is once per kind and socket, while every drop is counted', 
     /^\[network\] entityEvent from client a dropped: undecodable .*pos 2.*further drops are counted/
   )
 })
+
+test('inbound policy: EVM wallet packets have tight byte caps that real requests fit under', () => {
+  assert.equal(packetByteLimit('requestEvmNonce'), 128)
+  assert.equal(packetByteLimit('requestEvmVerify'), 512)
+  assert.equal(packetByteLimit('revokeEvmWallet'), 16)
+  assert.equal(packetByteLimit('setEvmTipReceive'), 32)
+  assert.equal(packetByteLimit('requestEvmTipIntent'), 192)
+  const { gate } = make()
+  const socket = { id: 'evm' }
+  const address = `0x${'Ab'.repeat(20)}`
+  const real = [
+    writeClientPacket('requestEvmNonce', { address, attempt: 0x7fffffff }),
+    writeClientPacket('requestEvmVerify', {
+      address,
+      signature: `0x${'cd'.repeat(65)}`,
+      nonce: 'e'.repeat(64),
+      attempt: 0x7fffffff,
+    }),
+    writeClientPacket('revokeEvmWallet', {}),
+    writeClientPacket('setEvmTipReceive', { enabled: false }),
+    writeClientPacket('requestEvmTipIntent', {
+      id: 0x7fffffff,
+      to: 'x'.repeat(64),
+      token: 'ABCDEFGHIJK',
+      amount: `${'9'.repeat(18)}.${'9'.repeat(18)}`,
+    }),
+  ]
+  for (const packet of real) assert.ok(gate.admit(socket, packet), `${packet.length} bytes admitted`)
+  // A 6492-sized smart-account signature (P1.5) does not fit the EOA cap.
+  const oversized = writeClientPacket('requestEvmVerify', {
+    address,
+    signature: `0x${'cd'.repeat(600)}`,
+    nonce: 'e'.repeat(64),
+    attempt: 1,
+  })
+  assert.equal(gate.admit(socket, oversized), false)
+  assert.equal(
+    gate.admit(socket, writeClientPacket('requestEvmNonce', { address, attempt: 1, pad: 'x'.repeat(100) })),
+    false
+  )
+})

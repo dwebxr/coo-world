@@ -6,8 +6,8 @@ import { walletPanelText } from '../src/client/components/walletPanelText.js'
 
 // Exercise the actual JSX handler and disabled prop with persistent hook state, without a DOM.
 function panel(refreshBalance) {
-  const source = fs.readFileSync(new URL('../src/client/components/SolanaWalletButton.js', import.meta.url), 'utf8')
-  const code = transformSync(source.replace(/^import .*\n/gm, '').replace('export function', 'function'), {
+  const source = fs.readFileSync(new URL('../src/client/components/SolanaWalletPanel.js', import.meta.url), 'utf8')
+  const code = transformSync(source.replace(/^import .*\n/gm, '').replace(/^export /gm, ''), {
     loader: 'jsx',
     jsxFactory: 'element',
   }).code
@@ -29,28 +29,18 @@ function panel(refreshBalance) {
       if (!(index in slots)) slots[index] = { current: initial }
       return slots[index]
     },
-    useEffect() {},
-    useCallback: fn => fn,
-    useRank: () => ({ isBuilder: false }),
     walletPanelText,
-    storage: { get: () => null },
-    cls: value => value,
     css() {},
     element: (type, props, ...children) => ({ type, props, children }),
     console: { error() {} },
-    ...Object.fromEntries(
-      ['RefreshCwIcon', 'CheckCircleIcon', 'AlertCircleIcon', 'WalletIcon', 'XIcon', 'LoaderIcon'].map(name => [
-        name,
-        name,
-      ])
-    ),
+    ...Object.fromEntries(['RefreshCwIcon', 'CheckCircleIcon', 'AlertCircleIcon'].map(name => [name, name])),
   }
-  const Component = new Function(...Object.keys(context), `${code}\nreturn SolanaWalletButton`)(
+  const Component = new Function(...Object.keys(context), `${code}\nreturn SolanaWalletPanel`)(
     ...Object.values(context)
   )
+  const walletState = { address: 'wallet', status: 'verified', verified: true, known: false }
   const world = {
     solana: {
-      getState: () => ({ address: 'wallet', status: 'verified', verified: true, known: false }),
       getRequiredTokenAmount: () => 10000,
       refreshBalance,
     },
@@ -66,7 +56,7 @@ function panel(refreshBalance) {
   }
   return () => {
     cursor = 0
-    return find(Component({ world }))
+    return find(Component({ world, walletState, isBuilder: false }))
   }
 }
 

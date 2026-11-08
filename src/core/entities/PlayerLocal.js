@@ -1274,6 +1274,12 @@ export class PlayerLocal extends Entity {
       this.world.emit('rank', { playerId: this.data.id, rank: this.data.rank })
       changed = true
     }
+    // 投げゼニを受け取れるか (サーバーだけが設定する真偽値。アドレスは含まない)
+    if (Object.prototype.hasOwnProperty.call(data, 'evmTips')) {
+      this.data.evmTips = data.evmTips === true
+      this.world.emit('evmTips', { playerId: this.data.id, evmTips: this.data.evmTips })
+      changed = true
+    }
     if (avatarChanged) {
       this.applyAvatar()
     }

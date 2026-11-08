@@ -80,6 +80,11 @@ Subscribes to both engine events (eg when players `enter` or `leave` the world) 
   nothing, and scripts cannot emit or send this engine event. The balance is not in the event;
   read it with [`player.getTokenBalance()`](/docs/scripting/world/Player.md).
 
+- `evmWallet`: **server scripts only.** A player's EVM wallet verification (Sign-In with Ethereum) was
+  accepted or ended: a frozen `{ playerId, verified }`. `verified: false` follows a disconnect from the
+  wallet panel, a failed or new sign-in, or a revoke. The address is not included; ask
+  [`player.getEvmHolding()`](/docs/scripting/world/Player.md) for holdings. Scripts cannot emit or send it.
+
 ```js
 world.on('wallet', async ({ playerId, verified }) => {
   const result = await world.getPlayer().getTokenBalance()

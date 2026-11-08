@@ -146,6 +146,40 @@ PUBLIC_TOKEN_DECIMALS=6
 - Token mint address should be a Solana SPL token address
 - Environment variables with `PUBLIC_` prefix are exposed to the client
 
+## 🦊 EVM Wallets (Sign-In with Ethereum)
+
+The wallet panel can also verify an EVM address (MetaMask, Rabby or any wallet that announces itself through EIP-6963). This proves ownership only: it moves no funds and grants no build access.
+
+```bash
+# Chain ids, comma separated (first one is used in the sign-in message). Empty disables EVM wallets.
+PUBLIC_EVM_CHAIN_IDS=137
+```
+
+- The server writes the sign-in message (EIP-4361) and checks the signature against it; the browser cannot change what is signed
+- The sign-in domain is the host of `PUBLIC_API_URL`, which must be the page's host (otherwise wallets warn about a mismatched site, and with no `PUBLIC_API_URL` EVM stays disabled)
+- Externally owned accounts only for now; smart-account wallets (EIP-1271/6492) are refused
+- Verification lasts for the connection and is never stored or shown to other players
+- When both Solana and EVM are enabled the panel shows a tab for each
+
+### Tips (JPYC / USDC)
+
+```bash
+PUBLIC_EVM_TIP_TOKENS=JPYC,USDC   # Polygon (137) built-ins; or SYMBOL:0xaddress:decimals[:min]
+```
+
+- A verified player can switch on **Receive tips** in the EVM tab. Others then see a tip button next to that player in the Players list; only a yes/no flag is shared, never the address
+- Sending a tip asks the server for the recipient's verified address (rate limited, verified senders only), then the sender's own wallet sends an ERC-20 transfer straight to the recipient. The world never holds funds, takes no fee and does not convert anything
+- Minimum amounts: 1 JPYC, 0.01 USDC. Tips are not yet confirmed on-chain or announced in chat (planned)
+- Not legal advice: check the rules that apply to you before enabling tips in production
+
+### NFT checks for apps
+
+```bash
+EVM_RPC_URL_137=https://polygon-mainnet.example/your-key   # server only, never PUBLIC_
+```
+
+Server scripts can ask `player.getEvmHolding({ chainId, contract, standard, tokenId })` whether a player's verified wallet holds an ERC-721 / ERC-1155 token (including OpenPay license NFTs), and send the answer to that player only with `app.sendTo` (app settings and scripts are visible to every visitor, so anything secret must come from your own server). See `docs/scripting/world/Player.md` and the example app `docs/scripting/examples/nft-gate.js`.
+
 ## 🛠️ Development
 
 ### Key Commands

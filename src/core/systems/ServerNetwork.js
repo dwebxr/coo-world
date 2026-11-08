@@ -28,6 +28,10 @@ import { SNAPSHOT_CAP, createWriteLedger } from '../extras/writeLedger'
 import { briefError, createLogOnce } from '../extras/logOnce'
 import { readInboundPacket } from '../../server/inboundDecode'
 import * as solanaGating from '../../server/solana-gating'
+import * as evmGating from '../../server/evm-gating'
+import { createEvmRpcs } from '../../server/evmRpc'
+import { createEvmHoldingService } from '../../server/evmHoldings'
+import { parseTipAmount } from '../extras/evmTokens'
 import { createSolanaRpc } from '../../server/solanaRpc'
 import { createTokenBalanceService } from '../../server/tokenBalance'
 import { grantTokenRank, persistRank, revokeTokenRank } from '../../server/rankGrants'
@@ -74,10 +78,14 @@ export class ServerNetwork extends System {
     this.writer = createWriteLedger({ log: line => console.error(line) })
   }
 
-  init({ db, tokenBalanceService }) {
+  init({ db, tokenBalanceService, evmHoldings }) {
     this.db = db
     this.tokenBalanceService = solanaGating.TOKEN_GATING_ENABLED
       ? (tokenBalanceService ?? createTokenBalanceService({ readRaw: createSolanaRpc().readRaw }))
+      : null
+    // NFT 保有判定 (EVM_RPC_URL_<chainId> があるチェーンだけ)。スクリプトの player.getEvmHolding が使う
+    this.evmHoldings = evmGating.EVM_ENABLED
+      ? (evmHoldings ?? createEvmHoldingService({ rpcs: createEvmRpcs() }))
       : null
   }
 
@@ -467,6 +475,7 @@ export class ServerNetwork extends System {
       // create socket
       socket = new Socket({ id: user.id, ws, network: this })
       socket.wallet = solanaGating.createWalletSession()
+      socket.evmWallet = evmGating.createEvmWalletSession()
 
       // spawn player
       socket.player = this.world.entities.add(
@@ -477,7 +486,7 @@ export class ServerNetwork extends System {
           quaternion: this.spawn.quaternion.slice(),
           owner: socket.id, // deprecated, same as userId
           userId: user.id, // deprecated, same as userId
-          name: name || user.name,
+          name: name || sanitizeName(user.name) || 'Anonymous',
           health: HEALTH_MAX,
           avatar: user.avatar || this.world.settings.avatar?.url || 'asset://avatar.vrm',
           sessionAvatar: avatar || null,
@@ -910,6 +919,199 @@ export class ServerNetwork extends System {
         createdAt: moment().toISOString(),
       })
     }
+  }
+
+  // EVM (SIWE) の所有証明。Solana の socket.wallet とは世代もクールダウンも独立させ、互いの試行を取り消さない。
+  // 検証はランクを変えない (P1)
+  invalidateEvmWallet(socket, { clearVerified }) {
+    const state = socket.evmWallet
+    const wasVerified = clearVerified && !!state.verified
+    state.generation++
+    state.challenge = null
+    if (clearVerified) state.verified = null
+    if (!wasVerified) return
+    // 検証が消えたら投げゼニの受け取りも止め (他の人の一覧から Tip を消す)、スクリプトにも知らせる
+    const player = socket.player
+    if (state.receiveTips) {
+      state.receiveTips = false
+      if (player?.data.evmTips) {
+        player.modify({ evmTips: false })
+        this.send('entityModified', { id: player.data.id, evmTips: false })
+      }
+    }
+    if (player) this.world.events?.emit('evmWallet', Object.freeze({ playerId: player.data.id, verified: false }))
+  }
+
+  currentEvm(socket, generation, player) {
+    return (
+      this.sockets.get(socket.id) === socket &&
+      !socket.disconnected &&
+      !this.stopping &&
+      !this.world.fatalError &&
+      socket.evmWallet?.generation === generation &&
+      socket.player === player
+    )
+  }
+
+  onRequestEvmNonce = (socket, data) => {
+    if (this.stopping || this.world.fatalError) return
+    if (!evmGating.EVM_ENABLED || !isObject(data) || Array.isArray(data)) return
+    const { address, attempt } = data
+    if (!evmGating.isEvmAddress(address) || !evmGating.isWalletRequestId(attempt)) return
+    const state = socket.evmWallet
+    if (!state || !this.currentEvm(socket, state.generation, socket.player)) return
+    const now = Date.now()
+    const retryAfterMs = evmGating.CHALLENGE_COOLDOWN_MS - (now - state.lastChallengeAt)
+    if (retryAfterMs > 0) {
+      if (!state.challengeCooldownReplied) {
+        state.challengeCooldownReplied = true
+        socket.send('evmNonce', { attempt, retryAfterMs })
+      }
+      return
+    }
+    const wasVerified = !!state.verified
+    this.invalidateEvmWallet(socket, { clearVerified: true })
+    if (wasVerified) socket.send('evmWalletStatus', { verified: false })
+    state.lastChallengeAt = now
+    state.challengeCooldownReplied = false
+    const challenge = evmGating.buildEvmChallenge(address, {
+      host: evmGating.WALLET_HOST,
+      uri: evmGating.WALLET_URI,
+      chainId: evmGating.EVM_CHAIN_ID,
+      now,
+    })
+    state.challenge = { ...challenge, attempt }
+    socket.send('evmNonce', { attempt, nonce: challenge.nonce, message: challenge.message })
+  }
+
+  onRequestEvmVerify = async (socket, data) => {
+    if (this.stopping || this.world.fatalError) return
+    if (!evmGating.EVM_ENABLED || !isObject(data) || Array.isArray(data) || !socket.player) return
+    const { address, signature, nonce, attempt } = data
+    if (!evmGating.isWalletRequestId(attempt) || !evmGating.isWalletNonce(nonce)) return
+    const player = socket.player
+    const state = socket.evmWallet
+    if (!state) return
+    const generation = state.generation
+    if (!this.currentEvm(socket, generation, player)) return
+    const challenge = state.challenge
+    // 古いパケットは現在の試行を消費せず、失敗の返信も出さない
+    if (!challenge || challenge.nonce !== nonce || challenge.attempt !== attempt) return
+    // await の前に使い切る (同じ nonce の二重検証を防ぐ)
+    state.challenge = null
+    const result = await evmGating.checkEvmChallenge(challenge, { address, signature, nonce }, Date.now())
+    if (!this.currentEvm(socket, generation, player)) return
+    if (!result.ok) {
+      this.invalidateEvmWallet(socket, { clearVerified: true })
+      socket.send('evmWalletStatus', { verified: false, attempt, reason: evmGating.publicReason(result.reason) })
+      return
+    }
+    state.verified = challenge.address
+    socket.send('evmWalletStatus', { verified: true, wallet: challenge.address, attempt, reason: 'ok' })
+    this.world.events?.emit('evmWallet', Object.freeze({ playerId: player.data.id, verified: true }))
+  }
+
+  onRevokeEvmWallet = (socket, data) => {
+    if (this.stopping || this.world.fatalError) return
+    if (!evmGating.EVM_ENABLED || !isObject(data) || Array.isArray(data) || Object.keys(data).length) return
+    const state = socket.evmWallet
+    if (!state) return
+    const changed = !!(state.verified || state.challenge)
+    this.invalidateEvmWallet(socket, { clearVerified: true })
+    if (!this.currentEvm(socket, state.generation, socket.player)) return
+    if (changed) socket.send('evmWalletStatus', { verified: false })
+  }
+
+  // 投げゼニの受け取り (オプトイン)。アドレスは配らず、真偽値 evmTips だけをプレイヤーに載せる
+  onSetEvmTipReceive = (socket, data) => {
+    if (this.stopping || this.world.fatalError) return
+    if (!evmGating.EVM_ENABLED || !evmGating.EVM_TIP_TOKENS.length) return
+    if (!isObject(data) || Array.isArray(data) || typeof data.enabled !== 'boolean' || Object.keys(data).length !== 1)
+      return
+    const state = socket.evmWallet
+    const player = socket.player
+    if (!state || !player || !this.currentEvm(socket, state.generation, player)) return
+    const enabled = data.enabled && !!state.verified
+    if (state.receiveTips === enabled) return
+    // 切替のたびに全員へ配るので、受け取りの開始はソケットあたり 1 秒に 1 回まで。
+    // やめる方は待たせない (アドレスを渡し続けないため)
+    const now = Date.now()
+    if (enabled && now - state.receiveChangedAt < evmGating.TIP_RECEIVE_COOLDOWN_MS) return
+    state.receiveChangedAt = now
+    state.receiveTips = enabled
+    player.modify({ evmTips: enabled })
+    this.send('entityModified', { id: player.data.id, evmTips: enabled })
+  }
+
+  // 送金の意思表示 (tip intent)。受取人のアドレスは、検証済みの送り手にだけ、ここで返す。
+  // サーバーは送金を作らず預からない: 返すのは受取人の検証済みアドレスと最小単位の金額だけ
+  onRequestEvmTipIntent = (socket, data) => {
+    if (this.stopping || this.world.fatalError) return
+    if (!evmGating.EVM_ENABLED || !evmGating.EVM_TIP_TOKENS.length || !isObject(data) || Array.isArray(data)) return
+    const { id, to, token, amount } = data
+    if (!evmGating.isWalletRequestId(id) || typeof to !== 'string' || !to || to.length > 64) return
+    if (typeof token !== 'string' || typeof amount !== 'string' || amount.length > 40) return
+    const state = socket.evmWallet
+    const player = socket.player
+    if (!state || !player || !this.currentEvm(socket, state.generation, player)) return
+    // アドレス収集の摩擦: 理由を問わず 1 件ずつ消費する (3 件、10 秒に 1 件回復)
+    const bucket = state.intentBucket
+    const now = Date.now()
+    bucket.tokens = Math.min(
+      evmGating.TIP_INTENT_BURST,
+      bucket.tokens + Math.max(0, now - bucket.at) / evmGating.TIP_INTENT_REFILL_MS
+    )
+    bucket.at = now
+    const refuse = reason => socket.send('evmTipIntent', { id, ok: false, reason })
+    if (bucket.tokens < 1) return refuse('rate_limited')
+    bucket.tokens--
+    if (!state.verified) return refuse('not_verified')
+    const tip = evmGating.EVM_TIP_TOKENS.find(entry => entry.symbol === token)
+    if (!tip) return refuse('bad_token')
+    let units
+    try {
+      units = parseTipAmount(amount, tip)
+    } catch (err) {
+      return refuse(err?.message === 'below minimum' ? 'below_minimum' : 'bad_amount')
+    }
+    const target = this.sockets.get(to)
+    const recipient =
+      target && target !== socket && !target.disconnected && target.evmWallet?.receiveTips
+        ? target.evmWallet.verified
+        : null
+    if (!recipient) return refuse('recipient_unavailable')
+    // 同じウォレットを別のソケットで検証していても自分宛ては出さない
+    if (evmGating.sameEvmAddress(recipient, state.verified)) return refuse('same_wallet')
+    socket.send('evmTipIntent', {
+      id,
+      ok: true,
+      to,
+      recipient,
+      chainId: evmGating.EVM_CHAIN_ID,
+      token: { symbol: tip.symbol, address: tip.address, decimals: tip.decimals },
+      amount,
+      units: units.toString(),
+    })
+  }
+
+  // サーバースクリプトの player.getEvmHolding から呼ばれる。アドレスはスクリプトに見せず、ここで引く
+  async evmHolding(playerId, spec) {
+    const socket = this.sockets.get(playerId)
+    const address = socket && !socket.disconnected ? (socket.evmWallet?.verified ?? null) : null
+    if (!address) return { verified: false, known: false, balance: 0 }
+    if (!this.evmHoldings) return { verified: true, known: false, balance: 0 }
+    let result = { known: false }
+    try {
+      result = await this.evmHoldings.get(address, spec)
+    } catch {
+      // 予期しない失敗も unknown
+    }
+    // 待っている間に検証が変わったら、古いアドレスの結果は使わない
+    if (this.sockets.get(playerId) !== socket || socket.disconnected || socket.evmWallet?.verified !== address) {
+      return { verified: false, known: false, balance: 0 }
+    }
+    const known = result?.known === true && Number.isFinite(result.balance) && result.balance >= 0
+    return { verified: true, known, balance: known ? result.balance : 0 }
   }
 
   onBlueprintAdded = (socket, blueprint) => {

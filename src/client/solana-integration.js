@@ -99,6 +99,9 @@ export function createSolanaIntegration(world) {
     if (!current(run)) return
     invalidate('failure')
     status = 'unverified'
+    // 検証要求を送った後の失敗 (確認待ちの期限切れなど) では、遅れて届く成功でサーバーだけが
+    // 検証済みのまま残らないように取り下げる。それより前の失敗ではサーバーは未検証なので送らない
+    if (run.verifySent) send('revokeBuilderByToken', {})
     publish()
     world.emit('toast', 'Could not verify your wallet. Please sign again.')
   }
@@ -252,6 +255,8 @@ export function createSolanaIntegration(world) {
         })
       )
         throw new Error('send refused')
+      // 送れた後だけ立てる (送れなかった検証要求のために revoke を送ると、既存のビルダー権限まで外れる)
+      run.verifySent = true
       const ack = await ackWait
       if (!current(run)) return null
       if (!ack?.verified || !verified) throw new Error('verification unavailable')

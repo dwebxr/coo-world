@@ -32,9 +32,10 @@ import {
   Volume2Icon,
   HammerIcon,
   CircleArrowRightIcon,
+  HandCoinsIcon,
 } from 'lucide-react'
 import { cls } from './cls'
-import { useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import {
   FieldBtn,
   FieldCurve,
@@ -65,6 +66,7 @@ import { uuid } from '../../core/utils'
 import { useRank } from './useRank'
 import { Ranks } from '../../core/extras/ranks'
 import { callScript } from '../../core/extras/callScript'
+import { TipForm } from './TipForm'
 
 const e1 = new THREE.Euler(0, 0, 0, 'YXZ')
 const q1 = new THREE.Quaternion()
@@ -1743,8 +1745,16 @@ function Players({ world, hidden }) {
   const localPlayer = world.entities.player
   const isAdmin = localPlayer.isAdmin()
   const [players, setPlayers] = useState(() => getPlayers(world))
+  // 投げゼニのフォームを開いている相手 (一度に 1 人)
+  const [tipTarget, setTipTarget] = useState(null)
+  const [, setTipRevision] = useState(0)
   useEffect(() => {
     const onChange = () => {
+      setPlayers(getPlayers(world))
+    }
+    // 受け取りの切替や自分の EVM 検証が変わったら Tip ボタンの表示を描き直す
+    const onTipChange = () => {
+      setTipRevision(n => n + 1)
       setPlayers(getPlayers(world))
     }
     world.entities.on('added', onChange)
@@ -1753,6 +1763,8 @@ function Players({ world, hidden }) {
     world.livekit.on('muted', onChange)
     world.on('rank', onChange)
     world.on('name', onChange)
+    world.on('evmTips', onTipChange)
+    world.on('evm:state', onTipChange)
     return () => {
       world.entities.off('added', onChange)
       world.entities.off('removed', onChange)
@@ -1760,8 +1772,12 @@ function Players({ world, hidden }) {
       world.livekit.off('muted', onChange)
       world.off('rank', onChange)
       world.off('name', onChange)
+      world.off('evmTips', onTipChange)
+      world.off('evm:state', onTipChange)
     }
   }, [])
+  const canTip = player =>
+    player.isRemote && player.data.evmTips === true && !!world.evm?.isVerified() && world.evm.getTipTokens().length > 0
   const toggleBuilder = player => {
     if (player.data.rank === Ranks.BUILDER) {
       world.network.send('modifyRank', { playerId: player.data.id, rank: Ranks.VISITOR })
@@ -1837,6 +1853,12 @@ function Players({ world, hidden }) {
               color: rgba(255, 255, 255, 0.6);
             }
           }
+          button.players-btn {
+            background: none;
+            border: none;
+            padding: 0;
+            font: inherit;
+          }
           .players-btn {
             width: 2rem;
             height: 2rem;
@@ -1859,63 +1881,89 @@ function Players({ world, hidden }) {
         </div>
         <div className='players-content noscrollbar'>
           {players.map(player => (
-            <div className='players-item' key={player.data.id}>
-              <div className='players-name'>
-                <span>{player.data.name}</span>
-                {player.speaking && <Volume2Icon size='1rem' />}
-                {player.isMuted() && <MicOffIcon size='1rem' />}
+            <Fragment key={player.data.id}>
+              <div className='players-item'>
+                <div className='players-name'>
+                  <span>{player.data.name}</span>
+                  {player.speaking && <Volume2Icon size='1rem' />}
+                  {player.isMuted() && <MicOffIcon size='1rem' />}
+                </div>
+                {isAdmin && player.isRemote && !player.isAdmin() && world.settings.rank < Ranks.BUILDER && (
+                  <div
+                    className={cls('players-btn', { dim: !player.isBuilder() })}
+                    onPointerEnter={() =>
+                      setHint(
+                        player.isBuilder()
+                          ? 'Player is not a builder. Click to allow building.'
+                          : 'Player is a builder. Click to revoke.'
+                      )
+                    }
+                    onPointerLeave={() => setHint(null)}
+                    onClick={() => toggleBuilder(player)}
+                  >
+                    <HammerIcon size='1.125rem' />
+                  </div>
+                )}
+                {player.isRemote && localPlayer.outranks(player) && (
+                  <div
+                    className='players-btn'
+                    onPointerEnter={() => setHint('Teleport to player.')}
+                    onPointerLeave={() => setHint(null)}
+                    onClick={() => teleportTo(player)}
+                  >
+                    <CircleArrowRightIcon size='1.125rem' />
+                  </div>
+                )}
+                {player.isRemote && localPlayer.outranks(player) && (
+                  <div
+                    className='players-btn'
+                    onPointerEnter={() =>
+                      setHint(
+                        player.isMuted() ? 'Player is muted. Click to unmute.' : 'Player is not muted. Click to mute.'
+                      )
+                    }
+                    onPointerLeave={() => setHint(null)}
+                    onClick={() => toggleMute(player)}
+                  >
+                    {player.isMuted() ? <MicOffIcon size='1.125rem' /> : <MicIcon size='1.125rem' />}
+                  </div>
+                )}
+                {player.isRemote && localPlayer.outranks(player) && (
+                  <div
+                    className='players-btn'
+                    onPointerEnter={() => setHint('Kick this player.')}
+                    onPointerLeave={() => setHint(null)}
+                    onClick={() => kick(player)}
+                  >
+                    <UserXIcon size='1.125rem' />
+                  </div>
+                )}
+                {canTip(player) && (
+                  // キーボードでも押せる本物の button。Enter / Space はワールドの操作 (チャット・ジャンプ) に渡さない
+                  <button
+                    type='button'
+                    className='players-btn players-tip'
+                    aria-label={`Tip ${player.data.name}`}
+                    aria-expanded={tipTarget === player.data.id}
+                    onPointerEnter={() => setHint('Send this player a tip from your wallet.')}
+                    onPointerLeave={() => setHint(null)}
+                    onKeyDown={e => e.stopPropagation()}
+                    onKeyUp={e => e.stopPropagation()}
+                    onClick={e => {
+                      if (e.detail > 0) e.currentTarget.blur()
+                      setTipTarget(tipTarget === player.data.id ? null : player.data.id)
+                    }}
+                  >
+                    <HandCoinsIcon size='1.125rem' />
+                  </button>
+                )}
               </div>
-              {isAdmin && player.isRemote && !player.isAdmin() && world.settings.rank < Ranks.BUILDER && (
-                <div
-                  className={cls('players-btn', { dim: !player.isBuilder() })}
-                  onPointerEnter={() =>
-                    setHint(
-                      player.isBuilder()
-                        ? 'Player is not a builder. Click to allow building.'
-                        : 'Player is a builder. Click to revoke.'
-                    )
-                  }
-                  onPointerLeave={() => setHint(null)}
-                  onClick={() => toggleBuilder(player)}
-                >
-                  <HammerIcon size='1.125rem' />
-                </div>
+              {/* 開いたフォームは、送金中に相手が受け取りをやめても結果 (送信済み・リンク) を見せるため残す。
+                  次の送金はサーバーの tip intent が断る */}
+              {tipTarget === player.data.id && (
+                <TipForm world={world} player={player} onClose={() => setTipTarget(null)} />
               )}
-              {player.isRemote && localPlayer.outranks(player) && (
-                <div
-                  className='players-btn'
-                  onPointerEnter={() => setHint('Teleport to player.')}
-                  onPointerLeave={() => setHint(null)}
-                  onClick={() => teleportTo(player)}
-                >
-                  <CircleArrowRightIcon size='1.125rem' />
-                </div>
-              )}
-              {player.isRemote && localPlayer.outranks(player) && (
-                <div
-                  className='players-btn'
-                  onPointerEnter={() =>
-                    setHint(
-                      player.isMuted() ? 'Player is muted. Click to unmute.' : 'Player is not muted. Click to mute.'
-                    )
-                  }
-                  onPointerLeave={() => setHint(null)}
-                  onClick={() => toggleMute(player)}
-                >
-                  {player.isMuted() ? <MicOffIcon size='1.125rem' /> : <MicIcon size='1.125rem' />}
-                </div>
-              )}
-              {player.isRemote && localPlayer.outranks(player) && (
-                <div
-                  className='players-btn'
-                  onPointerEnter={() => setHint('Kick this player.')}
-                  onPointerLeave={() => setHint(null)}
-                  onClick={() => kick(player)}
-                >
-                  <UserXIcon size='1.125rem' />
-                </div>
-              )}
-            </div>
+            </Fragment>
           ))}
         </div>
       </div>

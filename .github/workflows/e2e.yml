@@ -8,6 +8,8 @@ on:
       - 'src/**'
       - 'scripts/**'
       - 'test/e2e/**'
+      # evm-tips-gate.mjs installs the NFT gate example as an app
+      - 'docs/scripting/examples/**'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/e2e.yml'
@@ -91,6 +93,14 @@ jobs:
       - name: Token gate
         continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/token-gate.mjs --engine=${{ matrix.engine }}
+
+      - name: EVM wallet (SIWE)
+        continue-on-error: ${{ matrix.engine == 'firefox' }}
+        run: node test/e2e/evm-wallet.mjs --engine=${{ matrix.engine }}
+
+      - name: EVM tips and NFT gate (mock RPC)
+        continue-on-error: ${{ matrix.engine == 'firefox' }}
+        run: node test/e2e/evm-tips-gate.mjs --engine=${{ matrix.engine }}
 
       # a smoke only on shared runners (failures and errors, not throughput): 200 frames fit a slow
       # software-rendered run; the performance budgets (600 frames) are enforced on a designated machine

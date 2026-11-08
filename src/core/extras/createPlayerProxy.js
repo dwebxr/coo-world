@@ -9,6 +9,24 @@ import { readVec3, warnOnce } from './physxConvert.js'
 const _v = new THREE.Vector3()
 const HEALTH_MAX = 100
 const balanceWarnings = new WeakSet()
+const holdingWarnings = new WeakSet()
+const holdingSpecWarnings = new WeakSet()
+const UNKNOWN_HOLDING = { verified: false, known: false, balance: 0 }
+
+// スクリプトの spec はスクリプト側のオブジェクト (getter を持ち得る)。ここで一度だけ読み、プリミティブだけを写す
+function readHoldingSpec(spec) {
+  if (!spec || typeof spec !== 'object') return null
+  const chainId = spec.chainId
+  const contract = spec.contract
+  const standard = spec.standard
+  const tokenId = spec.tokenId
+  const minBalance = spec.minBalance
+  if (typeof chainId !== 'number' || typeof contract !== 'string' || typeof standard !== 'string') return null
+  if (tokenId !== undefined && tokenId !== null && typeof tokenId !== 'string' && typeof tokenId !== 'number')
+    return null
+  if (minBalance !== undefined && (!Number.isSafeInteger(minBalance) || minBalance < 1)) return null
+  return { chainId, contract, standard, tokenId: tokenId ?? undefined, minBalance: minBalance ?? 1 }
+}
 
 export function createPlayerProxy(entity, player) {
   const world = player.world
@@ -93,6 +111,45 @@ export function createPlayerProxy(entity, player) {
           result = { verified: world.solana?.isVerified() === true }
         }
         Promise.resolve(result).then(settle, () => settle({ verified: world.solana?.isVerified() === true }))
+      })
+    },
+    // サーバースクリプト専用: このプレイヤーの検証済み EVM アドレスが NFT を持っているか。
+    // known: false は「今は分からない (後で再試行)」で、「持っていない」ではない
+    getEvmHolding(spec) {
+      const run = entity.getDeadHook()
+      return new Promise(resolve => {
+        let minBalance = 1
+        const settle = value => {
+          if (run.dead || entity.crashed || entity.destroyed || world.fatalError) return
+          const verified = value?.verified === true
+          const known = verified && value?.known === true && typeof value.balance === 'number' && value.balance >= 0
+          const balance = known ? Math.min(value.balance, Number.MAX_SAFE_INTEGER) : 0
+          resolve(Object.freeze({ verified, known, balance, holds: known && balance >= minBalance }))
+        }
+        if (!world.network.isServer) {
+          if (!holdingWarnings.has(entity)) {
+            holdingWarnings.add(entity)
+            console.warn('[player] getEvmHolding is available only in server scripts')
+          }
+          return settle(UNKNOWN_HOLDING)
+        }
+        let request
+        try {
+          const read = readHoldingSpec(spec)
+          if (!read) {
+            if (!holdingSpecWarnings.has(entity)) {
+              holdingSpecWarnings.add(entity)
+              console.warn('[player] getEvmHolding needs { chainId, contract, standard, tokenId?, minBalance? }')
+            }
+            request = world.network.evmHolding(player.data.id, null)
+          } else {
+            minBalance = read.minBalance
+            request = world.network.evmHolding(player.data.id, read)
+          }
+        } catch {
+          request = null
+        }
+        Promise.resolve(request).then(settle, () => settle(UNKNOWN_HOLDING))
       })
     },
     teleport(position, rotationY) {
@@ -259,7 +316,7 @@ export function createPlayerProxy(entity, player) {
       proxy[name] = (...args) => world.network.asScript(() => method(...args), entity, name)
     }
   }
-  for (const name of ['push', 'teleport', 'getTokenBalance']) {
+  for (const name of ['push', 'teleport', 'getTokenBalance', 'getEvmHolding']) {
     const method = proxy[name]
     proxy[name] = (...args) => callForScript(method, entity, args)
   }

@@ -156,9 +156,16 @@ export function isBoundedJsonObject(value) {
   }
 }
 
+// 空白や不可視文字 (Unicode の既定で無視される文字・制御文字・書式文字、点字の空白) だけの名前は受けない。
+// 空の名前の利用者メッセージは、名前の付かないシステムメッセージと見分けにくくなるため
+const INVISIBLE = /^[\s\p{Default_Ignorable_Code_Point}\p{Cc}\p{Cf}\u2800]$/u
+const isInvisible = char => INVISIBLE.test(char)
+
 export function sanitizeName(value) {
   if (typeof value !== 'string') return undefined
-  return value.slice(0, NAME_MAX_LENGTH)
+  const name = value.slice(0, NAME_MAX_LENGTH)
+  for (const char of name) if (!isInvisible(char)) return name
+  return undefined
 }
 
 // an avatar url a client may set, wherever it arrives from (self-modify, a connection parameter, a

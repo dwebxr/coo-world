@@ -81,6 +81,59 @@ if (world.isClient) {
 }
 ```
 
+### `.getEvmHolding(spec)`: Promise<{ verified, known, balance, holds }>
+
+**Server scripts only.** Returns an intrinsic Promise of a fresh, frozen `{ verified, known, balance, holds }`
+object telling whether this player's EVM wallet, verified by the server for this connection (Sign-In with
+Ethereum in the wallet panel), holds an NFT. The address itself never reaches the script.
+
+`spec` is `{ chainId, contract, standard, tokenId?, minBalance? }`:
+
+- `chainId`: a chain listed in `PUBLIC_EVM_CHAIN_IDS` that has a server-side `EVM_RPC_URL_<chainId>`.
+- `contract`: the token contract (`0x` + 40 hex digits).
+- `standard`: `'erc721'` or `'erc1155'`.
+- `tokenId`: a decimal string, a `0x` hex string or a safe integer. Required for ERC-1155. For ERC-721 it
+  checks `ownerOf(tokenId)`; without it, any token of the collection counts (`balanceOf`). Pass 256-bit ids
+  (for example an OpenPay license id, `keccak256('openpay:license:' + productId)`) as hex strings.
+- `minBalance`: a positive safe integer, default `1`.
+
+Results:
+
+- `verified`: the player has a verified EVM wallet on this connection.
+- `known`: the read succeeded. **`known: false` means "unknown right now", not "does not hold"**: an RPC
+  outage, the shared request budget, an unsupported chain or an invalid `spec` (warned once per app) all
+  give `known: false`. Ask again later instead of treating it as a refusal.
+- `balance`: the count read at the latest block (capped at `Number.MAX_SAFE_INTEGER`), or `0`.
+- `holds`: `known && balance >= minBalance`.
+
+Reads are cached for 30 seconds per player and token (failures for 5 seconds) and share a global budget, so
+a burst of checks resolves `known: false` instead of waiting. A client script gets
+`{ verified: false, known: false, balance: 0, holds: false }` and a warning. The Promise never rejects; like
+`getTokenBalance`, it never settles if the app stops or the world becomes fatal while waiting. NFTs can be
+transferred, so check again when it matters (the engine's [`evmWallet` event](/docs/scripting/world/World.md#engine-events)
+tells server scripts when a player's verification changes).
+
+Decide on the server and send the result only to that player with `app.sendTo`. Anything opened on the
+client (a door, a barrier) is still only that player's screen. App settings (`props`) and the script are
+sent to every visitor, so they cannot hold anything secret: content for holders only must come from a
+source visitors cannot read and be sent by the server script after the check. A complete app is in
+[`docs/scripting/examples/nft-gate.js`](/docs/scripting/examples/nft-gate.js).
+
+```js
+if (world.isServer) {
+  app.on('check', async (data, playerId) => {
+    const player = world.getPlayer(playerId)
+    const result = await player.getEvmHolding({
+      chainId: 137,
+      contract: props.contract,
+      standard: 'erc1155',
+      tokenId: props.tokenId,
+    })
+    app.sendTo(playerId, 'result', { holds: result.holds, known: result.known, verified: result.verified })
+  })
+}
+```
+
 ### `.teleport(position, rotationY)`
 
 Teleports the player instantly to the new position. The `rotationY` value is in radians, and if omitted (or not a number) the player will continue facing their current direction.

@@ -57,7 +57,7 @@
       }
     },
     {
-      "files": ["examples/**/*.js", "src/world/assets/*.js", "test/e2e/apps/*.js"],
+      "files": ["examples/**/*.js", "docs/scripting/examples/*.js", "src/world/assets/*.js", "test/e2e/apps/*.js"],
       "globals": {
         "app": "readonly",
         "world": "readonly",

@@ -32,3 +32,36 @@ export function walletPanelText(walletState, { effectiveBuilder, rawRank, thresh
   }
   return { wallet, build }
 }
+
+const EVM_CHAIN_NAMES = {
+  1: 'Ethereum',
+  10: 'OP Mainnet',
+  137: 'Polygon',
+  8217: 'Kaia',
+  8453: 'Base',
+  42161: 'Arbitrum One',
+  43114: 'Avalanche',
+  80002: 'Polygon Amoy',
+  11155111: 'Sepolia',
+}
+
+export const evmChainName = chainId => EVM_CHAIN_NAMES[chainId] ?? `Chain ${chainId}`
+
+export const shortEvmAddress = address =>
+  typeof address === 'string' && address.length > 10 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address || ''
+
+// EVM パネルの文言。ビルド権限には触れない (EVM の検証はランクを変えない)
+export function evmWalletPanelText(walletState, { providerCount }) {
+  switch (walletState.status) {
+    case 'connecting':
+      return 'Connecting…'
+    case 'signing':
+      return 'Waiting for signature…'
+    case 'unverified':
+      return 'Not verified (sign to verify)'
+    case 'verified':
+      return 'Verified'
+    default:
+      return providerCount ? 'EVM wallet not connected' : 'No EVM wallet found in this browser'
+  }
+}

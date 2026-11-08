@@ -18,12 +18,22 @@ const env = {
 
 test('publicEnv: allows PUBLIC_ keys except the explicit denylist', () => {
   assert.deepEqual(PUBLIC_ENV_DENYLIST, ['PUBLIC_RPC_URL'])
-  for (const key of ['PUBLIC_TOKEN_MINT', 'PUBLIC_REQUIRED_TOKEN_AMOUNT', 'PUBLIC_', 'PUBLIC_RPC_URL_EXTRA']) {
+  // PUBLIC_EVM_CHAIN_IDS is meant for browsers. Any future EVM RPC URL must not start with PUBLIC_:
+  // the denylist is an exact match, so a PUBLIC_EVM_RPC_* name would be shipped.
+  for (const key of [
+    'PUBLIC_TOKEN_MINT',
+    'PUBLIC_REQUIRED_TOKEN_AMOUNT',
+    'PUBLIC_',
+    'PUBLIC_RPC_URL_EXTRA',
+    'PUBLIC_EVM_CHAIN_IDS',
+    'PUBLIC_EVM_RPC_URL',
+  ]) {
     assert.equal(isPublicEnvKey(key), true, key)
   }
   for (const key of [
     'PUBLIC_RPC_URL',
     'SOLANA_RPC_URL',
+    'EVM_RPC_URL_137',
     'PRIVATE_KEY',
     'PUBLIC',
     'public_RPC_URL',

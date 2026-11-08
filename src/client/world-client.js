@@ -7,6 +7,7 @@ import { css } from '@firebolt-dev/css'
 import { createClientWorld } from '../core/createClientWorld'
 import { CoreUI } from './components/CoreUI'
 import { createSolanaIntegration } from './solana-integration'
+import { createEvmIntegration } from './evm-integration'
 
 export { System } from '../core/systems/System'
 
@@ -47,6 +48,8 @@ export function Client({ wsUrl, onSetup }) {
 
       // Solana統合を初期化 (tokenMint 未設定時は no-op で world.solana を生やさない)
       createSolanaIntegration(world)
+      // EVM 統合 (PUBLIC_EVM_CHAIN_IDS 未設定時は world.evm を生やさない)
+      createEvmIntegration(world)
     }
     init()
   }, [])

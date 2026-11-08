@@ -14,7 +14,7 @@ import { uuid } from '../../core/utils'
 import { ControlPriorities } from '../../core/extras/ControlPriorities'
 import { ChevronDoubleUpIcon, HandIcon } from './Icons'
 import { Sidebar } from './Sidebar'
-import { SolanaWalletButton } from './SolanaWalletButton'
+import { WalletButton } from './WalletButton'
 
 export function CoreUI({ world }) {
   const ref = useRef()
@@ -101,7 +101,7 @@ export function CoreUI({ world }) {
       {ready && isTouch && <TouchBtns world={world} />}
       {ready && isTouch && <TouchStick world={world} />}
       {confirm && <Confirm options={confirm} />}
-      {ready && world.solana && <SolanaWalletButton world={world} />}
+      {ready && (world.solana || world.evm) && <WalletButton world={world} />}
       <div id='core-ui-portal' />
     </div>
   )
@@ -424,7 +424,13 @@ function Message({ msg, now }) {
         }
       `}
     >
-      {msg.from && <span className='message-from'>[{msg.from}]</span>}
+      {/* システムメッセージはサーバーかこのクライアントが作ったもの (fromId が無い)。利用者の発言は名前が
+          空でも必ず名前欄を出し、システムメッセージに見せかけられないようにする */}
+      {msg.fromId == null ? (
+        msg.from && <span className='message-from'>[{msg.from}]</span>
+      ) : (
+        <span className='message-from'>[{msg.from || 'Anonymous'}]</span>
+      )}
       <span className='message-body'>{body}</span>
       {/* <span>{timeAgo}</span> */}
     </div>

@@ -32,6 +32,7 @@ try {
     logPath: `${PREFIX}-server.log`,
     env: {
       PUBLIC_EVM_CHAIN_IDS: '137',
+      PUBLIC_EVM_TIP_TOKENS: 'JPYC,USDC',
       // Solana gating on too, so the panel shows both tabs. Nothing here verifies a Solana wallet, so the
       // unreachable RPC is never called.
       PUBLIC_TOKEN_MINT: '8MXWPUCmxtmaxNSmAve3YvQNAKmAbZJ1XxSnrqN9pump',
@@ -191,6 +192,23 @@ try {
     eq(parseSiweMessage(signed[0]).domain, `localhost:${PORT}`, 'wallet saw the page host')
     const state = await page.evaluate(() => window.world.evm.getState())
     eq(JSON.stringify(state), JSON.stringify({ status: 'verified', address: account.address, verified: true }))
+  })
+
+  await step('browser: Receive tips explains who gets the address and follows the server', async () => {
+    requireWorld()
+    const box = page.getByLabel(/Receive tips/)
+    eq(await box.isChecked(), false, 'off by default')
+    ok(
+      (await text('.evm-wallet-tips-note')).includes('Anyone in this world who verifies an EVM wallet can get this'),
+      'consent text'
+    )
+    // the switch shows the server's answer (evmTips on the local player), so wait for it instead of check()
+    await box.click()
+    await page.waitForFunction(() => document.querySelector('.evm-wallet-tips input')?.checked === true)
+    eq(await page.evaluate(() => window.world.entities.player.data.evmTips), true, 'server set the flag')
+    await box.click()
+    await page.waitForFunction(() => document.querySelector('.evm-wallet-tips input')?.checked === false)
+    eq(await page.evaluate(() => window.world.entities.player.data.evmTips), false, 'opted out at once')
   })
 
   await step('browser: the collapsed toggle shows the EVM dot; the tab choice survives a reload', async () => {

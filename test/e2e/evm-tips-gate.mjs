@@ -1,8 +1,10 @@
 // EVM tips (P2a) and the NFT gate (P3) end to end against the built server, with a mock EVM JSON-RPC.
 // - NFT gate over the wire: the docs example app decides with player.getEvmHolding() on the server and
 //   answers only the asking player (holder, non-holder, unverified, and a re-check after a revoke).
-// - Tips in two browsers with fake EIP-6963 wallets signing in Node: the recipient opts in, the sender sees a
-//   Tip button, and the wallet is asked for exactly one ERC-20 transfer to the recipient's verified address.
+// - Tips: the sender is a browser with a fake EIP-6963 wallet signing in Node; the recipient is a wire client
+//   (a second rendering page loses its socket on slow CI runners). The recipient opts in, the sender sees a Tip
+//   button, and the wallet is asked for exactly one ERC-20 transfer to the recipient's verified address. The
+//   recipient's panel (the Receive tips switch) is covered in evm-wallet.mjs.
 // - Confirmation (P2b): the fake wallet's transaction gets a receipt and a finalized block from the mock RPC;
 //   the server confirms it, announces it in chat and fires the server-script `tip` event.
 // usage: node test/e2e/evm-tips-gate.mjs [--engine=chromium] [--port=3133]
@@ -82,6 +84,7 @@ let rpc
 let server
 let browser
 let observer
+let recipient
 const pages = []
 
 // Mock Polygon RPC: chain id, ERC-1155 balanceOf(owner, id) for NFT from the holders table, and receipts,
@@ -177,8 +180,7 @@ async function connectWallet({ page }) {
 }
 
 async function openPage(account, name) {
-  // Two pages render at once. A small viewport keeps the software renderer's share of each frame low, as in
-  // token-gate.mjs.
+  // A small viewport keeps the software renderer's share of each frame low, as in token-gate.mjs.
   const context = await browser.newContext({ viewport: { width: 480, height: 320 }, serviceWorkers: 'block' })
   const page = await context.newPage()
   page.setDefaultTimeout(30000 * TIMEOUT_SCALE)
@@ -309,14 +311,23 @@ try {
     model: 'asset://ai.glb',
   })
 
+  // The recipient: a verified wire client named Bob.
+  recipient = await new WireClient(PORT, 'Bob').connect()
+  await wireVerify(recipient, bob)
+  const receiving = async enabled => {
+    const from = recipient.mark()
+    recipient.send('setEvmTipReceive', { enabled })
+    await recipient.waitFor(
+      m => m.method === 'onEntityModified' && m.data?.id === recipient.id && m.data.evmTips === enabled,
+      { from, timeout: 10000 * TIMEOUT_SCALE }
+    )
+  }
+
   browser = await launchBrowser(ENGINE)
   const sender = await openWallet(alice, 'Alice')
-  const recipient = await openWallet(bob, 'Bob')
 
   await step('tips: opting in shows a Tip button to verified players, without publishing the address', async () => {
-    // the switch shows the server's answer (evmTips on the local player), so wait for it instead of check()
-    await recipient.page.getByLabel(/Receive tips/).click()
-    await recipient.page.waitForFunction(() => document.querySelector('.evm-wallet-tips input')?.checked === true)
+    await receiving(true)
     await sender.page.evaluate(() => window.world.ui.togglePane('players'))
     await sender.page
       .getByRole('button', { name: 'Tip Bob' })
@@ -356,7 +367,6 @@ try {
         chainId: '0x89',
       })
     )
-    eq(recipient.sent.length, 0, 'recipient wallet untouched')
   })
 
   await step('tips: the server confirms the transfer on chain, announces it and tells server scripts', async () => {
@@ -381,11 +391,9 @@ try {
       { timeout: 30000 * TIMEOUT_SCALE }
     )
     eq(announced.data.fromId ?? null, null, 'system message')
-    await recipient.page.waitForFunction(
-      () => window.world.chat.msgs.some(msg => msg.body === 'Alice tipped Bob 100 JPYC' && msg.fromId == null),
-      null,
-      { timeout: 30000 * TIMEOUT_SCALE }
-    )
+    await recipient.waitFor(m => m.method === 'onChatAdded' && m.data?.body === 'Alice tipped Bob 100 JPYC', {
+      timeout: 30000 * TIMEOUT_SCALE,
+    })
     // the server-script event has the amount and the players, not the addresses or the hash
     const seen = await observer.waitFor(m => m.method === 'onEntityEvent' && m.data?.[2] === 'tip-seen', {
       timeout: 30000 * TIMEOUT_SCALE,
@@ -397,7 +405,7 @@ try {
     eq(event.units, (100n * 10n ** 18n).toString())
     eq(event.decimals, 18)
     eq(event.chainId, 137)
-    eq(event.toPlayerId, await recipient.page.evaluate(() => window.world.entities.player.data.id), 'recipient id')
+    eq(event.toPlayerId, recipient.id, 'recipient id')
     eq(event.fromPlayerId, await page.evaluate(() => window.world.entities.player.data.id), 'sender id')
     const text = JSON.stringify(event).toLowerCase()
     ok(!text.includes(alice.address.slice(2).toLowerCase()), 'no sender address')
@@ -412,9 +420,7 @@ try {
   })
 
   await step('tips: opting out removes the Tip button', async () => {
-    await sleep(1100)
-    await recipient.page.getByLabel(/Receive tips/).click()
-    await recipient.page.waitForFunction(() => document.querySelector('.evm-wallet-tips input')?.checked === false)
+    await receiving(false)
     await sender.page
       .getByRole('button', { name: 'Tip Bob' })
       .waitFor({ state: 'detached', timeout: 30000 * TIMEOUT_SCALE })
@@ -430,8 +436,10 @@ try {
     const page = sender.page
     await page.getByRole('button', { name: 'Close', exact: true }).click()
     await page.getByLabel('Amount').waitFor({ state: 'detached' })
-    const bobId = await recipient.page.evaluate(() => window.world.entities.player.data.id)
-    const outcome = await page.evaluate(id => window.world.evm.tip({ playerId: id, token: 'JPYC', amount: '1' }), bobId)
+    const outcome = await page.evaluate(
+      id => window.world.evm.tip({ playerId: id, token: 'JPYC', amount: '1' }),
+      recipient.id
+    )
     eq(JSON.stringify(outcome), JSON.stringify({ ok: false, reason: 'recipient_unavailable' }))
     eq(sender.sent.length, 1, 'no new transaction')
   })
@@ -447,6 +455,7 @@ try {
     await saveArtifacts({ ...entry, prefix: `${PREFIX}-${index}` }).catch(() => {})
   }
   observer?.close()
+  recipient?.close()
   await browser?.close().catch(() => {})
   await server?.stop().catch(() => {})
   rpc?.close()

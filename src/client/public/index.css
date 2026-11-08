@@ -223,7 +223,8 @@ a {
   /* only its buttons take the pointer: the world under it stays usable */
   pointer-events: none;
 }
-.boot-error.notice button {
+.boot-error.notice button,
+.boot-error.notice .boot-error-detail {
   pointer-events: auto;
 }
 .boot-error.notice .boot-error-title {

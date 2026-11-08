@@ -19,12 +19,20 @@ const AGENT_SECONDS = Number(arg('agent-seconds', 60))
 const OUT = ensureOut()
 const { record, step, finish } = createResults(`gate-extras/${ENGINE}`)
 
-// mock Anthropic Messages API: every call returns a tiny valid app script
+// mock Anthropic Messages API: every call returns a tiny valid app script. Like current models, the reply
+// starts with a thinking block (empty text by default), so the server must read the text block by type.
 let aiCalls = 0
+const aiRequests = []
 const mock = http.createServer((req, res) => {
-  req.on('data', () => {})
+  let body = ''
+  req.on('data', chunk => (body += chunk))
   req.on('end', () => {
     aiCalls++
+    try {
+      aiRequests.push({ url: req.url, beta: req.headers['anthropic-beta'], body: JSON.parse(body) })
+    } catch {
+      aiRequests.push({ url: req.url, beta: req.headers['anthropic-beta'], body: null })
+    }
     res.setHeader('content-type', 'application/json')
     res.end(
       JSON.stringify({
@@ -32,7 +40,10 @@ const mock = http.createServer((req, res) => {
         type: 'message',
         role: 'assistant',
         model: 'mock',
-        content: [{ type: 'text', text: 'app.on("update", () => {})' }],
+        content: [
+          { type: 'thinking', thinking: '', signature: 'mock' },
+          { type: 'text', text: 'app.on("update", () => {})' },
+        ],
         stop_reason: 'end_turn',
         stop_sequence: null,
         usage: { input_tokens: 1, output_tokens: 1 },
@@ -51,7 +62,11 @@ try {
     port: PORT,
     worldSource: WORLD_SOURCE,
     logPath: path.join(OUT, `extras-${ENGINE}-server.log`),
-    env: { AI_API_KEY: 'mock-key', ANTHROPIC_BASE_URL: `http://127.0.0.1:${mock.address().port}` },
+    env: {
+      AI_API_KEY: 'mock-key',
+      AI_MODEL: 'claude-opus-5-5',
+      ANTHROPIC_BASE_URL: `http://127.0.0.1:${mock.address().port}`,
+    },
   })
   browser = await launchBrowser(ENGINE)
   const { page, pageErrors, errorLines } = await openWorld(browser, server.url, {
@@ -237,6 +252,15 @@ try {
     })
     ok(ai.ok, JSON.stringify(ai))
     ok(aiCalls >= 1, 'mock called')
+    // the generation request asks for the default refusal fallback and sets the effort explicitly
+    const generate = aiRequests.find(
+      r => r.body?.messages?.[0]?.content?.includes('a spinning cube') && r.body.max_tokens === 16000
+    )
+    ok(generate, 'generation request seen')
+    ok(String(generate.beta).includes('server-side-fallback-2026-07-01'), 'fallback beta header')
+    ok(generate.body.fallbacks === 'default', 'default fallbacks')
+    ok(generate.body.model === 'claude-opus-5-5', 'model')
+    ok(['low', 'medium', 'high', 'xhigh', 'max'].includes(generate.body.output_config?.effort), 'effort')
     return `${aiCalls} mock calls, script ${ai.script}`
   })
 

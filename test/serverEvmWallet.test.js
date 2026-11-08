@@ -31,7 +31,7 @@ const clear = socket => {
   socket.ws.packets.length = 0
 }
 
-function fixture(t, { evmGating = evmEnabled, balance = 0, evmHoldings } = {}) {
+function fixture(t, { evmGating = evmEnabled, balance = 0, evmHoldings, tipWatcher, timers } = {}) {
   t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 })
   const users = new Map()
   const entities = new Map()
@@ -43,10 +43,12 @@ function fixture(t, { evmGating = evmEnabled, balance = 0, evmHoldings } = {}) {
       return { known: true, balance }
     },
   }
+  const chat = []
   const network = makeNetwork(() => {}, {
     tokenBalanceService: service,
     evmHoldings,
-    context: { solanaGating: solanaEnabled, evmGating, process: { env: {} } },
+    tipWatcher,
+    context: { solanaGating: solanaEnabled, evmGating, process: { env: {} }, ...timers },
   })
   network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
   network.db = () => ({
@@ -59,7 +61,7 @@ function fixture(t, { evmGating = evmEnabled, balance = 0, evmHoldings } = {}) {
     settings: { serialize: () => ({}), effectiveRank: 0 },
     livekit: { serialize: async () => ({}), clearModifiers() {} },
     collections: { serialize: () => [] },
-    chat: { serialize: () => [] },
+    chat: { serialize: () => [], add: (msg, broadcast) => chat.push({ msg, broadcast }) },
     ai: { serialize: () => ({}) },
     blueprints: { serialize: () => [] },
     events: { emit: (name, data) => events.push([name, data]) },
@@ -92,7 +94,7 @@ function fixture(t, { evmGating = evmEnabled, balance = 0, evmHoldings } = {}) {
     process: { env: {} },
     performance,
   })
-  const f = { network, calls, events }
+  const f = { network, calls, events, chat }
   f.connect = async (id = 'visitor', rank = Ranks.VISITOR) => {
     if (!users.has(id)) users.set(id, { id, name: id, rank })
     const ws = fakeWs()
@@ -424,18 +426,20 @@ test('evm tips: an intent gives only the verified sender the opted-in recipient 
   assert.deepEqual(intent(a), [{ id: 1, ok: false, reason: 'not_verified' }])
   await f.verify(a)
   f.advance(10_000)
-  assert.deepEqual(intent(a), [
-    {
-      id: 1,
-      ok: true,
-      to: 'b',
-      recipient: other.address,
-      chainId: 137,
-      token: { symbol: 'JPYC', address: '0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29', decimals: 18 },
-      amount: '100',
-      units: (100n * 10n ** 18n).toString(),
-    },
-  ])
+  const [granted] = intent(a)
+  // the ticket names the server's copy of this intent (P2b); the reply is otherwise the intent itself
+  assert.match(granted.ticket, /^[0-9a-f]{32}$/)
+  delete granted.ticket
+  assert.deepEqual(granted, {
+    id: 1,
+    ok: true,
+    to: 'b',
+    recipient: other.address,
+    chainId: 137,
+    token: { symbol: 'JPYC', address: '0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29', decimals: 18 },
+    amount: '100',
+    units: (100n * 10n ** 18n).toString(),
+  })
   assert.equal(replies(b, 'onEvmTipIntent').length, 0, 'nobody else gets the address')
   assert.equal(replies(c, 'onEvmTipIntent').length, 0)
   f.advance(30_000)
@@ -582,4 +586,393 @@ test('evm holdings: without an RPC the answer is verified but unknown', async t 
   const a = await f.connect('a')
   await f.verify(a)
   assert.deepEqual(plain(await f.network.evmHolding('a', {})), { verified: true, known: false, balance: 0 })
+})
+
+// P2b: tx reports, the watcher's results, announcements and the script `tip` event.
+function fakeWatcher() {
+  const watcher = {
+    jobs: [],
+    stopped: 0,
+    accept: true,
+    watch: job => {
+      if (!watcher.accept) return false
+      watcher.jobs.push(job)
+      return true
+    },
+    cancel: predicate => {
+      watcher.jobs = watcher.jobs.filter(job => !predicate(job))
+    },
+    size: () => watcher.jobs.length,
+    stop: () => watcher.stopped++,
+  }
+  return watcher
+}
+function fakeTimers() {
+  const pending = new Set()
+  return {
+    pending,
+    setTimeout: (fn, ms) => {
+      const timer = { fn, ms }
+      pending.add(timer)
+      return timer
+    },
+    clearTimeout: timer => pending.delete(timer),
+    runAll() {
+      for (const timer of [...pending]) {
+        pending.delete(timer)
+        timer.fn()
+      }
+    },
+  }
+}
+const hashOf = n => `0x${n.toString(16).padStart(64, '0')}`
+
+async function tipFixture(t, { watcher = fakeWatcher(), timers = fakeTimers() } = {}) {
+  const f = fixture(t, { evmGating: tipsEnabled, tipWatcher: watcher, timers })
+  f.watcher = watcher
+  f.timers = timers
+  f.a = await f.connect('a')
+  f.b = await f.connect('b')
+  await f.verify(f.a)
+  await f.verify(f.b, { signer: other })
+  f.network.onSetEvmTipReceive(f.b, { enabled: true })
+  f.ticket = (socket = f.a, { to = 'b', amount = '100', token = 'JPYC' } = {}) => {
+    // keep the intent bucket full: the bucket itself is covered above
+    socket.evmWallet.intentBucket.tokens = evm.TIP_INTENT_BURST
+    clear(socket)
+    f.network.onRequestEvmTipIntent(socket, { id: 1, to, token, amount })
+    const reply = replies(socket, 'onEvmTipIntent')[0]
+    assert.equal(reply.ok, true, reply.reason)
+    return reply.ticket
+  }
+  f.report = (socket, data) => {
+    clear(socket)
+    f.network.onEvmTip(socket, data)
+    return replies(socket, 'onEvmTipStatus')
+  }
+  return f
+}
+
+test('evm tip report: a ticket is the server copy of the intent, for its sender only, at most three', async t => {
+  const f = await tipFixture(t)
+  const first = f.ticket()
+  const copy = f.a.evmWallet.tickets.get(first)
+  assert.equal(copy.from, account.address)
+  assert.equal(copy.recipient, other.address)
+  assert.equal(copy.toPlayerId, 'b')
+  assert.equal(copy.units, 100n * 10n ** 18n)
+  assert.equal(copy.state, 'issued')
+  assert.equal(f.b.evmWallet.tickets.size, 0)
+  // a fourth ticket drops the oldest unused one
+  const second = f.ticket()
+  const third = f.ticket()
+  const fourth = f.ticket()
+  assert.deepEqual([...f.a.evmWallet.tickets.keys()], [second, third, fourth])
+  // watched tickets are never dropped: the oldest unused one goes instead
+  assert.deepEqual(f.report(f.a, { ticket: second, txHash: hashOf(1) }), [
+    { ticket: second, txHash: hashOf(1), state: 'watching' },
+  ])
+  f.ticket()
+  assert.equal(f.a.evmWallet.tickets.has(second), true)
+  assert.equal(f.a.evmWallet.tickets.has(third), false)
+  // tickets expire after ten minutes
+  const late = f.ticket()
+  f.advance(evm.TIP_TICKET_TTL_MS)
+  assert.deepEqual(f.report(f.a, { ticket: late, txHash: hashOf(2) }), [
+    { ticket: late, txHash: hashOf(2), state: 'failed', reason: 'unknown_ticket' },
+  ])
+})
+
+test('evm tip report: checks the ticket and the hash; malformed reports get no reply', async t => {
+  const f = await tipFixture(t)
+  const ticket = f.ticket()
+  assert.deepEqual(f.report(f.a, { ticket, txHash: '0x12' }), [
+    { ticket, txHash: '0x12', state: 'failed', reason: 'bad_tx' },
+  ])
+  assert.deepEqual(f.report(f.a, { ticket: 'f'.repeat(32), txHash: hashOf(1) }), [
+    { ticket: 'f'.repeat(32), txHash: hashOf(1), state: 'failed', reason: 'unknown_ticket' },
+  ])
+  // another socket cannot use this socket's ticket
+  assert.deepEqual(f.report(f.b, { ticket, txHash: hashOf(1) })[0].reason, 'unknown_ticket')
+  for (const data of [
+    null,
+    [],
+    {},
+    { ticket },
+    { ticket: 'F'.repeat(32), txHash: hashOf(1) },
+    { ticket, txHash: 1 },
+    { ticket, txHash: hashOf(1), extra: 1 },
+  ]) {
+    assert.deepEqual(f.report(f.a, data), [], JSON.stringify(data))
+  }
+  assert.equal(f.watcher.jobs.length, 0)
+  // the job is bound to the ticket, never to the report
+  const hash = `0x${'AB'.repeat(32)}`
+  assert.deepEqual(f.report(f.a, { ticket, txHash: hash }), [{ ticket, txHash: hash, state: 'watching' }])
+  const [job] = f.watcher.jobs
+  assert.equal(job.txHash, hash.toLowerCase())
+  assert.equal(job.from, account.address)
+  assert.equal(job.recipient, other.address)
+  assert.equal(job.token, '0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29')
+  assert.equal(job.units, 100n * 10n ** 18n)
+  assert.equal(job.notBeforeSec, f.a.evmWallet.tickets.get(ticket).issuedAt / 1000 - 30)
+  assert.equal(job.isLive(), true)
+  // a ticket is used once
+  assert.equal(f.report(f.a, { ticket, txHash: hashOf(9) })[0].reason, 'unknown_ticket')
+})
+
+test('evm tip report: without an RPC the tip is sent but unconfirmed', async t => {
+  const f = fixture(t, { evmGating: tipsEnabled })
+  assert.equal(f.network.tipWatcher, null)
+  const a = await f.connect('a')
+  const b = await f.connect('b')
+  await f.verify(a)
+  await f.verify(b, { signer: other })
+  f.network.onSetEvmTipReceive(b, { enabled: true })
+  clear(a)
+  f.network.onRequestEvmTipIntent(a, { id: 1, to: 'b', token: 'JPYC', amount: '1' })
+  const { ticket } = replies(a, 'onEvmTipIntent')[0]
+  clear(a)
+  f.network.onEvmTip(a, { ticket, txHash: hashOf(1) })
+  assert.deepEqual(replies(a, 'onEvmTipStatus'), [{ ticket, txHash: hashOf(1), state: 'unverified', reason: 'no_rpc' }])
+})
+
+test('evm tip result: confirmed tips reply, fire a frozen tip event without addresses and are announced', async t => {
+  const f = await tipFixture(t)
+  f.a.player.data.name = 'Al\nice‮'
+  const ticket = f.ticket()
+  f.report(f.a, { ticket, txHash: hashOf(1) })
+  clear(f.a)
+  f.events.length = 0
+  f.advance(4000)
+  f.watcher.jobs[0].onDone({ state: 'confirmed' })
+  assert.deepEqual(replies(f.a, 'onEvmTipStatus'), [{ ticket, txHash: hashOf(1), state: 'confirmed' }])
+  const tips = f.events.filter(([name]) => name === 'tip')
+  assert.equal(tips.length, 1)
+  const [, event] = tips[0]
+  assert.ok(Object.isFrozen(event))
+  assert.deepEqual(
+    { ...event },
+    {
+      tipId: ticket,
+      fromPlayerId: 'a',
+      toPlayerId: 'b',
+      token: 'JPYC',
+      amount: '100',
+      units: (100n * 10n ** 18n).toString(),
+      decimals: 18,
+      chainId: 137,
+      at: 1_004_000,
+    }
+  )
+  const text = JSON.stringify(event).toLowerCase()
+  assert.equal(text.includes(account.address.slice(2).toLowerCase()), false, 'no sender address')
+  assert.equal(text.includes(other.address.slice(2).toLowerCase()), false, 'no recipient address')
+  assert.equal(text.includes(hashOf(1).slice(2)), false, 'no tx hash')
+  // one world-wide system message; names lose line breaks and control characters
+  assert.equal(f.chat.length, 1)
+  assert.equal(f.chat[0].broadcast, true)
+  assert.equal(f.chat[0].msg.fromId, null)
+  assert.equal(f.chat[0].msg.from, null)
+  assert.equal(f.chat[0].msg.body, 'Al ice tipped b 100 JPYC')
+  assert.equal(f.a.evmWallet.tickets.has(ticket), false, 'the ticket is used up')
+})
+
+test('evm tip result: a confirmed transaction is counted once, and only once confirmed', async t => {
+  const f = await tipFixture(t)
+  const c = await f.connect('c')
+  await f.verify(c, { signer: privateKeyToAccount(`0x${'33'.repeat(32)}`) })
+  // someone else reports Alice's transaction first, with two tickets: both are watched, neither blocks Alice's
+  // own report (there is no per-hash cap to fill), and neither can confirm (their sender is not in the log)
+  for (let i = 0; i < 2; i++) {
+    assert.equal(f.report(c, { ticket: f.ticket(c), txHash: hashOf(7) })[0].state, 'watching')
+  }
+  const mine = f.ticket()
+  assert.equal(f.report(f.a, { ticket: mine, txHash: hashOf(7) })[0].state, 'watching')
+  const extra = f.ticket()
+  const [foreignJob, otherForeignJob, mineJob] = f.watcher.jobs
+  assert.equal(foreignJob.from, c.evmWallet.verified, 'bound to the reporter')
+  assert.equal(mineJob.from, account.address)
+  foreignJob.onDone({ state: 'failed', reason: 'no_transfer' })
+  otherForeignJob.onDone({ state: 'failed', reason: 'no_transfer' })
+  mineJob.onDone({ state: 'confirmed' })
+  assert.equal(f.events.filter(([name]) => name === 'tip').length, 1)
+  // once confirmed, the hash is refused for thirty minutes
+  assert.deepEqual(f.report(f.a, { ticket: extra, txHash: hashOf(7) }), [
+    { ticket: extra, txHash: hashOf(7), state: 'failed', reason: 'duplicate' },
+  ])
+  f.advance(evm.TIP_SEEN_TTL_MS)
+  const again = f.ticket()
+  assert.equal(f.report(f.a, { ticket: again, txHash: hashOf(7) })[0].state, 'watching')
+})
+
+test('evm tip result: two tickets confirming the same transaction fire one event', async t => {
+  const f = await tipFixture(t)
+  const first = f.ticket()
+  const second = f.ticket()
+  f.report(f.a, { ticket: first, txHash: hashOf(3) })
+  f.report(f.a, { ticket: second, txHash: hashOf(3) })
+  clear(f.a)
+  for (const job of [...f.watcher.jobs]) job.onDone({ state: 'confirmed' })
+  assert.deepEqual(
+    replies(f.a, 'onEvmTipStatus').map(r => r.state + (r.reason ? `:${r.reason}` : '')),
+    ['confirmed', 'failed:duplicate']
+  )
+  assert.equal(f.events.filter(([name]) => name === 'tip').length, 1)
+  assert.equal(f.chat.length, 1)
+})
+
+test('evm tip result: unconfirmed tips can be reported again once with the same hash', async t => {
+  const f = await tipFixture(t)
+  const ticket = f.ticket()
+  f.report(f.a, { ticket, txHash: hashOf(4) })
+  clear(f.a)
+  f.watcher.jobs.pop().onDone({ state: 'unverified', reason: 'timeout' })
+  assert.deepEqual(replies(f.a, 'onEvmTipStatus'), [
+    { ticket, txHash: hashOf(4), state: 'unverified', reason: 'timeout' },
+  ])
+  assert.equal(f.a.evmWallet.tickets.get(ticket).state, 'retryable')
+  assert.equal(f.report(f.a, { ticket, txHash: hashOf(5) })[0].reason, 'unknown_ticket', 'another hash')
+  assert.equal(f.report(f.a, { ticket, txHash: hashOf(4) })[0].state, 'watching')
+  f.watcher.jobs.pop().onDone({ state: 'unverified', reason: 'not_found' })
+  assert.equal(f.a.evmWallet.tickets.has(ticket), false, 'no second retry')
+  // failures and a departed sender end the ticket at once
+  for (const result of [
+    { state: 'failed', reason: 'reverted' },
+    { state: 'unverified', reason: 'left' },
+  ]) {
+    const next = f.ticket()
+    f.report(f.a, { ticket: next, txHash: hashOf(6) })
+    f.watcher.jobs.pop().onDone(result)
+    assert.equal(f.a.evmWallet.tickets.has(next), false, result.reason)
+  }
+  assert.equal(f.events.filter(([name]) => name === 'tip').length, 0)
+  assert.equal(f.chat.length, 0)
+})
+
+test('evm tip report: two watched tips per socket and sixteen in the world', async t => {
+  const f = await tipFixture(t)
+  f.report(f.a, { ticket: f.ticket(), txHash: hashOf(10) })
+  f.report(f.a, { ticket: f.ticket(), txHash: hashOf(11) })
+  const third = f.ticket()
+  assert.equal(f.report(f.a, { ticket: third, txHash: hashOf(12) })[0].reason, 'busy')
+  f.watcher.jobs.pop().onDone({ state: 'failed', reason: 'no_transfer' })
+  assert.equal(f.report(f.a, { ticket: third, txHash: hashOf(12) })[0].state, 'watching', 'a slot came back')
+  f.watcher.jobs.length = 0
+  for (let i = 0; i < 16; i++) f.watcher.jobs.push({ socket: null })
+  f.network.onSetEvmTipReceive(f.a, { enabled: true })
+  const fourth = f.ticket(f.b, { to: 'a' })
+  assert.equal(f.report(f.b, { ticket: fourth, txHash: hashOf(13) })[0].reason, 'busy')
+})
+
+test('evm tip announcements: three at once then one every three seconds; a sender is announced once per 30 s', async t => {
+  const f = await tipFixture(t)
+  const senders = []
+  for (const id of ['c', 'd', 'e', 'g']) {
+    const socket = await f.connect(id)
+    await f.verify(socket, { signer: privateKeyToAccount(`0x${String(senders.length + 4).repeat(64)}`) })
+    senders.push(socket)
+  }
+  let next = 100
+  const confirm = socket => {
+    const ticket = f.ticket(socket)
+    f.report(socket, { ticket, txHash: hashOf(next++) })
+    f.watcher.jobs.pop().onDone({ state: 'confirmed' })
+  }
+  for (const socket of senders) confirm(socket)
+  assert.deepEqual(
+    f.chat.map(entry => entry.msg.body),
+    ['c tipped b 100 JPYC', 'd tipped b 100 JPYC', 'e tipped b 100 JPYC']
+  )
+  assert.equal(f.timers.pending.size, 1, 'the fourth waits')
+  f.advance(3000)
+  f.timers.runAll()
+  assert.equal(f.chat.at(-1).msg.body, 'g tipped b 100 JPYC')
+  assert.equal(f.timers.pending.size, 0)
+  // the same sender again within 30 s: only the recipient hears about it, worded as private
+  clear(f.b)
+  confirm(senders[0])
+  assert.equal(f.chat.length, 4)
+  const privateNotes = replies(f.b, 'onChatAdded')
+  assert.equal(privateNotes.length, 1)
+  assert.equal(privateNotes[0].body, '(only you) c tipped you 100 JPYC')
+  assert.equal(privateNotes[0].fromId, null)
+  assert.equal(f.events.filter(([name]) => name === 'tip').length, 5, 'every confirmed tip fires the event')
+  f.advance(30_000)
+  confirm(senders[0])
+  assert.equal(f.chat.length, 5)
+})
+
+test('evm tips: a disconnect drops the tickets and cancels the jobs; invalidation keeps watched tickets', async t => {
+  const f = await tipFixture(t)
+  const watched = f.ticket()
+  const idle = f.ticket()
+  f.report(f.a, { ticket: watched, txHash: hashOf(20) })
+  // a new nonce withdraws the verification; the tickets stay (their sender is fixed at issue time)
+  f.advance(evm.CHALLENGE_COOLDOWN_MS)
+  f.network.onRequestEvmNonce(f.a, { address: account.address, attempt: 9 })
+  assert.deepEqual([...f.a.evmWallet.tickets.keys()], [watched, idle])
+  assert.equal(f.watcher.jobs.length, 1)
+  // the result still arrives on the same connection
+  f.watcher.jobs[0].onDone({ state: 'failed', reason: 'no_transfer' })
+  assert.deepEqual([...f.a.evmWallet.tickets.keys()], [idle])
+  // a wallet switch during the send reaches the server before the report: the payment is still watched,
+  // for the address the ticket was issued to
+  assert.equal(f.report(f.a, { ticket: idle, txHash: hashOf(22) })[0].state, 'watching')
+  assert.equal(f.watcher.jobs[0].from, account.address)
+  f.watcher.jobs.pop().onDone({ state: 'failed', reason: 'no_transfer' })
+
+  f.advance(evm.CHALLENGE_COOLDOWN_MS)
+  await f.verify(f.a, { attempt: 10 })
+  const next = f.ticket()
+  f.report(f.a, { ticket: next, txHash: hashOf(21) })
+  const job = f.watcher.jobs[0]
+  f.a.disconnect()
+  assert.equal(f.watcher.jobs.length, 0, 'cancelled')
+  assert.equal(job.isLive(), false)
+  assert.equal(f.a.evmWallet.tickets.size, 0)
+  // a late result after the disconnect does nothing
+  job.onDone({ state: 'confirmed' })
+  assert.equal(f.events.filter(([name]) => name === 'tip').length, 0)
+})
+
+test('evm tips: a recipient who left still gets the tip counted, under the name kept at intent time', async t => {
+  const f = await tipFixture(t)
+  const ticket = f.ticket()
+  f.report(f.a, { ticket, txHash: hashOf(30) })
+  f.b.disconnect()
+  f.watcher.jobs[0].onDone({ state: 'confirmed' })
+  assert.equal(f.events.filter(([name]) => name === 'tip').length, 1)
+  assert.equal(f.chat[0].msg.body, 'a tipped b 100 JPYC')
+})
+
+test('evm tips: stopping for a fatal error stops the watcher and the announcement timer', async t => {
+  const f = await tipFixture(t)
+  for (const [index, id] of ['c', 'd', 'e', 'g'].entries()) {
+    const socket = await f.connect(id)
+    await f.verify(socket, { signer: privateKeyToAccount(`0x${String(index + 4).repeat(64)}`) })
+    const ticket = f.ticket(socket)
+    f.report(socket, { ticket, txHash: hashOf(id.charCodeAt(0)) })
+    f.watcher.jobs.pop().onDone({ state: 'confirmed' })
+  }
+  assert.equal(f.timers.pending.size, 1)
+  f.network.stopForFatal()
+  assert.equal(f.watcher.stopped, 1)
+  assert.equal(f.timers.pending.size, 0)
+  // results after the stop do nothing
+  const before = f.events.length
+  f.network.onTipResult(f.a, 'x', hashOf(1), { state: 'confirmed' })
+  assert.equal(f.events.length, before)
+})
+
+test('evm tips: a revoke that reaches the server before the report keeps the payment watched', async t => {
+  const f = await tipFixture(t)
+  const ticket = f.ticket()
+  // the wallet switched account while sending: the client revokes first, then reports the hash it got
+  f.network.onRevokeEvmWallet(f.a, {})
+  assert.equal(f.a.evmWallet.verified, null)
+  assert.deepEqual(f.report(f.a, { ticket, txHash: hashOf(40) }), [{ ticket, txHash: hashOf(40), state: 'watching' }])
+  assert.equal(f.watcher.jobs[0].from, account.address)
+  f.watcher.jobs[0].onDone({ state: 'confirmed' })
+  assert.equal(f.events.filter(([name]) => name === 'tip').length, 1)
 })

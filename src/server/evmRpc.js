@@ -6,6 +6,16 @@ import { parseEvmChainIds } from '../core/extras/evmChains.js'
 // 起動後に一度 eth_chainId を確かめる。食い違えばその URL は使わない (別チェーンの結果を信じない)
 const CHAIN_RECHECK_MS = 60_000
 
+// ノードが JSON-RPC の error で答えた (メソッドやタグに対応していない等)。通信の失敗とは区別する。
+// メッセージはノード由来の文字列を含み得るので持たず、数値の code だけ持つ
+export class RpcError extends Error {
+  constructor(code) {
+    super('RPC error response')
+    this.name = 'RpcError'
+    this.code = Number.isSafeInteger(code) ? code : null
+  }
+}
+
 export function createEvmRpc({
   url,
   chainId,
@@ -63,15 +73,16 @@ export function createEvmRpc({
     } finally {
       reader?.releaseLock()
     }
-    if (
-      !body ||
-      body.jsonrpc !== '2.0' ||
-      body.id !== id ||
-      Object.hasOwn(body, 'error') ||
-      !Object.hasOwn(body, 'result')
-    ) {
+    if (!body || typeof body !== 'object' || body.jsonrpc !== '2.0' || body.id !== id) {
       throw new Error('invalid RPC response')
     }
+    if (Object.hasOwn(body, 'error')) {
+      if (body.error && typeof body.error === 'object' && !Object.hasOwn(body, 'result')) {
+        throw new RpcError(body.error.code)
+      }
+      throw new Error('invalid RPC response')
+    }
+    if (!Object.hasOwn(body, 'result')) throw new Error('invalid RPC response')
     return body.result
   }
 

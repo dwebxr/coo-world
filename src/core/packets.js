@@ -47,6 +47,8 @@ const names = [
   'setEvmTipReceive',
   'requestEvmTipIntent',
   'evmTipIntent',
+  'evmTip',
+  'evmTipStatus',
 ]
 
 const byName = {}

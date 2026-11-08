@@ -43,6 +43,8 @@ const failureMessage = (reason, error) => {
   return 'Could not verify your EVM wallet. Please sign again.'
 }
 
+const isTipTicket = value => typeof value === 'string' && /^[0-9a-f]{32}$/.test(value)
+
 export function createEvmIntegration(world) {
   const config = buildConfig()
   if (!config.chainIds.length) return null
@@ -416,6 +418,8 @@ export function createEvmIntegration(world) {
       ) {
         return { ok: false, reason: 'mismatch' }
       }
+      // サーバーの控え (P2b)。送金後にこれで tx を報告し、確定の結果を受け取る。無い (古いサーバー) なら報告しない
+      const ticket = isTipTicket(intent.ticket) ? intent.ticket : null
       // ウォレットの今のアカウントが検証済みアドレスであること
       const accounts = await wallet.request({ method: 'eth_accounts' })
       if (!stillCurrent()) return { ok: false, reason: 'cancelled' }
@@ -439,9 +443,11 @@ export function createEvmIntegration(world) {
         ],
       })
       if (!isTxHash(txHash)) return { ok: false, reason: 'bad_tx' }
+      // 確定の確認はサーバーがチェーンで行う (別のチェーンに出ていれば見つからず、未確認になる)
+      const reported = ticket ? send('evmTip', { ticket, txHash }) : false
       // 送信中に切り替わった場合、どのチェーンに出たか分からないのでリンクは出さない
-      if (chainMoved) return { ok: true, txHash, explorerUrl: null, warning: 'chain_changed' }
-      return { ok: true, txHash, explorerUrl: explorerTxUrl(chainId, txHash) }
+      if (chainMoved) return { ok: true, txHash, explorerUrl: null, warning: 'chain_changed', ticket, reported }
+      return { ok: true, txHash, explorerUrl: explorerTxUrl(chainId, txHash), ticket, reported }
     } catch (error) {
       return { ok: false, reason: error?.code === 4001 ? 'rejected' : 'failed' }
     } finally {
@@ -454,12 +460,33 @@ export function createEvmIntegration(world) {
     }
   }
 
+  // サーバーから届いた投げゼニの状態をチケットごとに控える (表示が購読する前に届いても失わない)
+  const tipStatuses = new Map()
+  const onTipStatus = data => {
+    if (!isTipTicket(data?.ticket) || typeof data.state !== 'string') return
+    tipStatuses.delete(data.ticket)
+    if (tipStatuses.size >= 32) tipStatuses.delete(tipStatuses.keys().next().value)
+    tipStatuses.set(data.ticket, Object.freeze({ ...data }))
+  }
+  const getTipStatus = ticket => tipStatuses.get(ticket) ?? null
+
+  // 確認できなかった投げゼニを 1 回だけ報告し直す (サーバー側も 1 回まで)
+  const rechecked = new Set()
+  const recheckTip = (ticket, txHash) => {
+    if (disposed || !isTipTicket(ticket) || !isTxHash(txHash) || rechecked.has(ticket)) return false
+    if (rechecked.size >= 64) rechecked.clear()
+    rechecked.add(ticket)
+    return send('evmTip', { ticket, txHash })
+  }
+
   const dispose = reason => {
     if (disposed) return
     disposed = true
     invalidate(reason)
     detachProvider()
     world.off('evm:walletStatus', onWalletStatus)
+    world.off('evm:tipStatus', onTipStatus)
+    tipStatuses.clear()
     win?.removeEventListener?.('eip6963:announceProvider', onAnnounce)
     discovered.clear()
     // 接続が終わったことを表示にも伝える (パネルが検証済みのまま残らないように)
@@ -467,6 +494,7 @@ export function createEvmIntegration(world) {
   }
 
   world.on('evm:walletStatus', onWalletStatus)
+  world.on('evm:tipStatus', onTipStatus)
   win?.addEventListener?.('eip6963:announceProvider', onAnnounce)
   try {
     win?.dispatchEvent?.(new Event('eip6963:requestProvider'))
@@ -479,6 +507,8 @@ export function createEvmIntegration(world) {
     getTipTokens: () => config.tipTokens.map(({ symbol, decimals, min }) => ({ symbol, decimals, min })),
     setReceiveTips,
     tip,
+    recheckTip,
+    getTipStatus,
     getState,
     getProviders,
     connect,

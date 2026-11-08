@@ -30,6 +30,8 @@ import * as evmGating from '../../src/server/evm-gating.js'
 import { parseTipAmount } from '../../src/core/extras/evmTokens.js'
 import { createEvmRpcs } from '../../src/server/evmRpc.js'
 import { createEvmHoldingService } from '../../src/server/evmHoldings.js'
+import { createTipWatcher } from '../../src/server/evmTipWatcher.js'
+import { formatUnits, isTxHash } from '../../src/core/extras/evmAbi.js'
 import { grantTokenRank, persistRank, revokeTokenRank } from '../../src/server/rankGrants.js'
 import { createSolanaRpc } from '../../src/server/solanaRpc.js'
 import { createTokenBalanceService } from '../../src/server/tokenBalance.js'
@@ -59,6 +61,15 @@ const names = [
   'onRevokeEvmWallet',
   'onSetEvmTipReceive',
   'onRequestEvmTipIntent',
+  'issueTipTicket',
+  'onEvmTip',
+  'pruneTipSeen',
+  'onTipResult',
+  'tipConfirmed',
+  'announceTip',
+  'drainTipAnnouncements',
+  'dropTipTickets',
+  'stopForFatal',
   'evmHolding',
   'markBlueprintDirty',
   'markAppDirty',
@@ -115,6 +126,12 @@ function networkClass(context) {
     parseTipAmount,
     createEvmRpcs,
     createEvmHoldingService,
+    createTipWatcher,
+    formatUnits,
+    isTxHash,
+    setTimeout,
+    clearTimeout,
+    clearInterval,
     grantTokenRank,
     persistRank,
     revokeTokenRank,
@@ -137,10 +154,10 @@ export const Socket = vm.runInNewContext(`(${socketSource.slice(socketSource.ind
   writePacket,
 })
 
-export function makeNetwork(log = () => {}, { context, tokenBalanceService, evmHoldings } = {}) {
+export function makeNetwork(log = () => {}, { context, tokenBalanceService, evmHoldings, tipWatcher } = {}) {
   const Network = networkClass(context)
   const network = new Network()
-  network.init({ tokenBalanceService, evmHoldings })
+  network.init({ tokenBalanceService, evmHoldings, tipWatcher })
   network.isServer = true
   network.id = 0
   network.sockets = new Map()

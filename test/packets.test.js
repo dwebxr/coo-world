@@ -56,6 +56,8 @@ const names = [
   'setEvmTipReceive',
   'requestEvmTipIntent',
   'evmTipIntent',
+  'evmTip',
+  'evmTipStatus',
 ]
 
 function capitalize(str) {

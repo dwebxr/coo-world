@@ -75,8 +75,14 @@ export function createEvmWalletSession(now = Date.now()) {
     receiveTips: false,
     receiveChangedAt: 0,
     intentBucket: { tokens: TIP_INTENT_BURST, at: now },
+    // 発行した tip intent の控え (チケット)。ticket → 控え。上限は TIP_TICKETS_PER_SOCKET
+    tickets: new Map(),
   }
 }
+
+// tip intent のチケット (サーバーが作る 16 バイトの 16 進)
+export const createTipTicket = () => randomBytes(16).toString('hex')
+export const isTipTicket = value => typeof value === 'string' && /^[0-9a-f]{32}$/.test(value)
 
 // 起動時に設定を確定する。メッセージが作れない設定 (domain / uri の不正) なら EVM を無効にする
 export function resolveEvmConfig(env = process.env, { host = WALLET_HOST, uri = WALLET_URI, log = console } = {}) {
@@ -119,3 +125,18 @@ export const EVM_TIP_TOKENS = Object.freeze(resolveTipTokens(process.env, config
 export const TIP_INTENT_BURST = 3
 export const TIP_INTENT_REFILL_MS = 10_000
 export const TIP_RECEIVE_COOLDOWN_MS = 1_000
+// 確定確認 (P2b): チケットは 10 分、ソケットあたり 3 件。監視はソケットあたり 2 件・全体で 16 件。
+// 確定した txHash は 30 分 (上限 4096 件) 覚える。
+// 確定したブロックの時刻はチケット発行の 30 秒前まで認める (時計のずれ)
+export const TIP_TICKET_TTL_MS = 600_000
+export const TIP_TICKETS_PER_SOCKET = 3
+export const TIP_WATCH_PER_SOCKET = 2
+export const TIP_WATCH_MAX = 16
+export const TIP_SEEN_TTL_MS = 1_800_000
+export const TIP_SEEN_MAX = 4096
+export const TIP_TIME_SKEW_SEC = 30
+// 告知: 全体で 3 秒に 1 件 (バースト 3)、待ちは 20 件まで、同じ送り手は 30 秒に 1 回
+export const TIP_ANNOUNCE_INTERVAL_MS = 3_000
+export const TIP_ANNOUNCE_BURST = 3
+export const TIP_ANNOUNCE_QUEUE = 20
+export const TIP_ANNOUNCE_COOLDOWN_MS = 30_000

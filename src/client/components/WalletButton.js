@@ -96,6 +96,8 @@ export function WalletButton({ world }) {
   useEffect(() => {
     const onUI = state => setActive(state.active)
     world.on('ui', onUI)
+    // 描画してから購読するまでの間の変化を拾い直す
+    setActive(world.ui.state.active)
     return () => world.off('ui', onUI)
   }, [world])
 

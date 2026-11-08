@@ -398,6 +398,7 @@ test('evm client: dispose on close drops listeners, timers and late packets', as
 const JPYC = { symbol: 'JPYC', address: '0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29', decimals: 18 }
 const recipient = otherAddress
 const txHash = `0x${'cd'.repeat(32)}`
+const ticket = 'a1'.repeat(16)
 const tipEnv = { PUBLIC_EVM_CHAIN_IDS: '137', PUBLIC_EVM_TIP_TOKENS: 'JPYC,USDC' }
 
 function tipSetup(t, { chain = '0x89' } = {}) {
@@ -420,6 +421,7 @@ function tipSetup(t, { chain = '0x89' } = {}) {
       token: { symbol: 'JPYC', address: JPYC.address, decimals: 18 },
       amount: request.amount,
       units: (BigInt(request.amount) * 10n ** 18n).toString(),
+      ticket,
       ...patch,
     })
   }
@@ -438,7 +440,15 @@ test('evm tips: the transfer goes from the verified wallet to the intent recipie
   await flush()
   assert.deepEqual(requests(h.world, 'RequestEvmTipIntent')[0][1], { id: 1, to: 'p2', token: 'JPYC', amount: '100' })
   h.intent()
-  assert.deepEqual(await pending, { ok: true, txHash, explorerUrl: `https://polygonscan.com/tx/${txHash}` })
+  assert.deepEqual(await pending, {
+    ok: true,
+    txHash,
+    explorerUrl: `https://polygonscan.com/tx/${txHash}`,
+    ticket,
+    reported: true,
+  })
+  // the hash is reported against the server's ticket, after the wallet returned it
+  assert.deepEqual(requests(h.world, 'EvmTip'), [['onEvmTip', { ticket, txHash }]])
   assert.deepEqual(h.sent(), [
     [
       'eth_sendTransaction',
@@ -608,7 +618,13 @@ test('evm tips: a network change in the wallet while sending is reported, not li
   const same = h.evm.tip({ playerId: 'p2', token: 'JPYC', amount: '1' })
   await flush()
   h.intent()
-  assert.deepEqual(await same, { ok: true, txHash, explorerUrl: `https://polygonscan.com/tx/${txHash}` })
+  assert.deepEqual(await same, {
+    ok: true,
+    txHash,
+    explorerUrl: `https://polygonscan.com/tx/${txHash}`,
+    ticket,
+    reported: true,
+  })
   h.provider.handlers.eth_sendTransaction = () => {
     h.provider.emit('chainChanged', '0x1')
     return txHash
@@ -616,6 +632,75 @@ test('evm tips: a network change in the wallet while sending is reported, not li
   const moved = h.evm.tip({ playerId: 'p2', token: 'JPYC', amount: '1' })
   await flush()
   h.intent()
-  assert.deepEqual(await moved, { ok: true, txHash, explorerUrl: null, warning: 'chain_changed' })
+  assert.deepEqual(await moved, {
+    ok: true,
+    txHash,
+    explorerUrl: null,
+    warning: 'chain_changed',
+    ticket,
+    reported: true,
+  })
   assert.equal(h.provider.listenerCount('chainChanged'), 0, 'listener removed after each tip')
+})
+
+test('evm tips: without a valid ticket nothing is reported; a recheck is sent once per ticket', async t => {
+  for (const bad of [undefined, 'A1'.repeat(16), 'a1'.repeat(15), 1]) {
+    const h = tipSetup(t)
+    await h.verify()
+    const pending = h.evm.tip({ playerId: 'p2', token: 'JPYC', amount: '1' })
+    await flush()
+    h.intent({ ticket: bad })
+    const result = await pending
+    assert.equal(result.ok, true)
+    assert.equal(result.ticket, null)
+    assert.equal(result.reported, false)
+    assert.equal(requests(h.world, 'EvmTip').length, 0, String(bad))
+  }
+  const h = tipSetup(t)
+  await h.verify()
+  assert.equal(h.evm.recheckTip('nope', txHash), false)
+  assert.equal(h.evm.recheckTip(ticket, '0x12'), false)
+  assert.equal(h.evm.recheckTip(ticket, txHash), true)
+  assert.equal(h.evm.recheckTip(ticket, txHash), false, 'once per ticket')
+  assert.deepEqual(requests(h.world, 'EvmTip'), [['onEvmTip', { ticket, txHash }]])
+  h.evm.dispose('test')
+  assert.equal(h.evm.recheckTip('b2'.repeat(16), txHash), false, 'not after dispose')
+})
+
+test('evm tips: tip statuses from the server are relayed by ticket', async t => {
+  const h = tipSetup(t)
+  const seen = []
+  h.world.on('evm:tipStatus', data => seen.push(data))
+  assert.equal(h.evm.getTipStatus(ticket), null)
+  h.world.network.onEvmTipStatus({ ticket, txHash, state: 'watching' })
+  h.world.network.onEvmTipStatus({ ticket, txHash, state: 'confirmed' })
+  assert.deepEqual(seen.at(-1), { ticket, txHash, state: 'confirmed' })
+  // the latest status is kept for a form that subscribes late, for 32 tickets at most
+  assert.deepEqual({ ...h.evm.getTipStatus(ticket) }, { ticket, txHash, state: 'confirmed' })
+  for (let i = 0; i < 40; i++)
+    h.world.network.onEvmTipStatus({ ticket: i.toString(16).padStart(32, '0'), state: 'watching' })
+  assert.equal(h.evm.getTipStatus(ticket), null, 'oldest dropped')
+  h.world.network.onEvmTipStatus({ ticket: 'bad', state: 'confirmed' })
+  assert.equal(h.evm.getTipStatus('bad'), null)
+  h.evm.dispose('test')
+  assert.equal(h.evm.getTipStatus((39).toString(16).padStart(32, '0')), null, 'cleared on dispose')
+})
+
+test('evm tips: an account switch during the send still reports the transaction after the revoke', async t => {
+  const h = tipSetup(t)
+  await h.verify()
+  h.provider.handlers.eth_sendTransaction = () => {
+    h.provider.emit('accountsChanged', [otherAddress])
+    return txHash
+  }
+  const pending = h.evm.tip({ playerId: 'p2', token: 'JPYC', amount: '1' })
+  await flush()
+  h.intent()
+  const result = await pending
+  assert.equal(result.ok, true)
+  assert.equal(result.reported, true)
+  const order = packets(h.world)
+    .map(([method]) => method)
+    .filter(method => method === 'onRevokeEvmWallet' || method === 'onEvmTip')
+  assert.deepEqual(order, ['onRevokeEvmWallet', 'onEvmTip'])
 })

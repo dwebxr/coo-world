@@ -158,6 +158,7 @@ test('evm session: independent of the Solana wallet session shape', () => {
     receiveTips: false,
     receiveChangedAt: 0,
     intentBucket: { tokens: evm.TIP_INTENT_BURST, at: 5 },
+    tickets: new Map(),
   })
 })
 

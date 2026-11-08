@@ -85,6 +85,28 @@ Subscribes to both engine events (eg when players `enter` or `leave` the world) 
   wallet panel, a failed or new sign-in, or a revoke. The address is not included; ask
   [`player.getEvmHolding()`](/docs/scripting/world/Player.md) for holdings. Scripts cannot emit or send it.
 
+- `tip`: **server scripts only.** A tip between two players was confirmed on chain (finalized block, exact
+  `Transfer` from the sender's verified wallet to the recipient's). The payload is a frozen
+  `{ tipId, fromPlayerId, toPlayerId, token, amount, units, decimals, chainId, at }`:
+  - `token` is the symbol (eg `'JPYC'`).
+  - `amount` is a normalized decimal string (eg `'100'`, `'0.5'`).
+  - `units` is the exact amount in the token's smallest unit, as a decimal string.
+  - `at` is the server time in ms.
+  - `tipId` is unique per tip; use it to ignore repeats.
+
+  The recipient may have left the world by then. Addresses and the transaction hash are not included. It fires
+  once per confirmed transaction, even when the chat announcement is skipped by its rate limits. Scripts cannot
+  emit or send it, and a chat message that looks like a tip announcement is not proof of one: only this event is.
+  If you turn tips into paid perks, prizes or rankings, you are selling something, and consumer, premium and
+  gambling rules may apply to you.
+
+```js
+// Server script: thank tippers in this app's area.
+world.on('tip', ({ tipId, fromPlayerId, toPlayerId, token, amount }) => {
+  app.send('thanks', { fromPlayerId, toPlayerId, token, amount })
+})
+```
+
 ```js
 world.on('wallet', async ({ playerId, verified }) => {
   const result = await world.getPlayer().getTokenBalance()

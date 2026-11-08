@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createEvmRpc, createEvmRpcs } from '../src/server/evmRpc.js'
+import { RpcError, createEvmRpc, createEvmRpcs } from '../src/server/evmRpc.js'
 
 // A fetch that answers JSON-RPC requests from a handler and records them.
 function fakeFetch(handler) {
@@ -78,6 +78,29 @@ test('evm rpc: malformed, oversized, erroring or mismatched responses are failur
     const { fetch } = fakeFetch((request, n) => (n === 1 ? { result: '0x89' } : make(request)))
     const rpc = createEvmRpc({ url: 'https://rpc.example', chainId: 137, fetch })
     await assert.rejects(rpc.call('eth_call', []), undefined, `case ${index}`)
+  }
+})
+
+test('evm rpc: a JSON-RPC error answer is an RpcError with the code only; transport failures are not', async () => {
+  const { fetch } = fakeFetch((request, n) =>
+    n === 1 ? { result: '0x89' } : { error: { code: -32601, message: 'the method finalized secret-host' } }
+  )
+  const rpc = createEvmRpc({ url: 'https://rpc.example', chainId: 137, fetch })
+  const error = await rpc.call('eth_getBlockByNumber', ['finalized', false]).catch(err => err)
+  assert.ok(error instanceof RpcError)
+  assert.equal(error.code, -32601)
+  assert.equal(error.message.includes('secret-host'), false, 'node text is not kept')
+  // an error next to a result, a non-object error and an HTTP failure are plain failures
+  for (const reply of [
+    request => new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: 1, error: {} }), { status: 200 }),
+    () => ({ error: 'nope' }),
+    () => new Response('busy', { status: 503 }),
+  ]) {
+    const { fetch } = fakeFetch((request, n) => (n === 1 ? { result: '0x89' } : reply(request)))
+    const rpc = createEvmRpc({ url: 'https://rpc.example', chainId: 137, fetch })
+    const err = await rpc.call('eth_call', []).catch(err => err)
+    assert.ok(err instanceof Error)
+    assert.equal(err instanceof RpcError, false)
   }
 })
 

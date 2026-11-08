@@ -226,6 +226,7 @@ test('inbound policy: EVM wallet packets have tight byte caps that real requests
   assert.equal(packetByteLimit('revokeEvmWallet'), 16)
   assert.equal(packetByteLimit('setEvmTipReceive'), 32)
   assert.equal(packetByteLimit('requestEvmTipIntent'), 192)
+  assert.equal(packetByteLimit('evmTip'), 160)
   const { gate } = make()
   const socket = { id: 'evm' }
   const address = `0x${'Ab'.repeat(20)}`
@@ -245,6 +246,7 @@ test('inbound policy: EVM wallet packets have tight byte caps that real requests
       token: 'ABCDEFGHIJK',
       amount: `${'9'.repeat(18)}.${'9'.repeat(18)}`,
     }),
+    writeClientPacket('evmTip', { ticket: 'f'.repeat(32), txHash: `0x${'ab'.repeat(32)}` }),
   ]
   for (const packet of real) assert.ok(gate.admit(socket, packet), `${packet.length} bytes admitted`)
   // A 6492-sized smart-account signature (P1.5) does not fit the EOA cap.
@@ -257,6 +259,13 @@ test('inbound policy: EVM wallet packets have tight byte caps that real requests
   assert.equal(gate.admit(socket, oversized), false)
   assert.equal(
     gate.admit(socket, writeClientPacket('requestEvmNonce', { address, attempt: 1, pad: 'x'.repeat(100) })),
+    false
+  )
+  assert.equal(
+    gate.admit(
+      socket,
+      writeClientPacket('evmTip', { ticket: 'f'.repeat(32), txHash: `0x${'ab'.repeat(32)}`, pad: 'x'.repeat(60) })
+    ),
     false
   )
 })

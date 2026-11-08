@@ -394,6 +394,12 @@ try {
     await recipient.waitFor(m => m.method === 'onChatAdded' && m.data?.body === 'Alice tipped Bob 100 JPYC', {
       timeout: 30000 * TIMEOUT_SCALE,
     })
+    // a browser takes the announcement as a system message (the sender's own page)
+    await page.waitForFunction(
+      () => window.world.chat.msgs.some(msg => msg.body === 'Alice tipped Bob 100 JPYC' && msg.fromId == null),
+      null,
+      { timeout: 30000 * TIMEOUT_SCALE }
+    )
     // the server-script event has the amount and the players, not the addresses or the hash
     const seen = await observer.waitFor(m => m.method === 'onEntityEvent' && m.data?.[2] === 'tip-seen', {
       timeout: 30000 * TIMEOUT_SCALE,

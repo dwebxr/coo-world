@@ -8,7 +8,7 @@ import fs from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
 
-import { BUILD_ROOT, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
+import { BUILD_ROOT, TIMEOUT_SCALE, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
 import { startServer, worldAssetsDir } from './lib/server.mjs'
 import { becomeAdmin, launchBrowser, openWorld, saveArtifacts } from './lib/browser.mjs'
 
@@ -297,6 +297,7 @@ try {
   })
 
   await step('boot watchdog: a world that cannot start says why instead of staying black', async () => {
+    // waits for the app to draw are scaled: a software-rendered CI runner can take tens of seconds to draw
     // the main page came up minutes ago: without the app's real ready() call its 60 s notice would be showing,
     // so no message here proves the ready path end to end; a later error does not bring one either (8 s wait)
     ok(await page.evaluate(() => !document.querySelector('.boot-error')), 'no message on a page that started')
@@ -345,7 +346,7 @@ try {
       )
       try {
         const box = probe.locator('.boot-error.blocking')
-        await box.waitFor({ state: 'visible', timeout: 30000 })
+        await box.waitFor({ state: 'visible', timeout: 30000 * TIMEOUT_SCALE })
         eq(await box.locator('.boot-error-title').textContent(), 'This browser could not start the world.', 'title')
         const detail = await box.locator('.boot-error-detail').textContent()
         await probe.screenshot({ path: path.join(OUT, `extras-${ENGINE}-boot-error.png`) })
@@ -382,7 +383,7 @@ try {
         await sleep(1500)
         ok(await probe.evaluate(() => !document.querySelector('.boot-error')), 'no failure from Script error. alone')
         const box = probe.locator('.boot-error.blocking')
-        await box.waitFor({ state: 'visible', timeout: 15000 })
+        await box.waitFor({ state: 'visible', timeout: 15000 * TIMEOUT_SCALE })
         eq(await box.locator('.boot-error-title').textContent(), 'The world did not start.', 'blocked title')
         ok((await box.locator('.boot-error-detail').textContent()).includes('another origin'), 'opaque detail')
         await closeStaysClosed(probe)
@@ -408,8 +409,8 @@ try {
         })
       })
       try {
-        await probe.locator('.boot-error.blocking').waitFor({ state: 'visible', timeout: 15000 })
-        await probe.locator('.boot-error.notice').waitFor({ state: 'visible', timeout: 30000 })
+        await probe.locator('.boot-error.blocking').waitFor({ state: 'visible', timeout: 15000 * TIMEOUT_SCALE })
+        await probe.locator('.boot-error.notice').waitFor({ state: 'visible', timeout: 30000 * TIMEOUT_SCALE })
         ok(await probe.evaluate(() => !document.querySelector('.boot-error.blocking')), 'moved out of the middle')
         eq(probeErrors.length, 0, probeErrors.join(' | '))
       } finally {
@@ -423,7 +424,7 @@ try {
       const { context, probe } = await fresh({ slow: 5000 }, p => p.routeWebSocket(/\/ws/, () => {}))
       try {
         const notice = probe.locator('.boot-error.notice')
-        await notice.waitFor({ state: 'visible', timeout: 30000 })
+        await notice.waitFor({ state: 'visible', timeout: 30000 * TIMEOUT_SCALE })
         eq(await notice.locator('.boot-error-title').textContent(), 'The world is taking long to start.', 'notice')
         // the game's controls are up and take Tab on window; inside the notice the keys still work
         eq(await probe.evaluate(() => document.activeElement?.textContent), 'Reload', 'notice Reload has focus')

@@ -81,6 +81,9 @@ const names = [
   'send',
   'sendTo',
   'checkSockets',
+  'answersPing',
+  'playersPresent',
+  'retireSocket',
   'admit',
   'enqueue',
   'flush',
@@ -119,6 +122,9 @@ function networkClass(context) {
     WORLD_BLUEPRINT_BYTES,
     defaultSpawn: '{"position":[0,0,0],"quaternion":[0,0,0,1]}',
     SAVE_INTERVAL: 0,
+    // the server's values; tests that wait on them set network.takeoverPingMs / takeoverCloseMs instead
+    TAKEOVER_PING_MS: 3000,
+    TAKEOVER_CLOSE_MS: 2000,
     process: { env: {} },
     console,
     solanaGating,
@@ -233,6 +239,9 @@ export function connectionMethod(context) {
   const method = source.match(/^ {2}async onConnection\([^]*?^ {2}}/m)?.[0]
   assert.ok(method)
   return vm.runInNewContext(`(class { ${method} }).prototype.onConnection`, {
+    setTimeout,
+    clearTimeout,
+    TAKEOVER_CLOSE_MS: 2000,
     writePacket,
     SNAPSHOT_CAP,
     Socket,

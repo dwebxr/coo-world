@@ -431,12 +431,33 @@ test('wallet liveness: duplicate_user refuses a second live connection without c
   const f = fixture(t)
   const socket = await f.connect('same', Ranks.ADMIN)
   await f.verify(socket)
+  // a live browser answers the server's ping
+  const ping = socket.ws.ping
+  socket.ws.ping = (...args) => {
+    ping(...args)
+    queueMicrotask(() => socket.ws.emit('pong'))
+  }
   const ws = fakeWs()
   await f.network.onConnection(ws, { authToken: 'same' })
   assert.deepEqual(ws.packets.map(readPacket), [['onKick', 'duplicate_user']])
   assert.equal(ws.readyState, 3)
   assert.equal(f.network.sockets.get('same'), socket)
   assert.equal(socket.wallet.verified, address)
+})
+
+test('wallet liveness: a silent old connection gives way, and the new one starts unverified', async t => {
+  const f = fixture(t)
+  f.network.takeoverPingMs = 20
+  const socket = await f.connect('same', Ranks.ADMIN)
+  await f.verify(socket)
+  const ws = fakeWs()
+  await f.network.onConnection(ws, { authToken: 'same' })
+  assert.equal(readPacket(ws.packets[0])[0], 'onSnapshot')
+  assert.equal(socket.disconnected, true)
+  assert.equal(socket.ws.terminations, 1)
+  const next = f.network.sockets.get('same')
+  assert.ok(next && next !== socket)
+  assert.equal(next.wallet.verified, null, 'a wallet is verified per connection')
 })
 
 test('wallet liveness: reconnect drops an old pending grant and restart requires verification again', async t => {

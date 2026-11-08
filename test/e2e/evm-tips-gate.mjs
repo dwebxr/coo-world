@@ -87,7 +87,9 @@ async function gateResult(wire, timeout = 10000) {
 }
 
 async function openWallet(account, name) {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+  // Two pages render at once. A small viewport keeps the software renderer's share of each frame low, as in
+  // token-gate.mjs: on a slow runner a busy page stops reading its socket and the server drops it.
+  const context = await browser.newContext({ viewport: { width: 480, height: 320 }, serviceWorkers: 'block' })
   const page = await context.newPage()
   page.setDefaultTimeout(30000 * TIMEOUT_SCALE)
   const entry = { page, account, consoleLines: [], pageErrors: [], sent: [] }

@@ -113,18 +113,15 @@ try {
 
   browser = await launchBrowser(ENGINE)
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
-  page = await context.newPage()
-  page.setDefaultTimeout(30000 * TIMEOUT_SCALE)
-  page.on('console', m => consoleLines.push(`[${m.type()}] ${m.text()}`))
-  page.on('pageerror', e => pageErrors.push(String(e)))
   const signed = []
-  // The wallet's key stays in Node; the page only sees the signature.
-  await page.exposeFunction('__evmSign', async hex => {
+  // The wallet's key stays in Node; the page only sees the signature. Both are on the context, so a later
+  // page in it gets the same wallet.
+  await context.exposeFunction('__evmSign', async hex => {
     const message = hexToText(hex)
     signed.push(message)
     return account.signMessage({ message })
   })
-  await page.addInitScript({
+  await context.addInitScript({
     content: `(() => {
       const listeners = new Map()
       const provider = {
@@ -143,6 +140,13 @@ try {
       announce()
     })()`,
   })
+  const newPage = async () => {
+    page = await context.newPage()
+    page.setDefaultTimeout(30000 * TIMEOUT_SCALE)
+    page.on('console', m => consoleLines.push(`[${m.type()}] ${m.text()}`))
+    page.on('pageerror', e => pageErrors.push(String(e)))
+  }
+  await newPage()
   const openWorld = async () => {
     await page.goto(server.url, { waitUntil: 'domcontentloaded' })
     await page.waitForSelector('.sidebar', { timeout: 180000 * TIMEOUT_SCALE })
@@ -186,6 +190,10 @@ try {
     ok((await toggle.getAttribute('class')).includes('evm'), 'evm status class')
     ok(await page.locator('.solana-wallet-dot.evm').isVisible(), 'blue dot')
     await toggle.click()
+    // A new page in the same context stands in for the reload: same storage, new session. Navigating the
+    // running world away makes WebKit report its aborted blob loads as page errors.
+    await page.close()
+    await newPage()
     await openWorld()
     eq(await page.getByRole('tab', { name: 'EVM' }).getAttribute('aria-selected'), 'true', 'remembered tab')
     // A reload is a new session: verification is per connection and is not restored.

@@ -222,7 +222,7 @@ test('admit: logging is once per kind and socket, while every drop is counted', 
 
 test('inbound policy: EVM wallet packets have tight byte caps that real requests fit under', () => {
   assert.equal(packetByteLimit('requestEvmNonce'), 128)
-  assert.equal(packetByteLimit('requestEvmVerify'), 512)
+  assert.equal(packetByteLimit('requestEvmVerify'), 8704)
   assert.equal(packetByteLimit('revokeEvmWallet'), 16)
   assert.equal(packetByteLimit('setEvmTipReceive'), 32)
   assert.equal(packetByteLimit('requestEvmTipIntent'), 192)
@@ -250,9 +250,18 @@ test('inbound policy: EVM wallet packets have tight byte caps that real requests
   ]
   for (const packet of real) assert.ok(gate.admit(socket, packet), `${packet.length} bytes admitted`)
   // A 6492-sized smart-account signature (P1.5) does not fit the EOA cap.
+  // the largest legal one: a 4096-byte contract account signature
+  const largest = writeClientPacket('requestEvmVerify', {
+    address,
+    signature: `0x${'cd'.repeat(4096)}`,
+    nonce: 'e'.repeat(64),
+    attempt: 0x7fffffff,
+  })
+  assert.ok(largest.length <= 8704, `${largest.length} bytes`)
+  assert.ok(gate.admit({ id: 'evm-largest' }, largest), 'the largest legal verify packet is admitted')
   const oversized = writeClientPacket('requestEvmVerify', {
     address,
-    signature: `0x${'cd'.repeat(600)}`,
+    signature: `0x${'cd'.repeat(4400)}`,
     nonce: 'e'.repeat(64),
     attempt: 1,
   })

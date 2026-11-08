@@ -1,9 +1,18 @@
 import { randomBytes } from 'node:crypto'
 // サーバーは SES lockdown 下で動く。viem のルート ('viem') は読み込み時に凍結済みの Function.prototype.call へ
 // 代入して落ちるので、lockdown 下で読み込めるサブパスだけを使う (test/evmGating.test.js で確認)
-import { getAddress, verifyMessage } from 'viem/utils'
+import { concatHex, encodeAbiParameters, getAddress, hashMessage, verifyMessage } from 'viem/utils'
 import { createSiweMessage } from 'viem/siwe'
-import { isEvmAddress, isEvmSignature, parseEvmChainIds, sameEvmAddress } from '../core/extras/evmChains.js'
+import {
+  isEvmAddress,
+  isEvmSignature,
+  isEvmSigninSignature,
+  parseEvmChainIds,
+  sameEvmAddress,
+} from '../core/extras/evmChains.js'
+import { createLogOnce } from '../core/extras/logOnce.js'
+import { erc6492CallData } from './erc6492.js'
+import { RpcError } from './evmRpc.js'
 import { parseTipTokens } from '../core/extras/evmTokens.js'
 import {
   CHALLENGE_COOLDOWN_MS,
@@ -16,7 +25,7 @@ import {
 
 // EVM 経路は solanaGating を参照しない。必要な共通値はここから再輸出する
 export { CHALLENGE_COOLDOWN_MS, CHALLENGE_TTL_MS, WALLET_HOST, WALLET_URI, isWalletNonce, isWalletRequestId }
-export { isEvmAddress, isEvmSignature, sameEvmAddress }
+export { isEvmAddress, isEvmSignature, isEvmSigninSignature, sameEvmAddress }
 
 export const EVM_STATEMENT = 'Verify wallet ownership for this world. This does not authorize any transaction.'
 
@@ -41,34 +50,150 @@ export function buildEvmChallenge(address, { host, uri, chainId, now }) {
   return { nonce, message, address: checksummed, expiresAt }
 }
 
-// P1 は EOA のみ (viem トップレベルの verifyMessage は recover + 比較で RPC を使わない)
-export async function checkEvmChallenge(challenge, { address, signature, nonce }, now) {
+// 署名の確認 (Phase 6、goals/phase6-smart-wallet-siwe-design.md):
+// 1. 65 バイトなら EOA として復元して比べる (RPC は使わない)。
+// 2. 合わなければ、コントラクトのアカウント (EIP-1271、未デプロイなら EIP-6492) としてチェーンで確かめる。
+//    verifyContract はサインインチェーンの RPC があるときだけ渡される (createEvmSignatureVerifier)。
+//    Safe の 1-of-1 のように、65 バイトでも持ち主の鍵に復元されるコントラクト署名があるので、2 も試す。
+// 例外は投げない: 返事が出ないと、クライアントは ack を最後まで待つことになる
+export async function checkEvmChallenge(challenge, { address, signature, nonce }, now, { verifyContract } = {}) {
   if (!challenge) return { ok: false, reason: 'no_nonce' }
   if (!isWalletNonce(nonce) || challenge.nonce !== nonce) return { ok: false, reason: 'nonce_mismatch' }
   if (now >= challenge.expiresAt) return { ok: false, reason: 'nonce_expired' }
   if (!isEvmAddress(address)) return { ok: false, reason: 'bad_wallet' }
   if (!sameEvmAddress(address, challenge.address)) return { ok: false, reason: 'wallet_mismatch' }
-  if (!isEvmSignature(signature)) return { ok: false, reason: 'bad_signature' }
-  let ok = false
-  try {
-    ok = await verifyMessage({ address: challenge.address, message: challenge.message, signature })
-  } catch {
-    // 復元できない署名 (v が範囲外など) は不正として扱う
+  // the validator's ecrecover gives the zero address for any unrecoverable signature, so nobody may sign in as it
+  if (isZeroAddress(challenge.address)) return { ok: false, reason: 'bad_wallet' }
+  if (!isEvmSigninSignature(signature)) return { ok: false, reason: 'bad_signature' }
+  const eoaLength = isEvmSignature(signature)
+  if (eoaLength) {
+    try {
+      if (await verifyMessage({ address: challenge.address, message: challenge.message, signature })) {
+        return { ok: true, reason: 'ok' }
+      }
+    } catch {
+      // 復元できない署名 (v が範囲外など): コントラクトとして確かめる
+    }
   }
-  return { ok, reason: ok ? 'ok' : 'signature_invalid' }
+  // チェーンを読めない world では、65 バイトの失敗は署名の誤り、それ以外はコントラクトの署名とみなす
+  if (typeof verifyContract !== 'function') {
+    return { ok: false, reason: eoaLength ? 'signature_invalid' : 'contract_unsupported' }
+  }
+  try {
+    const result = await verifyContract({
+      address: challenge.address,
+      hash: hashMessage(challenge.message),
+      signature,
+    })
+    // a contract account is verified on the sign-in chain only (its owners may differ on other chains)
+    if (result?.ok === true) return { ok: true, reason: 'ok', contract: true }
+    return { ok: false, reason: typeof result?.reason === 'string' ? result.reason : 'rpc_unexpected' }
+  } catch {
+    return { ok: false, reason: 'rpc_error' }
+  }
 }
 
 // クライアントへ返す理由は固定の語彙に丸める
+const UNAVAILABLE_REASONS = new Set(['unavailable', 'rpc_busy', 'rpc_timeout', 'rpc_error', 'rpc_unexpected'])
 export function publicReason(reason) {
-  if (reason === 'ok' || reason === 'nonce_expired') return reason
+  if (reason === 'ok' || reason === 'nonce_expired' || reason === 'contract_unsupported') return reason
   if (reason === 'signature_invalid' || reason === 'bad_signature') return 'signature_invalid'
+  if (UNAVAILABLE_REASONS.has(reason)) return 'unavailable'
   return 'bad_request'
+}
+
+export const isZeroAddress = address => isEvmAddress(address) && /^0x0{40}$/.test(address)
+
+// EIP-1271 の isValidSignature(bytes32,bytes) と、成功時の戻り値 (bytes4 の magic を 32 バイトに詰めたもの)
+const ERC1271_SELECTOR = '0x1626ba7e'
+const ERC1271_MAGIC_WORD = /^0x1626ba7e0{56}$/i
+// ERC-6492 の検証器は署名の末尾 32 バイトを読むので、それより短い署名はコントラクトへ直接聞く
+const SHORT_SIGNATURE_BYTES = 32
+
+// コントラクトのアカウントの署名を、ERC-6492 の汎用検証器を deployless の eth_call で動かして確かめる
+// (32 バイト未満の署名は、デプロイ済みのアカウントの isValidSignature を直接呼ぶ)。
+// ノードの答えのうち revert (RpcError.reverted) だけが「署名が通らない」で、ほかの誤り (レート制限、
+// to のない eth_call を受け付けない、状態が読めない、等) は確認できなかったものとして扱う。
+// 予算はサーバー全体で 1 つ: 同時に maxConcurrent 件まで、毎秒 ratePerSecond 件 (最大 burst 件まで貯まる)。
+// 超えたら待たずに rpc_busy。factory の呼び出しも含め、ノードの中で動くだけで状態は変わらない。
+// gas で 1 回あたりの仕事を抑える (パスキーの検証とアカウントのデプロイには十分な量)
+export function createEvmSignatureVerifier({
+  rpc,
+  maxConcurrent = 4,
+  ratePerSecond = 0.5,
+  burst = 10,
+  timeoutMs = 8000,
+  gas = 10_000_000,
+  now = Date.now,
+  timeoutSignal = ms => AbortSignal.timeout(ms),
+  log = console.warn,
+} = {}) {
+  if (!rpc || typeof rpc.call !== 'function') return null
+  const logOnce = createLogOnce(log)
+  const subject = {}
+  let active = 0
+  let tokens = burst
+  let bucketAt = now()
+  const fail = (reason, key, message) => {
+    // アドレス・署名・呼び出しデータ・ノードのメッセージ (URL を含み得る) は出さない
+    logOnce(subject, key, `[evm] contract signature check: ${message}`)
+    return { ok: false, reason }
+  }
+  return async function verifyContract({ address, hash, signature }) {
+    const at = now()
+    tokens = Math.min(burst, tokens + (Math.max(0, at - bucketAt) * ratePerSecond) / 1000)
+    bucketAt = at
+    if (active >= maxConcurrent || tokens < 1) return fail('rpc_busy', 'busy', 'over budget, refused')
+    tokens--
+    active++
+    const short = (signature.length - 2) / 2 < SHORT_SIGNATURE_BYTES
+    let result
+    try {
+      const call = short
+        ? {
+            to: address,
+            data: concatHex([
+              ERC1271_SELECTOR,
+              encodeAbiParameters([{ type: 'bytes32' }, { type: 'bytes' }], [hash, signature]),
+            ]),
+          }
+        : { data: erc6492CallData(address, hash, signature) }
+      result = await rpc.call(
+        'eth_call',
+        [{ ...call, gas: `0x${gas.toString(16)}` }, 'latest'],
+        timeoutSignal(timeoutMs)
+      )
+    } catch (err) {
+      if (err instanceof RpcError) {
+        if (err.reverted) return { ok: false, reason: 'signature_invalid' }
+        return fail('rpc_error', `rpc:${err.code}`, `the node answered with error code ${err.code}`)
+      }
+      if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+        return fail('rpc_timeout', 'timeout', `no answer within ${timeoutMs} ms`)
+      }
+      return fail('rpc_error', 'transport', 'the RPC request failed')
+    } finally {
+      active--
+    }
+    if (short && typeof result === 'string') {
+      if (ERC1271_MAGIC_WORD.test(result)) return { ok: true, reason: 'ok' }
+      // any other 32-byte answer, or none at all (no code at the address: an EOA cannot sign this short)
+      if (/^0x(?:[0-9a-fA-F]{64})?$/.test(result)) return { ok: false, reason: 'signature_invalid' }
+    }
+    if (!short && typeof result === 'string' && /^0x01$/i.test(result)) return { ok: true, reason: 'ok' }
+    if (!short && typeof result === 'string' && /^0x00$/i.test(result))
+      return { ok: false, reason: 'signature_invalid' }
+    // the node did not run the validator as an init call (another shape of answer)
+    return fail('rpc_unexpected', 'shape', 'unexpected eth_call result shape')
+  }
 }
 
 export function createEvmWalletSession(now = Date.now()) {
   return {
     generation: 0,
     verified: null,
+    // the verified address is a contract account (proven on the sign-in chain only)
+    verifiedContract: false,
     challenge: null,
     lastChallengeAt: 0,
     challengeCooldownReplied: false,

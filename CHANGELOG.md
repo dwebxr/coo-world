@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- wallet: smart-contract wallets (EIP-1271, and EIP-6492 for accounts not deployed yet, such as Myna Wallet) can sign in with EVM when the server has `EVM_RPC_URL_<chainId>` for the sign-in chain.
+  - **Check.** EOA signatures are still checked locally. Any other signature gets one deployless `eth_call` of the ERC-6492 universal validator at `latest`. The bytecode is copied from viem 2.57.8 and pinned in tests. The call is limited to 10M gas and 8 s, at most 4 at once and about 30 a minute per server.
+  - **Results.** A revert means a wrong signature. A rate limit, timeout or unexpected answer means the check is unavailable, logged once per kind.
+  - **Reasons.** `evmWalletStatus.reason` can now also be `contract_unsupported` (no RPC for the chain) or `unavailable`, each with its own message. The packet table and `PROTOCOL_VERSION` are unchanged.
+  - **Signatures.** A sign-in signature may be 1 to 4096 bytes; the `requestEvmVerify` inbound cap rises from 512 to 8704 bytes.
+- wallet: the WalletConnect phone links are MetaMask, HashPort Wallet and Myna Wallet (JPYC wallets), with the links from Reown's wallet registry. Trust Wallet and Rainbow are no longer listed.
 - wallet: WalletConnect (Reown) sign-in for EVM wallets on phones and other devices, behind `PUBLIC_WALLETCONNECT_PROJECT_ID` (32 hex characters; empty keeps it off).
   - **Panel.** A WalletConnect button joins the announced wallets. Desktops get a QR code; phones get MetaMask / Trust Wallet / Rainbow links (plus the plain `wc:` link on Android), a QR toggle and Copy link. While a signature or tip waits, the panel says "Approve in your wallet app" with an Open wallet link on phones.
   - **Loading.** `@walletconnect/sign-client` 2.26.0 and `uqr` 0.1.3 load in their own chunk only when WalletConnect is picked (the client build now splits code; the particles worker stays one file).

@@ -80,7 +80,7 @@ export class ServerNetwork extends System {
     this.writer = createWriteLedger({ log: line => console.error(line) })
   }
 
-  init({ db, tokenBalanceService, evmHoldings, tipWatcher }) {
+  init({ db, tokenBalanceService, evmHoldings, tipWatcher, evmSignatureVerifier }) {
     this.db = db
     this.tokenBalanceService = solanaGating.TOKEN_GATING_ENABLED
       ? (tokenBalanceService ?? createTokenBalanceService({ readRaw: createSolanaRpc().readRaw }))
@@ -90,6 +90,10 @@ export class ServerNetwork extends System {
     this.evmHoldings = evmGating.EVM_ENABLED ? (evmHoldings ?? createEvmHoldingService({ rpcs })) : null
     // 投げゼニの確定確認 (投げゼニが有効で、サインインのチェーンの RPC がある時だけ。無ければ送金のみ)
     const tipRpc = rpcs.get(evmGating.EVM_CHAIN_ID)
+    // コントラクトのアカウント (Myna Wallet など) のサインイン確認。サインインのチェーンの RPC がある時だけ
+    this.evmSignatureVerifier = evmGating.EVM_ENABLED
+      ? (evmSignatureVerifier ?? evmGating.createEvmSignatureVerifier({ rpc: tipRpc }))
+      : null
     this.tipWatcher =
       evmGating.EVM_ENABLED && evmGating.EVM_TIP_TOKENS.length
         ? (tipWatcher ?? (tipRpc ? createTipWatcher({ rpc: tipRpc }) : null))
@@ -940,7 +944,10 @@ export class ServerNetwork extends System {
     const wasVerified = clearVerified && !!state.verified
     state.generation++
     state.challenge = null
-    if (clearVerified) state.verified = null
+    if (clearVerified) {
+      state.verified = null
+      state.verifiedContract = false
+    }
     // チケットは捨てない: 送金の途中でウォレットが切り替わると、取り下げが tx の報告より先に届く。
     // チケットの送り手 (from) は発行時にこの接続で検証済みで変わらず、確定はその from のログでしか起きない
     if (!wasVerified) return
@@ -971,7 +978,8 @@ export class ServerNetwork extends System {
     if (this.stopping || this.world.fatalError) return
     if (!evmGating.EVM_ENABLED || !isObject(data) || Array.isArray(data)) return
     const { address, attempt } = data
-    if (!evmGating.isEvmAddress(address) || !evmGating.isWalletRequestId(attempt)) return
+    if (!evmGating.isEvmAddress(address) || evmGating.isZeroAddress(address) || !evmGating.isWalletRequestId(attempt))
+      return
     const state = socket.evmWallet
     if (!state || !this.currentEvm(socket, state.generation, socket.player)) return
     const now = Date.now()
@@ -1013,7 +1021,9 @@ export class ServerNetwork extends System {
     if (!challenge || challenge.nonce !== nonce || challenge.attempt !== attempt) return
     // await の前に使い切る (同じ nonce の二重検証を防ぐ)
     state.challenge = null
-    const result = await evmGating.checkEvmChallenge(challenge, { address, signature, nonce }, Date.now())
+    const result = await evmGating.checkEvmChallenge(challenge, { address, signature, nonce }, Date.now(), {
+      verifyContract: this.evmSignatureVerifier,
+    })
     if (!this.currentEvm(socket, generation, player)) return
     if (!result.ok) {
       this.invalidateEvmWallet(socket, { clearVerified: true })
@@ -1021,6 +1031,8 @@ export class ServerNetwork extends System {
       return
     }
     state.verified = challenge.address
+    // a contract account's ownership is proven on the sign-in chain only
+    state.verifiedContract = result.contract === true
     socket.send('evmWalletStatus', { verified: true, wallet: challenge.address, attempt, reason: 'ok' })
     this.world.events?.emit('evmWallet', Object.freeze({ playerId: player.data.id, verified: true }))
   }
@@ -1327,17 +1339,31 @@ export class ServerNetwork extends System {
   // サーバースクリプトの player.getEvmHolding から呼ばれる。アドレスはスクリプトに見せず、ここで引く
   async evmHolding(playerId, spec) {
     const socket = this.sockets.get(playerId)
-    const address = socket && !socket.disconnected ? (socket.evmWallet?.verified ?? null) : null
+    const state = socket && !socket.disconnected ? socket.evmWallet : null
+    const address = state?.verified ?? null
     if (!address) return { verified: false, known: false, balance: 0 }
+    // a contract account proved its ownership on the sign-in chain only: on another chain the same address may
+    // belong to someone else (a Safe with other owners), so it is not verified there
+    const provenHere = () => !state.verifiedContract || Number(spec?.chainId) === evmGating.EVM_CHAIN_ID
+    if (!provenHere()) return { verified: false, known: false, balance: 0 }
     if (!this.evmHoldings) return { verified: true, known: false, balance: 0 }
+    // every new sign-in (even of the same address, or the same address proven another way) bumps the generation
+    const generation = state.generation
     let result = { known: false }
     try {
       result = await this.evmHoldings.get(address, spec)
     } catch {
       // 予期しない失敗も unknown
     }
-    // 待っている間に検証が変わったら、古いアドレスの結果は使わない
-    if (this.sockets.get(playerId) !== socket || socket.disconnected || socket.evmWallet?.verified !== address) {
+    // 待っている間に検証が変わったら、古い検証での結果は使わない
+    if (
+      this.sockets.get(playerId) !== socket ||
+      socket.disconnected ||
+      socket.evmWallet !== state ||
+      state.generation !== generation ||
+      state.verified !== address ||
+      !provenHere()
+    ) {
       return { verified: false, known: false, balance: 0 }
     }
     const known = result?.known === true && Number.isFinite(result.balance) && result.balance >= 0

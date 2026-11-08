@@ -635,7 +635,7 @@ test('wallet links: the wallet-supplied link back is validated before it reaches
   )
   assert.deepEqual(
     WALLET_LINKS.map(w => w.universal),
-    ['https://metamask.app.link', 'https://link.trustwallet.com', 'https://rnbwapp.com']
+    ['https://metamask.app.link', 'https://link.wallet.hashport.com', 'https://prd-api.mynawallet.jp/deeplink']
   )
   assert.equal(isWalletConnectUri(URI), true)
   for (const bad of ['wc:short@2?x', 'https://x', `wc:${'1'.repeat(64)}@1?x`, 1])

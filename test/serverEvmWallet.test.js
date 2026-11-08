@@ -233,7 +233,8 @@ test('evm wallet: failures reply with a reason and burn the challenge', async t 
   f.advance(5000)
   const malformed = await f.challenge(socket, { attempt: 2 })
   delete malformed.message
-  await f.network.onRequestEvmVerify(socket, { ...malformed, signature: '0x1234' })
+  // (a 2-byte signature is well formed now: a contract account's, which a world without an RPC cannot check)
+  await f.network.onRequestEvmVerify(socket, { ...malformed, signature: '0x123' })
   // Expired.
   f.advance(5000)
   const late = await f.challenge(socket, { attempt: 3 })
@@ -535,6 +536,70 @@ test('evm tips: losing verification stops receiving, tells everyone and fires ev
 })
 
 // --- P3: server-side holdings for scripts ---
+
+test('evm holdings: a contract account verified on the sign-in chain is not verified on another chain', async t => {
+  const asked = []
+  const evmHoldings = {
+    get: async (address, spec) => {
+      asked.push(spec.chainId)
+      return { known: true, balance: 1 }
+    },
+  }
+  const f = fixture(t, { evmHoldings })
+  const a = await f.connect('a')
+  // the chain (a stand-in verifier) accepts a contract signature for this address
+  f.network.evmSignatureVerifier = async () => ({ ok: true, reason: 'ok' })
+  const request = await f.challenge(a, { signer: other, address: account.address })
+  delete request.message
+  await f.network.onRequestEvmVerify(a, request)
+  assert.deepEqual(replies(a, 'onEvmWalletStatus').pop(), {
+    verified: true,
+    wallet: account.address,
+    attempt: 1,
+    reason: 'ok',
+  })
+  assert.equal(a.evmWallet.verifiedContract, true)
+  const spec = chainId => ({ chainId, contract: `0x${'ab'.repeat(20)}`, standard: 'erc721' })
+  assert.deepEqual(plain(await f.network.evmHolding('a', spec(137))), { verified: true, known: true, balance: 1 })
+  assert.deepEqual(plain(await f.network.evmHolding('a', spec(1))), { verified: false, known: false, balance: 0 })
+  assert.deepEqual(asked, [137], 'never asked about another chain')
+  // an EOA proves its key on every chain
+  f.network.onRevokeEvmWallet(a, {})
+  assert.equal(a.evmWallet.verifiedContract, false)
+  f.advance(5000)
+  await f.verify(a, { attempt: 2 })
+  assert.equal(a.evmWallet.verifiedContract, false)
+  assert.deepEqual(plain(await f.network.evmHolding('a', spec(1))), { verified: true, known: true, balance: 1 })
+})
+
+test('evm holdings: a read still pending when the same address signs in again as a contract is dropped', async t => {
+  let release
+  const evmHoldings = { get: () => new Promise(resolve => (release = resolve)) }
+  const f = fixture(t, { evmHoldings })
+  const a = await f.connect('a')
+  // signed in with the EOA key (an EIP-7702 address, say): verified on every chain
+  await f.verify(a)
+  const spec = { chainId: 1, contract: `0x${'ab'.repeat(20)}`, standard: 'erc721' }
+  const pending = f.network.evmHolding('a', spec)
+  // the same address signs in again, now proven through EIP-1271 on the sign-in chain only
+  f.advance(5000)
+  f.network.evmSignatureVerifier = async () => ({ ok: true, reason: 'ok' })
+  const request = await f.challenge(a, { signer: other, address: account.address, attempt: 2 })
+  delete request.message
+  await f.network.onRequestEvmVerify(a, request)
+  assert.equal(a.evmWallet.verified, account.address)
+  assert.equal(a.evmWallet.verifiedContract, true)
+  release({ known: true, balance: 1 })
+  assert.deepEqual(plain(await pending), { verified: false, known: false, balance: 0 })
+})
+
+test('evm wallet: the zero address gets no sign-in challenge', async t => {
+  const f = fixture(t)
+  const a = await f.connect('a')
+  f.network.onRequestEvmNonce(a, { address: `0x${'0'.repeat(40)}`, attempt: 1 })
+  assert.deepEqual(replies(a, 'onEvmNonce'), [])
+  assert.equal(a.evmWallet.challenge, null)
+})
 
 test('evm holdings: resolves the verified address server-side and never for stale verifications', async t => {
   const asked = []

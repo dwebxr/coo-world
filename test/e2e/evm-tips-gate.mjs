@@ -10,7 +10,7 @@
 // usage: node test/e2e/evm-tips-gate.mjs [--engine=chromium] [--port=3133]
 import http from 'node:http'
 import path from 'node:path'
-import { keccak256, toHex } from 'viem'
+import { getAddress, keccak256, toHex } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
 import {
@@ -32,6 +32,10 @@ import { WireClient } from './lib/ws.mjs'
 const { encodeTransfer, encodeAddressWord, SELECTORS, TRANSFER_TOPIC, encodeUintWord } = await import(
   path.join(REPO_ROOT, 'src/core/extras/evmAbi.js')
 )
+const { ERC6492_VALIDATOR_BYTECODE } = await import(path.join(REPO_ROOT, 'src/server/erc6492.js'))
+// contract account signatures the mock chain answers for: valid, reverted, and an RPC that is rate limited
+const SMART_ACCOUNT = '0x5a11000000000000000000000000000000000005'
+const SMART_SIGNATURES = { valid: 'ab'.repeat(300), reverts: 'cd'.repeat(300), limited: 'ef'.repeat(300) }
 
 const ENGINE = arg('engine', 'chromium')
 const PORT = Number(arg('port', 3133))
@@ -109,6 +113,14 @@ function startRpc() {
       }
       if (request.method === 'eth_call') {
         const [{ to, data }] = request.params
+        // the ERC-6492 validator, run without a target (deployless)
+        if (!to && data.startsWith(ERC6492_VALIDATOR_BYTECODE)) {
+          const error = (code, message) =>
+            res.end(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code, message } }))
+          if (data.includes(SMART_SIGNATURES.valid)) return reply('0x01')
+          if (data.includes(SMART_SIGNATURES.limited)) return error(-32005, 'rate limited')
+          return error(-32000, 'execution reverted')
+        }
         if (to === NFT.toLowerCase() && data.startsWith(SELECTORS.balanceOf1155)) {
           const owner = `0x${data.slice(34, 74)}`
           const id = BigInt(`0x${data.slice(74)}`)
@@ -240,6 +252,49 @@ try {
   })
   const script = installAsset(server, path.join(REPO_ROOT, 'docs/scripting/examples/nft-gate.js'))
 
+  await step('wire: a smart-contract account signs in through the chain (EIP-1271 / 6492)', async () => {
+    const wire = await new WireClient(PORT, 'evm-smart-account').connect()
+    try {
+      const attempt = async (n, signature) => {
+        wire.send('requestEvmNonce', { address: SMART_ACCOUNT, attempt: n })
+        const { data } = await wire.waitFor(m => m.method === 'onEvmNonce' && m.data?.attempt === n)
+        const from = wire.mark()
+        const calls = rpcCalls.length
+        wire.send('requestEvmVerify', {
+          address: SMART_ACCOUNT,
+          signature: `0x${signature}`,
+          nonce: data.nonce,
+          attempt: n,
+        })
+        const status = await wire.waitFor(m => m.method === 'onEvmWalletStatus' && m.data?.attempt === n, { from })
+        const call = rpcCalls.slice(calls).find(r => r.method === 'eth_call')
+        ok(call && !call.params[0].to && call.params[1] === 'latest', 'one deployless eth_call at latest')
+        return status.data
+      }
+      eq(
+        JSON.stringify(await attempt(1, SMART_SIGNATURES.reverts)),
+        JSON.stringify({ verified: false, attempt: 1, reason: 'signature_invalid' }),
+        'a reverting validator is a wrong signature'
+      )
+      // the nonce cooldown between attempts
+      await sleep(5200)
+      eq(
+        JSON.stringify(await attempt(2, SMART_SIGNATURES.limited)),
+        JSON.stringify({ verified: false, attempt: 2, reason: 'unavailable' }),
+        'a rate-limited RPC is "unavailable", not a wrong signature'
+      )
+      await sleep(5200)
+      eq(
+        JSON.stringify(await attempt(3, SMART_SIGNATURES.valid)),
+        JSON.stringify({ verified: true, wallet: getAddress(SMART_ACCOUNT), attempt: 3, reason: 'ok' }),
+        'verified as the contract account'
+      )
+      ok(!/0x5a11|abababab/i.test(server.out), 'neither the account nor the signature is logged')
+    } finally {
+      wire.close()
+    }
+  })
+
   await step('gate: the docs example decides on the server and answers only the asker', async () => {
     const admin = await new WireClient(PORT, 'gate-admin').connect()
     const holder = await new WireClient(PORT, 'gate-holder').connect()
@@ -286,7 +341,7 @@ try {
         !visitor.inbox.some(m => m.method === 'onEntityEvent' && m.data?.[3]?.holds === true),
         'the holder answer only reached the holder'
       )
-      const call = rpcCalls.find(request => request.method === 'eth_call')
+      const call = rpcCalls.find(request => request.method === 'eth_call' && request.params[0].to)
       eq(call.params[0].to, NFT.toLowerCase(), 'contract')
       eq(call.params[1], 'latest', 'block tag')
       ok(call.params[0].data.endsWith(BigInt(TOKEN_ID).toString(16).padStart(64, '0')), 'OpenPay-style token id')

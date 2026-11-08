@@ -7,14 +7,22 @@ import { parseEvmChainIds } from '../core/extras/evmChains.js'
 const CHAIN_RECHECK_MS = 60_000
 
 // ノードが JSON-RPC の error で答えた (メソッドやタグに対応していない等)。通信の失敗とは区別する。
-// メッセージはノード由来の文字列を含み得るので持たず、数値の code だけ持つ
+// メッセージはノード由来の文字列を含み得るので持たず、数値の code と、実行が revert したかどうかだけ持つ
+// (-32000 は revert 以外の失敗にも使われるので、code だけでは区別できない)
 export class RpcError extends Error {
-  constructor(code) {
+  constructor(code, { reverted = false } = {}) {
     super('RPC error response')
     this.name = 'RpcError'
     this.code = Number.isSafeInteger(code) ? code : null
+    this.reverted = reverted === true
   }
 }
+
+// geth の 3 は常に revert。ほかのノードはメッセージか data に "revert" を含める
+const isRevert = error =>
+  error.code === 3 ||
+  (typeof error.message === 'string' && /revert/i.test(error.message.slice(0, 200))) ||
+  (typeof error.data === 'string' && /revert/i.test(error.data.slice(0, 200)))
 
 export function createEvmRpc({
   url,
@@ -78,7 +86,7 @@ export function createEvmRpc({
     }
     if (Object.hasOwn(body, 'error')) {
       if (body.error && typeof body.error === 'object' && !Object.hasOwn(body, 'result')) {
-        throw new RpcError(body.error.code)
+        throw new RpcError(body.error.code, { reverted: isRevert(body.error) })
       }
       throw new Error('invalid RPC response')
     }
@@ -95,6 +103,9 @@ export function createEvmRpc({
       result = await raw('eth_chainId', [], signal)
     } catch (err) {
       chainState = { at: now() }
+      // a JSON-RPC error here is about the chain check, not the caller's method: callers that read RpcError as
+      // "the node refused my request" must not see it
+      if (err instanceof RpcError) throw new Error('RPC chain unknown')
       throw err
     }
     if (typeof result === 'string' && /^0x[0-9a-fA-F]{1,16}$/.test(result) && Number(BigInt(result)) === chainId) {

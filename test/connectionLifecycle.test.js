@@ -256,25 +256,70 @@ test('onConnection: an invalid or absent JWT still creates an anonymous user', a
   }
 })
 
-test('onConnection: duplicate reservations and registered users kick through the writer', async () => {
+test('onConnection: a second connection while the first is still connecting is refused', async () => {
   const f = fixture({ existing: true, pause: 'livekit' })
   const running = f.run()
   const value = await f.reached.promise
-  for (const registered of [false, true]) {
-    const ws = f.peer()
-    await f.run({ authToken: 'token' }, ws)
-    assert.deepEqual(readPacket(ws.packets[0]), ['onKick', 'duplicate_user'])
-    assert.ok(f.network.writer.state(ws).queued > 0)
-    assert.equal(f.network.connecting.size, registered ? 0 : 1)
-    assert.equal(f.network.sockets.size, registered ? 1 : 0)
-    ws.finishClose()
-    assert.equal(f.limits.stats().active, 1)
-    if (!registered) {
-      f.pending.resolve(value)
-      await running
-    }
-  }
+  const ws = f.peer()
+  await f.run({ authToken: 'token' }, ws)
+  assert.deepEqual(readPacket(ws.packets[0]), ['onKick', 'duplicate_user'])
+  assert.ok(f.network.writer.state(ws).queued > 0)
+  assert.equal(f.network.connecting.size, 1)
+  assert.equal(f.network.sockets.size, 0)
+  ws.finishClose()
+  assert.equal(f.limits.stats().active, 1)
+  f.pending.resolve(value)
+  await running
   f.ws.finishClose()
+  assert.equal(f.limits.stats().active, 0)
+})
+
+test('onConnection: a registered player whose connection answers a ping keeps it; the newcomer is refused', async () => {
+  const f = fixture({ existing: true })
+  f.network.takeoverPingMs = 1000
+  await f.run()
+  const first = f.network.sockets.get('player')
+  const ws = f.peer()
+  const second = f.run({ authToken: 'token' }, ws)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(f.network.connecting.size, 1, 'the id is reserved while the old connection is asked')
+  // a third one meanwhile is refused at once
+  const third = f.peer()
+  await f.run({ authToken: 'token' }, third)
+  assert.deepEqual(readPacket(third.packets[0]), ['onKick', 'duplicate_user'])
+  f.ws.emit('pong')
+  await second
+  assert.deepEqual(readPacket(ws.packets[0]), ['onKick', 'duplicate_user'])
+  assert.ok(f.network.writer.state(ws).queued > 0)
+  assert.equal(f.network.sockets.get('player'), first, 'the live connection stays')
+  assert.equal(f.ws.terminations, 0)
+  assert.equal(f.network.connecting.size, 0)
+  ws.finishClose()
+  third.finishClose()
+  f.ws.finishClose()
+  assert.equal(f.limits.stats().active, 0)
+})
+
+test('onConnection: a registered player whose connection is silent (a suspended phone tab) gives way', async () => {
+  const f = fixture({ existing: true })
+  f.network.takeoverPingMs = 20
+  await f.run()
+  const first = f.network.sockets.get('player')
+  const firstPlayer = f.players.get('player')
+  const ws = f.peer()
+  await f.run({ authToken: 'token' }, ws)
+  assert.equal(f.ws.terminations, 1, 'the stale connection is closed')
+  assert.equal(firstPlayer.destroyed, true, 'its player left before the new one joined')
+  assert.equal(first.disconnected, true)
+  const socket = f.network.sockets.get('player')
+  assert.ok(socket && socket !== first)
+  assert.equal(socket.ws, ws)
+  assert.equal(readPacket(ws.packets[0])[0], 'onSnapshot')
+  assert.deepEqual(f.entered, ['player', 'player'])
+  assert.equal(f.network.connecting.size, 0)
+  ws.finishClose()
+  f.ws.finishClose()
+  assert.equal(f.network.sockets.size, 0)
   assert.equal(f.limits.stats().active, 0)
 })
 
@@ -286,10 +331,300 @@ test('onConnection: player limit kicks through the writer before touching the da
   await f.run()
   assert.deepEqual(readPacket(f.ws.packets[0]), ['onKick', 'player_limit'])
   assert.ok(f.network.writer.state(f.ws).queued > 0)
-  assert.deepEqual(f.calls, [])
+  // only the token is read (is this a player already here?), never the database
+  assert.deepEqual(f.calls, ['readJWT'])
   assert.equal(f.network.sockets.get('other'), other)
   f.ws.finishClose()
   assert.equal(f.limits.stats().active, 0)
+  // no token at all: refused without reading anything
+  const g = fixture()
+  g.network.world.settings.playerLimit = 1
+  g.network.sockets.set('other', {})
+  await g.run({})
+  assert.deepEqual(readPacket(g.ws.packets[0]), ['onKick', 'player_limit'])
+  assert.deepEqual(g.calls, [])
+  g.ws.finishClose()
+})
+
+test('onConnection: in a full world, a player whose old connection went silent can still come back', async () => {
+  const f = fixture({ existing: true })
+  f.network.takeoverPingMs = 20
+  f.network.world.settings.playerLimit = 1
+  await f.run()
+  const first = f.network.sockets.get('player')
+  const ws = f.peer()
+  await f.run({ authToken: 'token' }, ws)
+  assert.equal(readPacket(ws.packets[0])[0], 'onSnapshot')
+  assert.equal(first.disconnected, true)
+  assert.notEqual(f.network.sockets.get('player'), first)
+  ws.finishClose()
+  f.ws.finishClose()
+})
+
+test('onConnection: a newcomer that closes while the old connection is asked frees the id at once', async () => {
+  const f = fixture({ existing: true })
+  // long enough that only an early end (not the deadline) can finish the wait within the check below
+  f.network.takeoverPingMs = 3000
+  await f.run()
+  const first = f.network.sockets.get('player')
+  const ws = f.peer()
+  const second = f.run({ authToken: 'token' }, ws)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(f.network.connecting.size, 1)
+  assert.ok(first.probing)
+  ws.finishClose()
+  const outcome = await Promise.race([
+    second.then(() => 'ended'),
+    new Promise(resolve => setTimeout(() => resolve('still waiting'), 500)),
+  ])
+  assert.equal(outcome, 'ended', 'the wait ends with the newcomer')
+  assert.equal(f.network.connecting.size, 0, 'no minute-long reservation for a closed newcomer')
+  // the ping may still be queued: the regular check keeps leaving the socket alone until the probe's deadline
+  assert.ok(first.probing, 'still marked')
+  assert.equal(f.network.sockets.get('player'), first, 'nothing replaced')
+  // the next reload asks again (and here the old one answers)
+  const retry = f.peer()
+  const third = f.run({ authToken: 'token' }, retry)
+  await new Promise(resolve => setImmediate(resolve))
+  f.ws.emit('pong')
+  await third
+  assert.deepEqual(readPacket(retry.packets[0]), ['onKick', 'duplicate_user'])
+  assert.ok(first.probing, 'marked until its deadline, answered or not (its ping may still be queued)')
+  retry.finishClose()
+  f.ws.finishClose()
+})
+
+test('onConnection: the replacement takes the stored rank as it is after the wait, or a rank change still being stored', async () => {
+  const setup = async storedBefore => {
+    const f = fixture({ existing: true })
+    f.network.takeoverPingMs = 20
+    f.network.takeoverCloseMs = 20
+    // rows are copies, as a database returns them: a stale read cannot see a later change
+    const stored = { id: 'player', name: 'Saved', rank: storedBefore }
+    f.network.db = () => ({
+      where: () => ({ first: async () => ({ ...stored }) }),
+      insert: async () => {},
+    })
+    await f.run()
+    return { f, stored }
+  }
+  const takeOver = async (f, during) => {
+    const first = f.network.sockets.get('player')
+    const ws = f.peer()
+    const run = f.run({ authToken: 'token' }, ws)
+    await new Promise(resolve => setImmediate(resolve))
+    during?.(first)
+    await run
+    const next = f.network.sockets.get('player')
+    assert.notEqual(next, first)
+    return { next, ws }
+  }
+  const cases = [
+    ['a demotion stored meanwhile', 2, stored => (stored.rank = 1), 1],
+    ['a promotion stored meanwhile', 0, stored => (stored.rank = 2), 2],
+  ]
+  for (const [label, before, during, expected] of cases) {
+    const { f, stored } = await setup(before)
+    const { next, ws } = await takeOver(f, () => during(stored))
+    assert.equal(next.player.data.rank, expected, label)
+    ws.finishClose()
+    f.ws.finishClose()
+  }
+  {
+    // a demotion still being written: the in-world rank wins, and stays won across a second takeover
+    const { f } = await setup(2)
+    const never = new Promise(() => {})
+    const { next, ws } = await takeOver(f, first => {
+      first.player.data.rank = 0
+      first.player.rankWritesPending = 1
+      first.player.rankWrites.add(never)
+    })
+    assert.equal(next.player.data.rank, 0, 'still being written')
+    assert.equal(next.player.rankWritesPending, 1, 'the replacement carries the write')
+    const again = await takeOver(f)
+    assert.equal(again.next.player.data.rank, 0, 'a second takeover decides the same way')
+    ws.finishClose()
+    again.ws.finishClose()
+    f.ws.finishClose()
+  }
+  {
+    // a write that lands during the wait: the row read after it has it, and nothing is carried
+    const { f, stored } = await setup(2)
+    let land
+    const write = new Promise(resolve => (land = resolve))
+    f.network.takeoverCloseMs = 5000
+    const { next, ws } = await takeOver(f, first => {
+      first.player.data.rank = 0
+      first.player.rankWritesPending = 1
+      first.player.rankWrites.add(write)
+      setTimeout(() => {
+        stored.rank = 0
+        land()
+      }, 30)
+    })
+    assert.equal(next.player.data.rank, 0)
+    assert.equal(next.player.rankWritesPending, 0, 'nothing left to carry')
+    ws.finishClose()
+    f.ws.finishClose()
+  }
+})
+
+test('onConnection: a rank write that lands while the row is read, or a demotion while retiring, is not lost', async () => {
+  {
+    // the read starts before the write commits and returns the old row, but the write settles meanwhile
+    const f = fixture({ existing: true })
+    f.network.takeoverPingMs = 20
+    f.network.takeoverCloseMs = 20
+    const stored = { id: 'player', name: 'Saved', rank: 2 }
+    let reads = 0
+    let land
+    f.network.db = () => ({
+      where: () => ({
+        first: async () => {
+          const row = { ...stored }
+          // the replacement's read after the wait: the write lands while it is under way
+          if (++reads === 3) land()
+          return row
+        },
+      }),
+      insert: async () => {},
+    })
+    await f.run()
+    const first = f.network.sockets.get('player')
+    const ws = f.peer()
+    const run = f.run({ authToken: 'token' }, ws)
+    await new Promise(resolve => setImmediate(resolve))
+    first.player.data.rank = 0
+    first.player.rankWritesPending = 1
+    first.player.rankWrites.add(new Promise(resolve => (land = resolve)))
+    await run
+    const next = f.network.sockets.get('player')
+    assert.equal(reads, 3)
+    assert.equal(next.player.data.rank, 0, 'not the old row the read returned')
+    assert.equal(next.player.rankWritesPending, 0, 'nothing left to carry')
+    ws.finishClose()
+    f.ws.finishClose()
+  }
+  {
+    // an admin demotes the old player after the ping went unanswered, while its connection is being closed
+    const f = fixture({ existing: true })
+    f.network.takeoverPingMs = 20
+    f.network.takeoverCloseMs = 1000
+    const stored = { id: 'player', name: 'Saved', rank: 2 }
+    f.network.db = () => ({
+      where: () => ({ first: async () => ({ ...stored }) }),
+      insert: async () => {},
+    })
+    await f.run()
+    const first = f.network.sockets.get('player')
+    // its transport reports the close only a moment after it is terminated
+    const terminate = first.ws.terminate
+    first.ws.terminate = () => {
+      first.ws.terminations++
+      setTimeout(() => {
+        first.ws.terminations--
+        terminate()
+      }, 60)
+    }
+    const ws = f.peer()
+    const run = f.run({ authToken: 'token' }, ws)
+    setTimeout(() => {
+      assert.equal(f.network.sockets.get('player'), first, 'still registered while it closes')
+      first.player.data.rank = 0
+      first.player.rankWritesPending = 1
+      first.player.rankWrites.add(new Promise(() => {}))
+    }, 40)
+    await run
+    const next = f.network.sockets.get('player')
+    assert.notEqual(next, first)
+    assert.equal(next.player.data.rank, 0, 'the demotion made while retiring holds')
+    assert.equal(next.player.rankWritesPending, 1, 'and its write is carried')
+    ws.finishClose()
+    f.ws.finishClose()
+  }
+})
+
+test('answersPing: the mark stays until its own deadline, and a later probe keeps its own', async () => {
+  const f = fixture({ existing: true })
+  await f.run()
+  const socket = f.network.sockets.get('player')
+  const answered = f.network.answersPing(socket, 40)
+  f.ws.emit('pong')
+  assert.equal(await answered, true)
+  const firstMark = socket.probing
+  assert.ok(firstMark, 'answered, still marked')
+  await new Promise(resolve => setTimeout(resolve, 20))
+  const second = f.network.answersPing(socket, 200)
+  const secondMark = socket.probing
+  assert.notEqual(secondMark, firstMark)
+  await new Promise(resolve => setTimeout(resolve, 40))
+  assert.equal(socket.probing, secondMark, "the first probe's deadline does not clear the second's mark")
+  f.ws.emit('pong')
+  await second
+  await new Promise(resolve => setTimeout(resolve, 220))
+  assert.equal(socket.probing, null)
+  f.ws.finishClose()
+})
+
+test('playersPresent: a player being replaced counts once, whether its old connection is still there or not', () => {
+  const f = fixture()
+  f.network.sockets.set('player', {})
+  f.network.sockets.set('other', {})
+  assert.equal(f.network.playersPresent(), 2)
+  f.network.replacing = new Set(['player'])
+  assert.equal(f.network.playersPresent(), 2, 'old connection still registered: not counted twice')
+  f.network.sockets.delete('player')
+  assert.equal(f.network.playersPresent(), 2, 'old connection gone: its place is kept')
+  f.network.replacing.delete('player')
+  assert.equal(f.network.playersPresent(), 1)
+})
+
+test('onConnection: in a full world, nobody else can take the place of a player being replaced', async () => {
+  const f = fixture({ existing: true })
+  f.network.takeoverPingMs = 20
+  f.network.world.settings.playerLimit = 1
+  const stored = { id: 'player', name: 'Saved', rank: 0 }
+  let lookups = 0
+  let release
+  const held = new Promise(resolve => (release = resolve))
+  f.network.db = () => ({
+    where: () => ({
+      first: async () => {
+        // the replacement's second read waits here, after the old connection has been closed
+        if (++lookups === 3) await held
+        return { ...stored }
+      },
+    }),
+    insert: async () => {},
+  })
+  await f.run()
+  const ws = f.peer()
+  const replacement = f.run({ authToken: 'token' }, ws)
+  for (let i = 0; i < 50 && lookups < 3; i++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(lookups, 3, 'the replacement is reading the user again')
+  assert.equal(f.network.sockets.size, 0, 'the old connection is gone')
+  const stranger = f.peer()
+  await f.run({}, stranger)
+  assert.deepEqual(readPacket(stranger.packets[0]), ['onKick', 'player_limit'], 'the place is kept')
+  release()
+  await replacement
+  assert.equal(readPacket(ws.packets[0])[0], 'onSnapshot')
+  assert.equal(f.network.sockets.size, 1)
+  assert.equal(f.network.replacing.size, 0)
+  stranger.finishClose()
+  ws.finishClose()
+  f.ws.finishClose()
+})
+
+test('checkSockets: a connection being asked by a takeover is left to it', () => {
+  const f = fixture()
+  const terminated = []
+  const probing = { probing: true, pingPending: true, alive: false, disconnect: () => terminated.push('probing') }
+  const stale = { probing: false, pingPending: true, alive: false, disconnect: () => terminated.push('stale') }
+  f.network.sockets.set('a', probing)
+  f.network.sockets.set('b', stale)
+  f.network.checkSockets()
+  assert.deepEqual(terminated, ['stale'])
 })
 
 test('onConnection: oversized and refused snapshots clean up the player before transport close', async () => {

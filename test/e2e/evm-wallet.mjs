@@ -2,10 +2,13 @@
 // with a fake EIP-6963 wallet whose signatures are made in Node.
 // usage: node test/e2e/evm-wallet.mjs [--engine=chromium] [--port=3131]
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+// the ws package can stop answering pings (Node's own WebSocket always answers), like a suspended phone tab
+import WebSocket from 'ws'
 import { privateKeyToAccount } from 'viem/accounts'
 import { parseSiweMessage } from 'viem/siwe'
 
-import { TIMEOUT_SCALE, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
+import { REPO_ROOT, TIMEOUT_SCALE, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
 import { launchBrowser, saveArtifacts } from './lib/browser.mjs'
 import { startServer } from './lib/server.mjs'
 import { WireClient } from './lib/ws.mjs'
@@ -18,6 +21,8 @@ const other = privateKeyToAccount(`0x${'22'.repeat(32)}`)
 const short = `${account.address.slice(0, 6)}…${account.address.slice(-4)}`
 const WC_PROJECT_ID = 'e2e0'.repeat(8)
 const WC_URI = `wc:${'ab'.repeat(32)}@2?relay-protocol=irn&symKey=${'cd'.repeat(32)}`
+
+const { PROTOCOL_VERSION, readPacket } = await import(pathToFileURL(path.join(REPO_ROOT, 'src/core/packets.js')))
 
 const { step, finish } = createResults(`evm-wallet (${ENGINE})`)
 let server
@@ -116,6 +121,57 @@ try {
       wire.close()
     }
   })
+
+  // A phone that opens its wallet app often comes back as a reload while its old connection still looks open
+  // to the server: iOS suspends or drops the tab without closing the socket.
+  await step(
+    'wire: a connection that went silent (no pongs) gives way to the same player; a live one does not',
+    async () => {
+      const first = await new WireClient(PORT, 'evm-phone').connect()
+      const token = first.authToken
+      let silent
+      try {
+        // a live window: the newcomer is refused and the first one stays
+        const second = await new WireClient(PORT, 'evm-phone-2').open('evm-phone-2', { authToken: token })
+        const kick = await second.waitFor(m => m.method === 'onKick', { timeout: 15000 * TIMEOUT_SCALE })
+        eq(kick.data, 'duplicate_user', 'live window keeps the player')
+        ok(first.isOpen, 'first connection still open')
+        second.close()
+        first.close()
+        const firstClosed = await Promise.race([first.closed, sleep(10000 * TIMEOUT_SCALE).then(() => 'still open')])
+        ok(firstClosed !== 'still open', 'the first connection closed')
+        // the server lets the player go once the close arrives
+        await sleep(500)
+        // a suspended tab: connected, but it never answers a ping
+        const url = `ws://localhost:${PORT}/ws?authToken=${encodeURIComponent(token)}&name=evm-phone&v=${PROTOCOL_VERSION}`
+        silent = new WebSocket(url, { autoPong: false })
+        const silentClosed = new Promise(resolve => silent.once('close', code => resolve(code)))
+        // bounded: a refused or dropped connection fails the step instead of hanging it
+        const snapshot = new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('no snapshot for the silent client')), 20000 * TIMEOUT_SCALE)
+          silent.on('message', data => {
+            if (readPacket(new Uint8Array(data))[0] !== 'onSnapshot') return
+            clearTimeout(timer)
+            resolve()
+          })
+          silent.once('close', () => reject(new Error('the silent client was closed before its snapshot')))
+        })
+        await snapshot
+        const before = server.count('a silent connection gave way')
+        // the reload: the same player joins after one unanswered ping, and the silent connection is closed
+        const reload = await new WireClient(PORT, 'evm-phone-3').connect('evm-phone', { authToken: token })
+        eq(reload.id, first.id, 'same player')
+        // replaced by the takeover (the regular heartbeat check does not log this line)
+        eq(server.count('a silent connection gave way'), before + 1, 'replaced by the takeover')
+        const closed = await Promise.race([silentClosed, sleep(10000 * TIMEOUT_SCALE).then(() => 'still open')])
+        ok(closed !== 'still open', 'the silent connection was closed')
+        reload.close()
+      } finally {
+        first.close()
+        silent?.terminate()
+      }
+    }
+  )
 
   browser = await launchBrowser(ENGINE)
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })

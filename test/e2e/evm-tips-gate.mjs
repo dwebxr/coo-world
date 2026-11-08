@@ -3,18 +3,33 @@
 //   answers only the asking player (holder, non-holder, unverified, and a re-check after a revoke).
 // - Tips in two browsers with fake EIP-6963 wallets signing in Node: the recipient opts in, the sender sees a
 //   Tip button, and the wallet is asked for exactly one ERC-20 transfer to the recipient's verified address.
+// - Confirmation (P2b): the fake wallet's transaction gets a receipt and a finalized block from the mock RPC;
+//   the server confirms it, announces it in chat and fires the server-script `tip` event.
 // usage: node test/e2e/evm-tips-gate.mjs [--engine=chromium] [--port=3133]
 import http from 'node:http'
 import path from 'node:path'
 import { keccak256, toHex } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
-import { REPO_ROOT, TIMEOUT_SCALE, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
+import {
+  APPS_DIR,
+  REPO_ROOT,
+  TIMEOUT_SCALE,
+  arg,
+  createResults,
+  ensureOut,
+  eq,
+  ok,
+  sleep,
+  waitUntil,
+} from './lib/common.mjs'
 import { launchBrowser, saveArtifacts } from './lib/browser.mjs'
 import { installAsset, startServer } from './lib/server.mjs'
 import { WireClient } from './lib/ws.mjs'
 
-const { encodeTransfer, SELECTORS, encodeUintWord } = await import(path.join(REPO_ROOT, 'src/core/extras/evmAbi.js'))
+const { encodeTransfer, encodeAddressWord, SELECTORS, TRANSFER_TOPIC, encodeUintWord } = await import(
+  path.join(REPO_ROOT, 'src/core/extras/evmAbi.js')
+)
 
 const ENGINE = arg('engine', 'chromium')
 const PORT = Number(arg('port', 3133))
@@ -27,15 +42,50 @@ const alice = privateKeyToAccount(`0x${'11'.repeat(32)}`)
 const bob = privateKeyToAccount(`0x${'22'.repeat(32)}`)
 const carol = privateKeyToAccount(`0x${'33'.repeat(32)}`)
 const holders = new Map([[alice.address.toLowerCase(), 2n]])
+// transactions the fake wallets sent: hash → { receipt, block }. Each lands in its own block, finalized at once.
+const chainTxs = new Map()
+let nextTx = 0
+function mine(tx) {
+  nextTx++
+  const hash = `0x${'ab'.repeat(30)}${nextTx.toString(16).padStart(4, '0')}`
+  const number = `0x${(100 + nextTx).toString(16)}`
+  const blockHash = `0x${'cd'.repeat(30)}${nextTx.toString(16).padStart(4, '0')}`
+  const words = tx.data.slice(10)
+  chainTxs.set(hash, {
+    receipt: {
+      transactionHash: hash,
+      status: '0x1',
+      blockNumber: number,
+      blockHash,
+      from: tx.from.toLowerCase(),
+      to: tx.to.toLowerCase(),
+      logs: [
+        {
+          address: tx.to.toLowerCase(),
+          topics: [TRANSFER_TOPIC, `0x${encodeAddressWord(tx.from)}`, `0x${words.slice(0, 64)}`],
+          data: `0x${words.slice(64, 128)}`,
+          logIndex: '0x0',
+          transactionHash: hash,
+          blockHash,
+          removed: false,
+        },
+      ],
+    },
+    block: { number, hash: blockHash, timestamp: `0x${Math.floor(Date.now() / 1000).toString(16)}` },
+  })
+  return hash
+}
 
 const { step, finish } = createResults(`evm-tips-gate (${ENGINE})`)
 const rpcCalls = []
 let rpc
 let server
 let browser
+let observer
 const pages = []
 
-// Mock Polygon RPC: chain id, and ERC-1155 balanceOf(owner, id) for NFT from the holders table.
+// Mock Polygon RPC: chain id, ERC-1155 balanceOf(owner, id) for NFT from the holders table, and receipts,
+// blocks and the finalized block for the transactions the fake wallets sent.
 function startRpc() {
   rpc = http.createServer((req, res) => {
     let body = ''
@@ -45,6 +95,15 @@ function startRpc() {
       rpcCalls.push(request)
       const reply = result => res.end(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }))
       if (request.method === 'eth_chainId') return reply('0x89')
+      if (request.method === 'eth_getTransactionReceipt') return reply(chainTxs.get(request.params[0])?.receipt ?? null)
+      if (request.method === 'eth_getTransactionByHash') {
+        return reply(chainTxs.has(request.params[0]) ? { hash: request.params[0] } : null)
+      }
+      if (request.method === 'eth_getBlockByNumber') {
+        if (request.params[0] === 'finalized') return reply({ number: `0x${(100 + nextTx).toString(16)}` })
+        const found = [...chainTxs.values()].find(entry => entry.block.number === request.params[0])
+        return reply(found?.block ?? null)
+      }
       if (request.method === 'eth_call') {
         const [{ to, data }] = request.params
         if (to === NFT.toLowerCase() && data.startsWith(SELECTORS.balanceOf1155)) {
@@ -132,7 +191,7 @@ async function openPage(account, name) {
   )
   await page.exposeFunction('__evmSend', tx => {
     entry.sent.push(tx)
-    return `0x${'ab'.repeat(31)}${String(entry.sent.length).padStart(2, '0')}`
+    return mine(tx)
   })
   await page.addInitScript({
     content: `(() => {
@@ -240,6 +299,15 @@ try {
     }
   })
 
+  // A third player who only watches: gets the chat announcement and, through a probe app, the `tip` event.
+  observer = await new WireClient(PORT, 'tip-observer').connect()
+  await observer.becomeAdmin()
+  observer.installApp({
+    id: 'tip-listener',
+    script: installAsset(server, path.join(APPS_DIR, 'tip-listener.js')),
+    model: 'asset://ai.glb',
+  })
+
   browser = await launchBrowser(ENGINE)
   const sender = await openWallet(alice, 'Alice')
   const recipient = await openWallet(bob, 'Bob')
@@ -290,6 +358,58 @@ try {
     eq(recipient.sent.length, 0, 'recipient wallet untouched')
   })
 
+  await step('tips: the server confirms the transfer on chain, announces it and tells server scripts', async () => {
+    const page = sender.page
+    await page
+      .locator('.tip-confirmation.confirmed')
+      .filter({ hasText: 'Confirmed on chain.' })
+      .waitFor({ timeout: 30000 * TIMEOUT_SCALE })
+    await page.screenshot({ path: `${PREFIX}-tip-confirmed.png` })
+    const [hash] = chainTxs.keys()
+    ok(
+      rpcCalls.some(r => r.method === 'eth_getTransactionReceipt' && r.params[0] === hash),
+      'receipt read'
+    )
+    ok(
+      rpcCalls.some(r => r.method === 'eth_getBlockByNumber' && r.params[0] === 'finalized'),
+      'finality read'
+    )
+    // everyone hears it once, as a system message with names only
+    const announced = await observer.waitFor(
+      m => m.method === 'onChatAdded' && m.data?.body === 'Alice tipped Bob 100 JPYC',
+      { timeout: 30000 * TIMEOUT_SCALE }
+    )
+    eq(announced.data.fromId ?? null, null, 'system message')
+    await recipient.page.waitForFunction(
+      () => window.world.chat.msgs.some(msg => msg.body === 'Alice tipped Bob 100 JPYC' && msg.fromId == null),
+      null,
+      { timeout: 30000 * TIMEOUT_SCALE }
+    )
+    // the server-script event has the amount and the players, not the addresses or the hash
+    const seen = await observer.waitFor(m => m.method === 'onEntityEvent' && m.data?.[2] === 'tip-seen', {
+      timeout: 30000 * TIMEOUT_SCALE,
+    })
+    const event = seen.data[3]
+    eq(event.frozen, true, 'frozen')
+    eq(event.token, 'JPYC')
+    eq(event.amount, '100')
+    eq(event.units, (100n * 10n ** 18n).toString())
+    eq(event.decimals, 18)
+    eq(event.chainId, 137)
+    eq(event.toPlayerId, await recipient.page.evaluate(() => window.world.entities.player.data.id), 'recipient id')
+    eq(event.fromPlayerId, await page.evaluate(() => window.world.entities.player.data.id), 'sender id')
+    const text = JSON.stringify(event).toLowerCase()
+    ok(!text.includes(alice.address.slice(2).toLowerCase()), 'no sender address')
+    ok(!text.includes(bob.address.slice(2).toLowerCase()), 'no recipient address')
+    ok(!text.includes(hash.slice(2)), 'no transaction hash')
+    await sleep(500)
+    eq(
+      observer.inbox.filter(m => m.method === 'onChatAdded' && m.data?.body === 'Alice tipped Bob 100 JPYC').length,
+      1,
+      'announced once'
+    )
+  })
+
   await step('tips: opting out removes the Tip button', async () => {
     await sleep(1100)
     await recipient.page.getByLabel(/Receive tips/).click()
@@ -325,6 +445,7 @@ try {
   for (const [index, entry] of pages.entries()) {
     await saveArtifacts({ ...entry, prefix: `${PREFIX}-${index}` }).catch(() => {})
   }
+  observer?.close()
   await browser?.close().catch(() => {})
   await server?.stop().catch(() => {})
   rpc?.close()

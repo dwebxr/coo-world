@@ -169,8 +169,19 @@ PUBLIC_EVM_TIP_TOKENS=JPYC,USDC   # Polygon (137) built-ins; or SYMBOL:0xaddress
 
 - A verified player can switch on **Receive tips** in the EVM tab. Others then see a tip button next to that player in the Players list; only a yes/no flag is shared, never the address
 - Sending a tip asks the server for the recipient's verified address (rate limited, verified senders only), then the sender's own wallet sends an ERC-20 transfer straight to the recipient. The world never holds funds, takes no fee and does not convert anything
-- Minimum amounts: 1 JPYC, 0.01 USDC. Tips are not yet confirmed on-chain or announced in chat (planned)
-- Not legal advice: check the rules that apply to you before enabling tips in production
+- Minimum amounts: 1 JPYC, 0.01 USDC
+- With a server-side `EVM_RPC_URL_137`, the sender's client reports the transaction and the server confirms it on chain:
+  - It looks for the token's `Transfer` log from the sender's verified address to the recipient's, with the exact amount.
+  - It waits for the `finalized` block and checks that the transaction is not older than the tip request.
+  - It then announces "Alice tipped Bob 100 JPYC" in chat and fires the `tip` event for server scripts.
+  - Announcements are paced: at most 3 at once then one every 3 s, one per sender every 30 s. Otherwise only the recipient is told.
+- Without that RPC, tips are still sent but never confirmed or announced
+- Not confirmed:
+  - an RPC that does not answer the `finalized` tag
+  - tokens that take a fee on transfer
+  - a second announcement of the same transaction
+- After a server restart, a transaction confirmed in the last ~30 s before the restart could be announced again
+- Not legal advice: check the rules that apply to you before enabling tips in production. Using tips to unlock paid perks, prizes or rankings can make the world operator a seller
 
 ### NFT checks for apps
 

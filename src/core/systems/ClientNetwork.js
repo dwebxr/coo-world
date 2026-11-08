@@ -313,6 +313,10 @@ export class ClientNetwork extends System {
     this.world.emit('evm:tipIntent', data)
   }
 
+  onEvmTipStatus = data => {
+    this.world.emit('evm:tipStatus', data)
+  }
+
   disposeWallet(reason) {
     this.world.solana?.dispose(reason)
     this.world.evm?.dispose(reason)

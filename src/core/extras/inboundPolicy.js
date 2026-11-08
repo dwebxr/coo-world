@@ -11,6 +11,7 @@ export const INBOUND_BYTE_LIMITS = Object.freeze({
   revokeEvmWallet: 16,
   setEvmTipReceive: 32,
   requestEvmTipIntent: 192,
+  evmTip: 160,
   entityEvent: 64 * 1024,
   blueprintAdded: 64 * 1024,
   blueprintModified: 64 * 1024,

@@ -24,6 +24,7 @@ const methods = [
   'enqueue',
   'flush',
   'onDisconnect',
+  'dropTipTickets',
   'checkSockets',
   'onEntityEvent',
   'onBlueprintModified',

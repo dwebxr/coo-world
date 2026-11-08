@@ -11,6 +11,7 @@ export const internalEvents = [
   'leave',
   'wallet',
   'evmWallet',
+  'tip',
   'chat',
   'command',
   'health',

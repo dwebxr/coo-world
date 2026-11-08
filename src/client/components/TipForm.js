@@ -1,5 +1,6 @@
 import { css } from '@firebolt-dev/css'
 import { useEffect, useRef, useState } from 'react'
+import { evmChainName } from './walletPanelText'
 
 // 投げゼニのフォーム (Players 一覧の行の下に開く)。送金はウォレットから相手へ直接で、この世界は資金を預からない
 const REASONS = {
@@ -20,6 +21,37 @@ export const tipReasonText = (reason, token) => {
   return REASONS[reason] ?? 'Could not send the tip. Try again.'
 }
 
+// 送金後の確定確認 (P2b)。サーバーがチェーンで確かめ、チケットごとに evmTipStatus を返す
+const CONFIRM_WAIT_MS = 6 * 60_000
+const NOT_COUNTED = {
+  reverted: 'the transfer failed on chain.',
+  no_transfer: 'this transaction does not contain the tip.',
+  too_old: 'this transaction is older than the tip request.',
+  duplicate: 'this transaction was already counted.',
+  unknown_ticket: 'the tip request expired.',
+  bad_tx: 'the wallet returned an invalid transaction.',
+}
+const NOT_CONFIRMED = {
+  no_rpc: 'this world does not confirm tips.',
+  timeout: 'it was not confirmed in time.',
+  not_found: 'the network has not seen this transaction yet.',
+  no_finality: 'this world cannot confirm tips right now.',
+  busy: 'many tips are being confirmed.',
+  left: 'the world lost track of it.',
+  unavailable: 'the world could not be told about it.',
+}
+// 「もう一度確かめる」を出す理由 (サーバーも 1 回だけ受ける)
+const RECHECKABLE = new Set(['timeout', 'not_found', 'no_finality', 'busy'])
+
+export const tipConfirmText = (confirmation, chainName = 'chain') => {
+  if (!confirmation) return ''
+  const { state, reason } = confirmation
+  if (state === 'watching') return `Confirming on ${chainName}…`
+  if (state === 'confirmed') return 'Confirmed on chain.'
+  if (state === 'failed') return `Not counted: ${NOT_COUNTED[reason] ?? 'it could not be confirmed.'}`
+  return `Sent, but not confirmed: ${NOT_CONFIRMED[reason] ?? 'it could not be confirmed.'}`
+}
+
 // 入力中の文字列が送れる金額かどうか (確定の判定はサーバーの tip intent と evm-integration が行う)
 const looksLikeAmount = amount => /^\d{1,18}(\.\d{1,18})?$/.test(amount)
 
@@ -30,10 +62,43 @@ export function TipForm({ world, player, onClose }) {
   // idle → confirm → sending → sent / error
   const [step, setStep] = useState('idle')
   const [result, setResult] = useState(null)
+  // 送金後の確定確認: { state: watching | confirmed | failed | unverified, reason? }
+  const [confirmation, setConfirmation] = useState(null)
+  const [rechecked, setRechecked] = useState(false)
   const mounted = useRef(true)
   useEffect(() => () => (mounted.current = false), [])
   const token = tokens.find(entry => entry.symbol === symbol)
   const name = player.data.name
+  const chainName = evmChainName(world.evm?.getConfig().chainIds[0])
+  const ticket = result?.ticket ?? null
+
+  // この送金のチケットの状態だけを受ける
+  useEffect(() => {
+    if (!ticket) return
+    const onStatus = data => {
+      if (data?.ticket !== ticket || typeof data.state !== 'string') return
+      setConfirmation({ state: data.state, reason: typeof data.reason === 'string' ? data.reason : undefined })
+    }
+    // 購読の前に届いていた状態 (確定が速い場合) も拾う
+    const latest = world.evm?.getTipStatus(ticket)
+    if (latest) onStatus(latest)
+    world.on('evm:tipStatus', onStatus)
+    return () => world.off('evm:tipStatus', onStatus)
+  }, [world, ticket])
+
+  // 確認中のまま返事が来なければ、ここで未確認にする
+  const watching = confirmation?.state === 'watching'
+  useEffect(() => {
+    if (!watching) return
+    const timer = setTimeout(() => setConfirmation({ state: 'unverified', reason: 'timeout' }), CONFIRM_WAIT_MS)
+    return () => clearTimeout(timer)
+  }, [watching])
+
+  const recheck = () => {
+    setRechecked(true)
+    const sent = world.evm.recheckTip(ticket, result.txHash)
+    setConfirmation(sent ? { state: 'watching' } : { state: 'unverified', reason: 'unavailable' })
+  }
 
   const send = async () => {
     setStep('sending')
@@ -46,6 +111,12 @@ export function TipForm({ world, player, onClose }) {
     if (!mounted.current) return
     setResult(outcome)
     setStep(outcome?.ok ? 'sent' : 'error')
+    if (outcome?.ok) {
+      // チケットが無いのは確認しない (古い) サーバー。報告できなければ未確認
+      if (!outcome.ticket) setConfirmation({ state: 'unverified', reason: 'no_rpc' })
+      else if (!outcome.reported) setConfirmation({ state: 'unverified', reason: 'unavailable' })
+      else setConfirmation(current => current ?? world.evm.getTipStatus(outcome.ticket) ?? { state: 'watching' })
+    }
   }
 
   return (
@@ -102,6 +173,16 @@ export function TipForm({ world, player, onClose }) {
         .tip-note {
           color: rgba(255, 255, 255, 0.6);
           font-size: 0.75rem;
+        }
+        .tip-confirmation {
+          color: rgba(255, 255, 255, 0.85);
+          &.confirmed {
+            color: #86efac;
+          }
+          &.failed,
+          &.unverified {
+            color: #fca5a5;
+          }
         }
         a {
           color: #93c5fd;
@@ -178,8 +259,18 @@ export function TipForm({ world, player, onClose }) {
               The wallet changed network while sending. Check this transaction in your wallet.
             </div>
           )}
-          <div className='tip-note'>This world does not confirm or announce tips yet.</div>
+          {confirmation && (
+            <div className={`tip-confirmation ${confirmation.state}`} aria-live='polite'>
+              {tipConfirmText(confirmation, chainName)}
+            </div>
+          )}
+          {confirmation?.state === 'confirmed' && <div className='tip-note'>Confirmed tips are announced in chat.</div>}
           <div className='tip-row'>
+            {confirmation?.state === 'unverified' && RECHECKABLE.has(confirmation.reason) && !rechecked && (
+              <button type='button' onClick={recheck}>
+                Check again
+              </button>
+            )}
             <button type='button' onClick={onClose}>
               Close
             </button>

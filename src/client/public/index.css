@@ -211,11 +211,22 @@ a {
   top: 50%;
   transform: translate(-50%, -50%);
 }
-/* the app runs but is slow: at the bottom, out of the way */
+/* the app runs but is slow: small, at the bottom, out of the way */
 .boot-error.notice {
   bottom: 1rem;
   transform: translateX(-50%);
+  width: min(24rem, calc(100vw - 2rem));
+  max-height: 35vh;
+  padding: 0.75rem 1rem;
+  font-size: 0.8125rem;
+  background: rgb(22 22 28 / 0.85);
+}
+.boot-error.notice .boot-error-title {
   font-size: 0.875rem;
+  margin-bottom: 0.25rem;
+}
+.boot-error.notice .boot-error-actions {
+  margin-top: 0.5rem;
 }
 .boot-error-title {
   font-size: 1.0625rem;

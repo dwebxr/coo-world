@@ -66,9 +66,12 @@
         var later = function (run, ms) {
           timers.push(setTimeout(run, ms))
         }
+        var watch = null
         var stop = function () {
           for (var i = 0; i < timers.length; i++) clearTimeout(timers[i])
           timers = []
+          if (watch) clearInterval(watch)
+          watch = null
         }
         var remove = function () {
           if (box && box.parentNode) box.parentNode.removeChild(box)
@@ -129,10 +132,31 @@
           box.addEventListener('keydown', keep)
           box.addEventListener('keyup', keep)
           document.body.appendChild(box)
-          if (kind === 'blocking') reload.focus()
+          // the world is not ready yet, so taking focus here does not take it from the game
+          reload.focus()
+          // if the app starts drawing after all, move the message out of the way
+          if (kind === 'blocking' && !watch) {
+            watch = setInterval(function () {
+              if (!box || !started()) return
+              clearInterval(watch)
+              watch = null
+              remove()
+              show('notice', 'The world is taking long to start.', detail())
+            }, 1000)
+          }
+        }
+        // the last SES removal names the culprit only when the error came before lockdown finished (after it,
+        // the intrinsics are frozen and that removal had succeeded)
+        var duringLockdown = false
+        var lockedDown = function () {
+          try {
+            return Object.isFrozen(Object.prototype)
+          } catch (err) {
+            return false
+          }
         }
         var detail = function () {
-          if (firstError) return lastRemoval ? firstError + '\n(' + lastRemoval + ')' : firstError
+          if (firstError) return duringLockdown && lastRemoval ? firstError + '\n(' + lastRemoval + ')' : firstError
           return opaqueError
             ? 'Script error. (from a script of another origin, for example one added by the browser)'
             : ''
@@ -153,11 +177,13 @@
           }
           if (firstError) return
           firstError = text(event.error) || event.message || 'Unknown error'
+          duringLockdown = !lockedDown()
           later(afterError, ERROR_WAIT)
         })
         window.addEventListener('unhandledrejection', function (event) {
           if (ready || dismissed || firstError) return
           firstError = text(event.reason) || 'Unhandled rejection'
+          duringLockdown = !lockedDown()
           later(afterError, ERROR_WAIT)
         })
         later(whenSlow, SLOW_WAIT)

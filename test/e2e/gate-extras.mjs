@@ -297,7 +297,8 @@ try {
   })
 
   await step('boot watchdog: a world that cannot start says why instead of staying black', async () => {
-    // the main page came up: no message, and a later error does not bring one (8 s default wait)
+    // the main page came up minutes ago: without the app's real ready() call its 60 s notice would be showing,
+    // so no message here proves the ready path end to end; a later error does not bring one either (8 s wait)
     ok(await page.evaluate(() => !document.querySelector('.boot-error')), 'no message on a page that started')
     const linesBefore = consoleLines.length
     await page.evaluate(() =>
@@ -315,6 +316,8 @@ try {
     const kept = consoleLines.slice(linesBefore).filter(line => !probeLine(line))
     consoleLines.splice(linesBefore, consoleLines.length - linesBefore, ...kept)
 
+    // Safari moves Tab between form fields only; Option+Tab reaches buttons
+    const TAB = ENGINE === 'webkit' ? 'Alt+Tab' : 'Tab'
     const fresh = async (timings, prepare) => {
       const context = await browser.newContext()
       const probe = await context.newPage()
@@ -335,7 +338,7 @@ try {
     // 1. SES lockdown fails (an undeletable property on an intrinsic, as a script added by the browser could
     //    leave): nothing is drawn, so the message comes in the middle with the cause, and Reload has focus
     {
-      const { context, probe } = await fresh({ error: 500, slow: 60000 }, p =>
+      const { context, probe } = await fresh({ error: 500, slow: 4000 }, p =>
         p.addInitScript(() => {
           Object.defineProperty(Array.prototype, '__bootProbe', { value: 1, configurable: false })
         })
@@ -351,7 +354,12 @@ try {
         ok(detail.includes('__bootProbe'), `culprit named: ${detail}`)
         ok((await box.textContent()).includes('Brave Shields'), 'content blocker hint')
         eq(await probe.evaluate(() => document.activeElement?.textContent), 'Reload', 'Reload has focus')
-        await closeStaysClosed(probe)
+        // keyboard only: Tab to Close, Enter; it stays closed past both deadlines (error 0.5 s, slow 4 s)
+        await probe.keyboard.press(TAB)
+        eq(await probe.evaluate(() => document.activeElement?.textContent), 'Close', 'Tab reaches Close')
+        await probe.keyboard.press('Enter')
+        await sleep(5000)
+        ok(await probe.evaluate(() => !document.querySelector('.boot-error')), 'closed by keyboard, for good')
       } finally {
         await context.close()
       }
@@ -391,6 +399,10 @@ try {
         const notice = probe.locator('.boot-error.notice')
         await notice.waitFor({ state: 'visible', timeout: 30000 })
         eq(await notice.locator('.boot-error-title').textContent(), 'The world is taking long to start.', 'notice')
+        // the game's controls are up and take Tab on window; inside the notice the keys still work
+        eq(await probe.evaluate(() => document.activeElement?.textContent), 'Reload', 'notice Reload has focus')
+        await probe.keyboard.press(TAB)
+        eq(await probe.evaluate(() => document.activeElement?.textContent), 'Close', 'Tab reaches Close in the notice')
         await probe.evaluate(() => window.__worldBoot.ready())
         ok(await probe.evaluate(() => !document.querySelector('.boot-error')), 'removed when ready')
       } finally {

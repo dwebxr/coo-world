@@ -86,13 +86,44 @@ async function gateResult(wire, timeout = 10000) {
   return m.data[3]
 }
 
+const isConnected = page => page.evaluate(() => window.world?.network?.ws?.readyState === 1).catch(() => false)
+
+// A page that loads while another one renders can lose its socket on a slow runner: the busy page stops
+// answering pings and the server drops it (token-gate.mjs retries its admin page for the same reason). A
+// dropped page is closed and opened again, up to three times; any other failure is reported as it is.
 async function openWallet(account, name) {
+  for (let attempt = 1; ; attempt++) {
+    const entry = await openPage(account, name)
+    try {
+      if (await isConnected(entry.page)) {
+        await connectWallet(entry)
+        if (await isConnected(entry.page)) return entry
+      }
+    } catch (err) {
+      if (await isConnected(entry.page)) throw err
+    }
+    pages.splice(pages.indexOf(entry), 1)
+    await saveArtifacts({ ...entry, prefix: `${PREFIX}-${name}-dropped-${attempt}` }).catch(() => {})
+    await entry.context.close().catch(() => {})
+    if (attempt === 3) throw new Error(`${name}'s page lost its socket while loading three times`)
+    console.log(`note  ${name}'s page lost its socket while loading (attempt ${attempt}); opening it again`)
+  }
+}
+
+async function connectWallet({ page }) {
+  await page.getByRole('button', { name: 'Connect Wallet', exact: true }).click()
+  await page.waitForFunction(() => document.querySelector('.evm-wallet-status')?.textContent === 'Verified', null, {
+    timeout: 30000 * TIMEOUT_SCALE,
+  })
+}
+
+async function openPage(account, name) {
   // Two pages render at once. A small viewport keeps the software renderer's share of each frame low, as in
-  // token-gate.mjs: on a slow runner a busy page stops reading its socket and the server drops it.
+  // token-gate.mjs.
   const context = await browser.newContext({ viewport: { width: 480, height: 320 }, serviceWorkers: 'block' })
   const page = await context.newPage()
   page.setDefaultTimeout(30000 * TIMEOUT_SCALE)
-  const entry = { page, account, consoleLines: [], pageErrors: [], sent: [] }
+  const entry = { page, context, account, consoleLines: [], pageErrors: [], sent: [] }
   pages.push(entry)
   page.on('console', m => entry.consoleLines.push(`[${m.type()}] ${m.text()}`))
   page.on('pageerror', e => entry.pageErrors.push(String(e)))
@@ -131,10 +162,6 @@ async function openWallet(account, name) {
   })
   await page.evaluate(name => window.world.entities.player.setName(name), name)
   await page.locator('#solana-wallet-panel').waitFor({ state: 'visible' })
-  await page.getByRole('button', { name: 'Connect Wallet', exact: true }).click()
-  await page.waitForFunction(() => document.querySelector('.evm-wallet-status')?.textContent === 'Verified', null, {
-    timeout: 30000 * TIMEOUT_SCALE,
-  })
   return entry
 }
 

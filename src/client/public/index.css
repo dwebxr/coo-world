@@ -220,6 +220,11 @@ a {
   padding: 0.75rem 1rem;
   font-size: 0.8125rem;
   background: rgb(22 22 28 / 0.85);
+  /* only its buttons take the pointer: the world under it stays usable */
+  pointer-events: none;
+}
+.boot-error.notice button {
+  pointer-events: auto;
 }
 .boot-error.notice .boot-error-title {
   font-size: 0.875rem;

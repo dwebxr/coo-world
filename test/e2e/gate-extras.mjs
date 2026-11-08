@@ -391,6 +391,32 @@ try {
       }
     }
 
+    // 4. nothing is drawn at the slow mark (the app script arrives late), then the app draws: the message in the
+    //    middle moves to the bottom notice, with no error from the watchdog itself
+    {
+      const probeErrors = []
+      const { context, probe } = await fresh({ slow: 1000 }, async p => {
+        p.on('pageerror', error => probeErrors.push(String(error)))
+        await p.routeWebSocket(/\/ws/, () => {})
+        let delayed = false
+        await p.route(/\/index-[^/]*\.js(\?|$)/, async route => {
+          if (!delayed) {
+            delayed = true
+            await sleep(3000)
+          }
+          await route.continue()
+        })
+      })
+      try {
+        await probe.locator('.boot-error.blocking').waitFor({ state: 'visible', timeout: 15000 })
+        await probe.locator('.boot-error.notice').waitFor({ state: 'visible', timeout: 30000 })
+        ok(await probe.evaluate(() => !document.querySelector('.boot-error.blocking')), 'moved out of the middle')
+        eq(probeErrors.length, 0, probeErrors.join(' | '))
+      } finally {
+        await context.close()
+      }
+    }
+
     // 3. the app runs but has not finished at the slow mark (its socket never answers): a notice at the bottom,
     //    out of the way, removed when the world is ready
     {

@@ -73,8 +73,19 @@
           if (watch) clearInterval(watch)
           watch = null
         }
+        var previousFocus = null
         var remove = function () {
-          if (box && box.parentNode) box.parentNode.removeChild(box)
+          if (!box) return
+          // give focus back if it is still in the message
+          if (box.contains(document.activeElement)) {
+            try {
+              if (previousFocus && previousFocus.focus && previousFocus !== document.body) previousFocus.focus()
+              else document.activeElement.blur()
+            } catch (err) {
+              // nothing to restore
+            }
+          }
+          if (box.parentNode) box.parentNode.removeChild(box)
           box = null
         }
         var started = function () {
@@ -86,7 +97,7 @@
           if (typeof value === 'string') return value
           return String(value.message || value)
         }
-        var show = function (kind, title, detail) {
+        var show = function (kind, title, cause) {
           if (ready || dismissed || box) return
           box = document.createElement('div')
           box.className = 'boot-error ' + kind
@@ -100,10 +111,10 @@
           hint.textContent =
             'If you use a content blocker (for example Brave Shields), turn it off for this site and reload, or open the page in another browser.'
           box.appendChild(hint)
-          if (detail) {
+          if (cause) {
             var pre = document.createElement('pre')
             pre.className = 'boot-error-detail'
-            pre.textContent = detail.slice(0, 600)
+            pre.textContent = cause.slice(0, 600)
             box.appendChild(pre)
           }
           var row = document.createElement('div')
@@ -133,6 +144,7 @@
           box.addEventListener('keyup', keep)
           document.body.appendChild(box)
           // the world is not ready yet, so taking focus here does not take it from the game
+          previousFocus = document.activeElement
           reload.focus()
           // if the app starts drawing after all, move the message out of the way
           if (kind === 'blocking' && !watch) {
@@ -147,7 +159,7 @@
         }
         // the last SES removal names the culprit only when the error came before lockdown finished (after it,
         // the intrinsics are frozen and that removal had succeeded)
-        var duringLockdown = false
+        var culprit = ''
         var lockedDown = function () {
           try {
             return Object.isFrozen(Object.prototype)
@@ -156,7 +168,7 @@
           }
         }
         var detail = function () {
-          if (firstError) return duringLockdown && lastRemoval ? firstError + '\n(' + lastRemoval + ')' : firstError
+          if (firstError) return culprit ? firstError + '\n(' + culprit + ')' : firstError
           return opaqueError
             ? 'Script error. (from a script of another origin, for example one added by the browser)'
             : ''
@@ -177,13 +189,13 @@
           }
           if (firstError) return
           firstError = text(event.error) || event.message || 'Unknown error'
-          duringLockdown = !lockedDown()
+          culprit = lockedDown() ? '' : lastRemoval
           later(afterError, ERROR_WAIT)
         })
         window.addEventListener('unhandledrejection', function (event) {
           if (ready || dismissed || firstError) return
           firstError = text(event.reason) || 'Unhandled rejection'
-          duringLockdown = !lockedDown()
+          culprit = lockedDown() ? '' : lastRemoval
           later(afterError, ERROR_WAIT)
         })
         later(whenSlow, SLOW_WAIT)

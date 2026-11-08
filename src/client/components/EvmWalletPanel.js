@@ -2,6 +2,7 @@ import { css } from '@firebolt-dev/css'
 import { useEffect, useState } from 'react'
 import { blurIfPointer } from './SolanaWalletPanel'
 import { evmChainName, evmWalletPanelText, shortEvmAddress } from './walletPanelText'
+import { WalletConnectSheet } from './WalletConnectSheet'
 
 const buttonStyle = css`
   display: flex;
@@ -133,10 +134,15 @@ export function EvmWalletPanel({ world, walletState }) {
               css={buttonStyle}
             >
               {provider.icon && <img src={provider.icon} alt='' />}
-              {connecting ? 'Connecting...' : providers.length > 1 ? provider.name : 'Connect Wallet'}
+              {connecting
+                ? 'Connecting...'
+                : providers.length > 1 || provider.id === 'walletconnect'
+                  ? provider.name
+                  : 'Connect Wallet'}
             </button>
           ))
         ))}
+      <WalletConnectSheet world={world} />
       {connected && (
         <div
           className='evm-wallet-info'

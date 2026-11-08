@@ -1,6 +1,7 @@
 import { css } from '@firebolt-dev/css'
 import { useEffect, useRef, useState } from 'react'
 import { evmChainName } from './walletPanelText'
+import { WalletConnectRequestNotice } from './WalletConnectSheet'
 
 // 投げゼニのフォーム (Players 一覧の行の下に開く)。送金はウォレットから相手へ直接で、この世界は資金を預からない
 const REASONS = {
@@ -243,7 +244,12 @@ export function TipForm({ world, player, onClose }) {
           </div>
         </>
       )}
-      {step === 'sending' && <div className='tip-status'>Confirm the transfer in your wallet…</div>}
+      {step === 'sending' && (
+        <>
+          <div className='tip-status'>Confirm the transfer in your wallet…</div>
+          <WalletConnectRequestNotice world={world} />
+        </>
+      )}
       {step === 'sent' && (
         <>
           <div className='tip-status' role='status'>

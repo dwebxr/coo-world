@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- wallet: WalletConnect (Reown) sign-in for EVM wallets on phones and other devices, behind `PUBLIC_WALLETCONNECT_PROJECT_ID` (32 hex characters; empty keeps it off).
+  - **Panel.** A WalletConnect button joins the announced wallets. Desktops get a QR code; phones get MetaMask / Trust Wallet / Rainbow links (plus the plain `wc:` link on Android), a QR toggle and Copy link. While a signature or tip waits, the panel says "Approve in your wallet app" with an Open wallet link on phones.
+  - **Loading.** `@walletconnect/sign-client` 2.26.0 and `uqr` 0.1.3 load in their own chunk only when WalletConnect is picked (the client build now splits code; the particles worker stays one file).
+  - **Behaviour.** An adapter on SignClient makes the session look like an injected wallet to the existing SIWE and tip code: accounts on the sign-in chain only (following the wallet's account switches), the network switch answered locally, rejections as 4001, and a session ended in the wallet seen as a disconnect. Each pairing has its own link; the relay gets 20 s to answer; Cancel (also while the sign-in waits in the wallet) ends the pending pairing and closes a session that arrives late. Sessions are ended by topic, waiting at most 10 s for the relay before they are dropped locally. A wallet's link back is used only when it is an https link or an app scheme.
+  - Telemetry is off; the verification flow and server are unchanged.
 - wallet: tips are confirmed on chain and announced (P2b) when the server has `EVM_RPC_URL_<chainId>` for the sign-in chain.
   - **Reporting.** Each tip intent now carries a server ticket. After the wallet returns the transaction hash, the client reports `{ ticket, txHash }` (new packets `evmTip` / `evmTipStatus`, appended; protocol version unchanged).
   - **Checking.** The server polls a shared, budgeted watcher. It matches only the token's `Transfer` log (sender, recipient, exact amount), not `receipt.from` or `receipt.to`, so EIP-7702 and sponsored transactions work. It waits for the `finalized` block, checks the block hash, and refuses transactions older than the ticket.

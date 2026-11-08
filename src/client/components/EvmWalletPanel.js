@@ -50,6 +50,8 @@ export function EvmWalletPanel({ world, walletState }) {
       if (playerId === world.entities.player?.data.id) setReceiving(evmTips === true)
     }
     world.on('evmTips', onTips)
+    // 描画してから購読するまでの間に届いた変更を拾い直す
+    setReceiving(world.entities.player?.data.evmTips === true)
     return () => world.off('evmTips', onTips)
   }, [world])
 

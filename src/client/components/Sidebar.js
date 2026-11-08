@@ -1765,6 +1765,8 @@ function Players({ world, hidden }) {
     world.on('name', onChange)
     world.on('evmTips', onTipChange)
     world.on('evm:state', onTipChange)
+    // 描画してから購読するまでの間に届いた変更 (ペインを開いた直後の受け取り切替など) を拾い直す
+    onTipChange()
     return () => {
       world.entities.off('added', onChange)
       world.entities.off('removed', onChange)

@@ -147,9 +147,16 @@ try {
     page.on('pageerror', e => pageErrors.push(String(e)))
   }
   await newPage()
+  // Set once the first page has loaded the world. Without it (Firefox on CI has no WebGL), the later steps
+  // fail at once instead of each waiting out its timeouts.
+  let worldLoaded = false
+  const requireWorld = () => {
+    if (!worldLoaded) throw new Error('the world did not load in this browser')
+  }
   const openWorld = async () => {
     await page.goto(server.url, { waitUntil: 'domcontentloaded' })
-    await page.waitForSelector('.sidebar', { timeout: 180000 * TIMEOUT_SCALE })
+    // unscaled like the other suites: a page that has not drawn its UI by then will not
+    await page.waitForSelector('.sidebar', { timeout: 180000 })
     await page.waitForFunction(() => window.world?.ui?.state?.active === true && !!window.world.evm, null, {
       timeout: 60000 * TIMEOUT_SCALE,
     })
@@ -165,6 +172,7 @@ try {
 
   await step('browser: both chains show as tabs and Solana is the default', async () => {
     await openWorld()
+    worldLoaded = true
     const tabs = await page.getByRole('tab').allTextContents()
     eq(JSON.stringify(tabs), JSON.stringify(['Solana', 'EVM']), 'tabs')
     eq(await page.getByRole('tab', { name: 'Solana' }).getAttribute('aria-selected'), 'true', 'default tab')
@@ -172,6 +180,7 @@ try {
   })
 
   await step('browser: EVM tab connects the announced wallet and verifies with SIWE', async () => {
+    requireWorld()
     await page.getByRole('tab', { name: 'EVM' }).click()
     eq(await text('.evm-wallet-status'), 'EVM wallet not connected', 'idle status')
     eq(await text('.evm-wallet-network'), 'Sign-in network: Polygon', 'network line')
@@ -185,6 +194,7 @@ try {
   })
 
   await step('browser: the collapsed toggle shows the EVM dot; the tab choice survives a reload', async () => {
+    requireWorld()
     await page.getByRole('button', { name: 'Hide wallet panel' }).click()
     const toggle = page.locator('.solana-wallet-toggle')
     ok((await toggle.getAttribute('class')).includes('evm'), 'evm status class')
@@ -201,6 +211,7 @@ try {
   })
 
   await step('browser: disconnect clears the session and the site permission', async () => {
+    requireWorld()
     await page.getByRole('button', { name: 'Connect Wallet', exact: true }).click()
     await waitText('.evm-wallet-status', 'Verified')
     await page.getByRole('button', { name: 'Disconnect', exact: true }).click()

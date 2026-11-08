@@ -363,7 +363,8 @@ test('onConnection: in a full world, a player whose old connection went silent c
 
 test('onConnection: a newcomer that closes while the old connection is asked frees the id at once', async () => {
   const f = fixture({ existing: true })
-  f.network.takeoverPingMs = 60_000
+  // long enough that only an early end (not the deadline) can finish the wait within the check below
+  f.network.takeoverPingMs = 3000
   await f.run()
   const first = f.network.sockets.get('player')
   const ws = f.peer()

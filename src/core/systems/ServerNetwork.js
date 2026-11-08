@@ -247,7 +247,6 @@ export class ServerNetwork extends System {
         unmark()
         finish(false)
       }, ms)
-      deadline.unref?.()
       // ended early by the caller (the newcomer closed)
       register?.(() => finish(false))
       this.write(ws, null)
@@ -611,7 +610,6 @@ export class ServerNetwork extends System {
         if (writes.length) {
           await new Promise(resolve => {
             const timer = setTimeout(resolve, this.takeoverCloseMs ?? TAKEOVER_CLOSE_MS)
-            timer.unref?.()
             Promise.allSettled(writes.map(write => write.promise)).then(() => {
               clearTimeout(timer)
               resolve()

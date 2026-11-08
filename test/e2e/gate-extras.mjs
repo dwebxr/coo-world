@@ -392,21 +392,27 @@ try {
       }
     }
 
-    // 5. iPhone Brave adds an undeletable `call` to Function.prototype.apply. The cleanup before lockdown swaps
-    //    that apply for a clean one, so lockdown completes and the app starts (its socket is held: drawing and
-    //    a clean, frozen Function.prototype are enough here)
+    // 5. iPhone Brave's injected script adds its own call / apply / bind / toString to Function.prototype.call,
+    //    .apply and .bind and freezes them. The cleanup before lockdown swaps in clean ones, so lockdown
+    //    completes and the app starts (its socket is held: drawing and clean, frozen intrinsics are enough)
     {
       const consoleLines = []
       const { context, probe } = await fresh({ error: 500, slow: 60000 }, async p => {
         p.on('console', m => consoleLines.push(m.text()))
         await p.routeWebSocket(/\/ws/, () => {})
         await p.addInitScript(() => {
-          Object.defineProperty(Function.prototype.apply, 'call', {
-            value: Function.prototype.call,
-            configurable: false,
-            writable: false,
-            enumerable: false,
-          })
+          const { call, apply, bind, toString } = Function.prototype
+          for (const fn of [call, apply, bind]) {
+            for (const [name, value] of [
+              ['call', call],
+              ['apply', apply],
+              ['bind', bind],
+            ]) {
+              Object.defineProperty(fn, name, { value, configurable: false, writable: false, enumerable: false })
+            }
+            Object.defineProperty(fn, 'toString', { value: toString, configurable: true, writable: true })
+            Object.freeze(fn)
+          }
         })
       })
       try {
@@ -417,10 +423,20 @@ try {
         ok(await probe.evaluate(() => !document.querySelector('.boot-error')), 'no failure message')
         const state = await probe.evaluate(() => ({
           frozen: Object.isFrozen(Function.prototype),
-          braveCall: Object.hasOwn(Function.prototype.apply, 'call'),
+          keys: ['apply', 'call', 'bind'].map(name => Reflect.ownKeys(Function.prototype[name]).join(',')),
           max: Math.max.apply(null, [1, 5, 3]),
+          bound: function (a, b) {
+            return a + b
+          }.bind(
+            null,
+            2
+          )(3),
         }))
-        eq(JSON.stringify(state), JSON.stringify({ frozen: true, braveCall: false, max: 5 }), 'locked down and clean')
+        eq(
+          JSON.stringify(state),
+          JSON.stringify({ frozen: true, keys: ['length,name', 'length,name', 'length,name'], max: 5, bound: 5 }),
+          'locked down and clean'
+        )
         ok(
           consoleLines.some(line => line.includes('[lockdown] replaced Function.prototype methods')),
           'replacement reported'

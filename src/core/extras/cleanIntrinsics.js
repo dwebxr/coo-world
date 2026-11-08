@@ -1,23 +1,33 @@
 // Runs just before SES lockdown (src/core/lockdown.js).
 //
-// Some browsers add their own properties to built-in functions before the page runs. iPhone Brave puts an
-// undeletable `call` on Function.prototype.apply. Lockdown removes every property it does not know, and an
-// undeletable one stops it ("Unable to delete property"), so the world never starts.
+// Some browsers change built-in functions before the page runs. iPhone Brave's injected script
+// (__firefox__.js) adds its own `call` / `apply` / `bind` / `toString` to Function.prototype.call, .apply and
+// .bind and freezes them. Lockdown removes every property it does not know, and an undeletable one stops
+// it ("Unable to delete property"), so the world never starts.
 //
-// Tolerating the property would leave the browser's own function reachable from app scripts (other
-// builders' code). Instead, the affected method is replaced on Function.prototype with a clean equivalent.
-// The browser keeps using the copy it captured; pages, the engine and app scripts get the clean one, and
-// lockdown hardens it like any other intrinsic. Nothing changes where no such property exists.
+// Tolerating those properties would leave the browser's own functions reachable from app scripts (other
+// builders' code). Instead, each affected method is replaced on Function.prototype with a clean equivalent.
+// The browser keeps using the copies it captured; pages, the engine and app scripts get the clean ones, and
+// lockdown hardens them like any other intrinsic. Nothing changes where no such property exists.
 
 const EXPECTED = new Set(['length', 'name'])
 
-// method shorthand: no own `prototype`; lengths and names match the built-ins (apply 2, call 1)
+// captured when this module loads, before lockdown and before any page or app script can rebind them
+const reflectApply = Reflect.apply
+const nativeBind = Function.prototype.bind
+
+// Method shorthand: no own `prototype`, and lengths and names match the built-ins (apply 2, call 1, bind 1).
+// bind delegates to the native bind (held only in this closure), so bound functions keep their name
+// ("bound f"), length and construct behaviour.
 const CLEAN = {
   apply(thisArg, args) {
-    return Reflect.apply(this, thisArg, args === undefined || args === null ? [] : args)
+    return reflectApply(this, thisArg, args === undefined || args === null ? [] : args)
   },
   call(thisArg, ...args) {
-    return Reflect.apply(this, thisArg, args)
+    return reflectApply(this, thisArg, args)
+  },
+  bind(thisArg, ...args) {
+    return reflectApply(nativeBind, this, [thisArg, ...args])
   },
 }
 
@@ -30,10 +40,10 @@ function undeletable(fn) {
   })
 }
 
-// Returns what was replaced, eg ['apply (call)']; reports it once through `report`.
+// Returns what was replaced, eg ['apply (call, apply, bind)']; reports it once through `report`.
 export function cleanFunctionPrototype(report = message => console.warn(message)) {
   const replaced = []
-  for (const name of ['apply', 'call']) {
+  for (const name of ['apply', 'call', 'bind']) {
     const method = Function.prototype[name]
     if (typeof method !== 'function') continue
     const extra = undeletable(method)

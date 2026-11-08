@@ -23,8 +23,9 @@ function realm(prelude = '') {
 // errors from the other realm have its own TypeError
 const isTypeError = err => err?.name === 'TypeError'
 
-// What iPhone Brave's __firefox__.js leaves (brave-core ios/.../UserScripts/__firefox__.js): own call / apply /
-// bind on Function.prototype.call, .apply and .bind (fixed by its $() helper), a toString, and then frozen.
+// A stricter version of what iPhone Brave's __firefox__.js leaves (brave-core ios/.../UserScripts/__firefox__.js):
+// Brave adds own call / apply to Function.prototype.call, .apply and .bind and freezes them; this fixture also adds
+// bind and toString, so the cleanup is tested against more than Brave does.
 const braveLike = `(() => {
   const { call, apply, bind, toString } = Function.prototype
   for (const fn of [call, apply, bind]) {

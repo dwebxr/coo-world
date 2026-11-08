@@ -392,8 +392,8 @@ try {
       }
     }
 
-    // 5. iPhone Brave's injected script adds its own call / apply / bind / toString to Function.prototype.call,
-    //    .apply and .bind and freezes them. The cleanup before lockdown swaps in clean ones, so lockdown
+    // 5. iPhone Brave's injected script adds its own call / apply to Function.prototype.call, .apply and .bind and
+    //    freezes them (this fixture also adds bind and toString). The cleanup before lockdown swaps in clean ones, so lockdown
     //    completes and the app starts (its socket is held: drawing and clean, frozen intrinsics are enough)
     {
       const consoleLines = []

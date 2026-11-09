@@ -116,6 +116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - server: `/server stats` answers builders only.
 
 ### Fixed
+- nodes: an in-place edit of a UI node's `offset` (`ui.offset.x = 5`) now rebuilds the UI. The node used to overwrite the vector's `_onChange` method instead of registering a callback. A cloned UI node gets its own offset vector instead of sharing the source's.
 - wallet: the WalletConnect "Open HashPort Wallet" link opens the app with the connection request.
   - **Before.** HashPort's universal link (https://link.wallet.hashport.com) did not reach the app on an iPhone. Its page sent the player to the App Store, and the pairing link was lost.
   - **Pairing.** HashPort Wallet now pairs through its app scheme, `expo2025-wallet://wc?uri=…`, which is the link Reown's AppKit uses on phones. Safari asks before opening it. Without the app installed, Safari says it cannot open the page.
@@ -145,13 +146,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - apps: `setSessionAvatar('')` on the local player clears the session avatar again, as it did before the avatar URL policy.
 
 ### Security
+- scripts: the classes app scripts can reach are frozen. Before this, a script could replace a method on a shared class (`Vector3.prototype.add = …`), and the engine and every other app then ran the replacement, on the server and in every visitor's browser, until the process restarted.
+  - **What is frozen.** `Vector3`, `Quaternion`, `Euler`, `Matrix4`, the interpolation classes and `Curve`, and the classes their instances lead to (THREE's own `Vector3`, `Matrix3`, `Keyframe`): constructors, statics, prototypes and the methods themselves. Any write throws a `TypeError` in the script.
+  - **`Object3D` is no longer given to scripts.** THREE's `Object3D` hands every listener the same event objects, through which a script could receive each object the engine later adds to its scene (and from a texture, the page's `document`). It was not documented; scripts use nodes for hierarchies.
+  - **How.** Each prototype property is first turned into an accessor that still lets an instance take its own value (`src/core/extras/scriptClassPrep.js`), because THREE and the engine assign over prototype properties on instances (`_onChange`) and in constructors (`isVector3`). A plain freeze makes `new Object3D()` throw.
+  - **Tests.** `test/scriptClassHardening.test.js` runs 18 attacks in real compartments under the real lockdown, checks that the engine and every node type still work, and walks everything reachable from a script's globals, instances and node proxies. The old test passed over an empty class list.
+  - **Not covered.** A script can still obtain one of the math classes' internal temporary objects (for example through `Matrix4.decompose` with a made-up quaternion) and change that one object. That can disturb math for others; it gives the script nothing it could not already do to availability.
 - server: the unused `Comput3Client` in `src/core/systems/ServerAI.js` is removed, together with the Comput3 API key written into it.
   - **Origin.** The class and key came from upstream Hyperfy (commit `57ee205`, 2025-08-20). The key was not issued for this project, so rotating it is up to whoever holds that Comput3 account.
   - **Not used.** The class was never constructed; the AI providers are still chosen by `AI_PROVIDER`, with `AI_API_KEY`.
   - **Still visible.** The key remains in this repository's history and in upstream.
 
 ### Still open
-- Phase 2: mutable THREE prototypes and method shadowing with host (non-native) arguments remain, including interpolation, query/player getters and transitive matrix decomposition. Shared query vectors and live temporary output vectors remain script-reachable. This is not class hardening or instance sealing; the sentinel must be revisited when prototypes are hardened.
+- Phase 2: method shadowing with host (non-native) arguments remains (the THREE prototypes themselves are now frozen, see Security), including interpolation, query/player getters and transitive matrix decomposition. Shared query vectors and live temporary output vectors remain script-reachable. This is not class hardening or instance sealing; the sentinel must be revisited when prototypes are hardened.
 - Healthy physics shapes still do not resize on later scale edits (a skipped one mounts again once its transform changes).
 - Persisted app repair and finite float32 checks at converted PhysX pose boundaries do not validate arbitrary script-composed transforms or every geometry. The player-transform hotfix already closed the octree expansion hang.
 - Pending asynchronous native continuations after fatal shutdown remain a Phase 3b-1 residual; stopping ticks is not a global cancellation of native work. Generation-bound physics capabilities and a full teardown transaction are deferred. Emscripten abort state requires a restart; the dormant `prim-physics-test` example's direct PHYSX usage remains a follow-up. XR physical movement requires code review/headset verification.

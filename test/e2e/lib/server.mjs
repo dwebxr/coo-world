@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import fs from 'node:fs'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 import { BUILD_ROOT, E2E_DIR, REPO_ROOT, sleep } from './common.mjs'
 
@@ -54,13 +55,15 @@ export function serverEnv(port, world, extra = {}) {
 
 // `worldSource`: an existing world directory to copy (local runs with the 5-app world); without it the
 // server bootstraps the default world from src/world on first boot
-export async function startServer({ port, worldSource, env = {}, logPath, timeout = 120000 }) {
+// `preload`: a script the server process imports before its own entry (node --import), eg a test hook
+export async function startServer({ port, worldSource, env = {}, logPath, timeout = 120000, preload }) {
   const world = `world-e2e-${Math.random().toString(36).slice(2, 8)}`
   const worldDir = path.join(BUILD_ROOT, world)
   if (worldSource) fs.cpSync(worldSource, worldDir, { recursive: true })
   else fs.mkdirSync(worldDir, { recursive: true })
   const log = logPath ? fs.openSync(logPath, 'w') : null
-  const child = spawn(process.execPath, [path.join(BUILD_ROOT, 'build/index.js')], {
+  const nodeArgs = preload ? ['--import', pathToFileURL(preload).href] : []
+  const child = spawn(process.execPath, [...nodeArgs, path.join(BUILD_ROOT, 'build/index.js')], {
     cwd: E2E_DIR,
     env: serverEnv(port, world, env),
     stdio: ['ignore', 'pipe', 'pipe'],

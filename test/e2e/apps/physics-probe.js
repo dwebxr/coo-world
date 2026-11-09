@@ -7,7 +7,8 @@ const near = (a, b, epsilon = 0.02) => Math.abs(a - b) < epsilon
 const xyz = v => [v.x, v.y, v.z]
 const same = (a, b) => a.every((n, i) => near(n, b[i], 1e-5))
 const vector = (x = 0, y = 0, z = 0) => new Vector3(x, y, z)
-const stock = (x = 0, y = 0, z = 0) => new Object3D().position.set(x, y, z)
+// THREE's own Vector3 class: scripts cannot construct one, the e2e hook provides a factory (lib/script-class-hook.js)
+const stock = (x = 0, y = 0, z = 0) => new Vector3().__e2eStock(x, y, z)
 const counts = { prim: { begin: 0, end: 0, points: 0 }, body: { begin: 0, end: 0, points: 0 }, enter: 0, leave: 0 }
 let ticks = 0
 let elapsed = 0
@@ -157,7 +158,7 @@ function query(make = vector) {
   return { tag: hit.tag, distance: hit.distance, overlaps: overlaps.length }
 }
 function inputs(playerId) {
-  for (const value of [new Vector3(), new Object3D().position, new Quaternion(), new Matrix4()]) {
+  for (const value of [new Vector3(), stock(), new Quaternion(), new Matrix4()]) {
     for (const key of ['toPxVec3', 'toPxExtVec3', 'toPxTransform', 'fromPxVec3'])
       check(value[key] === undefined, `${key} removed`)
   }

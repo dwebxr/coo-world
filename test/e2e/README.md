@@ -147,15 +147,25 @@ CI; Firefox is advisory. A parent watchdog tracks/kills the full process tree on
 on failure. Console, page errors, server logs and `physics-boundary-<engine>-results.json` (with a
 `-sentinel-only` suffix for the subset) retain counts, poses and scenario evidence.
 
-`native-sentinel.js` enumerates `Reflect.ownKeys` on endowed Enhanced Vector3, stock Vector3
-(`Object.getPrototypeOf(new Object3D().position)`), Quaternion, Euler and Matrix4 prototypes. It
-preserves descriptors while wrapping string/Symbol data functions and accessor setters (getters are left unwrapped: they return numbers from the THREE instance itself, and wrapping every component read made software-rendered CI browsers too slow),
-skips constructors, and checks receiver, arguments and return values for presence of `ptr` inside
-`try`. Wrappers store only method/counter metadata and never read components. Before scenarios,
-copying a fake native records exactly one violation; chaining, components, iteration and change
-callbacks match the unarmed behavior. Disarm restores and checks every original descriptor, also
-on failed scenarios. **Revisit this probe for Phase 2 hardening**, when these prototypes become
-immutable. Armed runs are excluded from performance comparisons.
+The engine freezes the math classes scripts can reach when it starts, so a script can no longer wrap
+their methods. The instrumentation therefore runs on the host side: `lib/script-class-hook.js` sets
+`globalThis.__scriptClassTestHook`, which the engine calls once while the classes can still be changed.
+The suite preloads it into the server (`node --import`) and injects it into the page before the client
+bundle runs. The hook enumerates `Reflect.ownKeys` on the Enhanced Vector3, stock Vector3, Quaternion,
+Euler, Matrix4, Matrix3, interpolation and Curve prototypes. It wraps string/Symbol data functions and
+accessor setters (getters are left unwrapped: they return numbers from the THREE instance itself, and
+wrapping every component read made software-rendered CI browsers too slow), skips constructors, and
+while armed checks receiver, arguments and return values for presence of `ptr` inside `try`. Wrappers
+store only method/counter metadata and never read components. It also leaves two test-only methods on
+Vector3: `__e2eSentinel('arm'|'disarm'|'report')` and `__e2eStock(x, y, z)` (a stock THREE Vector3,
+which scripts cannot otherwise construct). `native-sentinel.js` and `physics-probe.js` drive them.
+`fullstack.mjs` preloads the same hook into its server for `__e2eComposeFault(on)`, which `retry-probe.js`
+uses to make a host-owned node fail (A7).
+Before scenarios, copying a fake native records exactly one violation; chaining, components, iteration
+and change callbacks match the unarmed behavior. The wrappers stay installed for the whole run and only
+count while armed. Armed runs are excluded from performance comparisons. A base build from before the
+hook existed (`ea5e8f0` above) has no `__e2eSentinel`, so the positive control needs the apps and
+harness of that era as well.
 
 The full suite checks:
 

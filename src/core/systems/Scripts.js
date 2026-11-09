@@ -1,11 +1,12 @@
 import { System } from './System'
 
+import { Matrix3, Vector3 as StockVector3 } from 'three'
 import * as THREE from '../extras/three'
 import { DEG2RAD, RAD2DEG } from '../extras/general'
 import { clamp, num, uuid } from '../utils'
 import { LerpVector3 } from '../extras/LerpVector3'
 import { LerpQuaternion } from '../extras/LerpQuaternion'
-import { Curve } from '../extras/Curve'
+import { Curve, Keyframe } from '../extras/Curve'
 import { prng } from '../extras/prng'
 import { BufferedLerpVector3 } from '../extras/BufferedLerpVector3'
 import { BufferedLerpQuaternion } from '../extras/BufferedLerpQuaternion'
@@ -23,10 +24,39 @@ import { createScriptConsole, hostInspect } from '../extras/scriptConsole'
  *
  */
 
+// Classes scripts can reach. The first group is endowed to every script (createEndowments). The second is not,
+// but its instances are reachable: THREE's own Vector3 is what the math classes use for their internal
+// temporaries, Matrix3 is accepted and produced by Matrix4 methods, and a Curve holds Keyframes.
+// THREE's Object3D is deliberately not offered to scripts: it dispatches shared, mutable event objects, through
+// which a script listener could get hold of every object the engine later adds to its scene.
+const SCRIPT_CLASSES = [
+  ['Vector3', THREE.Vector3],
+  ['Quaternion', THREE.Quaternion],
+  ['Euler', THREE.Euler],
+  ['Matrix4', THREE.Matrix4],
+  ['LerpVector3', LerpVector3],
+  ['LerpQuaternion', LerpQuaternion],
+  ['BufferedLerpVector3', BufferedLerpVector3],
+  ['BufferedLerpQuaternion', BufferedLerpQuaternion],
+  ['Curve', Curve],
+  ['StockVector3', StockVector3],
+  ['Matrix3', Matrix3],
+  ['Keyframe', Keyframe],
+]
+
+function hardenClasses() {
+  // THREE's constructors create their type flag on the prototype (`X.prototype.isX = true`) the first time
+  // they run; it has to exist before the prototype is frozen
+  new StockVector3()
+  new Matrix3()
+  new THREE.Matrix4()
+  hardenScriptClasses(SCRIPT_CLASSES)
+}
+
 export class Scripts extends System {
   constructor(world) {
     super(world)
-    hardenScriptClasses()
+    hardenClasses()
     // shared host functions are frozen once, so no script can stash data on them
     this.helpers = hardenForScripts({ num, prng, clamp, uuid })
     // on Node, script console arguments are rendered to strings before they reach the host console
@@ -51,7 +81,6 @@ export class Scripts extends System {
       prng: this.helpers.prng,
       clamp: this.helpers.clamp,
       // Layers,
-      Object3D: THREE.Object3D,
       Quaternion: THREE.Quaternion,
       Vector3: THREE.Vector3,
       Euler: THREE.Euler,

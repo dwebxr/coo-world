@@ -25,7 +25,7 @@
 |---|---|---|---|
 | 0-1 | JPYC: decimals / EIP-2612 / EIP-3009 / EIP-712 domain / 制限 | §10 参照 | なし (P2) |
 | 0-2 | JPYC 各チェーンのアドレス一致 | §10 参照 | なし (P2) |
-| 0-3 | OpenPay 保護配布 NFT | **未デプロイ** (§10) | なし (P3 は待ち) |
+| 0-3 | OpenPay 保護配布 NFT | **未デプロイ** (§10)。2026-11-10 追記: デプロイ済み (phase7) | なし (P3 は待ち) |
 | 0-4 | 法務方針: 非カストディ直接送金に限定 | 人間の判断 | P2 の設計制約 |
 | 0-5 | viem のサーバー動作 | viem 2.57.8 (2 週間以上前の版を exact 固定) で SIWE 生成と EOA 検証を確認済み。クライアントには入れない (§4-4) ので SES lockdown 下のバンドル検証は不要 | 解消 |
 | 0-6 | SIWE domain = ページのホスト | `WALLET_HOST` は `PUBLIC_API_URL` / `PUBLIC_WS_URL` のホスト。MetaMask は domain とページ origin の不一致で警告を出す。dev (`.env.example` の `localhost:3000`) と Fly (`fly.toml` の `play.dwebxr.xyz`) はページと API が同一ホストで一致を確認済み。フォールバックの `coo-world` は viem の `createSiweMessage` が domain として拒否する (RFC 3986 authority 検査) ため、起動時のメッセージ生成プローブで失敗し、EVM を無効にしてエラーログを出す | 解消 |
@@ -139,7 +139,7 @@ RPC URL を将来追加する場合は `PUBLIC_` を付けない (`PUBLIC_` で�
 - 4 チェーン (Ethereum / Polygon / Avalanche / Kaia) で同一アドレス: JPYC 公式 README の記載 (**REPORTED**)。オンチェーン確認は Polygon のみ。
 
 ### OpenPay
-- `OpenPayLicense1155` (保護配布の利用許諾 NFT) は **未デプロイ**。公式 contracts README に「アドレスの記載なし」。→ **P3 は外部依存が未着地のため着手不可**。
+- `OpenPayLicense1155` (保護配布の利用許諾 NFT) は **未デプロイ**。公式 contracts README に「アドレスの記載なし」。→ **P3 は外部依存が未着地のため着手不可**。(2026-11-10 追記: Polygon の `0x1c652241Cc820Ce897F0d8D9351Df9AD8a0916cc` にデプロイ済み。プロキシではなく、`balanceOf` は標準のまま。チェーンでの確認と、これを使うドアは goals/phase7-openpay-nft-door-design.md)
 - `Eip3009Forwarder` (Polygon 0x0F4560a777415580F0680F8B56a79B0022C6B848) は alpha・監査なし。本プロジェクトは直接依存しない。
 - openpay-x402-sdk の最新は 0.10.5 (2026-10-30)。
 

@@ -278,6 +278,37 @@ try {
       (await text('.evm-wallet-tips-note')).includes('Anyone in this world who verifies an EVM wallet can get this'),
       'consent text'
     )
+    // the terms open from the switch, and the server serves them
+    const terms = page.locator('.evm-wallet-tips-note a.evm-wallet-terms')
+    eq(await terms.getAttribute('href'), '/terms.html', 'terms link')
+    eq(await terms.getAttribute('target'), '_blank', 'terms in a new tab')
+    const served = await page.evaluate(async () => {
+      const resp = await fetch('/terms.html')
+      return { status: resp.status, type: resp.headers.get('content-type'), body: await resp.text() }
+    })
+    eq(served.status, 200, 'terms served')
+    ok(/^text\/html/.test(served.type ?? ''), `terms are html (${served.type})`)
+    ok(served.body.includes('coo-world 利用規約') && served.body.includes('第3条（投げゼニ）'), 'terms content')
+    // from the keyboard: Tab reaches the link past the world's controls (WebKit, like Safari, does not tab to
+    // links by default, so there the link is focused directly), and Enter opens it without the chat
+    if (ENGINE === 'webkit') {
+      await terms.focus()
+    } else {
+      await box.focus()
+      await page.keyboard.press('Tab')
+      ok(await page.evaluate(() => document.activeElement?.classList.contains('evm-wallet-terms')), 'Tab to Terms')
+    }
+    const [popup] = await Promise.all([page.waitForEvent('popup'), page.keyboard.press('Enter')])
+    await popup.waitForLoadState('domcontentloaded')
+    ok(new URL(popup.url()).pathname === '/terms.html', `Enter opens the terms (${popup.url()})`)
+    await popup.close()
+    ok(await page.evaluate(() => !document.querySelector('.mainchat.active')), 'chat not opened by Enter')
+    // Escape still reaches the panel's own shortcut and folds it; the toggle opens it again
+    await terms.focus()
+    await page.keyboard.press('Escape')
+    await page.locator('.solana-wallet-toggle').waitFor({ state: 'visible', timeout: 5000 * TIMEOUT_SCALE })
+    await page.locator('.solana-wallet-toggle').click()
+    await page.locator('.evm-wallet-tips').waitFor({ state: 'visible', timeout: 5000 * TIMEOUT_SCALE })
     // the switch shows the server's answer (evmTips on the local player), so wait for it instead of check()
     await box.click()
     await page.waitForFunction(() => document.querySelector('.evm-wallet-tips input')?.checked === true)

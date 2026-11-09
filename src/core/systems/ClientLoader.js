@@ -10,6 +10,7 @@ import { glbToNodes } from '../extras/glbToNodes'
 import { createEmoteFactory } from '../extras/createEmoteFactory'
 import { TextureLoader } from 'three'
 import { formatBytes } from '../extras/formatBytes'
+import { imageElementsPlugin, isAppleMobile } from '../extras/gltfImageElements'
 import { emoteUrls } from '../extras/playerEmotes'
 import Hls from 'hls.js/dist/hls.js'
 
@@ -31,6 +32,8 @@ export class ClientLoader extends System {
     this.rgbeLoader = new RGBELoader()
     this.texLoader = new TextureLoader()
     this.gltfLoader = new GLTFLoader()
+    // iPhone and iPad: images as <img> elements, which WebKit can let go of when memory runs low
+    if (isAppleMobile()) this.gltfLoader.register(imageElementsPlugin)
     this.gltfLoader.register(parser => new VRMLoaderPlugin(parser))
     this.preloadItems = []
   }

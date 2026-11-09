@@ -406,7 +406,7 @@ try {
     // the confirmation says the world takes no part and no fee, and links the terms
     const confirm = page.locator('.tip-confirm')
     ok((await confirm.innerText()).includes('not a party to it and takes no fee'), 'no-fee wording')
-    eq(await confirm.locator('a.tip-terms').getAttribute('href'), '/terms.html', 'terms link')
+    eq(await confirm.locator('a.tip-terms').getAttribute('href'), '/terms.html#en', 'terms link')
     await page.getByRole('button', { name: 'Send tip', exact: true }).click()
     await page
       .getByRole('status')

@@ -234,7 +234,7 @@ export function TipForm({ world, player, onClose }) {
           <div className='tip-confirm'>
             Send {amount} {symbol} to {name}? It goes straight from your wallet and cannot be undone. This world is not
             a party to it and takes no fee.{' '}
-            <a className='tip-terms' href='/terms.html' target='_blank' rel='noopener noreferrer'>
+            <a className='tip-terms' href='/terms.html#en' target='_blank' rel='noopener noreferrer'>
               Terms
             </a>
           </div>

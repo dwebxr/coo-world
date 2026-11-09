@@ -240,7 +240,7 @@ export function EvmWalletPanel({ world, walletState }) {
           <div className='evm-wallet-tips-note'>
             Anyone in this world who verifies an EVM wallet can get this address to send you a tip. Tips go straight to
             your wallet; this world never holds funds and takes no fee. Tips you receive may be taxable.{' '}
-            <a className='evm-wallet-terms' href='/terms.html' target='_blank' rel='noopener noreferrer'>
+            <a className='evm-wallet-terms' href='/terms.html#en' target='_blank' rel='noopener noreferrer'>
               Terms
             </a>
           </div>

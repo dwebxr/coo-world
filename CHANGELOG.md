@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- docs: terms of service at `/terms.html` (Japanese; operator dWebXR Lab, contact @coo_aiagent on X), modeled on OpenPay's terms.
+- docs: terms of service at `/terms.html` (operator dWebXR Lab, contact @coo_aiagent on X), modeled on OpenPay's terms. The Japanese text governs; an English translation follows on the same page, and the in-world Terms links open it (`#en`).
   - **What they say.** The world is non-custodial and takes no part in transfers between players. Minors need a guardian's consent.
   - **Tips.**
     - **The address.** The opt-in is visible to the players in the world. The recipient's address goes to a sender when they start a tip, even one they never send, and it cannot be taken back.

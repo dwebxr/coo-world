@@ -280,7 +280,7 @@ try {
     )
     // the terms open from the switch, and the server serves them
     const terms = page.locator('.evm-wallet-tips-note a.evm-wallet-terms')
-    eq(await terms.getAttribute('href'), '/terms.html', 'terms link')
+    eq(await terms.getAttribute('href'), '/terms.html#en', 'terms link (the English translation, like the UI)')
     eq(await terms.getAttribute('target'), '_blank', 'terms in a new tab')
     const served = await page.evaluate(async () => {
       const resp = await fetch('/terms.html')
@@ -288,7 +288,11 @@ try {
     })
     eq(served.status, 200, 'terms served')
     ok(/^text\/html/.test(served.type ?? ''), `terms are html (${served.type})`)
-    ok(served.body.includes('coo-world 利用規約') && served.body.includes('第3条（投げゼニ）'), 'terms content')
+    ok(
+      served.body.includes('coo-world 利用規約') && served.body.includes('第3条（投げゼニ）'),
+      'terms content (Japanese)'
+    )
+    ok(served.body.includes('id="en"') && served.body.includes('Article 3 (Tips)'), 'terms content (English)')
     // from the keyboard: Tab reaches the link past the world's controls (WebKit, like Safari, does not tab to
     // links by default, so there the link is focused directly), and Enter opens it without the chat
     if (ENGINE === 'webkit') {
@@ -300,7 +304,8 @@ try {
     }
     const [popup] = await Promise.all([page.waitForEvent('popup'), page.keyboard.press('Enter')])
     await popup.waitForLoadState('domcontentloaded')
-    ok(new URL(popup.url()).pathname === '/terms.html', `Enter opens the terms (${popup.url()})`)
+    const opened = new URL(popup.url())
+    ok(opened.pathname === '/terms.html' && opened.hash === '#en', `Enter opens the terms (${popup.url()})`)
     await popup.close()
     ok(await page.evaluate(() => !document.querySelector('.mainchat.active')), 'chat not opened by Enter')
     // Escape still reaches the panel's own shortcut and folds it; the toggle opens it again

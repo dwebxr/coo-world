@@ -62,148 +62,344 @@
       a {
         color: var(--link);
       }
+      .lang {
+        display: flex;
+        gap: 1rem;
+        margin: 0 0 1.5rem;
+      }
+      section + section {
+        margin-top: 3rem;
+        padding-top: 1rem;
+        border-top: 2px solid var(--rule);
+      }
     </style>
   </head>
   <body>
     <main>
-      <h1>coo-world 利用規約</h1>
-      <p class="muted">These terms are in Japanese, and the Japanese text governs.</p>
+      <nav class="lang" aria-label="Language">
+        <a href="#ja" lang="ja">日本語</a>
+        <a href="#en" lang="en">English</a>
+      </nav>
+      <section id="ja" lang="ja">
+        <h1>coo-world 利用規約</h1>
+        <p class="muted" lang="en">An English translation follows. The Japanese text governs.</p>
 
-      <p>
-        この規約は、dWebXR Lab（以下「運営者」）が提供する 3D
-        ワールド「coo-world」（以下「本サービス」）の利用条件を定めるものです。本サービスを利用した時点で、この規約に同意したものとみなします。
-      </p>
+        <p>
+          この規約は、dWebXR Lab（以下「運営者」）が提供する 3D
+          ワールド「coo-world」（以下「本サービス」）の利用条件を定めるものです。本サービスを利用した時点で、この規約に同意したものとみなします。
+        </p>
 
-      <h2>第1条（本サービスの内容と性質）</h2>
-      <ol>
-        <li>
-          本サービスは、ブラウザから入れる 3D
-          ワールドです。利用者は、ウォレットを接続し、署名によってそのウォレットの持ち主であることを確かめられます。
-        </li>
-        <li>
-          運営者は、利用者の秘密鍵、暗号資産、電子決済手段その他の資産を一切保管しません（ノンカストディアル）。署名や送金は、利用者が自分のウォレットで行います。
-        </li>
-        <li>運営者は、利用者どうしの取引や送金の当事者、代理人、仲介者のいずれにもならず、それらに介入しません。</li>
-      </ol>
+        <h2>第1条（本サービスの内容と性質）</h2>
+        <ol>
+          <li>
+            本サービスは、ブラウザから入れる 3D
+            ワールドです。利用者は、ウォレットを接続し、署名によってそのウォレットの持ち主であることを確かめられます。
+          </li>
+          <li>
+            運営者は、利用者の秘密鍵、暗号資産、電子決済手段その他の資産を一切保管しません（ノンカストディアル）。署名や送金は、利用者が自分のウォレットで行います。
+          </li>
+          <li>運営者は、利用者どうしの取引や送金の当事者、代理人、仲介者のいずれにもならず、それらに介入しません。</li>
+        </ol>
 
-      <h2>第2条（利用環境）</h2>
-      <ol>
-        <li>利用者は、本サービスの利用に必要な行為能力を有している必要があります。</li>
-        <li>未成年者が本サービスを利用する場合は、親権者その他の法定代理人の同意を得た上で利用するものとします。</li>
-        <li>ウォレット、ブラウザ、通信環境その他の利用環境は、利用者が自分の責任と費用で用意します。</li>
-      </ol>
+        <h2>第2条（利用環境）</h2>
+        <ol>
+          <li>利用者は、本サービスの利用に必要な行為能力を有している必要があります。</li>
+          <li>未成年者が本サービスを利用する場合は、親権者その他の法定代理人の同意を得た上で利用するものとします。</li>
+          <li>ウォレット、ブラウザ、通信環境その他の利用環境は、利用者が自分の責任と費用で用意します。</li>
+        </ol>
 
-      <h2>第3条（投げゼニ）</h2>
-      <ol>
-        <li>
-          「投げゼニ」は、ウォレットを確かめた利用者が、受け取りを有効にした他の利用者に、JPYC などのトークンを Polygon
-          で送れる機能です。
-        </li>
-        <li>受け取りを有効にしているかどうかは、ワールドにいる人に知らされます。</li>
-        <li>
-          受け取りを有効にすると、ウォレットを確かめた他の利用者が投げゼニを送ろうとした時点で（実際に送金しなかった場合を含みます）、受け取り用のウォレットアドレスがその利用者に渡ります。受け取りはいつでも無効にできますが、すでに渡ったアドレスを取り戻すことはできません。
-        </li>
-        <li>
-          投げゼニは、送る人のウォレットから受け取る人のウォレットへ、直接送られます。運営者は、投げゼニを受領、保管、管理、または精算しません。
-        </li>
-        <li>
-          運営者は、投げゼニについて手数料を受け取りません。ネットワーク手数料（ガス代、Polygon では
-          POL）は、送る人が自分のウォレットで負担します。
-        </li>
-        <li>投げゼニには、トークンごとの最小額や、送る回数の制限などがあります。</li>
-        <li>
-          ブロックチェーン上で確定した送金は、取消、返金、修正ができません。送る前に、相手と金額を必ず確かめてください。
-        </li>
-        <li>
-          運営者は、送金がブロックチェーン上で確定したかを確かめ、その結果を送った人に表示します。「確認できなかった」との表示は、送金されなかったことを意味しません。ネットワークの混雑や外部サービスの障害などで、運営者が確かめられなかったことを意味します。送金の事実は、ウォレットやブロックチェーンの記録で確かめてください。
-        </li>
-        <li>
-          運営者は、確定を確かめた投げゼニについて、送った人と受け取った人の表示名、金額およびトークンを、ワールドのチャットで知らせます。知らせが多いときは、受け取った人にだけ知らせることがあります。確かめられなかった投げゼニは知らせません。
-        </li>
-        <li>
-          確定を確かめた投げゼニは、ワールド内のアプリにも知らされます。アプリに知らせる内容は、送った人と受け取った人の識別子、金額およびトークンです。チャットでもアプリでも、ウォレットアドレスと取引のハッシュは知らせません。
-        </li>
-        <li>
-          投げゼニは、本サービス内の物品、特典、サービスの対価ではありません。ワールド内のアプリが投げゼニに反応して演出などを行うことはありますが、運営者以外が作ったアプリの内容と、そのアプリが提供するものについては、そのアプリの作者が責任を負います。
-        </li>
-        <li>
-          投げゼニの受け取りに税金がかかる場合、その申告と納付は受け取った人の責任です。利用者は、自分の居住地や利用環境に適用される法令を守るものとします。
-        </li>
-        <li>
-          運営者は、不正な利用の疑いがある場合その他必要と判断した場合、投げゼニの提供を予告なく停止し、または制限することがあります。
-        </li>
-      </ol>
+        <h2>第3条（投げゼニ）</h2>
+        <ol>
+          <li>
+            「投げゼニ」は、ウォレットを確かめた利用者が、受け取りを有効にした他の利用者に、JPYC などのトークンを
+            Polygon で送れる機能です。
+          </li>
+          <li>受け取りを有効にしているかどうかは、ワールドにいる人に知らされます。</li>
+          <li>
+            受け取りを有効にすると、ウォレットを確かめた他の利用者が投げゼニを送ろうとした時点で（実際に送金しなかった場合を含みます）、受け取り用のウォレットアドレスがその利用者に渡ります。受け取りはいつでも無効にできますが、すでに渡ったアドレスを取り戻すことはできません。
+          </li>
+          <li>
+            投げゼニは、送る人のウォレットから受け取る人のウォレットへ、直接送られます。運営者は、投げゼニを受領、保管、管理、または精算しません。
+          </li>
+          <li>
+            運営者は、投げゼニについて手数料を受け取りません。ネットワーク手数料（ガス代、Polygon では
+            POL）は、送る人が自分のウォレットで負担します。
+          </li>
+          <li>投げゼニには、トークンごとの最小額や、送る回数の制限などがあります。</li>
+          <li>
+            ブロックチェーン上で確定した送金は、取消、返金、修正ができません。送る前に、相手と金額を必ず確かめてください。
+          </li>
+          <li>
+            運営者は、送金がブロックチェーン上で確定したかを確かめ、その結果を送った人に表示します。「確認できなかった」との表示は、送金されなかったことを意味しません。ネットワークの混雑や外部サービスの障害などで、運営者が確かめられなかったことを意味します。送金の事実は、ウォレットやブロックチェーンの記録で確かめてください。
+          </li>
+          <li>
+            運営者は、確定を確かめた投げゼニについて、送った人と受け取った人の表示名、金額およびトークンを、ワールドのチャットで知らせます。知らせが多いときは、受け取った人にだけ知らせることがあります。確かめられなかった投げゼニは知らせません。
+          </li>
+          <li>
+            確定を確かめた投げゼニは、ワールド内のアプリにも知らされます。アプリに知らせる内容は、送った人と受け取った人の識別子、金額およびトークンです。チャットでもアプリでも、ウォレットアドレスと取引のハッシュは知らせません。
+          </li>
+          <li>
+            投げゼニは、本サービス内の物品、特典、サービスの対価ではありません。ワールド内のアプリが投げゼニに反応して演出などを行うことはありますが、運営者以外が作ったアプリの内容と、そのアプリが提供するものについては、そのアプリの作者が責任を負います。
+          </li>
+          <li>
+            投げゼニの受け取りに税金がかかる場合、その申告と納付は受け取った人の責任です。利用者は、自分の居住地や利用環境に適用される法令を守るものとします。
+          </li>
+          <li>
+            運営者は、不正な利用の疑いがある場合その他必要と判断した場合、投げゼニの提供を予告なく停止し、または制限することがあります。
+          </li>
+        </ol>
 
-      <h2>第4条（情報の取り扱い）</h2>
-      <ol>
-        <li>
-          ウォレットのアドレス、そのウォレットを確かめたかどうか、投げゼニの受け取りの設定は、ウォレットの確認、投げゼニの確認、トークンや
-          NFT
-          の保有の確認のために、サーバーのメモリに一時的に置きます。データベースには保存せず、サーバーが再起動すると消えます。
-        </li>
-        <li>表示名、アバター、チャットなどは、ワールドにいる人に見えます。</li>
-        <li>ブロックチェーン上の送金は、誰でも見られる公開情報です。</li>
-        <li>
-          運営者は、ウォレットの確認や送金の確認のために、ブロックチェーンのノード（RPC）や WalletConnect
-          などの外部サービスを使います。これらの外部サービスには、ウォレットのアドレスなど、確認に必要な情報が渡ります。
-        </li>
-      </ol>
+        <h2>第4条（情報の取り扱い）</h2>
+        <ol>
+          <li>
+            ウォレットのアドレス、そのウォレットを確かめたかどうか、投げゼニの受け取りの設定は、ウォレットの確認、投げゼニの確認、トークンや
+            NFT
+            の保有の確認のために、サーバーのメモリに一時的に置きます。データベースには保存せず、サーバーが再起動すると消えます。
+          </li>
+          <li>表示名、アバター、チャットなどは、ワールドにいる人に見えます。</li>
+          <li>ブロックチェーン上の送金は、誰でも見られる公開情報です。</li>
+          <li>
+            運営者は、ウォレットの確認や送金の確認のために、ブロックチェーンのノード（RPC）や WalletConnect
+            などの外部サービスを使います。これらの外部サービスには、ウォレットのアドレスなど、確認に必要な情報が渡ります。
+          </li>
+        </ol>
 
-      <h2>第5条（外部サービス）</h2>
-      <p>
-        ウォレット、ブロックチェーン、RPC、WalletConnect
-        その他の外部サービスは、それぞれの提供者が定める条件のもとで提供されます。利用者は、それらの条件に従って利用するものとします。
-      </p>
+        <h2>第5条（外部サービス）</h2>
+        <p>
+          ウォレット、ブロックチェーン、RPC、WalletConnect
+          その他の外部サービスは、それぞれの提供者が定める条件のもとで提供されます。利用者は、それらの条件に従って利用するものとします。
+        </p>
 
-      <h2>第6条（禁止事項）</h2>
-      <p>利用者は、本サービスの利用にあたり、次の行為を行ってはなりません。</p>
-      <ol>
-        <li>法令または公序良俗に違反する行為</li>
-        <li>犯罪行為、またはこれに結びつく行為</li>
-        <li>制裁の対象となっている者による利用、または制裁の回避を助ける行為</li>
-        <li>詐欺、なりすまし、他人のウォレットや表示名を装う行為</li>
-        <li>他人の知的財産権、プライバシーその他の権利を侵害する行為</li>
-        <li>本サービスのサーバーやネットワークに過度の負荷をかけ、または妨害する行為</li>
-        <li>反社会的勢力に利益を与える行為</li>
-        <li>その他、運営者が不適切と判断する行為</li>
-      </ol>
+        <h2>第6条（禁止事項）</h2>
+        <p>利用者は、本サービスの利用にあたり、次の行為を行ってはなりません。</p>
+        <ol>
+          <li>法令または公序良俗に違反する行為</li>
+          <li>犯罪行為、またはこれに結びつく行為</li>
+          <li>制裁の対象となっている者による利用、または制裁の回避を助ける行為</li>
+          <li>詐欺、なりすまし、他人のウォレットや表示名を装う行為</li>
+          <li>他人の知的財産権、プライバシーその他の権利を侵害する行為</li>
+          <li>本サービスのサーバーやネットワークに過度の負荷をかけ、または妨害する行為</li>
+          <li>反社会的勢力に利益を与える行為</li>
+          <li>その他、運営者が不適切と判断する行為</li>
+        </ol>
 
-      <h2>第7条（利用の停止）</h2>
-      <p>
-        運営者は、利用者が前条の禁止事項に当たる行為をした場合、またはそのおそれがあると判断した場合、予告なく、その利用者による本サービスの全部または一部の利用を停止し、または制限することがあります。
-      </p>
+        <h2>第7条（利用の停止）</h2>
+        <p>
+          運営者は、利用者が前条の禁止事項に当たる行為をした場合、またはそのおそれがあると判断した場合、予告なく、その利用者による本サービスの全部または一部の利用を停止し、または制限することがあります。
+        </p>
 
-      <h2>第8条（免責）</h2>
-      <ol>
-        <li>運営者は、本サービスを現状のまま提供し、特定の目的への適合性、正確性、継続性などを保証しません。</li>
-        <li>
-          運営者は、次のことに起因する損害について責任を負いません：ブロックチェーンネットワークの障害、リオーグ、フォーク、外部サービスの障害や仕様変更、トークンの価格変動、利用者の操作の誤り。
-        </li>
-        <li>
-          運営者に故意または重大な過失がある場合を除き、運営者は、利用者に生じた損害のうち、直接かつ通常の損害の範囲でのみ責任を負います。
-        </li>
-        <li>
-          前各項にかかわらず、消費者契約法その他の法令により運営者の責任を免除し、または制限する条項が無効となる場合は、その範囲で適用されません。
-        </li>
-      </ol>
+        <h2>第8条（免責）</h2>
+        <ol>
+          <li>運営者は、本サービスを現状のまま提供し、特定の目的への適合性、正確性、継続性などを保証しません。</li>
+          <li>
+            運営者は、次のことに起因する損害について責任を負いません：ブロックチェーンネットワークの障害、リオーグ、フォーク、外部サービスの障害や仕様変更、トークンの価格変動、利用者の操作の誤り。
+          </li>
+          <li>
+            運営者に故意または重大な過失がある場合を除き、運営者は、利用者に生じた損害のうち、直接かつ通常の損害の範囲でのみ責任を負います。
+          </li>
+          <li>
+            前各項にかかわらず、消費者契約法その他の法令により運営者の責任を免除し、または制限する条項が無効となる場合は、その範囲で適用されません。
+          </li>
+        </ol>
 
-      <h2>第9条（規約の変更）</h2>
-      <p>
-        運営者は、民法第548条の4の規定に基づき、この規約を変更できます。変更するときは、変更後の内容と効力が生じる日を、効力が生じる日より前にこのページに掲載して知らせます。
-      </p>
+        <h2>第9条（規約の変更）</h2>
+        <p>
+          運営者は、民法第548条の4の規定に基づき、この規約を変更できます。変更するときは、変更後の内容と効力が生じる日を、効力が生じる日より前にこのページに掲載して知らせます。
+        </p>
 
-      <h2>第10条（準拠法と管轄）</h2>
-      <p>
-        この規約および本サービスの利用に関する一切の事項は、日本法に準拠します。本サービスに関して紛争が生じた場合は、東京地方裁判所を第一審の専属的合意管轄裁判所とします。
-      </p>
+        <h2>第10条（準拠法と管轄）</h2>
+        <p>
+          この規約および本サービスの利用に関する一切の事項は、日本法に準拠します。本サービスに関して紛争が生じた場合は、東京地方裁判所を第一審の専属的合意管轄裁判所とします。
+        </p>
 
-      <h2>お問い合わせ</h2>
-      <p>
-        X（旧 Twitter）の
-        <a href="https://x.com/coo_aiagent" rel="noopener noreferrer">@coo_aiagent</a> までご連絡ください。
-      </p>
+        <h2>お問い合わせ</h2>
+        <p>
+          X（旧 Twitter）の
+          <a href="https://x.com/coo_aiagent" rel="noopener noreferrer">@coo_aiagent</a> までご連絡ください。
+        </p>
 
-      <p class="muted">制定日：2026年11月9日</p>
+        <p class="muted">制定日：2026年11月9日</p>
+      </section>
+
+      <section id="en" lang="en">
+        <h1>coo-world Terms of Service (English translation)</h1>
+        <p class="muted">
+          This translation is for reference. If it differs from the Japanese text above, the Japanese text governs.
+        </p>
+
+        <p>
+          These terms set out the conditions for using "coo-world" (the "Service"), a 3D world provided by dWebXR Lab
+          (the "Operator"). By using the Service, you are deemed to have agreed to these terms.
+        </p>
+
+        <h2>Article 1 (What the Service is)</h2>
+        <ol>
+          <li>
+            The Service is a 3D world you can enter from a browser. Users can connect a wallet and confirm, by signing,
+            that they own it.
+          </li>
+          <li>
+            The Operator never holds users' private keys, crypto assets, electronic payment instruments or any other
+            assets (non-custodial). Users sign and send with their own wallets.
+          </li>
+          <li>
+            The Operator is not a party, agent or intermediary to any transaction or transfer between users, and does
+            not intervene in them.
+          </li>
+        </ol>
+
+        <h2>Article 2 (Requirements)</h2>
+        <ol>
+          <li>Users must have the legal capacity needed to use the Service.</li>
+          <li>
+            Minors may use the Service only after obtaining consent from a person exercising parental authority or
+            another legal representative.
+          </li>
+          <li>
+            Users provide their own wallet, browser, connection and other environment, at their own responsibility and
+            cost.
+          </li>
+        </ol>
+
+        <h2>Article 3 (Tips)</h2>
+        <ol>
+          <li>
+            "Tips" (投げゼニ) let a user who has verified a wallet send tokens such as JPYC on Polygon to another user
+            who has turned on receiving.
+          </li>
+          <li>Whether you have turned on receiving is shown to the people in the world.</li>
+          <li>
+            When you turn on receiving, your receiving wallet address is handed to another verified user when they start
+            sending you a tip, including when they do not actually send it. You can turn receiving off at any time, but
+            an address already handed over cannot be taken back.
+          </li>
+          <li>
+            Tips go directly from the sender's wallet to the recipient's wallet. The Operator does not receive, hold,
+            manage or settle tips.
+          </li>
+          <li>
+            The Operator takes no fee for tips. The sender pays the network fee (gas; POL on Polygon) from their own
+            wallet.
+          </li>
+          <li>
+            Tips are subject to limits, such as a minimum amount per token and a limit on how often tips can be sent.
+          </li>
+          <li>
+            A transfer confirmed on the blockchain cannot be cancelled, refunded or corrected. Always check the
+            recipient and the amount before sending.
+          </li>
+          <li>
+            The Operator checks whether a transfer has been confirmed on the blockchain and shows the result to the
+            sender. "Could not confirm" does not mean the tip was not sent; it means the Operator could not check it,
+            for example because of network congestion or an outage of an external service. Check the transfer in your
+            wallet or on the blockchain.
+          </li>
+          <li>
+            For tips it has confirmed, the Operator announces the sender's and recipient's display names, the amount and
+            the token in the world's chat. When there are many announcements, it may tell only the recipient. Tips it
+            could not confirm are not announced.
+          </li>
+          <li>
+            Confirmed tips are also reported to apps in the world. Apps are told the sender's and recipient's
+            identifiers, the amount and the token. Neither the chat nor apps are told wallet addresses or transaction
+            hashes.
+          </li>
+          <li>
+            Tips are not payment for any goods, perks or services in the Service. Apps in the world may react to tips,
+            for example with an effect; for apps made by anyone other than the Operator, the app's author is responsible
+            for the app's content and anything it provides.
+          </li>
+          <li>
+            If receiving tips is taxable, the recipient is responsible for filing and paying the tax. Users must comply
+            with the laws that apply where they live and use the Service.
+          </li>
+          <li>
+            The Operator may suspend or limit tips without notice if it suspects misuse or otherwise considers it
+            necessary.
+          </li>
+        </ol>
+
+        <h2>Article 4 (Information)</h2>
+        <ol>
+          <li>
+            Your wallet address, whether it is verified, and your tips setting are kept temporarily in the server's
+            memory, for verifying wallets, confirming tips and checking token and NFT holdings. They are not stored in a
+            database, and are gone when the server restarts.
+          </li>
+          <li>Display names, avatars, chat and the like are visible to the people in the world.</li>
+          <li>Transfers on the blockchain are public information that anyone can see.</li>
+          <li>
+            The Operator uses external services such as blockchain nodes (RPC) and WalletConnect to verify wallets and
+            confirm transfers. These services receive the information the checks need, such as wallet addresses.
+          </li>
+        </ol>
+
+        <h2>Article 5 (External services)</h2>
+        <p>
+          Wallets, blockchains, RPC, WalletConnect and other external services are provided under their providers' own
+          terms. Users use them in accordance with those terms.
+        </p>
+
+        <h2>Article 6 (Prohibited acts)</h2>
+        <p>When using the Service, users must not:</p>
+        <ol>
+          <li>violate laws or public order and morals;</li>
+          <li>commit crimes, or acts connected with crimes;</li>
+          <li>use the Service as a sanctioned person, or help anyone evade sanctions;</li>
+          <li>commit fraud or impersonation, or pose as someone else's wallet or display name;</li>
+          <li>infringe others' intellectual property, privacy or other rights;</li>
+          <li>put excessive load on, or interfere with, the Service's servers or network;</li>
+          <li>benefit anti-social forces;</li>
+          <li>do anything else the Operator considers inappropriate.</li>
+        </ol>
+
+        <h2>Article 7 (Suspension)</h2>
+        <p>
+          If a user does anything prohibited by the previous article, or the Operator considers there is a risk of it,
+          the Operator may suspend or limit that user's use of all or part of the Service without notice.
+        </p>
+
+        <h2>Article 8 (Disclaimer)</h2>
+        <ol>
+          <li>
+            The Operator provides the Service as is, and does not warrant its fitness for a particular purpose,
+            accuracy, continuity or the like.
+          </li>
+          <li>
+            The Operator is not liable for damage arising from: blockchain network failures, reorganizations or forks;
+            external-service failures or changes to their specifications; token price fluctuations; or user operating
+            errors.
+          </li>
+          <li>
+            Except in the case of the Operator's intent or gross negligence, the Operator is liable only for direct and
+            ordinary damage suffered by users.
+          </li>
+          <li>
+            Notwithstanding the above, where the Consumer Contract Act or another law makes a clause exempting or
+            limiting the Operator's liability void, that clause does not apply to that extent.
+          </li>
+        </ol>
+
+        <h2>Article 9 (Changes to these terms)</h2>
+        <p>
+          The Operator may change these terms under Article 548-4 of the Civil Code. Before a change takes effect, the
+          Operator announces the changed terms and the date they take effect on this page.
+        </p>
+
+        <h2>Article 10 (Governing law and jurisdiction)</h2>
+        <p>
+          These terms and all matters concerning the use of the Service are governed by Japanese law. The Tokyo District
+          Court has exclusive agreed jurisdiction as the court of first instance for any dispute concerning the Service.
+        </p>
+
+        <h2>Contact</h2>
+        <p>
+          Please contact <a href="https://x.com/coo_aiagent" rel="noopener noreferrer">@coo_aiagent</a> on X (formerly
+          Twitter).
+        </p>
+
+        <p class="muted">Established: November 9, 2026</p>
+      </section>
     </main>
   </body>
 </html>

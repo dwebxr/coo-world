@@ -2,7 +2,16 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { createWalletConnectProvider } from '../src/client/walletconnect.js'
-import { WALLET_LINKS, isWalletConnectUri, safeRedirect, walletConnectLink } from '../src/core/extras/walletLinks.js'
+import {
+  WALLET_LINKS,
+  isAppScheme,
+  isListedScheme,
+  isWalletConnectUri,
+  sameHost,
+  safeAppLink,
+  safeRedirect,
+  walletConnectLink,
+} from '../src/core/extras/walletLinks.js'
 
 const A = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const B = '0x1563915e194D8CfBA1943570603F7606A3115508'
@@ -614,6 +623,13 @@ test('wallet links: the wallet-supplied link back is validated before it reaches
   assert.equal(safeRedirect({ universal: 'https://metamask.app.link' }), 'https://metamask.app.link/')
   assert.equal(safeRedirect({ native: 'metamask://' }), 'metamask://')
   assert.equal(safeRedirect({ universal: 'http://wallet.example', native: 'rainbow://' }), 'rainbow://')
+  // the app scheme first: the connected app is installed, and a universal link can end on the App Store
+  assert.equal(safeRedirect({ universal: 'https://metamask.app.link', native: 'metamask://' }), 'metamask://')
+  assert.equal(
+    safeRedirect({ universal: 'https://wallet.example', native: 'javascript:alert(1)' }),
+    'https://wallet.example/',
+    'a refused scheme falls back to the universal link'
+  )
   for (const bad of [
     { universal: 'javascript:alert(1)' },
     { universal: 'https://user:pass@wallet.example' },
@@ -624,19 +640,52 @@ test('wallet links: the wallet-supplied link back is validated before it reaches
     { native: 'wallet://a b' },
     { native: 'x'.repeat(201) + ':' },
     { native: '//no-scheme' },
+    // an Android intent can fall back to any web page
+    { native: 'intent://x/#Intent;scheme=missing;S.browser_fallback_url=https%3A%2F%2Fevil.example;end' },
+    { native: 'INTENT://x/#Intent;end' },
+    { native: 'android-app://com.example/https/evil.example/' },
     null,
     'https://wallet.example',
   ]) {
     assert.equal(safeRedirect(bad), null, JSON.stringify(bad))
   }
+  // AppKit's two pairing forms: <universal>/wc?uri=… and <scheme>://wc?uri=…
+  const encoded = encodeURIComponent(URI)
   assert.equal(
-    walletConnectLink('https://metamask.app.link', URI),
-    `https://metamask.app.link/wc?uri=${encodeURIComponent(URI)}`
+    walletConnectLink({ universal: 'https://w.example', native: 'w://' }, URI),
+    `https://w.example/wc?uri=${encoded}`
+  )
+  assert.equal(
+    walletConnectLink({ universal: 'https://w.example', native: 'w://', pairWith: 'native' }, URI),
+    `w://wc?uri=${encoded}`
   )
   assert.deepEqual(
-    WALLET_LINKS.map(w => w.universal),
-    ['https://metamask.app.link', 'https://link.wallet.hashport.com', 'https://prd-api.mynawallet.jp/deeplink']
+    WALLET_LINKS.map(w => [w.id, w.native, w.universal, w.pairWith]),
+    [
+      ['metamask', 'metamask://', 'https://metamask.app.link', undefined],
+      // HashPort's universal link did not reach the app on an iPhone: it pairs through its scheme
+      ['hashport', 'expo2025-wallet://', 'https://link.wallet.hashport.com', 'native'],
+      ['myna', 'mynawallet://', 'https://prd-api.mynawallet.jp/deeplink', undefined],
+    ]
   )
+  // only the listed wallets' own schemes count as listed
+  for (const wallet of WALLET_LINKS) assert.equal(isListedScheme(wallet.native), true, wallet.id)
+  for (const other of ['rainbow://', 'metamask:', 'METAMASK://', 'https://metamask.app.link', null])
+    assert.equal(isListedScheme(other), false, String(other))
+  // a wallet's own link is matched to a listed wallet by host
+  assert.equal(sameHost('https://prd-api.mynawallet.jp/deeplink/', 'https://prd-api.mynawallet.jp/deeplink'), true)
+  assert.equal(sameHost('https://metamask.app.link/', 'https://link.wallet.hashport.com'), false)
+  assert.equal(sameHost('https://prd-api.mynawallet.jp.evil.example/', 'https://prd-api.mynawallet.jp'), false)
+  assert.equal(sameHost('not a url', 'https://metamask.app.link'), false)
+  assert.equal(sameHost('https://metamask.app.link', undefined), false)
+  for (const wallet of WALLET_LINKS) {
+    assert.match(wallet.native, /^[a-z][a-z0-9+.-]*:\/\/$/, wallet.id)
+    assert.equal(safeAppLink(wallet.native), wallet.native, wallet.id)
+    assert.equal(isAppScheme(wallet.native), true, wallet.id)
+    if (wallet.universal) assert.equal(isAppScheme(wallet.universal), false, wallet.id)
+  }
+  for (const bad of [null, undefined, '', 'wallet', '//no-scheme', 'HTTPS://wallet.example'])
+    assert.equal(isAppScheme(bad), false, String(bad))
   assert.equal(isWalletConnectUri(URI), true)
   for (const bad of ['wc:short@2?x', 'https://x', `wc:${'1'.repeat(64)}@1?x`, 1])
     assert.equal(isWalletConnectUri(bad), false)

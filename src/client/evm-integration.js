@@ -1,7 +1,7 @@
 import { isEvmAddress, isEvmSigninSignature, parseEvmChainIds, sameEvmAddress } from '../core/extras/evmChains'
 import { encodeTransfer, isTxHash } from '../core/extras/evmAbi'
 import { KNOWN_CHAINS, explorerTxUrl, parseTipAmount, parseTipTokens } from '../core/extras/evmTokens'
-import { WALLET_LINKS, isAppScheme } from '../core/extras/walletLinks'
+import { WALLET_LINKS, isAppScheme, sameHost } from '../core/extras/walletLinks'
 
 // EVM ウォレット (EIP-1193 / EIP-6963) の所有証明。依存ライブラリなし。
 // 流れと世代管理は solana-integration.js と同じ。状態は Solana と独立で、ビルド権限には関与しない
@@ -576,11 +576,15 @@ export function createEvmIntegration(world, { loadWalletConnect = () => import('
 
   // the link that opens the connected wallet app, for "Open wallet": the wallet's own app scheme (validated by
   // the adapter), else the scheme of the listed wallet the player tapped to connect, else the wallet's own
-  // universal link. A scheme opens the installed app; a universal link can end on the App Store instead.
+  // universal link. A scheme opens the installed app; a universal link can end on the App Store instead. The
+  // tapped wallet's scheme stands in only when the connected wallet sent no link or a link on that wallet's
+  // host: another wallet may have taken the pairing link.
   const getWalletConnectRedirect = () => {
     const own = walletConnect?.walletRedirect() ?? null
     if (isAppScheme(own)) return own
-    return WALLET_LINKS.find(wallet => wallet.id === walletConnectChoice)?.native ?? own
+    const tapped = WALLET_LINKS.find(wallet => wallet.id === walletConnectChoice)
+    if (tapped && (!own || sameHost(own, tapped.universal))) return tapped.native
+    return own
   }
   const setWalletConnectChoice = id => {
     walletConnectChoice = WALLET_LINKS.some(wallet => wallet.id === id) ? id : null

@@ -1,7 +1,7 @@
 import { css } from '@firebolt-dev/css'
 import { useEffect, useState } from 'react'
 import { isTouch } from '../utils'
-import { WALLET_LINKS, isAppScheme, isWalletConnectUri, walletConnectLink } from '../../core/extras/walletLinks'
+import { WALLET_LINKS, isListedScheme, isWalletConnectUri, walletConnectLink } from '../../core/extras/walletLinks'
 
 // WalletConnect steps in the EVM panel: waiting for the relay, then a QR (desktop) or wallet links (phones),
 // then "approve in your wallet" while a signature or transfer waits. The status comes from world.evm.
@@ -55,8 +55,9 @@ const sheetStyle = css`
 `
 
 // "Open wallet" while a request waits: the connected wallet's app (see getWalletConnectRedirect). Phones only
-// (on a desktop the request shows up in the phone's wallet anyway). An app scheme opens in place: in a new tab
-// iOS would leave an empty tab behind.
+// (on a desktop the request shows up in the phone's wallet anyway). A listed wallet's scheme opens in place (in
+// a new tab iOS would leave an empty tab behind); any other link, which the wallet itself sent, opens in a new
+// tab so it can never replace the world's page.
 export function OpenWalletLink({ world }) {
   const redirect = world.evm?.getWalletConnectRedirect?.()
   if (!isTouch || !redirect) return null
@@ -64,7 +65,7 @@ export function OpenWalletLink({ world }) {
     <a
       className='wc-open-wallet'
       href={redirect}
-      target={isAppScheme(redirect) ? undefined : '_blank'}
+      target={isListedScheme(redirect) ? undefined : '_blank'}
       rel='noopener noreferrer'
     >
       Open wallet

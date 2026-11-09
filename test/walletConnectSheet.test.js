@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { transformSync } from 'esbuild'
 
-import { WALLET_LINKS, isAppScheme, isWalletConnectUri, walletConnectLink } from '../src/core/extras/walletLinks.js'
+import { WALLET_LINKS, isListedScheme, isWalletConnectUri, walletConnectLink } from '../src/core/extras/walletLinks.js'
 
 const URI = `wc:${'ab'.repeat(32)}@2?relay-protocol=irn&symKey=${'cd'.repeat(32)}`
 const QR = 'data:image/svg+xml;charset=utf-8,%3Csvg%2F%3E'
@@ -63,7 +63,7 @@ function sheet({ status, touch = false, userAgent = 'Mozilla/5.0 (Macintosh)', r
       },
     },
     WALLET_LINKS,
-    isAppScheme,
+    isListedScheme,
     isWalletConnectUri,
     walletConnectLink,
     element,
@@ -209,10 +209,13 @@ test('walletconnect sheet: a waiting request offers "Open wallet" on phones only
   assert.equal(open[0].props.href, 'https://metamask.app.link')
   assert.equal(open[0].props.target, '_blank')
   assert.equal(open[0].props.rel, 'noopener noreferrer')
-  // an app scheme opens in place: a new tab would stay behind empty
+  // a listed wallet's scheme opens in place: a new tab would stay behind empty
   const scheme = byClass(sheet({ status, touch: true, redirect: 'expo2025-wallet://' }).render(), 'wc-open-wallet')
   assert.equal(scheme[0].props.href, 'expo2025-wallet://')
   assert.equal(scheme[0].props.target, undefined)
+  // any other scheme came from the wallet itself: a new tab, so it can never replace the world's page
+  const other = byClass(sheet({ status, touch: true, redirect: 'rainbow://' }).render(), 'wc-open-wallet')
+  assert.equal(other[0].props.target, '_blank')
   assert.equal(byClass(sheet({ status, touch: true }).render(), 'wc-open-wallet').length, 0, 'no link to offer')
   const desktop = sheet({ status, redirect: 'https://metamask.app.link' }).render()
   assert.equal(byClass(desktop, 'wc-open-wallet').length, 0, 'a desktop has no wallet app to open')

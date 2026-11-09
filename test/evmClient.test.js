@@ -8,7 +8,7 @@ import { packetMethodById } from '../src/core/packets.js'
 import { isEvmAddress, isEvmSigninSignature, parseEvmChainIds, sameEvmAddress } from '../src/core/extras/evmChains.js'
 import { encodeTransfer, isTxHash } from '../src/core/extras/evmAbi.js'
 import { KNOWN_CHAINS, explorerTxUrl, parseTipAmount, parseTipTokens } from '../src/core/extras/evmTokens.js'
-import { WALLET_LINKS, isAppScheme } from '../src/core/extras/walletLinks.js'
+import { WALLET_LINKS, isAppScheme, sameHost } from '../src/core/extras/walletLinks.js'
 
 const deps = {
   isEvmAddress,
@@ -23,6 +23,7 @@ const deps = {
   parseTipTokens,
   WALLET_LINKS,
   isAppScheme,
+  sameHost,
 }
 
 const checksummed = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
@@ -913,6 +914,12 @@ test('walletconnect: "Open wallet" uses the wallet\'s app scheme, else the tappe
   assert.equal(h.evm.getWalletConnectRedirect(), 'mynawallet://')
   h.evm.setWalletConnectChoice(null)
   assert.equal(h.evm.getWalletConnectRedirect(), 'https://prd-api.mynawallet.jp/deeplink')
+  // a link from another wallet's host: that wallet took the pairing link, not the one tapped
+  h.adapter.redirect = 'https://wallet.example/'
+  h.evm.setWalletConnectChoice('hashport')
+  assert.equal(h.evm.getWalletConnectRedirect(), 'https://wallet.example/')
+  h.adapter.redirect = 'https://link.wallet.hashport.com/'
+  assert.equal(h.evm.getWalletConnectRedirect(), 'expo2025-wallet://', "the tapped wallet's own host")
   // the wallet's own scheme wins over a tapped one: it names the app that holds the session
   h.adapter.redirect = 'metamask://'
   h.evm.setWalletConnectChoice('hashport')

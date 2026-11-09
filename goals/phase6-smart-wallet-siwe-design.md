@@ -40,7 +40,10 @@ AppKit (`formatUniversalUrl`) と同じく、`<universal>/wc?uri=<encodeURICompo
 - 「Open wallet」もスキームを優先する。接続済みならアプリは入っている。
   - Myna の AASA は `/deeplink/*` だけなので、ベースの `…/deeplink` はアプリに渡らない。
   - 順序: ウォレット自身の `redirect.native` → タップしたウォレットのスキーム → ウォレット自身の `redirect.universal`。
-  - アプリ用スキームのリンクは同じタブで開く。新しいタブで開くと空のタブが残るため。
+    - タップしたウォレットのスキームを使うのは、接続したウォレットがリンクを送ってこないとき、または送ってきた `universal` がそのウォレットと同じホストのときだけ (Codex 指摘: 別のウォレットが QR で受けた場合に取り違えないため)。
+  - 同じタブで開くのは、登録した 3 つのウォレットのスキームだけ。新しいタブで開くと空のタブが残るため。
+    - ウォレットが送ってきたその他のリンクは、今まで通り新しいタブで開く。
+    - Android の `intent:` / `android-app:` は受け付けない (Codex 指摘: フォールバック先の Web ページが world のタブを置き換えうるため)。
   - 「Copy link」と「Show QR」を押したら、タップしたウォレットの記憶を消す。別のウォレットが受けるかもしれないため。
 
 ## 2. ボタン (src/core/extras/walletLinks.js)

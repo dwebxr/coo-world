@@ -120,6 +120,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - server: a flood of `entityEvent` packets could grow the heap without bound: every packet was decoded on arrival whatever its size, an app queued events without limit while it rebuilt, one event with a far-future blueprint version at the head of that queue held back every later event for ever, and a `NaN` or `Infinity` version passed the type check. All four are closed (see Changed).
 - apps: `setSessionAvatar('')` on the local player clears the session avatar again, as it did before the avatar URL policy.
 
+### Security
+- server: the unused `Comput3Client` in `src/core/systems/ServerAI.js` is removed, together with the Comput3 API key written into it.
+  - **Origin.** The class and key came from upstream Hyperfy (commit `57ee205`, 2025-08-20). The key was not issued for this project, so rotating it is up to whoever holds that Comput3 account.
+  - **Not used.** The class was never constructed; the AI providers are still chosen by `AI_PROVIDER`, with `AI_API_KEY`.
+  - **Still visible.** The key remains in this repository's history and in upstream.
+
 ### Still open
 - Phase 2: mutable THREE prototypes and method shadowing with host (non-native) arguments remain, including interpolation, query/player getters and transitive matrix decomposition. Shared query vectors and live temporary output vectors remain script-reachable. This is not class hardening or instance sealing; the sentinel must be revisited when prototypes are hardened.
 - Healthy physics shapes still do not resize on later scale edits (a skipped one mounts again once its transform changes).

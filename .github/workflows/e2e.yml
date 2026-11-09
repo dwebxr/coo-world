@@ -86,6 +86,10 @@ jobs:
         continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/physics-boundary.mjs --engine=${{ matrix.engine }}
 
+      - name: Phone model images (iPhone / iPad user agents)
+        continue-on-error: ${{ matrix.engine == 'firefox' }}
+        run: node test/e2e/phone-images.mjs --engine=${{ matrix.engine }}
+
       - name: Extras (movement, avatar, uploads, AI mock, agent)
         continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/gate-extras.mjs --engine=${{ matrix.engine }}

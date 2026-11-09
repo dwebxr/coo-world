@@ -28,15 +28,18 @@ test('blueprintPolicy: id and version limits, required only on add', () => {
 test('blueprintPolicy: every text cap, null and surrogate-safe truncation', () => {
   for (const sanitize of sanitizers) {
     for (const [key, max] of Object.entries(textLimits)) {
-      for (const item of [null, '', 'x'.repeat(max)]) {
+      // model and script must also be references (asset:// or http(s)), so their filler is a URL path
+      const head = key === 'model' || key === 'script' ? 'https://example.com/' : ''
+      const empty = head ? [] : ['']
+      for (const item of [null, ...empty, head + 'x'.repeat(max - head.length)]) {
         assert.deepEqual(sanitize({ ...base, [key]: item }), {
           ok: true,
           value: { ...base, [key]: item },
           changed: false,
         })
       }
-      const safe = sanitize({ ...base, [key]: 'x'.repeat(max - 1) + '😀tail' })
-      assert.equal(safe.value[key], 'x'.repeat(max - 1))
+      const safe = sanitize({ ...base, [key]: head + 'x'.repeat(max - 1 - head.length) + '😀tail' })
+      assert.equal(safe.value[key], head + 'x'.repeat(max - 1 - head.length))
       assert.equal(safe.changed, true)
       for (const item of [false, 1, [], {}]) assert.equal(sanitize({ ...base, [key]: item }).ok, false)
     }
@@ -201,4 +204,87 @@ test('blueprintPolicy: the browser and wire e2e fixture producers pass unchanged
   for (const blueprint of blueprints) {
     assert.deepEqual(sanitizeBlueprintAdd(blueprint), { ok: true, value: blueprint, changed: false })
   }
+})
+
+const hashScript = `asset://${'0123456789abcdef'.repeat(4)}.js`
+const refusedReferences = [
+  '/etc/passwd',
+  '/proc/self/environ',
+  'asset://../x',
+  'asset://../../../proc/self/environ',
+  'asset://a/b.js',
+  'asset://%2e%2e/x',
+  'asset://',
+  'file:///etc/passwd',
+  'javascript:alert(1)',
+  'data:text/javascript,1',
+  'blob:http://localhost/x',
+  'C:\\Windows\\win.ini',
+  '../x.js',
+  'x.js',
+  '',
+]
+
+test('blueprintPolicy: model and script are an asset://<name> or an http(s) URL when added or set', () => {
+  for (const sanitize of sanitizers) {
+    for (const key of ['model', 'script']) {
+      for (const item of refusedReferences) {
+        assert.equal(sanitize({ ...base, [key]: item }).ok, false, `${sanitize.name} ${key} ${item}`)
+      }
+      for (const item of [
+        hashScript,
+        'asset://ai.glb',
+        'https://example.com/a.glb',
+        'http://localhost:3000/a.js?v=1',
+      ]) {
+        assert.deepEqual(sanitize({ ...base, [key]: item }), {
+          ok: true,
+          value: { ...base, [key]: item },
+          changed: false,
+        })
+      }
+    }
+  }
+})
+
+test('blueprintPolicy: image.url follows the same rule; an image without a url is unchanged', () => {
+  const image = url => ({ type: 'texture', name: 'i.png', url })
+  for (const sanitize of sanitizers) {
+    for (const url of [...refusedReferences, 1, {}, ['asset://a.png']]) {
+      assert.equal(sanitize({ ...base, image: image(url) }).ok, false, `${sanitize.name} ${url}`)
+    }
+    for (const url of ['asset://a.png', 'https://example.com/a.png', null]) {
+      assert.equal(sanitize({ ...base, image: image(url) }).ok, true, `${sanitize.name} ${url}`)
+    }
+    assert.equal(sanitize({ ...base, image: {} }).ok, true)
+    assert.equal(sanitize({ ...base, image: null }).ok, true)
+  }
+})
+
+test('blueprintPolicy: only the reference a modify sets is checked; a legacy stored value stays editable', () => {
+  const current = {
+    id: 'bp',
+    version: 3,
+    script: '/legacy/odd.js',
+    model: 'asset://../legacy.glb',
+    image: { url: 'x' },
+  }
+  // a modify that does not touch script, model or image
+  for (const change of [{ name: 'renamed' }, { props: { a: 1 } }, { disabled: true }]) {
+    const data = { id: 'bp', version: 4, ...change }
+    assert.deepEqual(sanitizeBlueprintModify(data, { current }), { ok: true, value: data, changed: false })
+    assert.deepEqual(sanitizeBlueprintModify(data), { ok: true, value: data, changed: false })
+  }
+  // a modify that repeats the stored values unchanged (a full-blueprint change) sets nothing new
+  const repeat = { ...current, version: 4, name: 'renamed', image: { url: 'x' } }
+  assert.equal(sanitizeBlueprintModify(repeat, { current }).ok, true)
+  assert.equal(sanitizeBlueprintModify(repeat).ok, false, 'without the stored blueprint it is checked')
+  // setting a new value is checked, and a different odd value is refused
+  assert.equal(sanitizeBlueprintModify({ id: 'bp', version: 4, script: hashScript }, { current }).ok, true)
+  assert.equal(sanitizeBlueprintModify({ id: 'bp', version: 4, script: '/etc/passwd' }, { current }).ok, false)
+  assert.equal(sanitizeBlueprintModify({ id: 'bp', version: 4, image: { url: 'y' } }, { current }).ok, false)
+  // an add never borrows the stored values
+  assert.equal(sanitizeBlueprintAdd({ ...current, version: 0 }, { current }).ok, false)
+  // a stored record keeps whatever it holds (hydration, cleaner)
+  assert.deepEqual(sanitizeBlueprintAdd(current, { persisted: true }), { ok: true, value: current, changed: false })
 })

@@ -10,6 +10,10 @@ import { createVRMFactory } from '../extras/createVRMFactory'
 import { glbToNodes } from '../extras/glbToNodes'
 import { createNode } from '../extras/createNode'
 import { createEmoteFactory } from '../extras/createEmoteFactory'
+import { ASSET_PROTOCOL, assetName, assetRefusal } from '../extras/assetURL'
+import { resolveAssetFile } from '../extras/resolveAssetFile'
+
+const isRemote = url => typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'))
 
 /**
  * Server Loader System
@@ -61,27 +65,60 @@ export class ServerLoader extends System {
     })
   }
 
+  // Where a load reads its bytes: { file } or { remote }. An asset://<name> is a file directly inside the assets
+  // directory when this world has one (server with ASSETS=local, through resolveAssetFile); otherwise (ASSETS=s3,
+  // the node agent) it is the assets URL over HTTP. http(s) URLs, and what World.resolveURL maps to one, are
+  // fetched. Anything else (absolute or relative paths, asset:// traversal, blob: and other schemes) throws
+  // here, so no other string reaches fs.readFile.
+  locate(url) {
+    if (typeof url !== 'string') throw assetRefusal('not a string', url)
+    const value = url.trim()
+    if (value.startsWith(ASSET_PROTOCOL)) {
+      if (this.world.assetsDir) return { file: resolveAssetFile(value, this.world.assetsDir) }
+      if (assetName(value) === null) throw assetRefusal('invalid asset name', value)
+      if (!this.world.assetsUrl) throw assetRefusal('no assets location', value)
+    }
+    const remote = this.world.resolveURL(value)
+    if (isRemote(remote)) return { remote }
+    throw assetRefusal('not an asset:// or http(s) URL', value)
+  }
+
+  // the model/script fields of a blueprint that locate() refuses, as `field: reason` texts (nothing is read)
+  refusedSources(blueprint) {
+    const refused = []
+    for (const field of ['model', 'script']) {
+      const value = blueprint?.[field]
+      if (value === null || value === undefined || value === '') continue
+      try {
+        this.locate(value)
+      } catch (err) {
+        refused.push(`${field}: ${err.message}`)
+      }
+    }
+    return refused
+  }
+
   async fetchArrayBuffer(url) {
-    const isRemote = url.startsWith('http://') || url.startsWith('https://')
-    if (isRemote) {
-      const response = await fetch(url)
+    const { file, remote } = this.locate(url)
+    if (remote) {
+      const response = await fetch(remote)
       const arrayBuffer = await response.arrayBuffer()
       return arrayBuffer
     } else {
-      const buffer = await fs.readFile(url)
+      const buffer = await fs.readFile(file)
       const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
       return arrayBuffer
     }
   }
 
   async fetchText(url) {
-    const isRemote = url.startsWith('http://') || url.startsWith('https://')
-    if (isRemote) {
-      const response = await fetch(url)
+    const { file, remote } = this.locate(url)
+    if (remote) {
+      const response = await fetch(remote)
       const text = await response.text()
       return text
     } else {
-      const text = await fs.readFile(url, { encoding: 'utf8' })
+      const text = await fs.readFile(file, { encoding: 'utf8' })
       return text
     }
   }
@@ -91,7 +128,7 @@ export class ServerLoader extends System {
     if (this.promises.has(key)) {
       return this.promises.get(key)
     }
-    url = this.world.resolveURL(url, true)
+    // the url stays as given: fetchArrayBuffer/fetchText locate() it when they read
 
     let promise
     if (type === 'hdr') {

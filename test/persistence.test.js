@@ -19,6 +19,8 @@ for (const action of ['create', 'edit', 'fix', 'classify']) {
     ai.client = { [action]: async () => (action === 'classify' ? 'name' : 'app.on("init", () => {})') }
     ai.assets = { upload: async () => {} }
     if (action === 'create') ai.classify = () => {}
+    // edit and fix read only an asset:// script
+    world.blueprints.get('bp').script = 'asset://old.js'
     world.loader = { get: () => ({ code: 'app.on("init", () => {})' }) }
     network.send = () => world.fatal('test')
     world.blueprints.modify = () => {

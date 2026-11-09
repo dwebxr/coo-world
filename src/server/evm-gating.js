@@ -231,12 +231,14 @@ export function resolveEvmConfig(env = process.env, { host = WALLET_HOST, uri = 
   return { enabled: true, chainIds, chainId: chainIds[0] }
 }
 
-// 投げゼニのトークン (チェーンは SIWE と同じ先頭チェーン)。不正な設定は全体を無効にしてログを出す
+// 投げ銭のトークン (チェーンは SIWE と同じ先頭チェーン)。不正な設定は全体を無効にしてログを出す
 export function resolveTipTokens(env = process.env, chainId, { log = console } = {}) {
   if (chainId === null) return []
   const tokens = parseTipTokens(env.PUBLIC_EVM_TIP_TOKENS, chainId)
   if (!tokens.length && env.PUBLIC_EVM_TIP_TOKENS?.trim()) {
-    log.error('[evm] PUBLIC_EVM_TIP_TOKENS is invalid for the sign-in chain; tips disabled')
+    log.error(
+      '[evm] PUBLIC_EVM_TIP_TOKENS is invalid for the sign-in chain (built-in symbols or SYMBOL:0xaddress:decimals[:min[:max]]); tips disabled'
+    )
   }
   return tokens
 }

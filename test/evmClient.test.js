@@ -7,7 +7,13 @@ import { strictDecode } from '../src/core/extras/strictDecode.js'
 import { packetMethodById } from '../src/core/packets.js'
 import { isEvmAddress, isEvmSigninSignature, parseEvmChainIds, sameEvmAddress } from '../src/core/extras/evmChains.js'
 import { encodeTransfer, isTxHash } from '../src/core/extras/evmAbi.js'
-import { KNOWN_CHAINS, explorerTxUrl, parseTipAmount, parseTipTokens } from '../src/core/extras/evmTokens.js'
+import {
+  KNOWN_CHAINS,
+  explorerTxUrl,
+  parseTipAmount,
+  parseTipTokens,
+  tipAmountReason,
+} from '../src/core/extras/evmTokens.js'
 import { WALLET_LINKS, isAppScheme, sameHost } from '../src/core/extras/walletLinks.js'
 
 const deps = {
@@ -21,6 +27,7 @@ const deps = {
   explorerTxUrl,
   parseTipAmount,
   parseTipTokens,
+  tipAmountReason,
   WALLET_LINKS,
   isAppScheme,
   sameHost,
@@ -476,8 +483,8 @@ test('evm tips: the transfer goes from the verified wallet to the intent recipie
   const h = tipSetup(t)
   await h.verify()
   assert.deepEqual(h.evm.getTipTokens(), [
-    { symbol: 'JPYC', decimals: 18, min: '1' },
-    { symbol: 'USDC', decimals: 6, min: '0.01' },
+    { symbol: 'JPYC', decimals: 18, min: '1', max: '1000' },
+    { symbol: 'USDC', decimals: 6, min: '0.01', max: '10' },
   ])
   const pending = h.evm.tip({ playerId: 'p2', token: 'JPYC', amount: '100' })
   await flush()
@@ -545,6 +552,10 @@ test('evm tips: local checks, server refusals, timeouts and a busy wallet', asyn
   assert.deepEqual(await h.evm.tip({ playerId: 'p2', token: 'JPYC', amount: '1e3' }), {
     ok: false,
     reason: 'bad_amount',
+  })
+  assert.deepEqual(await h.evm.tip({ playerId: 'p2', token: 'JPYC', amount: '1001' }), {
+    ok: false,
+    reason: 'above_maximum',
   })
   assert.equal(requests(h.world, 'RequestEvmTipIntent').length, 0, 'nothing asked for invalid input')
   const refused = h.evm.tip({ playerId: 'p2', token: 'JPYC', amount: '1' })

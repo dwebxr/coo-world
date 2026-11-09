@@ -405,7 +405,19 @@ try {
     await page.keyboard.press('Enter')
     await page.getByLabel('Amount').waitFor({ state: 'visible' })
     ok(await page.evaluate(() => !document.querySelector('.mainchat.active')), 'chat not opened by Enter')
+    // beta: the form says so, shows the range, and stops an amount above the maximum before the confirmation
+    ok((await page.locator('.tip-beta').innerText()).includes('start with small tips'), 'beta notice')
+    eq(await page.getByLabel('Amount').getAttribute('placeholder'), 'min 1 · max 1,000', 'range')
+    await page.getByLabel('Amount').fill('1001')
+    await page.getByRole('button', { name: 'Next', exact: true }).click()
+    await page
+      .getByRole('alert')
+      .filter({ hasText: 'The maximum tip is 1,000 JPYC during the beta.' })
+      .waitFor({ timeout: 10000 * TIMEOUT_SCALE })
+    eq(await page.locator('.tip-confirm').count(), 0, 'no confirmation for 1001 JPYC')
     await page.getByLabel('Amount').fill('100')
+    // the message about 1001 goes away with the edit
+    await page.locator('.tip-error').waitFor({ state: 'detached', timeout: 10000 * TIMEOUT_SCALE })
     await page.getByRole('button', { name: 'Next', exact: true }).click()
     // the confirmation says the world takes no part and no fee, and links the terms
     const confirm = page.locator('.tip-confirm')

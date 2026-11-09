@@ -27,7 +27,7 @@ import {
 import { readInboundPacket } from '../../src/server/inboundDecode.js'
 import * as solanaGating from '../../src/server/solana-gating.js'
 import * as evmGating from '../../src/server/evm-gating.js'
-import { parseTipAmount } from '../../src/core/extras/evmTokens.js'
+import { parseTipAmount, tipAmountReason } from '../../src/core/extras/evmTokens.js'
 import { createEvmRpcs } from '../../src/server/evmRpc.js'
 import { createEvmHoldingService } from '../../src/server/evmHoldings.js'
 import { createTipWatcher } from '../../src/server/evmTipWatcher.js'
@@ -130,6 +130,7 @@ function networkClass(context) {
     solanaGating,
     evmGating,
     parseTipAmount,
+    tipAmountReason,
     createEvmRpcs,
     createEvmHoldingService,
     createTipWatcher,

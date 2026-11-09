@@ -28,7 +28,7 @@
 - ERC-20 `Transfer(address,address,uint256)` topic0 = `0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef` (viem で計算)。
 - Polygon PoS は Heimdall v2 (2025-07) 以降、milestone finality 2〜5 秒。`eth_getBlockByNumber('finalized')` で確定済みブロックを取れる。
 - polygon-rpc.com は Ankr 運営になり、キー無しアクセスは非推奨。本番はキー付きプロバイダー (Alchemy / Infura / Ankr) をサーバー専用で使う。
-- OpenPay の利用許諾 NFT: 標準 ERC-1155。tokenId は商品ごと `keccak256(UTF8('openpay:license:' + productId))`。コントラクトのアドレスは未確認 (デプロイ待ち)。SDK の `hasLicense` は `balanceOf(address, tokenId)` を最新ブロックで読む。→ P3 の汎用 ERC-1155 判定に `contract` と 16 進 `tokenId` を渡せばそのまま使える。
+- OpenPay の利用許諾 NFT: 標準 ERC-1155。tokenId は商品ごと `keccak256(UTF8('openpay:license:' + productId))`。コントラクトのアドレスは未確認 (デプロイ待ち)。SDK の `hasLicense` は `balanceOf(address, tokenId)` を最新ブロックで読む。→ P3 の汎用 ERC-1155 判定に `contract` と 16 進 `tokenId` を渡せばそのまま使える。(2026-11-10 追記: Polygon の `0x1c652241Cc820Ce897F0d8D9351Df9AD8a0916cc` にデプロイ済み。プロキシではなく、`balanceOf` は標準のまま。チェーンでの確認と、これを使うドアは goals/phase7-openpay-nft-door-design.md)
 - 法務 (法的助言ではない): JPYC は電子決済手段、発行体は第二種資金移動業者。ユーザーが自分のウォレットで署名し、受取人へ直接送られ、本サービスが鍵・資金を持たず、手数料・交換・保管をしない形は、電子決済手段等取引業に当たりにくいと考えられるが、公式の判断は見つかっていない。公開前に弁護士または金融庁の事前相談で確認する。
 
 ## 3. R: サーバー専用 EVM JSON-RPC
@@ -121,7 +121,7 @@
   - サーバー側: プレイヤーが近づく (またはアクション) → `getEvmHolding` → 保有者にだけ `app.sendTo` で「開く」と保有者向けの内容を送る。
   - クライアント側: 受け取った本人の画面だけ扉を開く (既存 token-door と同じく、表示は本人の画面だけ。改造クライアントで扉を開けること自体は防げないため、守りたい中身はサーバーから保有者にだけ送る)。
 - ビルダーはこの script を app に貼って .hyp として書き出せる。手順を docs に書く。
-- OpenPay 対応: `standard: 'erc1155'`、`tokenId` に `keccak256('openpay:license:' + productId)` の 16 進。コントラクトのアドレスは公開後に設定する。
+- OpenPay 対応: `standard: 'erc1155'`、`tokenId` に `keccak256('openpay:license:' + productId)` の 16 進。コントラクトのアドレスは公開後に設定する。(2026-11-10 追記: Polygon の `0x1c652241Cc820Ce897F0d8D9351Df9AD8a0916cc` にデプロイ済み。プロキシではなく、`balanceOf` は標準のまま。チェーンでの確認と、これを使うドアは goals/phase7-openpay-nft-door-design.md)
 
 ## 6. 互換性
 
@@ -177,7 +177,7 @@
 - **送金前の確認**: `eth_accounts` の先頭が検証済みアドレスと一致しなければ送らない。intent の units とクライアントでの解析結果が一致しなければ送らない。送金先は intent の受取人だけ (テストで固定: 他のアドレスへの transfer を組み立てる経路が無い)。
 - **受信上限** (S7): `setEvmTipReceive` 32 B、`requestEvmTipIntent` 192 B。パケットは `setEvmTipReceive` / `requestEvmTipIntent` / `evmTipIntent` の 3 つ (ID 35〜37)。
 - **P3 サービス** (S9 / N7): `createTokenBalanceService` を decimals 0 で流用 (キャッシュ 30 秒、負のキャッシュ 5 秒、同時 4、全体バケット 5/秒・バースト 10、`maxEntries` 4096)。キーは正規化 `chainId|contract(小文字)|standard|tokenId(10 進)|owner(小文字)`。`known: false` は「今は分からない (後で再試行)」でありスクリプトは「持っていない」と扱わないよう docs に書く。
-- **OpenPay** (N2): §2 の OpenPay の事実は REPORTED (SDK README 由来)。コントラクトの公開までは将来の注記に留める。
+- **OpenPay** (N2): §2 の OpenPay の事実は REPORTED (SDK README 由来)。コントラクトの公開までは将来の注記に留める。(2026-11-10 追記: Polygon の `0x1c652241Cc820Ce897F0d8D9351Df9AD8a0916cc` にデプロイ済み。プロキシではなく、`balanceOf` は標準のまま。チェーンでの確認と、これを使うドアは goals/phase7-openpay-nft-door-design.md)
 - **法務の不変条件** (回答 7): 手数料なし・保管なし・交換なし。運営のアドレスが「代わりに受け取る」経路を作らない。`tip` を有料特典や景品に変える場合は app 作者の販売 (特商法・景表法・賭博に注意) である旨を P2b の docs に書く。USDC の扱いは発行体・チェーンごとに確認が必要。
 
 ### P2b (次回) に持ち越す対策

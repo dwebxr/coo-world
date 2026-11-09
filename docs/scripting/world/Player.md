@@ -94,7 +94,8 @@ Ethereum in the wallet panel), holds an NFT. The address itself never reaches th
 - `standard`: `'erc721'` or `'erc1155'`.
 - `tokenId`: a decimal string, a `0x` hex string or a safe integer. Required for ERC-1155. For ERC-721 it
   checks `ownerOf(tokenId)`; without it, any token of the collection counts (`balanceOf`). Pass 256-bit ids
-  (for example an OpenPay license id, `keccak256('openpay:license:' + productId)`) as hex strings.
+  (for example an OpenPay license id, `keccak256('openpay:license:' + productId)`) as hex strings. OpenPay's
+  license NFTs are ERC-1155 tokens of `0x1c652241Cc820Ce897F0d8D9351Df9AD8a0916cc` on Polygon (`137`).
 - `minBalance`: a positive safe integer, default `1`.
 
 Results:
@@ -117,7 +118,8 @@ Decide on the server and send the result only to that player with `app.sendTo`. 
 client (a door, a barrier) is still only that player's screen. App settings (`props`) and the script are
 sent to every visitor, so they cannot hold anything secret: content for holders only must come from a
 source visitors cannot read and be sent by the server script after the check. A complete app is in
-[`docs/scripting/examples/nft-gate.js`](/docs/scripting/examples/nft-gate.js).
+[`docs/scripting/examples/nft-gate.js`](/docs/scripting/examples/nft-gate.js), and a door that opens for the
+holder of an OpenPay license NFT is in [`docs/scripting/examples/nft-door.js`](/docs/scripting/examples/nft-door.js).
 
 ```js
 if (world.isServer) {

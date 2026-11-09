@@ -12,7 +12,8 @@
 //
 // Paste this into an app's script, configure it in the app's settings and export the app as a .hyp file to
 // place it in other worlds. The world needs PUBLIC_EVM_CHAIN_IDS and a server-side EVM_RPC_URL_<chainId>.
-// For an OpenPay license NFT use ERC-1155 and keccak256('openpay:license:' + productId) as the token id (hex).
+// For an OpenPay license NFT use ERC-1155, the contract 0x1c652241Cc820Ce897F0d8D9351Df9AD8a0916cc on Polygon (137)
+// and keccak256('openpay:license:' + productId) as the token id (hex). nft-door.js is a door preset for one.
 
 app.configure([
   { key: 'nft', type: 'section', label: 'NFT' },

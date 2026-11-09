@@ -7,7 +7,11 @@
 //   recipient's panel (the Receive tips switch) is covered in evm-wallet.mjs.
 // - Confirmation (P2b): the fake wallet's transaction gets a receipt and a finalized block from the mock RPC;
 //   the server confirms it, announces it in chat and fires the server-script `tip` event.
+// - NFT door: the OpenPay door example (docs/scripting/examples/nft-door.js) on the token-door fixture's frame
+//   and panels, read from the sender's page: the status on load, Open, the store link for a token id she does
+//   not hold, and the update after her wallet disconnects.
 // usage: node test/e2e/evm-tips-gate.mjs [--engine=chromium] [--port=3133]
+import fs from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
 import { getAddress, keccak256, toHex } from 'viem'
@@ -26,7 +30,7 @@ import {
   waitUntil,
 } from './lib/common.mjs'
 import { launchBrowser, saveArtifacts } from './lib/browser.mjs'
-import { installAsset, startServer } from './lib/server.mjs'
+import { installAsset, startServer, worldAssetsDir } from './lib/server.mjs'
 import { WireClient } from './lib/ws.mjs'
 
 const { encodeTransfer, encodeAddressWord, SELECTORS, TRANSFER_TOPIC, encodeUintWord } = await import(
@@ -507,6 +511,124 @@ try {
     )
     eq(JSON.stringify(outcome), JSON.stringify({ ok: false, reason: 'recipient_unavailable' }))
     eq(sender.sent.length, 1, 'no new transaction')
+  })
+
+  // The OpenPay door example on the token-door fixture's frame and panels (the owner's model is not in the repo):
+  // one door for the NFT Alice holds, one for a token id nobody holds.
+  const tokenDoor = fs.readFileSync(path.join(APPS_DIR, 'token-door.js'), 'utf8')
+  // written straight into the world's assets (not test/e2e/out, which eslint would read as a source file)
+  fs.mkdirSync(worldAssetsDir(server), { recursive: true })
+  fs.writeFileSync(
+    path.join(worldAssetsDir(server), 'nft-door-e2e.js'),
+    tokenDoor.slice(0, tokenDoor.indexOf('app.configure(')) +
+      fs.readFileSync(path.join(REPO_ROOT, 'docs/scripting/examples/nft-door.js'), 'utf8')
+  )
+  const doorScript = 'asset://nft-door-e2e.js'
+  const STORE = `http://127.0.0.1:${RPC_PORT}/store?product=h_e2e`
+  const doorProps = tokenId => ({
+    chainId: 137,
+    contract: NFT,
+    tokenId,
+    minBalance: 1,
+    passName: 'E2E Pass',
+    storeUrl: STORE,
+  })
+  const doorState = id =>
+    sender.page.evaluate(id => {
+      const root = window.world.entities.get(id)?.root
+      if (!root?.get('nft-door-open')?.mounted) return null
+      return {
+        sign: root.get('nft-door-status').value,
+        hint: root.get('nft-door-hint').value,
+        pass: root.get('nft-door-pass').value,
+        left: root.get('LeftDoor').position.x,
+      }
+    }, id)
+  const waitDoor = async (id, predicate, message) => {
+    let last
+    try {
+      await waitUntil(
+        async () => {
+          last = await doorState(id)
+          return last && predicate(last)
+        },
+        { timeout: 30000, message }
+      )
+    } catch (err) {
+      throw new Error(`${err.message} (last: ${JSON.stringify(last)})`)
+    }
+    return last
+  }
+
+  // the holder door's closed position, read on load
+  let doorClosedX
+
+  await step('door: a holder sees the pass on load, and the door opens only on Open', async () => {
+    observer.installApp({
+      id: 'nft-door',
+      script: doorScript,
+      model: 'asset://ai.glb',
+      props: doorProps(TOKEN_ID),
+      position: [0, 0, -40],
+    })
+    observer.installApp({
+      id: 'nft-door-none',
+      script: doorScript,
+      model: 'asset://ai.glb',
+      props: doorProps(keccak256(toHex('openpay:license:h_none'))),
+      position: [40, 0, -40],
+    })
+    const loaded = await waitDoor('nft-door', d => d.sign === 'PASS VERIFIED', 'the answer on load')
+    eq(loaded.pass, 'Pass: held')
+    doorClosedX = loaded.left
+    await sleep(1000)
+    eq((await doorState('nft-door')).left, loaded.left, 'closed until Open')
+    await sender.page.evaluate(() => window.world.entities.get('nft-door').root.get('nft-door-open').onTrigger())
+    await waitDoor('nft-door', d => d.sign === 'ACCESS GRANTED' && d.left !== loaded.left, 'the door opening')
+    const call = rpcCalls.findLast(r => r.method === 'eth_call' && r.params[0].to === NFT.toLowerCase())
+    ok(call.params[0].data.startsWith(SELECTORS.balanceOf1155), 'ERC-1155 balanceOf')
+    ok(call.params[0].data.includes(alice.address.slice(2).toLowerCase()), "of Alice's verified address")
+  })
+
+  await step('door: a wallet without the pass is offered the store page in a new tab', async () => {
+    const none = await waitDoor(
+      'nft-door-none',
+      d => d.sign === 'NFT PASS REQUIRED' && d.pass === 'No pass · Get it here',
+      'the non-holder answer'
+    )
+    eq(none.hint, `Get the pass: 127.0.0.1:${RPC_PORT}/store`)
+    // window.open is replaced for the click so that no real tab opens; world.open calls it after a 0 ms timeout
+    const opened = await sender.page.evaluate(async () => {
+      const calls = []
+      const original = window.open
+      window.open = (...args) => {
+        calls.push(args)
+        return null
+      }
+      try {
+        window.world.entities.get('nft-door-none').root.get('nft-door-pass-panel').onPointerDown()
+        await new Promise(resolve => setTimeout(resolve, 200))
+      } finally {
+        window.open = original
+      }
+      return calls
+    })
+    eq(JSON.stringify(opened), JSON.stringify([[STORE, '_blank', 'noopener,noreferrer']]), 'store page in a new tab')
+  })
+
+  await step('door: disconnecting while the door is open updates both doors, and closing keeps it', async () => {
+    // the first step's opening may still be running: a press while the door moves is ignored
+    await waitDoor('nft-door', d => d.left === doorClosedX, 'the door closed after the first opening')
+    await sender.page.evaluate(() => window.world.entities.get('nft-door').root.get('nft-door-open').onTrigger())
+    await waitDoor('nft-door', d => d.sign === 'ACCESS GRANTED', 'the door opening again')
+    await sender.page.evaluate(() => window.world.evm.disconnect())
+    for (const id of ['nft-door', 'nft-door-none']) {
+      const state = await waitDoor(id, d => d.sign === 'CONNECT EVM WALLET', `${id} after the disconnect`)
+      eq(state.pass, 'EVM wallet not connected')
+    }
+    // the door closes on its own; the sign still asks for a wallet
+    const after = await waitDoor('nft-door', d => d.left === doorClosedX, 'the door closing')
+    eq(after.sign, 'CONNECT EVM WALLET', 'sign after closing')
   })
 
   await step('browser: no page errors', async () => {

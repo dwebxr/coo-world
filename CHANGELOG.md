@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- docs: `docs/scripting/examples/nft-door.js`, a door that opens for holders of an OpenPay license NFT (ERC-1155 `0x1c652241Cc820Ce897F0d8D9351Df9AD8a0916cc` on Polygon). It is preset for the "Coo-World NFT Gate" product and replaces the Solana COO check of the "TOKEN GATE COO" door.
+- docs: `docs/scripting/examples/nft-door.js`, a door that opens for holders of an OpenPay license NFT (ERC-1155 `0x1c652241Cc820Ce897F0d8D9351Df9AD8a0916cc` on Polygon). It is preset for the "Coo-World NFT Gate" product. It is a separate door built from the "TOKEN GATE COO" door's model and animation; TOKEN GATE COO and its Solana COO check stay as they are.
   - **The check.** It runs in the server script with `player.getEvmHolding()` and answers only the asking player. Each answer carries the request's build id, number and Open flag, so only the answer to that exact Open press opens the door. Answers to an earlier build, or after a wallet change, are status only.
   - **Without a pass.** The pass panel links to the product's OpenPay page in a new tab, and the sign shows the store's address.
   - **Design.** goals/phase7-openpay-nft-door-design.md.

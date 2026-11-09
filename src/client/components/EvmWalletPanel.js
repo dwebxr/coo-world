@@ -37,6 +37,11 @@ const buttonStyle = css`
 `
 
 // EVM ウォレットパネルの中身。外枠は WalletButton。ビルド権限の文言は出さない
+// the tips block keeps its keys from the game's controls, except Escape (the panel's own fold shortcut)
+const keepKeys = e => {
+  if (e.key !== 'Escape') e.stopPropagation()
+}
+
 export function EvmWalletPanel({ world, walletState }) {
   const [providers, setProviders] = useState(() => world.evm?.getProviders() ?? [])
   const connected = !!walletState.address
@@ -218,8 +223,15 @@ export function EvmWalletPanel({ world, walletState }) {
             }
             .evm-wallet-tips-note {
               color: rgba(255, 255, 255, 0.6);
+              a {
+                color: #93c5fd;
+              }
             }
           `}
+          // keys stay here (the game's controls listen on window): Tab moves between the switch and the Terms
+          // link, and Enter opens the link without opening the chat. Escape still folds the panel.
+          onKeyDown={keepKeys}
+          onKeyUp={keepKeys}
         >
           <label>
             <input type='checkbox' checked={receiving} onChange={toggleReceive} />
@@ -227,7 +239,10 @@ export function EvmWalletPanel({ world, walletState }) {
           </label>
           <div className='evm-wallet-tips-note'>
             Anyone in this world who verifies an EVM wallet can get this address to send you a tip. Tips go straight to
-            your wallet; this world never holds funds. Tips you receive may be taxable.
+            your wallet; this world never holds funds and takes no fee. Tips you receive may be taxable.{' '}
+            <a className='evm-wallet-terms' href='/terms.html#en' target='_blank' rel='noopener noreferrer'>
+              Terms
+            </a>
           </div>
         </div>
       )}

@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- docs: terms of service at `/terms.html` (operator dWebXR Lab, contact @coo_aiagent on X), modeled on OpenPay's terms. The Japanese text governs; an English translation follows on the same page, and the in-world Terms links open it (`#en`).
+  - **What they say.** The world is non-custodial and takes no part in transfers between players. Minors need a guardian's consent.
+  - **Tips.**
+    - **The address.** The opt-in is visible to the players in the world. The recipient's address goes to a sender when they start a tip, even one they never send, and it cannot be taken back.
+    - **Sending.** Transfers go wallet to wallet on Polygon with no fee; the sender pays gas. There are per-token minimums and rate limits, and transfers cannot be undone.
+    - **Confirmation.** "Could not confirm" does not mean the tip was not sent.
+    - **Announcements.** Confirmed tips are announced in chat with display names, amount and token, sometimes to the recipient only. World apps are told the same with player ids. Neither gets addresses or hashes.
+    - **No goods.** Tips buy nothing; an app's own perks are its author's responsibility. Recipients handle their own taxes.
+  - **Data.** Wallet address, verified state and the tips setting are kept only in server memory, for the checks (sign-in, tip confirmation, token and NFT holdings). They are never stored in the database and are gone when the server restarts. RPC and WalletConnect get what they need to check.
+  - **The rest.** Third-party services, suspension for violations, a liability limit for ordinary negligence, changes under Civil Code art. 548-4, Japanese law with the Tokyo District Court.
+  - **Links.** The Receive tips switch and the tip confirmation link the terms. Both now say the world takes no fee, and the confirmation also says it is not a party to the transfer. Keys in the tips block stay out of the world's controls, so Tab reaches the link and Enter opens it without the chat; Escape still folds the panel.
 - wallet: smart-contract wallets (EIP-1271, and EIP-6492 for accounts not deployed yet, such as Myna Wallet) can sign in with EVM when the server has `EVM_RPC_URL_<chainId>` for the sign-in chain.
   - **Check.** EOA signatures are still checked locally. Any other signature gets one deployless `eth_call` of the ERC-6492 universal validator at `latest`. The bytecode is copied from viem 2.57.8 and pinned in tests. The call is limited to 10M gas and 8 s, at most 4 at once and about 30 a minute per server.
   - **Results.** A revert means a wrong signature. A rate limit, timeout or unexpected answer means the check is unavailable, logged once per kind.

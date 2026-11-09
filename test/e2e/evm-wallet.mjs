@@ -289,7 +289,9 @@ try {
     eq(served.status, 200, 'terms served')
     ok(/^text\/html/.test(served.type ?? ''), `terms are html (${served.type})`)
     ok(
-      served.body.includes('coo-world 利用規約') && served.body.includes('第3条（投げゼニ）'),
+      served.body.includes('coo-world 利用規約') &&
+        served.body.includes('第3条（投げ銭）') &&
+        !served.body.includes('投げゼニ'),
       'terms content (Japanese)'
     )
     ok(served.body.includes('id="en"') && served.body.includes('Article 3 (Tips)'), 'terms content (English)')

@@ -183,12 +183,13 @@ PUBLIC_WALLETCONNECT_PROJECT_ID=0123456789abcdef0123456789abcdef   # from dashbo
 ### Tips (JPYC / USDC)
 
 ```bash
-PUBLIC_EVM_TIP_TOKENS=JPYC,USDC   # Polygon (137) built-ins; or SYMBOL:0xaddress:decimals[:min]
+PUBLIC_EVM_TIP_TOKENS=JPYC,USDC   # Polygon (137) built-ins; or SYMBOL:0xaddress:decimals[:min[:max]]
 ```
 
 - A verified player can switch on **Receive tips** in the EVM tab. Others then see a tip button next to that player in the Players list; only a yes/no flag is shared, never the address
 - Sending a tip asks the server for the recipient's verified address (rate limited, verified senders only), then the sender's own wallet sends an ERC-20 transfer straight to the recipient. The world never holds funds, takes no fee and does not convert anything
-- Minimum amounts: 1 JPYC, 0.01 USDC
+- Tips are in beta: the form says so and asks players to start small from a wallet holding only a little
+- Amounts per tip: 1 to 1,000 JPYC, 0.01 to 10 USDC (the maximum is the beta limit). A custom token has a maximum only when its spec gives one (`:min:max`). The client checks before the confirmation step and the server refuses a larger intent (`above_maximum`); a transfer that does not match an accepted tip intent (same recipient and exact amount) is never counted as a tip, so nothing above the maximum is confirmed or announced
 - With a server-side `EVM_RPC_URL_137`, the sender's client reports the transaction and the server confirms it on chain:
   - It looks for the token's `Transfer` log from the sender's verified address to the recipient's, with the exact amount.
   - It waits for the `finalized` block and checks that the transaction is not older than the tip request.

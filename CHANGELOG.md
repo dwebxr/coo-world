@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Tips (beta): a maximum per tip, 1,000 JPYC and 10 USDC for the built-in tokens. A custom token spec can give one, `SYMBOL:0xaddress:decimals[:min[:max]]`.
+  - **Where it is checked.** The client checks the minimum and the maximum when Next is pressed, before the confirmation step. The server refuses a larger intent with `above_maximum`.
+  - **The form.** It shows the range in the amount field and a beta notice: start small, from a wallet holding only a little.
+  - **Design.** goals/phase8-tip-beta-limits-design.md.
+- docs: the terms of service, dated 2026-11-10 (still before launch, with no users, so updated in place):
+  - tips are called 投げ銭;
+  - Article 3 says tips are a beta feature developed with the help of AI. The per-tip maximum is shown in the tip form (currently 1,000 JPYC). A transfer whose recipient and amount do not match a tip the Service accepted is not a tip;
+  - Article 8 limits liability concerning tips, except for intent or gross negligence, to the greater of the amount the tips causing the damage were meant to send and the amount actually sent (their total, if several).
+  The English translation follows. The EVM wallet panel also tells users that tips are in beta and to connect a wallet holding only a small amount.
 - docs: `docs/scripting/examples/nft-door.js`, a door that opens for holders of an OpenPay license NFT (ERC-1155 `0x1c652241Cc820Ce897F0d8D9351Df9AD8a0916cc` on Polygon). It is preset for the "Coo-World NFT Gate" product. It is a separate door built from the "TOKEN GATE COO" door's model and animation; TOKEN GATE COO and its Solana COO check stay as they are.
   - **The check.** It runs in the server script with `player.getEvmHolding()` and answers only the asking player. Each answer carries the request's build id, number and Open flag, so only the answer to that exact Open press opens the door. Answers to an earlier build, or after a wallet change, are status only.
   - **Without a pass.** The pass panel links to the product's OpenPay page in a new tab, and the sign shows the store's address.

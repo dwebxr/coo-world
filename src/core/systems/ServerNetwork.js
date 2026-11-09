@@ -32,7 +32,7 @@ import * as evmGating from '../../server/evm-gating'
 import { createEvmRpcs } from '../../server/evmRpc'
 import { createEvmHoldingService } from '../../server/evmHoldings'
 import { createTipWatcher } from '../../server/evmTipWatcher'
-import { parseTipAmount } from '../extras/evmTokens'
+import { parseTipAmount, tipAmountReason } from '../extras/evmTokens'
 import { formatUnits, isTxHash } from '../extras/evmAbi'
 import { createSolanaRpc } from '../../server/solanaRpc'
 import { createTokenBalanceService } from '../../server/tokenBalance'
@@ -1258,7 +1258,7 @@ export class ServerNetwork extends System {
     try {
       units = parseTipAmount(amount, tip)
     } catch (err) {
-      return refuse(err?.message === 'below minimum' ? 'below_minimum' : 'bad_amount')
+      return refuse(tipAmountReason(err))
     }
     const target = this.sockets.get(to)
     const recipient =

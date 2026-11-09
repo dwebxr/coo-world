@@ -1,6 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { KNOWN_TOKENS, explorerTxUrl, parseTipAmount, parseTipTokens } from '../src/core/extras/evmTokens.js'
+import {
+  KNOWN_TOKENS,
+  explorerTxUrl,
+  parseTipAmount,
+  parseTipTokens,
+  tipAmountReason,
+} from '../src/core/extras/evmTokens.js'
 import { TRANSFER_TOPIC, encodeAddressWord, encodeUintWord } from '../src/core/extras/evmAbi.js'
 import { checkTipBlock, finalizedNumber, matchTipReceipt } from '../src/server/evmTipVerify.js'
 
@@ -43,6 +49,24 @@ test('tip tokens: built-in symbols, explicit entries, and all-or-nothing parsing
   assert.deepEqual(parseTipTokens(`TEST:${address}:18:0.5`, 80002), [
     { symbol: 'TEST', address, decimals: 18, min: '0.5' },
   ])
+  // an optional max after the min
+  assert.deepEqual(parseTipTokens(`TEST:${address}:6:1:500`, 80002), [
+    { symbol: 'TEST', address, decimals: 6, min: '1', max: '500' },
+  ])
+  assert.deepEqual(parseTipTokens(`TEST:${address}:6:1:1`, 80002), [
+    { symbol: 'TEST', address, decimals: 6, min: '1', max: '1' },
+  ])
+  // a max below the min, a max without a min, a max with more decimals than the token, or a sixth field
+  for (const raw of [
+    `TEST:${address}:6:2:1`,
+    `TEST:${address}:6::500`,
+    `TEST:${address}:6:1:0.0000001`,
+    `TEST:${address}:6:1:500:1`,
+  ]) {
+    assert.deepEqual(parseTipTokens(raw, 80002), [], raw)
+  }
+  assert.equal(KNOWN_TOKENS[137].JPYC.max, '1000')
+  assert.equal(KNOWN_TOKENS[137].USDC.max, '10')
   for (const raw of [
     '',
     'JPYC,DOGE',
@@ -64,18 +88,45 @@ test('tip tokens: built-in symbols, explicit entries, and all-or-nothing parsing
   assert.ok(Object.isFrozen(parseTipTokens('JPYC', 137)[0]))
 })
 
-test('tip amounts: strict grammar and the per-token minimum', () => {
+test('tip amounts: strict grammar, the per-token minimum and the beta maximum', () => {
   const USDC = KNOWN_TOKENS[137].USDC
   assert.equal(parseTipAmount('100', JPYC), 100n * 10n ** 18n)
   assert.equal(parseTipAmount('1', JPYC), 10n ** 18n)
   assert.equal(parseTipAmount('0.01', USDC), 10000n)
-  assert.equal(parseTipAmount('123.456789', USDC), 123456789n)
+  assert.equal(parseTipAmount('9.876543', USDC), 9876543n)
+  // the beta maximum: 1,000 JPYC and 10 USDC per tip, exactly included
+  assert.equal(parseTipAmount('1000', JPYC), 1000n * 10n ** 18n)
+  assert.equal(parseTipAmount('999.999999999999999999', JPYC), 1000n * 10n ** 18n - 1n)
+  assert.throws(() => parseTipAmount('1000.000000000000000001', JPYC), /above maximum/)
+  assert.throws(() => parseTipAmount('1001', JPYC), /above maximum/)
+  assert.equal(parseTipAmount('10', USDC), 10_000_000n)
+  assert.throws(() => parseTipAmount('10.000001', USDC), /above maximum/)
   assert.throws(() => parseTipAmount('0.5', JPYC), /below minimum/)
   assert.throws(() => parseTipAmount('0.009', USDC), /below minimum/)
   for (const bad of ['', '1.', '.5', '-1', '1e3', ' 1', '1 ', '1,5', '0x10', '1'.repeat(19), '1.0000001']) {
     assert.throws(() => parseTipAmount(bad, USDC), /invalid amount|too many decimals/, bad)
   }
   assert.throws(() => parseTipAmount(5, USDC), /invalid amount/)
+  // a custom token without a max has no ceiling
+  const custom = parseTipTokens(`TEST:0x${'ab'.repeat(20)}:0`, 80002)[0]
+  assert.equal(parseTipAmount('999999999999999999', custom), 999999999999999999n)
+})
+
+test('tip amounts: the reason codes the client and the server send for a refused amount', () => {
+  const reason = amount => {
+    try {
+      parseTipAmount(amount, JPYC)
+      return 'ok'
+    } catch (err) {
+      return tipAmountReason(err)
+    }
+  }
+  assert.equal(reason('100'), 'ok')
+  assert.equal(reason('0.5'), 'below_minimum')
+  assert.equal(reason('1001'), 'above_maximum')
+  assert.equal(reason('1e3'), 'bad_amount')
+  assert.equal(reason('1.0000000000000000001'), 'bad_amount', 'too many decimals')
+  assert.equal(tipAmountReason(undefined), 'bad_amount')
 })
 
 test('tip tokens: explorer links only for known chains', () => {

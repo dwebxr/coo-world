@@ -448,6 +448,8 @@ test('evm tips: an intent gives only the verified sender the opted-in recipient 
   assert.deepEqual(intent(a, { token: 'DOGE' }), [{ id: 1, ok: false, reason: 'bad_token' }])
   assert.deepEqual(intent(a, { amount: '0.5' }), [{ id: 1, ok: false, reason: 'below_minimum' }])
   f.advance(30_000)
+  assert.deepEqual(intent(a, { amount: '1000.000000000000000001' }), [{ id: 1, ok: false, reason: 'above_maximum' }])
+  f.advance(30_000)
   assert.deepEqual(intent(a, { amount: '1e3' }), [{ id: 1, ok: false, reason: 'bad_amount' }])
   assert.deepEqual(intent(a, { to: 'c' }), [{ id: 1, ok: false, reason: 'recipient_unavailable' }])
   assert.deepEqual(intent(a, { to: 'a' }), [{ id: 1, ok: false, reason: 'recipient_unavailable' }])

@@ -147,6 +147,17 @@ export function EvmWalletPanel({ world, walletState }) {
             </button>
           ))
         ))}
+      {!walletState.verified && tipTokens.length > 0 && (
+        <div
+          className='evm-wallet-beta-note'
+          css={css`
+            font-size: 0.75rem;
+            color: rgba(255, 255, 255, 0.6);
+          `}
+        >
+          Tips are in beta: connect a wallet holding only a small amount.
+        </div>
+      )}
       <WalletConnectSheet world={world} />
       {connected && (
         <div
@@ -238,8 +249,9 @@ export function EvmWalletPanel({ world, walletState }) {
             <span>Receive tips ({tipTokens.map(token => token.symbol).join(' / ')})</span>
           </label>
           <div className='evm-wallet-tips-note'>
-            Anyone in this world who verifies an EVM wallet can get this address to send you a tip. Tips go straight to
-            your wallet; this world never holds funds and takes no fee. Tips you receive may be taxable.{' '}
+            Tips are in beta and may still have bugs: keep only a small amount in this wallet. Anyone in this world who
+            verifies an EVM wallet can get this address to send you a tip. Tips go straight to your wallet; this world
+            never holds funds and takes no fee. Tips you receive may be taxable.{' '}
             <a className='evm-wallet-terms' href='/terms.html#en' target='_blank' rel='noopener noreferrer'>
               Terms
             </a>

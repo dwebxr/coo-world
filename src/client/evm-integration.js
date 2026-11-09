@@ -1,6 +1,6 @@
 import { isEvmAddress, isEvmSigninSignature, parseEvmChainIds, sameEvmAddress } from '../core/extras/evmChains'
 import { encodeTransfer, isTxHash } from '../core/extras/evmAbi'
-import { KNOWN_CHAINS, explorerTxUrl, parseTipAmount, parseTipTokens } from '../core/extras/evmTokens'
+import { KNOWN_CHAINS, explorerTxUrl, parseTipAmount, parseTipTokens, tipAmountReason } from '../core/extras/evmTokens'
 import { WALLET_LINKS, isAppScheme, sameHost } from '../core/extras/walletLinks'
 
 // EVM ウォレット (EIP-1193 / EIP-6963) の所有証明。依存ライブラリなし。
@@ -460,7 +460,7 @@ export function createEvmIntegration(world, { loadWalletConnect = () => import('
     try {
       units = parseTipAmount(amount, info)
     } catch (error) {
-      return { ok: false, reason: error?.message === 'below minimum' ? 'below_minimum' : 'bad_amount' }
+      return { ok: false, reason: tipAmountReason(error) }
     }
     tipping = true
     const startedAt = generation
@@ -615,7 +615,10 @@ export function createEvmIntegration(world, { loadWalletConnect = () => import('
 
   world.evm = {
     getConfig: () => ({ chainIds: [...config.chainIds] }),
-    getTipTokens: () => config.tipTokens.map(({ symbol, decimals, min }) => ({ symbol, decimals, min })),
+    getTipTokens: () =>
+      config.tipTokens.map(({ symbol, decimals, min, max }) =>
+        max === undefined ? { symbol, decimals, min } : { symbol, decimals, min, max }
+      ),
     setReceiveTips,
     tip,
     recheckTip,

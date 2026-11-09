@@ -3,12 +3,20 @@ import { parseUnits } from './evmAbi.js'
 import { isEvmAddress } from './evmChains.js'
 
 // 金額の文法 (送金の意思表示とクライアントで同じものを使う): 数字、任意で 1 つの小数点と decimals 桁以内の小数部。
-// 整数部は 18 桁まで、符号・指数・区切り文字は不可。最小額以上
+// 整数部は 18 桁まで、符号・指数・区切り文字は不可。最小額以上、上限 (max があれば) 以下
 export function parseTipAmount(amount, token) {
   if (typeof amount !== 'string' || !/^\d{1,18}(\.\d+)?$/.test(amount)) throw new Error('invalid amount')
   const units = parseUnits(amount, token.decimals)
   if (units < parseUnits(token.min, token.decimals)) throw new Error('below minimum')
+  if (token.max !== undefined && units > parseUnits(token.max, token.decimals)) throw new Error('above maximum')
   return units
+}
+
+// parseTipAmount の失敗を、クライアントとサーバーが返す理由のコードにする
+export function tipAmountReason(err) {
+  if (err?.message === 'below minimum') return 'below_minimum'
+  if (err?.message === 'above maximum') return 'above_maximum'
+  return 'bad_amount'
 }
 
 // 組み込み表: オンチェーンで decimals を確認したもの (goals/phase3-evm-tips-gates-design.md §2)
@@ -19,12 +27,15 @@ export const KNOWN_TOKENS = Object.freeze({
       address: '0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29',
       decimals: 18,
       min: '1',
+      // ベータ版のあいだの 1 回の上限 (goals/phase8-tip-beta-limits-design.md)
+      max: '1000',
     }),
     USDC: Object.freeze({
       symbol: 'USDC',
       address: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
       decimals: 6,
       min: '0.01',
+      max: '10',
     }),
   }),
 })
@@ -45,8 +56,9 @@ export const explorerTxUrl = (chainId, txHash) => {
   return base ? `${base}/tx/${txHash}` : null
 }
 
-// PUBLIC_EVM_TIP_TOKENS: "JPYC,USDC" (組み込み表の記号) か "SYMBOL:0xaddress:decimals[:min]" の明示指定。
+// PUBLIC_EVM_TIP_TOKENS: "JPYC,USDC" (組み込み表の記号) か "SYMBOL:0xaddress:decimals[:min[:max]]" の明示指定。
 // 記号は英大文字と数字 1〜11 文字、decimals は 0〜18、min (最小額、10 進) の既定は最小単位 1。
+// max (1 回の上限、10 進) は min を書いたときだけ書け、min 以上でなければならない。書かなければ上限なし。
 // 1 つでも不正なら全体を無効 (空) にする。記号・アドレスは重複不可
 export function parseTipTokens(raw, chainId) {
   if (typeof raw !== 'string' || !raw.trim() || !Number.isSafeInteger(chainId)) return []
@@ -54,17 +66,23 @@ export function parseTipTokens(raw, chainId) {
   for (const part of raw.split(',')) {
     const entry = part.trim()
     let token
-    const custom = /^([A-Z0-9]{1,11}):(0x[0-9a-fA-F]{40}):(\d{1,2})(?::(\d{1,18}(?:\.\d{1,18})?))?$/.exec(entry)
+    const custom =
+      /^([A-Z0-9]{1,11}):(0x[0-9a-fA-F]{40}):(\d{1,2})(?::(\d{1,18}(?:\.\d{1,18})?)(?::(\d{1,18}(?:\.\d{1,18})?))?)?$/.exec(
+        entry
+      )
     if (custom) {
       const decimals = Number(custom[3])
       if (decimals > 18 || !isEvmAddress(custom[2])) return []
       const min = custom[4] ?? (decimals ? `0.${'0'.repeat(decimals - 1)}1` : '1')
+      const max = custom[5]
       try {
         if (parseUnits(min, decimals) < 1n) return []
+        if (max !== undefined && parseUnits(max, decimals) < parseUnits(min, decimals)) return []
       } catch {
         return []
       }
       token = { symbol: custom[1], address: custom[2], decimals, min }
+      if (max !== undefined) token.max = max
     } else if (/^[A-Z0-9]{1,11}$/.test(entry)) {
       token = KNOWN_TOKENS[chainId]?.[entry]
       if (!token) return []

@@ -1,9 +1,10 @@
 import { css } from '@firebolt-dev/css'
 import { useEffect, useRef, useState } from 'react'
+import { parseTipAmount, tipAmountReason } from '../../core/extras/evmTokens'
 import { evmChainName } from './walletPanelText'
 import { WalletConnectRequestNotice } from './WalletConnectSheet'
 
-// 投げゼニのフォーム (Players 一覧の行の下に開く)。送金はウォレットから相手へ直接で、この世界は資金を預からない
+// 投げ銭のフォーム (Players 一覧の行の下に開く)。送金はウォレットから相手へ直接で、この世界は資金を預からない
 const REASONS = {
   not_verified: 'Verify your EVM wallet first.',
   busy: 'Another tip is in progress.',
@@ -17,8 +18,17 @@ const REASONS = {
   chain_changed: 'The wallet changed network. Try again.',
 }
 
+// 1000 → 1,000 (整数部だけ区切る。小数部はそのまま)
+export const groupedAmount = value =>
+  String(value ?? '').replace(/^\d+/, digits => digits.replace(/\B(?=(\d{3})+$)/g, ','))
+
 export const tipReasonText = (reason, token) => {
-  if (reason === 'below_minimum') return `The minimum tip is ${token?.min} ${token?.symbol}.`
+  if (reason === 'below_minimum') return `The minimum tip is ${groupedAmount(token?.min)} ${token?.symbol}.`
+  if (reason === 'above_maximum') {
+    return token?.max
+      ? `The maximum tip is ${groupedAmount(token.max)} ${token.symbol} during the beta.`
+      : 'This amount is above the maximum tip.'
+  }
   return REASONS[reason] ?? 'Could not send the tip. Try again.'
 }
 
@@ -99,6 +109,26 @@ export function TipForm({ world, player, onClose }) {
     setRechecked(true)
     const sent = world.evm.recheckTip(ticket, result.txHash)
     setConfirmation(sent ? { state: 'watching' } : { state: 'unverified', reason: 'unavailable' })
+  }
+
+  // 最小額と上限は、確認の画面へ進む前に知らせる (送る前に tip() とサーバーも同じ関数で確かめる)
+  const next = () => {
+    try {
+      parseTipAmount(amount, token)
+    } catch (err) {
+      setResult({ ok: false, reason: tipAmountReason(err) })
+      setStep('error')
+      return
+    }
+    setResult(null)
+    setStep('confirm')
+  }
+
+  // a message about the previous token or amount goes away as soon as either changes
+  const edited = () => {
+    if (step !== 'error') return
+    setResult(null)
+    setStep('idle')
   }
 
   const send = async () => {
@@ -194,7 +224,14 @@ export function TipForm({ world, player, onClose }) {
       {(step === 'idle' || step === 'error') && (
         <>
           <div className='tip-row'>
-            <select aria-label='Token' value={symbol} onChange={e => setSymbol(e.target.value)}>
+            <select
+              aria-label='Token'
+              value={symbol}
+              onChange={e => {
+                setSymbol(e.target.value)
+                edited()
+              }}
+            >
               {tokens.map(entry => (
                 <option key={entry.symbol} value={entry.symbol}>
                   {entry.symbol}
@@ -204,9 +241,14 @@ export function TipForm({ world, player, onClose }) {
             <input
               aria-label='Amount'
               inputMode='decimal'
-              placeholder={token ? `min ${token.min}` : ''}
+              placeholder={
+                token ? `min ${groupedAmount(token.min)}${token.max ? ` · max ${groupedAmount(token.max)}` : ''}` : ''
+              }
               value={amount}
-              onChange={e => setAmount(e.target.value.trim())}
+              onChange={e => {
+                setAmount(e.target.value.trim())
+                edited()
+              }}
             />
           </div>
           {step === 'error' && (
@@ -215,12 +257,7 @@ export function TipForm({ world, player, onClose }) {
             </div>
           )}
           <div className='tip-row'>
-            <button
-              type='button'
-              className='primary'
-              disabled={!token || !looksLikeAmount(amount)}
-              onClick={() => setStep('confirm')}
-            >
+            <button type='button' className='primary' disabled={!token || !looksLikeAmount(amount)} onClick={next}>
               Next
             </button>
             <button type='button' onClick={onClose}>
@@ -288,6 +325,9 @@ export function TipForm({ world, player, onClose }) {
         </>
       )}
       <div className='tip-note'>Tips go directly between wallets. This world never holds funds or takes a fee.</div>
+      <div className='tip-note tip-beta'>
+        Beta: tips may still have bugs. Connect a wallet holding only a small amount and start with small tips.
+      </div>
     </div>
   )
 }

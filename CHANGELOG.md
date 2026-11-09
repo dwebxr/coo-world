@@ -67,6 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - server: connection limits for `/ws`: per address, a burst of 20, a sustained rate of 10/min and 8 concurrent connections (`WS_CONNECT_*` envs); IPv6 parents have `WS_CONNECT_CONCURRENT_PER_56=16` and `WS_CONNECT_CONCURRENT_PER_48=32`, and `WS_MAX_SOCKETS=64` caps all transports until TCP closes, including closing sockets. Refused upgrades receive HTTP 503 with `Retry-After: 10` before any database lookup. Raising or disabling `WS_MAX_SOCKETS` raises or removes the default 64 MiB total write-backlog bound.
 
 ### Changed
+- ci: the end-to-end job also runs on every push to `main` and weekly (Mondays 04:23 UTC), so `main` is checked even when a pull request skipped the suites through its paths filter.
 - chat: a user's message always shows a name (`Anonymous` when empty), and names made only of spaces or invisible characters are refused on the server and the client, so a user message can no longer look like a system message.
 - wallet: a Solana verification that times out after the verify request was sent is withdrawn on the server (`revokeBuilderByToken`), so a late success cannot leave the server verified (and a builder) behind an unverified panel.
 - network: tip packets are appended (`setEvmTipReceive`, `requestEvmTipIntent`, `evmTipIntent`, ids 35-37) with inbound caps of 32 and 192 bytes.

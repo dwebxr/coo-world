@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { transformSync } from 'esbuild'
 
-import { WALLET_LINKS, isWalletConnectUri, walletConnectLink } from '../src/core/extras/walletLinks.js'
+import { WALLET_LINKS, isAppScheme, isWalletConnectUri, walletConnectLink } from '../src/core/extras/walletLinks.js'
 
 const URI = `wc:${'ab'.repeat(32)}@2?relay-protocol=irn&symKey=${'cd'.repeat(32)}`
 const QR = 'data:image/svg+xml;charset=utf-8,%3Csvg%2F%3E'
@@ -63,6 +63,7 @@ function sheet({ status, touch = false, userAgent = 'Mozilla/5.0 (Macintosh)', r
       },
     },
     WALLET_LINKS,
+    isAppScheme,
     isWalletConnectUri,
     walletConnectLink,
     element,
@@ -127,6 +128,7 @@ test('walletconnect sheet: a desktop shows the QR and the copy link, no phone wa
   assert.ok(text(tree).includes('Do not share it.'))
   await button(tree, 'Copy link').props.onClick()
   assert.deepEqual(calls.copied, [URI])
+  assert.deepEqual(calls.choices, [null], 'a copied link can go to any wallet: no tapped wallet to reopen')
   tree = render()
   assert.ok(button(tree, 'Copied'), 'copy confirmed')
   button(tree, 'Cancel').props.onClick()
@@ -138,10 +140,17 @@ test('walletconnect sheet: an iPhone gets wallet links, QR behind a toggle, no w
   let tree = render()
   assert.equal(text(byClass(tree, 'wc-title')[0]), 'Open your wallet app')
   const links = byClass(tree, 'wc-wallet')
+  // MetaMask and Myna pair through their universal links; HashPort's does not reach the app, so its scheme
+  const encoded = encodeURIComponent(URI)
   assert.deepEqual(
     links.map(a => [text(a), a.props.href]),
-    WALLET_LINKS.map(w => [`Open ${w.name}`, `${w.universal}/wc?uri=${encodeURIComponent(URI)}`])
+    [
+      ['Open MetaMask', `https://metamask.app.link/wc?uri=${encoded}`],
+      ['Open HashPort Wallet', `expo2025-wallet://wc?uri=${encoded}`],
+      ['Open Myna Wallet', `https://prd-api.mynawallet.jp/deeplink/wc?uri=${encoded}`],
+    ]
   )
+  for (const a of links) assert.equal(a.props.target, undefined, 'the pairing link opens in place')
   for (const a of links) assert.equal(a.props.rel, 'noopener noreferrer')
   assert.equal(byClass(tree, 'wc-wallet-other').length, 0, 'iOS has no app chooser for wc: links')
   assert.equal(all(tree, n => n.type === 'img').length, 0, 'QR hidden at first on a phone')
@@ -150,10 +159,12 @@ test('walletconnect sheet: an iPhone gets wallet links, QR behind a toggle, no w
   links[0].props.onClick()
   assert.deepEqual(calls.choices, ['hashport', 'metamask'])
   button(tree, 'Show QR').props.onClick()
+  assert.deepEqual(calls.choices, ['hashport', 'metamask', null], 'the QR can go to any wallet')
   tree = render()
   assert.equal(all(tree, n => n.type === 'img').length, 1, 'QR on request (another device scans it)')
   button(tree, 'Hide QR').props.onClick()
   assert.equal(all(render(), n => n.type === 'img').length, 0)
+  assert.equal(calls.choices.length, 3, 'hiding it changes nothing')
 })
 
 test('walletconnect sheet: Android also offers the wc: link for other wallets', () => {
@@ -196,7 +207,12 @@ test('walletconnect sheet: a waiting request offers "Open wallet" on phones only
   const open = byClass(phone, 'wc-open-wallet')
   assert.equal(open.length, 1)
   assert.equal(open[0].props.href, 'https://metamask.app.link')
+  assert.equal(open[0].props.target, '_blank')
   assert.equal(open[0].props.rel, 'noopener noreferrer')
+  // an app scheme opens in place: a new tab would stay behind empty
+  const scheme = byClass(sheet({ status, touch: true, redirect: 'expo2025-wallet://' }).render(), 'wc-open-wallet')
+  assert.equal(scheme[0].props.href, 'expo2025-wallet://')
+  assert.equal(scheme[0].props.target, undefined)
   assert.equal(byClass(sheet({ status, touch: true }).render(), 'wc-open-wallet').length, 0, 'no link to offer')
   const desktop = sheet({ status, redirect: 'https://metamask.app.link' }).render()
   assert.equal(byClass(desktop, 'wc-open-wallet').length, 0, 'a desktop has no wallet app to open')

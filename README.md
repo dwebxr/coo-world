@@ -172,7 +172,7 @@ PUBLIC_WALLETCONNECT_PROJECT_ID=0123456789abcdef0123456789abcdef   # from dashbo
 
 - Adds a **WalletConnect** button next to the browser wallets, so a phone browser without a wallet (Safari, Chrome, Brave) can sign in with a wallet app
   - On a desktop it shows a QR code to scan with the wallet app
-  - On a phone it links to MetaMask, HashPort Wallet or Myna Wallet (both hold JPYC), and Android also offers any other wallet. The app asks to connect, then to sign the same sign-in message. Other WalletConnect wallets can use the QR code or Copy link
+  - On a phone it links to MetaMask, HashPort Wallet or Myna Wallet (both hold JPYC), and Android also offers any other wallet. MetaMask and Myna Wallet open through their universal links; HashPort Wallet opens through its app scheme, so Safari asks before opening it, and without the app installed Safari says it cannot open the page instead of going to the App Store. The app asks to connect, then to sign the same sign-in message. Other WalletConnect wallets can use the QR code or Copy link
 - The WalletConnect code (about 410 KB) loads only when the button is pressed, and only then does the page talk to Reown's relay
 - The project id is public by design (it is sent to browsers). In the Reown dashboard, allow only your page's domain
 - Reown's own terms and plan limits apply; check them at reown.com before you rely on it. Telemetry to Reown is turned off

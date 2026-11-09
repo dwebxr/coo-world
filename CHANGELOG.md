@@ -92,6 +92,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - server: `/server stats` answers builders only.
 
 ### Fixed
+- wallet: the WalletConnect "Open HashPort Wallet" link opens the app with the connection request.
+  - **Before.** HashPort's universal link (https://link.wallet.hashport.com) did not reach the app on an iPhone. Its page sent the player to the App Store, and the pairing link was lost.
+  - **Pairing.** HashPort Wallet now pairs through its app scheme, `expo2025-wallet://wc?uri=…`, which is the link Reown's AppKit uses on phones. Safari asks before opening it. Without the app installed, Safari says it cannot open the page.
+  - **Unchanged.** MetaMask and Myna Wallet keep their universal links.
+- wallet: "Open wallet" (while a signature or tip waits) opens the connected app without an App Store detour.
+  - **Link order.** It uses the wallet's own app scheme, else the scheme of the listed wallet the player tapped, else the wallet's own universal link. Myna Wallet's bare `…/deeplink` base is not one of its app links.
+  - **Same tab.** A scheme link opens in place, where a new tab would stay behind empty.
+  - **Forgetting the tapped wallet.** Copy link and Show QR forget the wallet the player tapped, since another wallet may take the link.
 - client: on iPhone and iPad, model images load as `<img>` elements in every browser, as iPhone Chrome already did. Safari and Brave got ImageBitmaps from three's GLTFLoader, which WebKit cannot release when memory runs low. With a world's textures, iOS then closed the page ("A problem repeatedly occurred"), most often while the player was in a wallet app. In WebKit under simulated memory pressure, the production world kept about 2.5 GB with ImageBitmaps and about 1.6 GB with `<img>` elements. Desktop browsers and Android keep three's own choice.
 - physics: static rigidbodies return zero from velocity-at-position queries and ignore force-at-position calls without entering dynamic-body native functions. Invalid controller descriptors and failed controller allocation leave physics disabled with one warning; teleport still updates the node position. Query spheres reuse one native geometry; the material cache uses unambiguous keys and is capped at 4096 entries, falling back to the default material with a bounded warning at the cap or on allocation failure.
 - server: `Server.tick` keeps running after ordinary exceptions, with bounded diagnostics, and never re-arms after shutdown. Fatal physics failures stop the current tick and later tick entry.

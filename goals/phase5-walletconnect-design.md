@@ -110,6 +110,7 @@ createWalletConnectProvider({ UniversalProvider, projectId, chainId, metadata, s
 - **署名・送金の承認待ち (スマホ):**
   - パネルとフォームに「Approve in your wallet app」と「Open wallet」を出す。
   - リンク先は、セッション相手の `metadata.redirect.universal` (無ければ `native`)、無ければ接続に使ったウォレットのリンク。
+  - 2026-11-09 変更 (phase6 §1 リンクの形式): 相手の `native` → 接続に使ったウォレットのスキーム → 相手の `universal` の順。
 
 ## 6. エラーとセキュリティ
 

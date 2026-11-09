@@ -1,7 +1,7 @@
 import { css } from '@firebolt-dev/css'
 import { useEffect, useState } from 'react'
 import { isTouch } from '../utils'
-import { WALLET_LINKS, isWalletConnectUri, walletConnectLink } from '../../core/extras/walletLinks'
+import { WALLET_LINKS, isAppScheme, isWalletConnectUri, walletConnectLink } from '../../core/extras/walletLinks'
 
 // WalletConnect steps in the EVM panel: waiting for the relay, then a QR (desktop) or wallet links (phones),
 // then "approve in your wallet" while a signature or transfer waits. The status comes from world.evm.
@@ -54,13 +54,19 @@ const sheetStyle = css`
   }
 `
 
-// "Open wallet" while a request waits: the connected wallet's own (validated) link, or the one the player
-// tapped to connect. Phones only (on a desktop the request shows up in the phone's wallet anyway).
+// "Open wallet" while a request waits: the connected wallet's app (see getWalletConnectRedirect). Phones only
+// (on a desktop the request shows up in the phone's wallet anyway). An app scheme opens in place: in a new tab
+// iOS would leave an empty tab behind.
 export function OpenWalletLink({ world }) {
   const redirect = world.evm?.getWalletConnectRedirect?.()
   if (!isTouch || !redirect) return null
   return (
-    <a className='wc-open-wallet' href={redirect} target='_blank' rel='noopener noreferrer'>
+    <a
+      className='wc-open-wallet'
+      href={redirect}
+      target={isAppScheme(redirect) ? undefined : '_blank'}
+      rel='noopener noreferrer'
+    >
       Open wallet
     </a>
   )
@@ -89,7 +95,10 @@ export function WalletConnectSheet({ world }) {
   const uri = state === 'uri' && isWalletConnectUri(status.uri) ? status.uri : null
   // a link that does not look like a pairing link is never shown; the player can still cancel
   const waiting = state === 'loading' || state === 'connecting' || (state === 'uri' && !uri)
+  // a copied link or the QR can go to any wallet: the one tapped earlier no longer says which
+  const forgetChoice = () => world.evm?.setWalletConnectChoice?.(null)
   const copy = async () => {
+    forgetChoice()
     try {
       await navigator.clipboard.writeText(uri)
       setCopied(true)
@@ -125,7 +134,7 @@ export function WalletConnectSheet({ world }) {
                 <a
                   key={wallet.id}
                   className={`wc-wallet wc-wallet-${wallet.id}`}
-                  href={walletConnectLink(wallet.universal, uri)}
+                  href={walletConnectLink(wallet, uri)}
                   rel='noopener noreferrer'
                   onClick={() => world.evm?.setWalletConnectChoice?.(wallet.id)}
                 >
@@ -149,7 +158,13 @@ export function WalletConnectSheet({ world }) {
           {showQr && status.qr && <img className='wc-qr' src={status.qr} alt='WalletConnect QR code' />}
           <div className='wc-row'>
             {isTouch && (
-              <button type='button' onClick={() => setShowQr(!showQr)}>
+              <button
+                type='button'
+                onClick={() => {
+                  if (!showQr) forgetChoice()
+                  setShowQr(!showQr)
+                }}
+              >
                 {showQr ? 'Hide QR' : 'Show QR'}
               </button>
             )}

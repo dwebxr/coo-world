@@ -29,6 +29,20 @@ AppKit (`formatUniversalUrl`) と同じく、`<universal>/wc?uri=<encodeURICompo
 
 この 2 つで実際に開くかは、実機で確かめる。
 
+**2026-11-09 実機の結果と変更:**
+- Myna Wallet: 開いた。接続と署名まで通った。
+- HashPort Wallet: App Store のページを経てアプリが開いたが、接続の要求は出なかった。
+  - `link.wallet.hashport.com/wc?uri=` は、アプリに渡らないと App Store へ 301 で移り、そこで wc: URI が失われる。
+  - AASA は `*` を宣言していて、Apple の CDN にも載っているが、アプリには渡らなかった。
+- 変更: HashPort だけ、AppKit がスマホで使う `mobile_link` のスキームで開く (`expo2025-wallet://wc?uri=…`)。
+  - Reown のレジストリと api.web3modal.org の値。universal の方は AppKit では Link Mode 専用 (`link_mode`)。
+  - アプリが無いと Safari は「開けない」と出る (ストアへは飛ばない)。パネルの「Install the wallet app first」でカバーする。
+- 「Open wallet」もスキームを優先する。接続済みならアプリは入っている。
+  - Myna の AASA は `/deeplink/*` だけなので、ベースの `…/deeplink` はアプリに渡らない。
+  - 順序: ウォレット自身の `redirect.native` → タップしたウォレットのスキーム → ウォレット自身の `redirect.universal`。
+  - アプリ用スキームのリンクは同じタブで開く。新しいタブで開くと空のタブが残るため。
+  - 「Copy link」と「Show QR」を押したら、タップしたウォレットの記憶を消す。別のウォレットが受けるかもしれないため。
+
 ## 2. ボタン (src/core/extras/walletLinks.js)
 
 - `WALLET_LINKS` を MetaMask、HashPort Wallet、Myna Wallet にする。id は `metamask` / `hashport` / `myna`。

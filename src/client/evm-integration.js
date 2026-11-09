@@ -1,7 +1,7 @@
 import { isEvmAddress, isEvmSigninSignature, parseEvmChainIds, sameEvmAddress } from '../core/extras/evmChains'
 import { encodeTransfer, isTxHash } from '../core/extras/evmAbi'
 import { KNOWN_CHAINS, explorerTxUrl, parseTipAmount, parseTipTokens } from '../core/extras/evmTokens'
-import { WALLET_LINKS } from '../core/extras/walletLinks'
+import { WALLET_LINKS, isAppScheme } from '../core/extras/walletLinks'
 
 // EVM ウォレット (EIP-1193 / EIP-6963) の所有証明。依存ライブラリなし。
 // 流れと世代管理は solana-integration.js と同じ。状態は Solana と独立で、ビルド権限には関与しない
@@ -87,7 +87,8 @@ export function createEvmIntegration(world, { loadWalletConnect = () => import('
   let walletConnect = null
   let walletConnectLoading = null
   let walletConnectStatus = null
-  // the wallet app the player tapped to connect (a WALLET_LINKS id), for "Open wallet" if the wallet sends no link
+  // the wallet app the player tapped to connect (a WALLET_LINKS id), for "Open wallet" if the wallet sends no
+  // app scheme of its own. Cleared by a new pairing link, and by Copy link or the QR (another wallet may take it)
   let walletConnectChoice = null
 
   const getState = () => ({ status, address, verified })
@@ -573,10 +574,14 @@ export function createEvmIntegration(world, { loadWalletConnect = () => import('
     return true
   }
 
-  // the link that opens the connected wallet app, for "Open wallet": the wallet's own (validated by the
-  // adapter), else the one the player tapped to connect
-  const getWalletConnectRedirect = () =>
-    walletConnect?.walletRedirect() ?? WALLET_LINKS.find(wallet => wallet.id === walletConnectChoice)?.universal ?? null
+  // the link that opens the connected wallet app, for "Open wallet": the wallet's own app scheme (validated by
+  // the adapter), else the scheme of the listed wallet the player tapped to connect, else the wallet's own
+  // universal link. A scheme opens the installed app; a universal link can end on the App Store instead.
+  const getWalletConnectRedirect = () => {
+    const own = walletConnect?.walletRedirect() ?? null
+    if (isAppScheme(own)) return own
+    return WALLET_LINKS.find(wallet => wallet.id === walletConnectChoice)?.native ?? own
+  }
   const setWalletConnectChoice = id => {
     walletConnectChoice = WALLET_LINKS.some(wallet => wallet.id === id) ? id : null
   }

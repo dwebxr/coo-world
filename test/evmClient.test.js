@@ -8,7 +8,7 @@ import { packetMethodById } from '../src/core/packets.js'
 import { isEvmAddress, isEvmSigninSignature, parseEvmChainIds, sameEvmAddress } from '../src/core/extras/evmChains.js'
 import { encodeTransfer, isTxHash } from '../src/core/extras/evmAbi.js'
 import { KNOWN_CHAINS, explorerTxUrl, parseTipAmount, parseTipTokens } from '../src/core/extras/evmTokens.js'
-import { WALLET_LINKS } from '../src/core/extras/walletLinks.js'
+import { WALLET_LINKS, isAppScheme } from '../src/core/extras/walletLinks.js'
 
 const deps = {
   isEvmAddress,
@@ -22,6 +22,7 @@ const deps = {
   parseTipAmount,
   parseTipTokens,
   WALLET_LINKS,
+  isAppScheme,
 }
 
 const checksummed = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
@@ -892,7 +893,7 @@ test('walletconnect: Cancel and dispose stop a connection still waiting for the 
   assert.deepEqual(h.toasts, [])
 })
 
-test('walletconnect: "Open wallet" uses the wallet link, else the wallet the player tapped', async t => {
+test('walletconnect: "Open wallet" uses the wallet\'s app scheme, else the tapped wallet\'s, else its universal link', async t => {
   const h = wcSetup(t)
   assert.equal(h.evm.getWalletConnectRedirect(), null)
   const run = await h.start('walletconnect')
@@ -900,11 +901,23 @@ test('walletconnect: "Open wallet" uses the wallet link, else the wallet the pla
   await flush()
   h.status(run.attempt)
   await run.promise
+  // no link from the wallet: the scheme of the listed wallet the player tapped
   h.evm.setWalletConnectChoice('hashport')
-  assert.equal(h.evm.getWalletConnectRedirect(), 'https://link.wallet.hashport.com')
+  assert.equal(h.evm.getWalletConnectRedirect(), 'expo2025-wallet://')
   h.evm.setWalletConnectChoice('evil')
   assert.equal(h.evm.getWalletConnectRedirect(), null)
+  // the wallet's own universal link gives way to the tapped wallet's scheme (a universal link can end on the
+  // App Store), and is used when no listed wallet was tapped (a stored session, the QR, a copied link)
+  h.adapter.redirect = 'https://prd-api.mynawallet.jp/deeplink'
+  h.evm.setWalletConnectChoice('myna')
+  assert.equal(h.evm.getWalletConnectRedirect(), 'mynawallet://')
+  h.evm.setWalletConnectChoice(null)
+  assert.equal(h.evm.getWalletConnectRedirect(), 'https://prd-api.mynawallet.jp/deeplink')
+  // the wallet's own scheme wins over a tapped one: it names the app that holds the session
   h.adapter.redirect = 'metamask://'
+  h.evm.setWalletConnectChoice('hashport')
+  assert.equal(h.evm.getWalletConnectRedirect(), 'metamask://')
+  h.evm.setWalletConnectChoice(null)
   assert.equal(h.evm.getWalletConnectRedirect(), 'metamask://')
   // the session ending on the phone disconnects here
   h.adapter.emit('accountsChanged', [])
@@ -915,7 +928,7 @@ test('walletconnect: a new pairing link forgets the wallet tapped for an earlier
   const h = wcSetup(t)
   const run = await h.start('walletconnect')
   h.evm.setWalletConnectChoice('hashport')
-  assert.equal(h.evm.getWalletConnectRedirect(), 'https://link.wallet.hashport.com')
+  assert.equal(h.evm.getWalletConnectRedirect(), 'expo2025-wallet://')
   h.adapter.options.onStatus({ state: 'uri', uri: `wc:${'ab'.repeat(32)}@2?x` })
   assert.equal(h.evm.getWalletConnectRedirect(), null, 'another wallet may take this link')
   h.evm.setWalletConnectChoice('myna')

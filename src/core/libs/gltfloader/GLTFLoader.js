@@ -3336,17 +3336,20 @@ class GLTFParser {
 		}
 
 		const options = this.options;
+		const budget = this.budget;
 
-		// COO_BUDGET: a data: URI is decoded into a buffer (any other URI is refused before a fetch)
-		if ( this.budget && isDataURI( bufferDef.uri ) ) {
+		// COO_BUDGET: with a budget, a data: URI buffer is decoded by the budget (the decoder the check sized it with,
+		// charged at its size before the array) and those bytes are the buffer: its URL is never fetched (a fetch's URL
+		// parser could make other bytes of the same text). Without one (the server), fetched as upstream
+		if ( budget && isDataURI( bufferDef.uri ) ) {
 
-			this.budget.bytes( Math.ceil( bufferDef.uri.length * 3 / 4 ), 'data: buffer' );
+			return Promise.resolve().then( () => budget.dataBuffer( bufferDef.uri, 'data: buffer' ) );
 
 		}
 
-		return new Promise( function ( resolve, reject ) { // COO_EXEMPT: once per buffer (charged above when a data: URI)
+		return new Promise( function ( resolve, reject ) { // COO_EXEMPT: once per buffer (any other URI is refused before a fetch)
 
-			loader.load( resolveURI( bufferDef.uri, options.path ), resolve, undefined, function () { // COO_EXEMPT: a data: URI buffer, charged above (any other URI is refused before a fetch); COO_BUDGET: its URI used as it is (resolveURI)
+			loader.load( resolveURI( bufferDef.uri, options.path ), resolve, undefined, function () { // COO_EXEMPT: without a budget (the server), as upstream; with one, a URI that is not data: is refused before a fetch; COO_BUDGET: its URI used as it is (resolveURI)
 
 				reject( new Error( 'THREE.GLTFLoader: Failed to load buffer "' + bufferDef.uri + '".' ) ); // COO_EXEMPT: an error, once
 
@@ -3676,6 +3679,23 @@ class GLTFParser {
 
 			} );
 
+		} else if ( budget && isDataURI( sourceDef.uri ) ) {
+
+			// COO_BUDGET: with a budget, a data: image is never fetched: the array the budget decoded, sized from its header
+			// and charged is the one decoded as the image, in a Blob, as an image in a bufferView is (a fetch of the URL
+			// decoded other bytes than the budget sized: its URL parser drops tabs, UTF-8-encodes characters past ASCII and
+			// ends at a `#`). Without a budget (the server), fetched as upstream
+			sourceURI = Promise.resolve().then( function () {
+
+				const bytes = budget.imageURI( sourceDef.uri, 'image ' + sourceIndex );
+				budget.bytes( bytes.byteLength, 'image blob' );
+				isObjectURL = true;
+				const blob = new Blob( [ bytes ], { type: sourceDef.mimeType || getImageURIMimeType( sourceDef.uri ) } ); // COO_BUDGET: charged above (image blob); COO_REVOKE
+				sourceURI = URL.createObjectURL( blob ); // COO_REVOKE: revoked however the load ends
+				return sourceURI;
+
+			} );
+
 		} else if ( sourceDef.uri === undefined ) {
 
 			throw new Error( 'THREE.GLTFLoader: Image ' + sourceIndex + ' is missing URI and bufferView' );
@@ -3684,8 +3704,8 @@ class GLTFParser {
 
 		const promise = Promise.resolve( sourceURI ).then( function ( sourceURI ) {
 
-			// COO_BUDGET: an image in a data: URI is measured the same way (any other URI is refused before a fetch)
-			if ( budget && sourceDef.bufferView === undefined ) budget.imageURI( sourceURI, 'image ' + sourceIndex );
+			// COO_BUDGET: an image named by any other URI (a blob: URL is refused; any other is refused before a fetch)
+			if ( budget && sourceDef.bufferView === undefined && ! isDataURI( sourceDef.uri ) ) budget.imageURI( sourceURI, 'image ' + sourceIndex );
 
 			return new Promise( function ( resolve, reject ) { // COO_EXEMPT: one per image source (decodes are counted: images)
 

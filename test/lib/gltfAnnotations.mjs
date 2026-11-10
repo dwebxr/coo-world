@@ -66,7 +66,8 @@ export const ALLOWED = {
     work: 'a charge (the budget)',
     jsonCopy: 'a charge (the budget): a JSON copy, at what it holds',
     image: 'a charge (the budget): reads an image header',
-    imageURI: 'a charge (the budget): measures a data: URI image',
+    imageURI: 'a charge (the budget): decodes a data: URI image, charged, and returns it',
+    dataBuffer: 'a charge (the budget): decodes a data: URI buffer, charged, and returns it',
     refuse: 'a refusal (the budget)',
     // one entry of a Map, a Set or a cache
     get: 'one look-up',

@@ -459,6 +459,17 @@ function checkURI(uri, top, at, limits) {
   ) {
     refuse(`${place(top, at)} uri is a data: URI whose media type is not a type/subtype`)
   }
+  // a payload that is not base64 (which agrees with atob) only printable ASCII and no `#`: the forms on which
+  // decoders disagree (a URL parser drops tabs and newlines, UTF-8-encodes characters past ASCII, strips trailing
+  // spaces and control characters, and ends the URI at a `#`)
+  if (!/;base64$/i.test(uri.slice(5, comma))) {
+    for (let i = comma + 1; i < uri.length; i++) {
+      const c = uri.charCodeAt(i)
+      if (c < 0x21 || c > 0x7e || c === 35) {
+        refuse(`${place(top, at)} uri is a data: URI whose payload has a character other than printable ASCII, or a #`)
+      }
+    }
+  }
   parameters.forEach((parameter, k) => {
     if (k === parameters.length - 1 && parameter.toLowerCase() === 'base64') return
     const equals = parameter.indexOf('=')
@@ -481,8 +492,10 @@ function checkText(json, limits, step) {
     values++
     if (STRING_KEYS.has(key) && typeof value !== 'string') refuse(`${place(top, at)} ${key} is not a string`)
     if (typeof value === 'string') {
-      if (key === 'uri') payloads += checkURI(value, top, at, limits) || 0
-      else if (value.length > cap)
+      // a buffer's or an image's uri (the URIs the parser reads); a `uri` elsewhere is a string like any other
+      if (key === 'uri' && depth === 3 && (top === 'buffers' || top === 'images')) {
+        payloads += checkURI(value, top, at, limits) || 0
+      } else if (value.length > cap)
         refuse(`${place(top, at)} ${key} is ${value.length} characters long, more than ${cap}`)
     } else if (Array.isArray(value)) {
       for (let i = 0; i < value.length; i++) visit(value[i], key, top, depth === 1 ? i : at, cap, depth + 1)
@@ -621,6 +634,19 @@ export function checkGLTF(data, limits = GLTF_LIMITS, budget = null) {
       if (i !== 0 || bin === null) refuse(`buffer ${i} has no data in the file`)
     } else if (!isDataURI(buffer.uri)) {
       refuse(`a model may not reference external files (buffer ${i})`)
+    } else {
+      // its data, sized by the decoder the parser decodes it with (one pass, nothing allocated): at least its
+      // byteLength, on which every bufferView and accessor check relies (shorter, the parser's arrays threw)
+      let size
+      try {
+        size = dataURIPayload(buffer.uri).size
+      } catch {
+        refuse(`buffer ${i} is a data: URI that does not decode`)
+      }
+      step(buffer.uri.length, 'data: buffers')
+      if (size < (buffer.byteLength || 0)) {
+        refuse(`buffer ${i} has ${size} bytes of data, fewer than its byteLength (${buffer.byteLength})`)
+      }
     }
   })
   collections.bufferViews.forEach((view, i) => {
@@ -1394,6 +1420,17 @@ function primitiveKey(primitive) {
   return key
 }
 
+// why an image of this header is refused, or null: not PNG, JPEG or WebP, malformed, cut short, without a size, or
+// larger than the pixels one image may have
+function imageRefusal(header, limits) {
+  if (!header) return 'is not a PNG, JPEG or WebP image'
+  if (header.malformed) return `is a malformed ${header.type} (${header.malformed})`
+  if (header.incomplete) return `is a ${header.type} cut short`
+  if (!(header.width > 0 && header.height > 0)) return 'has no width or height'
+  if (header.width * header.height > limits.imagePixels) return `is larger than ${limits.imagePixels} pixels`
+  return null
+}
+
 // The per-file budget the parser charges (see the COO_BUDGET and COO_WORK sites in the vendored GLTFLoader).
 // `fileBytes`: the file's size (its data is copied twice: the GLB's binary chunk, then the bufferViews; and an honest
 // file's accessors are gone through about once). `onCharge(kind, n, what, total)`: told of every charge (tests).
@@ -1483,12 +1520,9 @@ export function createGLTFBudget({
     image(bytes, what) {
       clock(what)
       const header = readImageHeader(bytes)
-      if (!header) fail(what, `${what} is not a PNG, JPEG or WebP image`)
-      if (header.malformed) fail(what, `${what} is a malformed ${header.type} (${header.malformed})`)
-      if (header.incomplete) fail(what, `${what} is a ${header.type} cut short`)
-      if (!(header.width > 0 && header.height > 0)) fail(what, `${what} has no width or height`)
+      const refusal = imageRefusal(header, limits)
+      if (refusal) fail(what, `${what} ${refusal}`)
       const pixels = header.width * header.height
-      if (pixels > limits.imagePixels) fail(what, `${what} is larger than ${limits.imagePixels} pixels`)
       budget.count('images')
       used.pixels += pixels
       onCharge?.('pixels', pixels, what, used.pixels)
@@ -1496,12 +1530,14 @@ export function createGLTFBudget({
         fail(what, `the images decoded would have more than ${limits.imagePixelsPerFile} pixels (at ${what})`)
       }
     },
-    // an image named by URI: a data: URI is measured as embedded bytes (one that does not decode is refused, like any
-    // other image that is not one): its first IMAGE_HEADER_BYTES decoded for the header, the whole image only when its
-    // size is not settled within them (as for a stand-alone image), each array charged before it is made; a blob: URL
-    // is refused; any other URL is refused by the client's URL filter before a fetch, so nothing decodes it
+    // an image named by URI. A data: URI is decoded here, and the array returned is what the parser hands the decoder
+    // (in a Blob: it never fetches the URL, whose URL parser drops tabs, UTF-8-encodes characters past ASCII and ends
+    // at a `#`, so a fetch decoded other bytes than these). Its first IMAGE_HEADER_BYTES are decoded first, so that an
+    // image refused from its header costs only them; an image accepted is decoded whole, once, and sized from the
+    // header of the very bytes returned. Each array is charged before it is made. A blob: URL is refused; any other URL
+    // is refused by the client's URL filter before a fetch, so nothing decodes it (and null is returned)
     imageURI(uri, what) {
-      if (typeof uri !== 'string') return
+      if (typeof uri !== 'string') return null
       if (isDataURI(uri)) {
         let payload
         try {
@@ -1511,13 +1547,33 @@ export function createGLTFBudget({
         }
         budget.bytes(Math.min(payload.size, IMAGE_HEADER_BYTES), 'data: image')
         let bytes = payload.decode(IMAGE_HEADER_BYTES)
-        if (payload.size > bytes.length && readImageHeader(bytes)?.incomplete) {
+        if (bytes.length < payload.size) {
+          const early = readImageHeader(bytes)
+          if (!early?.incomplete) {
+            const refusal = imageRefusal(early, limits)
+            if (refusal) fail(what, `${what} ${refusal}`)
+          }
           budget.bytes(payload.size, 'data: image')
           bytes = payload.decode()
         }
-        return budget.image(bytes, what)
+        budget.image(bytes, what)
+        return bytes
       }
       if (/^\s*blob:/i.test(uri)) fail(what, `${what} names a blob: URL`)
+      return null
+    },
+    // a buffer named by a data: URI, decoded here by the decoder checkGLTF sized it with (its size at least the
+    // buffer's byteLength) and charged at its size before the array is made; the parser uses these bytes and never
+    // fetches the URL (a fetch's URL parser could make other bytes of the same text)
+    dataBuffer(uri, what) {
+      let payload
+      try {
+        payload = dataURIPayload(uri)
+      } catch {
+        fail(what, `${what} is a data: URI that does not decode`)
+      }
+      budget.bytes(payload.size, what)
+      return payload.decode().buffer
     },
   }
   return budget

@@ -4,8 +4,10 @@ import v8 from 'node:v8'
 import vm from 'node:vm'
 import { GLTFLoader } from '../src/core/libs/gltfloader/GLTFLoader.js'
 import { checkGLTF, createGLTFBudget, dataURIPayload, GLTF_LIMITS, isDataURI } from '../src/core/extras/gltfLimits.js'
+import { readImageHeader } from '../src/core/extras/imageHeader.js'
 import { IMAGE_HEADER_BYTES } from '../src/core/extras/imageHeader.js'
 import { png, jpeg } from './lib/imageBytes.mjs'
+import { glb } from './lib/glb.mjs'
 
 // A model's data: URIs: the budget's own decode of a data: image (charged before each array it makes, straight into
 // arrays of the decoded size, the whole image only when its header is not settled in the first 256 KiB), the one test
@@ -106,8 +108,9 @@ test('a data: payload decodes as atob and the old decoder did, into an array of 
 })
 
 test("the budget's decode of a data: image: charged before each array, the decoded size, the whole only when needed", () => {
-  // a PNG of 1 MB: its header in the first 256 KiB, which are all that is decoded and charged. A JPEG whose frame
-  // header comes after 325 KB: the first 256 KiB, then the whole of it, each charged before it is made
+  // the first 256 KiB first (a refused image costs only them), then, the image accepted, the whole of it, once: the
+  // array returned is what the parser decodes. A PNG of 1 MB (its header in the window), a JPEG whose frame header
+  // comes after 325 KB (read from the whole); each array charged before it is made
   const uris = [
     base64URI('image/png', padded(png(16, 16), MiB)),
     base64URI('image/jpeg', lateJPEG(2 * MiB)),
@@ -132,6 +135,8 @@ test("the budget's decode of a data: image: charged before each array, the decod
   assert.deepEqual(events, [
     ['charge', window, 'data: image'],
     ['array', window],
+    ['charge', MiB, 'data: image'],
+    ['array', MiB],
     ['charge', window, 'data: image'],
     ['array', window],
     ['charge', 2 * MiB, 'data: image'],
@@ -168,45 +173,202 @@ test('decoding an N-byte data: image allocates about N, not an intermediate stri
   }
 })
 
-test('a .gltf is held to the JSON limit without its data: payloads; a large data: buffer in it loads', async () => {
-  gc()
-  // a .gltf's text of `size` characters of `char` between a prefix and a suffix, built as bytes (no string of it)
-  const document = (prefix, char, size, suffix) => {
-    const [head, tail] = [prefix, suffix].map(part => new TextEncoder().encode(part))
-    const bytes = new Uint8Array(head.length + size + tail.length)
-    bytes.set(head)
-    bytes.fill(char.charCodeAt(0), head.length, head.length + size)
-    bytes.set(tail, head.length + size)
-    return bytes
-  }
-  // the reviewer's probe: a plain .gltf was not held to the 16 MiB a GLB's JSON chunk is (a 20 MB one passed). Its
-  // structure is now: 17 MiB of it is refused (here an extension's text nothing reads)
-  const big = document('{"asset":{"version":"2.0"},"extensions":{"X_notes":{"text":"', 'x', 17 * MiB, '"}}}')
-  assert.throws(() => checkGLTF(big), /the JSON is \d+ characters without its data: URIs' payloads, more than 16777216/)
-  // 1 MiB of structure (1000 nodes named with 1000 characters) and a data: buffer of 17 MiB of base64 pass: the
-  // payload is data, charged where it is decoded
-  const structure = buffer => ({
+// The reviewer's probe: a percent-encoded JPEG whose bytes differ between a decoder that reads a raw character as its
+// low byte (the budget's) and a fetch of the data: URL, whose URL parser drops tabs (or UTF-8-encodes a character past
+// ASCII) before it percent-decodes: the budget read a 16 x 16 frame, the browser decoded a 20000 x 20000 one
+function twoViews(mode) {
+  const sof = (h, w) => [
+    0xff,
+    0xc0,
+    0x00,
+    0x11,
+    0x08,
+    h >> 8,
+    h & 255,
+    w >> 8,
+    w & 255,
+    0x03,
+    1,
+    0x22,
+    0,
+    2,
+    0x11,
+    1,
+    3,
+    0x11,
+    1,
+  ]
+  const sos = [0xff, 0xda, 0x00, 0x0c, 0x03, 1, 0, 2, 0x11, 3, 0x11, 0, 0x3f, 0]
+  const T = new Array(65600).fill(0)
+  T[0] = 0xff
+  T[1] = 0xe2
+  T[2] = 0xff
+  T[3] = 0xc0
+  const big = sof(20000, 20000).slice(2)
+  big.forEach((b, i) => (T[4 + i] = b))
+  const comAt = 4 + big.length
+  T[comAt] = 0xff
+  T[comAt + 1] = 0xfe
+  T[comAt + 2] = 0xff
+  T[comAt + 3] = 0xfe
+  ;[...sof(16, 16), ...sos].forEach((b, i) => (T[2 + 0xffc0 + i] = b))
+  sos.forEach((b, i) => (T[comAt + 2 + 0xfffe + i] = b))
+  const pct = bytes => bytes.map(b => '%' + b.toString(16).padStart(2, '0')).join('')
+  const head = pct([0xff, 0xd8, 0xff, 0xe1, 0x00, 0x0a, 1, 2, 3, 4, 5, 6])
+  const odd = mode === 'tab' ? '\t\t' : String.fromCharCode(0x800) + '%00'
+  return flat('data:image/jpeg,' + head + odd + pct(T))
+}
+const vec3 = (count, more = {}) => ({ componentType: 5126, type: 'VEC3', count, ...more })
+const imageModel = uri =>
+  glb({
     asset: { version: '2.0' },
     scene: 0,
     scenes: [{ nodes: [0] }],
-    nodes: Array.from({ length: 1000 }, (_, i) => ({
-      name: `${i}`.padEnd(1000, 'n'),
-      ...(i === 0 ? { mesh: 0 } : {}),
-    })),
-    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
-    accessors: [{ bufferView: 0, componentType: 5126, type: 'VEC3', count: 3, min: [0, 0, 0], max: [0, 0, 0] }],
-    bufferViews: [{ buffer: 0, byteLength: 36 }],
-    buffers: [{ byteLength: buffer, uri: 'URI' }],
+    nodes: [{ mesh: 0 }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+    materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } }, emissiveTexture: { index: 1 } }],
+    textures: [{ source: 0 }, { source: 0, sampler: 0 }],
+    samplers: [{ magFilter: 9728 }],
+    images: [{ uri }],
+    accessors: [vec3(3, { min: [0, 0, 0], max: [0, 0, 0] })],
   })
-  const [before, after] = JSON.stringify(structure(12.75 * MiB)).split('"URI"')
-  const large = document(`${before}"data:application/octet-stream;base64,`, 'A', 17 * MiB, `"${after}`)
-  assert.ok(large.length > 17 * MiB)
-  assert.ok(checkGLTF(large))
-  // and such a .gltf loads, as the client loads it (a data: buffer of 1 MiB here: the parse fetches and decodes it)
-  const [head, tail] = JSON.stringify(structure(0.75 * MiB)).split('"URI"')
-  const file = document(`${head}"data:application/octet-stream;base64,`, 'A', MiB, `"${tail}`)
-  const budget = createGLTFBudget({ fileBytes: file.byteLength })
-  checkGLTF(file, GLTF_LIMITS, budget)
-  const parsed = await new GLTFLoader().parseAsync(file.buffer, '', budget)
-  assert.equal(parsed.scene.children.length, 1)
+
+test('a data: image is one byte sequence: refused at the door where decoders disagree, never fetched in a model', async t => {
+  // the two views: the budget's decoder and a fetch of the URL make different bytes of the same text
+  for (const mode of ['tab', 'utf8']) {
+    const uri = twoViews(mode)
+    const fetched = new Uint8Array(await (await fetch(uri)).arrayBuffer())
+    assert.equal(readImageHeader(dataURIPayload(uri).decode()).width, 16)
+    assert.notEqual(readImageHeader(fetched).width, 16, `${mode}: the fetch makes other bytes`)
+    // at the door: a percent-encoded payload is printable ASCII without `#`
+    assert.throws(() => checkGLTF(imageModel(uri)), /payload has a character other than printable ASCII, or a #/)
+  }
+  for (const payload of ['%41 %42', '%41#%42', `%41${String.fromCharCode(0x7f)}`, '%41é']) {
+    assert.throws(
+      () => checkGLTF(imageModel(`data:image/png,${payload}`)),
+      /other than printable ASCII, or a #/,
+      payload
+    )
+  }
+  // with the check bypassed (a budget, no check), the parser decodes the very bytes the budget sized: the Blob the
+  // decoder is handed holds the budget's array, and no data: image URL is fetched
+  const handed = []
+  t.mock.method(globalThis, 'createImageBitmap', async blob => {
+    handed.push(new Uint8Array(await blob.arrayBuffer()))
+    return { width: 16, height: 16, close() {} }
+  })
+  const fetches = []
+  const realFetch = globalThis.fetch
+  t.mock.method(globalThis, 'fetch', (input, init) => {
+    fetches.push(String(typeof input === 'string' ? input : input.url).slice(0, 5))
+    return realFetch(input, init)
+  })
+  const created = []
+  const revoked = []
+  const realCreate = URL.createObjectURL
+  const realRevoke = URL.revokeObjectURL
+  t.mock.method(URL, 'createObjectURL', blob => {
+    const url = realCreate(blob)
+    created.push(url)
+    return url
+  })
+  t.mock.method(URL, 'revokeObjectURL', url => {
+    revoked.push(url)
+    return realRevoke(url)
+  })
+  const parse = async uri => {
+    const file = imageModel(uri)
+    const budget = createGLTFBudget({ fileBytes: file.byteLength })
+    const gltf = await new GLTFLoader().parseAsync(file, '', budget)
+    let map = null
+    gltf.scene.traverse(o => o.isMesh && (map = o.material.map))
+    return { map, budget }
+  }
+  for (const mode of ['tab', 'utf8']) {
+    handed.length = 0
+    const uri = twoViews(mode)
+    const { budget } = await parse(uri)
+    assert.equal(handed.length, 1, 'one decode for the two textures on the image')
+    assert.deepEqual(handed[0], dataURIPayload(uri).decode(), `${mode}: the decoder got the budget's bytes`)
+    assert.equal(budget.used.pixels, 16 * 16)
+  }
+  // base64 and percent-encoded images still load, through a Blob each, revoked once loaded
+  for (const uri of [base64URI('image/png', png(32, 32)), percentURI('image/png', png(32, 32))]) {
+    handed.length = 0
+    const { map } = await parse(uri)
+    assert.ok(map?.image, 'the texture loaded')
+    assert.deepEqual(handed[0], dataURIPayload(uri).decode())
+  }
+  assert.ok(!fetches.includes('data:'), 'no data: URL was fetched')
+  assert.equal(created.length, 4)
+  assert.deepEqual(revoked, created, 'every object URL revoked')
+  // a refused one is revoked too, and costs its window: a 4 MB PNG of 100000 x 100000 (nothing created for it)
+  await assert.rejects(parse(base64URI('image/png', padded(png(100000, 100000), 4 * MiB))), /larger than/)
+  assert.deepEqual(revoked, created)
+})
+
+test('a data: buffer: decoded by the decoder the check sized it with, at least its byteLength, never fetched', async t => {
+  const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0])
+  const model = (uri, byteLength = 36) =>
+    text({
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+      accessors: [vec3(3, { bufferView: 0, min: [0, 0, 0], max: [1, 1, 0] })],
+      bufferViews: [{ buffer: 0, byteLength: 36 }],
+      buffers: [{ byteLength, uri }],
+    })
+  const bytes = new Uint8Array(positions.buffer)
+  // the check sizes it with the parser's decoder: data shorter than its byteLength is refused (the parser's arrays
+  // threw a RangeError on it)
+  assert.throws(
+    () => checkGLTF(model(base64URI('application/octet-stream', bytes.subarray(0, 24)))),
+    /buffer 0 has 24 bytes of data, fewer than its byteLength \(36\)/
+  )
+  assert.throws(
+    () => checkGLTF(model('data:application/octet-stream;base64,@@@@')),
+    /buffer 0 is a data: URI that does not decode/
+  )
+  // with a budget, the parser decodes it with that decoder, charged at its size, and never fetches the URL
+  const fetches = []
+  const realFetch = globalThis.fetch
+  t.mock.method(globalThis, 'fetch', (input, init) => {
+    fetches.push(String(typeof input === 'string' ? input : input.url).slice(0, 5))
+    return realFetch(input, init)
+  })
+  for (const uri of [base64URI('application/octet-stream', bytes), percentURI('application/octet-stream', bytes)]) {
+    const file = model(uri)
+    const charges = []
+    const budget = createGLTFBudget({
+      fileBytes: file.byteLength,
+      onCharge: (kind, n, what) => charges.push([kind, n, what]),
+    })
+    checkGLTF(file, GLTF_LIMITS, budget)
+    const gltf = await new GLTFLoader().parseAsync(file.buffer, '', budget)
+    let geometry = null
+    gltf.scene.traverse(o => o.isMesh && (geometry = o.geometry))
+    assert.deepEqual([...geometry.attributes.position.array], [...positions])
+    assert.deepEqual(
+      charges.filter(c => c[2] === 'data: buffer'),
+      [['bytes', 36, 'data: buffer']]
+    )
+  }
+  assert.ok(!fetches.includes('data:'), 'no data: URL was fetched')
+})
+
+test('only a buffer or an image has a URI: a `uri` elsewhere is a string like any other', () => {
+  // the reviewer's probe: a data: string under any key named `uri` (a node's, the asset's) was counted as a payload,
+  // out of the structure, though nothing reads it
+  const long = 'data:,' + 'x'.repeat(20000)
+  assert.throws(
+    () => checkGLTF(text({ asset: { version: '2.0' }, nodes: [{ uri: long }] })),
+    /nodes 0 uri is 20006 characters long, more than 1024/
+  )
+  assert.throws(
+    () => checkGLTF(text({ asset: { version: '2.0', uri: long } })),
+    /asset uri is 20006 characters long, more than 16384/
+  )
+  assert.ok(checkGLTF(text({ asset: { version: '2.0' }, nodes: [{ uri: 'data:,short' }] })))
 })

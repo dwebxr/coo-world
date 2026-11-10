@@ -61,13 +61,25 @@ function assertUsableVRM(glb) {
   }
 }
 
+// The bone the runtime takes out of the scene and drives as the root of the skeleton: from the hips up, as long as
+// the parent is a bone of that skeleton. (The order of the joints says nothing about it: a file may list the head
+// first.) `hipsName` is the name the humanoid gives the hips bone.
+function skeletonRoot(skeleton, hipsName) {
+  const bones = new Set(skeleton.bones)
+  let root = skeleton.getBoneByName(hipsName)
+  while (root?.parent && bones.has(root.parent)) root = root.parent
+  return root
+}
+
 // The runtime drives one skeleton: the first skinned mesh's (in traversal order, as create() finds it again in each
-// clone). The mixer is bound to that mesh, findBone and the per-frame bone updates use that skeleton, and its first
-// bone is taken out of the scene as the root. The other skinned meshes of a VRM usually have Skeleton objects of
-// their own over the same bones; they are skinned as they are and not checked. What is assumed of the first one:
-// it has bones, every bone is in the scene (a clone maps bones through the scene graph, so one outside it would come
-// back missing and every frame would throw), its root bone has a parent, and the bones in SKELETON_BONES are found
-// in it by the names the humanoid gives.
+// clone). The mixer is bound to that mesh, findBone and the per-frame bone updates use that skeleton, and the root
+// above its hips (skeletonRoot) is taken out of the scene. The other skinned meshes of a VRM usually have Skeleton
+// objects of their own over the same bones; they are skinned as they are and not checked. What is assumed of the
+// first one: it has bones; every bone is in the scene (a clone maps bones through the scene graph, so one outside it
+// would come back missing and every frame would throw); the hips and head are found in it by the names the humanoid
+// gives; and the head is below the root, so the bones that are aimed and looked up move with the avatar. Other
+// bones of the skeleton may lie outside the root's tree (some files have stray bones): they stay in the scene and
+// are not refused.
 function assertUsableSkeleton(glb) {
   let first = null
   glb.scene.traverse(node => {
@@ -86,13 +98,16 @@ function assertUsableSkeleton(glb) {
   if (!bones.every(bone => bone?.isObject3D && inScene(bone))) {
     throw new Error('[avatar] unusable VRM: a bone of the skeleton is not in the scene')
   }
-  if (!bones[0].parent) throw new Error('[avatar] unusable VRM: the root bone has no parent')
+  const found = {}
   for (const name of SKELETON_BONES) {
     const boneName = glb.userData.vrm.humanoid.getRawBoneNode(name)?.name
-    if (!boneName || !skeleton.getBoneByName(boneName)) {
-      throw new Error(`[avatar] unusable VRM: the ${name} bone is not in the skeleton`)
-    }
+    found[name] = boneName ? skeleton.getBoneByName(boneName) : undefined
+    if (!found[name]) throw new Error(`[avatar] unusable VRM: the ${name} bone is not in the skeleton`)
   }
+  const root = skeletonRoot(skeleton, found.hips.name)
+  let below = false
+  for (let node = found.head; node; node = node.parent) if (node === root) below = true
+  if (!below) throw new Error('[avatar] unusable VRM: the head bone is not below the root of the skeleton')
 }
 
 // emote clips one avatar instance keeps mixed and ready; the least recently started leaves first
@@ -211,7 +226,8 @@ export function createVRMFactory(glb, setupMaterial) {
     const tvrm = vrm.userData.vrm
     const skinnedMeshes = getSkinnedMeshes(vrm.scene)
     const skeleton = skinnedMeshes[0].skeleton // should be same across all skinnedMeshes
-    const rootBone = skeleton.bones[0] // should always be 0
+    // the root above the hips (checked at load), not the first joint: the joints may be listed in any order
+    const rootBone = skeletonRoot(skeleton, getBoneName('hips'))
     rootBone.parent.remove(rootBone)
     rootBone.updateMatrixWorld(true)
     vrm.scene.matrix = matrix // synced!

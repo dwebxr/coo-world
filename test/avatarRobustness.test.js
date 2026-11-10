@@ -1,5 +1,6 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import { bundleProbe } from './lib/workerProbe.mjs'
 
 // The real avatar, emote and model helpers, bundled the way the client build does it, fed files that are
@@ -14,6 +15,8 @@ before(async () => {
     export { createEmoteFactory } from './src/core/extras/createEmoteFactory'
     export { glbToNodes } from './src/core/extras/glbToNodes'
     export { getTrianglesFromGeometry } from './src/core/extras/getTrianglesFromGeometry'
+    export { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+    export { VRMLoaderPlugin } from '@pixiv/three-vrm'
   `)
   m = await import(bundle.url)
 })
@@ -140,7 +143,16 @@ test('an avatar the engine cannot drive is refused while it loads, with the reas
   )
   assert.throws(
     broken((vrm, mesh) => (mesh.skeleton.bones = [vrm.scene])),
-    /root bone has no parent/
+    /hips bone is not in the skeleton/
+  )
+  // the head outside the tree of the root above the hips: it would not move with the avatar
+  assert.throws(
+    broken(vrm => {
+      const head = vrm.scene.getObjectByName('J_head')
+      head.removeFromParent()
+      vrm.scene.add(head)
+    }),
+    /head bone is not below the root of the skeleton/
   )
   // the head is in the humanoid and the scene but only in a second mesh's skeleton: lookups use the first
   assert.throws(
@@ -170,6 +182,74 @@ test('an avatar the engine cannot drive is refused while it loads, with the reas
   secondary.parent = several.scene
   const hooks = makeHooks([])
   const instance = m.createVRMFactory(several, () => {}).create(new THREE.Matrix4(), hooks, null)
+  instance.destroy()
+})
+
+// an instance placed at X = 10 and updated once; where its bones are in the world
+function placeAt10(factory) {
+  const { THREE } = m
+  const instance = factory.create(new THREE.Matrix4().makeTranslation(10, 0, 0), makeHooks([]), null)
+  instance.disableRateCheck()
+  instance.update(0.016)
+  return instance
+}
+const worldX = (instance, bone) => new m.THREE.Vector3().setFromMatrixPosition(instance.getBoneTransform(bone)).x
+
+test('the skeleton root is found from the hips whatever the order of the joints; stray bones are accepted', async t => {
+  silence(t)
+  const { THREE } = m
+  // joints listed head first: the head used to be taken out as the root, and the hips moved twice (X = 20)
+  const reordered = makeVRM()
+  const mesh = skinnedMeshOf(reordered.scene)
+  const head = mesh.skeleton.bones.find(bone => bone.name === 'J_head')
+  mesh.bind(new THREE.Skeleton([head, ...mesh.skeleton.bones.filter(bone => bone !== head)]))
+  const instance = placeAt10(m.createVRMFactory(reordered, () => {}))
+  for (const name of ['hips', 'spine', 'neck', 'head', 'leftUpperArm', 'rightUpperArm']) {
+    assert.ok(Math.abs(worldX(instance, name) - 10) < 1e-6, `${name} at X = ${worldX(instance, name)}`)
+  }
+  instance.destroy()
+  // a stray bone of the skeleton outside the root's tree (some files have them) is not a reason to refuse
+  const stray = makeVRM()
+  const strayMesh = skinnedMeshOf(stray.scene)
+  const extra = new THREE.Bone()
+  extra.name = 'J_stray'
+  stray.scene.add(extra)
+  stray.scene.updateMatrixWorld(true)
+  strayMesh.bind(new THREE.Skeleton([extra, ...strayMesh.skeleton.bones]))
+  const strayInstance = placeAt10(m.createVRMFactory(stray, () => {}))
+  assert.ok(Math.abs(worldX(strayInstance, 'hips') - 10) < 1e-6)
+  assert.ok(Math.abs(worldX(strayInstance, 'head') - 10) < 1e-6)
+  strayInstance.destroy()
+})
+
+test('the bundled avatar loads through three-vrm, and its bones move with it', async t => {
+  silence(t)
+  const { THREE, GLTFLoader, VRMLoaderPlugin } = m
+  // Node has no image decoder: a decoded image is a stand-in of its size
+  const saved = { self: globalThis.self, createImageBitmap: globalThis.createImageBitmap }
+  globalThis.self = globalThis
+  globalThis.createImageBitmap = async () => ({ width: 64, height: 64, close() {} })
+  t.after(() => {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete globalThis[name]
+      else globalThis[name] = value
+    }
+  })
+  const loader = new GLTFLoader()
+  loader.register(parser => new VRMLoaderPlugin(parser))
+  const file = fs.readFileSync(new URL('../src/world/assets/avatar.vrm', import.meta.url))
+  const glb = await loader.parseAsync(file.buffer.slice(file.byteOffset, file.byteOffset + file.byteLength), '')
+  // for this file the root above the hips is also its first joint, so it is driven as before
+  const skeleton = skinnedMeshOf(glb.scene).skeleton
+  let root = skeleton.getBoneByName(glb.userData.vrm.humanoid.getRawBoneNode('hips').name)
+  while (root.parent && skeleton.bones.includes(root.parent)) root = root.parent
+  assert.equal(root, skeleton.bones[0])
+  const hipsRest = new THREE.Vector3().setFromMatrixPosition(
+    glb.userData.vrm.humanoid.getRawBoneNode('hips').matrixWorld
+  )
+  const instance = placeAt10(m.createVRMFactory(glb, () => {}))
+  assert.ok(Math.abs(worldX(instance, 'hips') - (10 + hipsRest.x)) < 1e-3, `hips at X = ${worldX(instance, 'hips')}`)
+  assert.ok(Math.abs(worldX(instance, 'head') - 10) < 0.1, `head at X = ${worldX(instance, 'head')}`)
   instance.destroy()
 })
 

@@ -14,7 +14,15 @@
 // its own statement, for what bounds its depth.
 //
 // What it cannot see: cost inside the functions the file calls in libraries (three.js, three-vrm); those calls need
-// a marker, but the marker is a claim, not a proof.
+// a marker, but the marker is a claim, not a proof. The allow-list is by name, not by binding: a callee passes when
+// its name (or its receiver's, or its method's) is listed, whatever that name holds, so a library function assigned
+// to an allow-listed name (`const resolve = structuredClone`) or handed to an allowed method as its callback
+// (`.then( structuredClone )`) is not caught, nor an allowed method name on another kind of object
+// (`text.normalize()`). Forms it does not see at all: recursion through two functions (mutual), through a callback
+// (`.then( again )`) or through another name for the parser (`parser.loadSkin()` inside loadSkin); tagged templates;
+// copies made by rest destructuring (`const [ ...a ] = list`, `const { ...o } = object`); and the implicit join of a
+// list converted to a string (`'' + list`, `${ list }` in a template). None of these is in the vendored file (a
+// reviewer's probe inserted each one and saw it missed); they are found by reading the file, not by this check.
 
 import { parse } from 'acorn'
 

@@ -9,6 +9,13 @@ import { NODE_CLIMB_LIMIT } from '../extras/nodeLimits.js'
 import { hardenForScripts } from '../extras/scriptHardening'
 
 const vec2 = new THREE.Vector2()
+
+// what a material facade passes to the renderer, which reads it every frame for every app: primitives only (a boxed
+// Number or an object with its own valueOf would run script code inside the renderer)
+function materialNumber(value, name) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`[material] ${name} not a number`)
+  return value
+}
 const CLEAN_RETRY_CAP = 10
 // a Model with no instances is released after this long (world time), so a visible toggle or an LOD switch keeps it
 const MODEL_IDLE_SECONDS = 10
@@ -317,6 +324,7 @@ export class Stage extends System {
         return textures[0]?.offset.x
       },
       set textureX(val) {
+        val = materialNumber(val, 'textureX')
         for (const tex of textures) {
           tex.offset.x = val
         }
@@ -326,13 +334,16 @@ export class Stage extends System {
         return textures[0]?.offset.y
       },
       set textureY(val) {
+        val = materialNumber(val, 'textureY')
         for (const tex of textures) {
           tex.offset.y = val
         }
         raw.needsUpdate = true
       },
+      // a new Color with the material's numbers: the renderer's own Color stays private (it is read every frame, and
+      // a linked material is shared by every app that uses it); change the colour by assigning a string
       get color() {
-        return raw.color
+        return new THREE.Color(raw.color.r, raw.color.g, raw.color.b)
       },
       set color(val) {
         if (typeof val !== 'string') {
@@ -345,16 +356,14 @@ export class Stage extends System {
         return raw.emissiveIntensity
       },
       set emissiveIntensity(value) {
-        if (!isNumber(value)) {
-          throw new Error('[material] emissiveIntensity not a number')
-        }
-        raw.emissiveIntensity = value
+        raw.emissiveIntensity = materialNumber(value, 'emissiveIntensity')
         raw.needsUpdate = true
       },
       get fog() {
         return raw.fog
       },
       set fog(value) {
+        if (typeof value !== 'boolean') throw new Error('[material] fog not a boolean')
         raw.fog = value
         raw.needsUpdate = true
       },

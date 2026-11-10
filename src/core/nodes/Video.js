@@ -363,7 +363,7 @@ export class Video extends Node {
       material.needsUpdate = true
 
       this._loading = false
-      this._onLoad?.call(undefined) // script callbacks run without a receiver
+      if (typeof this._onLoad === 'function') Reflect.apply(this._onLoad, undefined, []) // no receiver
 
       if (this.shouldPlay) {
         this.instance.play()
@@ -871,13 +871,16 @@ export class Video extends Node {
         get textureX() {
           return self.mesh.material.uniforms.uOffset.value.x
         },
+        // read by the renderer every frame: a primitive finite number only
         set textureX(value) {
+          if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error('[video] textureX not a number')
           self.mesh.material.uniforms.uOffset.value.x = value
         },
         get textureY() {
           return self.mesh.material.uniforms.uOffset.value.y
         },
         set textureY(value) {
+          if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error('[video] textureY not a number')
           self.mesh.material.uniforms.uOffset.value.y = value
         },
       }

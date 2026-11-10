@@ -21,6 +21,8 @@ before(async () => {
     export * as THREE from './src/core/extras/three'
     export { createPlayerProxy } from './src/core/extras/createPlayerProxy'
     export { Apps } from './src/core/systems/Apps'
+    export { Stage } from './src/core/systems/Stage'
+    export { Object3D } from 'three'
   `)
   m = await import(bundle.url)
   scripts = new m.Scripts({})
@@ -109,4 +111,47 @@ test('a fresh copy cannot have been prepared: per-object hooks stay on the objec
   assert.deepEqual(world.leaked, [], 'no host object reached a script function')
   assert.deepEqual(base.position.toArray(), [1, 2, 3])
   assert.deepEqual(hit.point.toArray(), [4, 5, 6])
+})
+
+test("a material's color is a copy: the renderer's own Color stays out of reach; setters take primitives only", () => {
+  const stage = new m.Stage({ rig: new m.Object3D(), camera: new m.Object3D(), setupMaterial() {} })
+  const material = stage.createMaterial()
+  material.raw.color.set('#336699')
+  const result = run(
+    `
+    const a = world.color
+    const b = world.color
+    Object.defineProperty(a, 'r', { get() { throw new Error('render poison') } })
+    a.g = 99
+    return { distinct: a !== b, hex: b.getHexString(), r: b.r }
+  `,
+    material.proxy
+  )
+  assert.equal(result.distinct, true)
+  assert.equal(result.hex, '336699')
+  assert.ok(Math.abs(result.r - material.raw.color.r) < 1e-12)
+  // the renderer's colour is untouched and readable
+  assert.equal(material.raw.color.getHexString(), '336699')
+  const r = Object.getOwnPropertyDescriptor(material.raw.color, 'r')
+  assert.equal(r.get, undefined, 'still a plain number, no accessor')
+  assert.equal(typeof r.value, 'number')
+  // the documented way to change it still works
+  run(`world.color = 'red'`, material.proxy)
+  assert.equal(material.raw.color.getHex(), 0xff0000)
+  // hostile values never reach the renderer
+  for (const code of [
+    `world.color = new String('blue')`,
+    `world.color = { toString() { return 'blue' } }`,
+    `world.textureX = Object.defineProperty(new Number(1), 'valueOf', { value() { throw new Error('poison') } })`,
+    `world.textureY = NaN`,
+    `world.emissiveIntensity = new Number(2)`,
+    `world.emissiveIntensity = Infinity`,
+    `world.fog = 'yes'`,
+  ]) {
+    assert.throws(() => run(code, material.proxy), /must be a string|not a number|not a boolean/, code)
+  }
+  assert.equal(material.raw.color.getHex(), 0xff0000)
+  run(`world.textureX = 0.5; world.emissiveIntensity = 2; world.fog = false`, material.proxy)
+  assert.equal(material.raw.emissiveIntensity, 2)
+  assert.equal(material.raw.fog, false)
 })

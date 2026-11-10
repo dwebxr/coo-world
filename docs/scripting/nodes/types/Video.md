@@ -26,6 +26,10 @@ Whether the video should be displayed. Defaults to `true`.
 
 This can be used if you just want to play audio headlessly with more control over the audio position.
 
+### `.material`
+
+`material.textureX` and `material.textureY` offset the video texture (finite numbers only).
+
 ### `.color`: String
 
 The color of the mesh before the video is playing. Defaults to `black`.

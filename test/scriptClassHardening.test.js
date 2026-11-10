@@ -151,6 +151,20 @@ test('a material proxy gives out only frozen-class objects', () => {
   // the documented use still works
   run(`world.color = 'red'`, material.proxy)
   assert.equal(material.raw.color.getHex(), 0xff0000)
+  run(`world.emissiveIntensity = 2; world.fog = false`, material.proxy)
+  assert.equal(material.raw.emissiveIntensity, 2)
+  assert.equal(material.raw.fog, false)
+  // a linked material's facade is shared by every app that uses it: nothing on it can be redefined or written to
+  assert.equal(Object.isFrozen(material.proxy), true)
+  for (const code of [
+    `Object.defineProperty(world, 'fog', { get: () => 'forged' })`,
+    `Object.getOwnPropertyDescriptor(world, 'color').get.mailbox = 'from A'`,
+    `Object.getOwnPropertyDescriptor(world, 'color').set.mailbox = 'from A'`,
+    `world.note = 'from A'`,
+  ]) {
+    assert.throws(() => run(`'use strict'; ${code}`, material.proxy), TypeError, code)
+  }
+  assert.equal(run(`return world.fog`, material.proxy), false)
 })
 
 test('pointer callbacks get a new frozen event each time, and nothing of the engine through it', () => {

@@ -126,12 +126,13 @@ node test/e2e/physics-boundary.mjs --engine=chromium --sentinel-only
 ```
 
 The full suite and the candidate subset require **zero violations in each realm**. For the positive
-control, check out `ea5e8f0` separately, build it, and run **that checkout's own** harness (its engine
-does not call the test hook this harness relies on, and its test apps patch the prototypes themselves):
+control, build `ea5e8f0` in one checkout and run the harness and test apps of `6b4a892` (the last commit
+whose test apps patch the prototypes from a script) against that build. This harness cannot be used for
+it: its apps drive a test hook that an engine from before the hardening never calls.
 
 ```bash
-cd /absolute/path/to/ea5e8f0-checkout
-E2E_OUT_DIR=/tmp/physx-base-e2e node test/e2e/physics-boundary.mjs --engine=chromium --sentinel-only --expect-violations
+# in a checkout of 6b4a892
+E2E_BUILD_ROOT=/absolute/path/to/ea5e8f0-checkout E2E_OUT_DIR=/tmp/physx-base-e2e node test/e2e/physics-boundary.mjs --engine=chromium --sentinel-only --expect-violations
 ```
 
 `--expect-violations` is allowed only with `--sentinel-only`; it requires **more than zero violations

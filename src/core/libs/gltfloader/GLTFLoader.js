@@ -1623,6 +1623,11 @@ class GLTFTextureAVIFExtension {
 
 	detectSupport() {
 
+		// COO_BUDGET: with a budget, an AVIF image is not decoded inside a model: it cannot be sized before its decode (the
+		// budget reads PNG, JPEG and WebP headers only), so the parser takes AVIF as unsupported and loads the fallback
+		// (a file requiring the extension is refused before parsing). Without one (the server), as upstream
+		if ( this.parser.budget ) return Promise.resolve( false );
+
 		if ( ! this.isSupported ) {
 
 			this.isSupported = new Promise( function ( resolve ) { // COO_EXEMPT: once per parser (the AVIF support check)

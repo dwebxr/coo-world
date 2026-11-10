@@ -316,10 +316,10 @@ test('an image is sized from its header at the decode, whatever references it (a
   assert.equal(decoded, 0)
 })
 
-test('an optional KTX2 or AVIF image with a fallback: the parser decides what it decodes, as it did', async t => {
-  // a KTX2 or AVIF image's mimeType is one of the fixed list a file may carry. The parser decides whether it is
-  // decoded, as before the list: a KTX2 image (no decoder) is skipped for its PNG fallback, which is the one decoded
-  // and charged; the file loads. A file that requires the extension is refused before parsing (not loadable)
+test('an optional KTX2 or AVIF image with a fallback: neither is decoded in a model, the fallback is', async t => {
+  // a KTX2 or AVIF image's mimeType is one of the fixed list a file may carry. A KTX2 image (no decoder) is skipped
+  // for its PNG fallback, which is the one decoded and charged; the file loads. A file that requires the extension is
+  // refused before parsing (not loadable)
   const ktx2 = Uint8Array.from([0xab, 0x4b, 0x54, 0x58, 0x20, 0x32, 0x30, 0xbb, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0])
   const avif = Uint8Array.from([0, 0, 0, 0x14, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66, 0, 0, 0, 0])
   const withFallback = (extension, mimeType, bytes, required = false) => {
@@ -369,9 +369,10 @@ test('an optional KTX2 or AVIF image with a fallback: the parser decides what it
     () => checkGLTF(withFallback('KHR_texture_basisu', 'image/ktx2', ktx2, true)),
     /requires an extension this client cannot load \(KHR_texture_basisu\)/
   )
-  // AVIF: the parser asks the browser whether it decodes AVIF. Where it does not, the fallback is decoded and
-  // charged, the AVIF image never; where it does, the parser takes the AVIF image and the budget refuses it at its
-  // decode, as any image that is not PNG, JPEG or WebP (as before the list)
+  // AVIF: with a budget the parser takes AVIF as unsupported (an AVIF image cannot be sized before it is decoded),
+  // even in a browser that decodes it: the fallback is decoded and charged, the AVIF image never; a file that
+  // requires the extension is refused before parsing. (A browser decoding AVIF made the parser take the AVIF image,
+  // and the budget refused it: the file failed despite its fallback)
   const image = supported =>
     class {
       set src(value) {
@@ -382,22 +383,29 @@ test('an optional KTX2 or AVIF image with a fallback: the parser decides what it
       }
     }
   t.after(() => delete globalThis.Image)
-  globalThis.Image = image(false)
-  const fallback = await loaded(withFallback('EXT_texture_avif', 'image/avif', avif))
-  assert.equal(decoded, 1)
-  assert.equal(fallback.map.userData.mimeType, 'image/png')
-  assert.deepEqual(
-    fallback.charges.filter(c => c.kind === 'pixels').map(c => c.what),
-    ['image 1']
+  for (const supported of [true, false]) {
+    globalThis.Image = image(supported)
+    const fallback = await loaded(withFallback('EXT_texture_avif', 'image/avif', avif))
+    assert.equal(decoded, 1, `the fallback, once (AVIF ${supported ? '' : 'not '}decoded by the browser)`)
+    assert.equal(fallback.map.userData.mimeType, 'image/png')
+    assert.deepEqual(
+      fallback.charges.filter(c => c.kind === 'pixels').map(c => c.what),
+      ['image 1']
+    )
+    assert.ok(!fallback.charges.some(c => c.what === 'image 0'), 'the AVIF image never charged')
+  }
+  assert.throws(
+    () => checkGLTF(withFallback('EXT_texture_avif', 'image/avif', avif, true)),
+    /requires an extension this client cannot load \(EXT_texture_avif\)/
   )
-  assert.ok(!fallback.charges.some(c => c.what === 'image 0'), 'the AVIF image never charged')
+  // without a budget (the server, which loads no textures), the parser asks the browser, as upstream
   globalThis.Image = image(true)
   decoded = 0
-  await assert.rejects(
-    parse(withFallback('EXT_texture_avif', 'image/avif', avif), { check: true }),
-    /image 0 is not a PNG, JPEG or WebP image/
-  )
-  assert.equal(decoded, 0)
+  const unmetered = await new GLTFLoader().parseAsync(withFallback('EXT_texture_avif', 'image/avif', avif), '')
+  let map = null
+  unmetered.scene.traverse(o => o.isMesh && (map = o.material.map))
+  assert.equal(map.userData.mimeType, 'image/avif')
+  assert.equal(decoded, 1)
 })
 
 test('image decodes are charged as the parser makes them: ten entries on one view and sampler are one decode', async () => {

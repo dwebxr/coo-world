@@ -276,8 +276,9 @@ export function decodeDataURI(uri) {
 }
 
 // extensions a file may require: the ones this client's parser and plugins implement. Draco, meshopt and KTX2 need
-// decoders it does not have, and AVIF images are refused at decode; any of them may be optional (the parser then
-// reads the fallback data)
+// decoders it does not have, and an AVIF image is not decoded inside a model (it cannot be sized from a header before
+// its decode: with a budget the parser takes AVIF as unsupported); any of them may be optional (the parser then reads
+// the fallback data)
 const LOADABLE_EXTENSIONS = new Set([
   'KHR_materials_unlit',
   'KHR_texture_transform',
@@ -335,8 +336,8 @@ const STRING_KEYS = new Set([
 // the image media types a valid file may carry: the three this client decodes, and the two the vendored parser's
 // plugins name for images reached through an extension (KHR_texture_basisu's image/ktx2, EXT_texture_avif's
 // image/avif; getImageURIMimeType and the AVIF support check). A fixed list, so the mimeType each texture's userData
-// keeps (and each clone copies) is ten characters at most. Whether an image is decoded is the parser's decision, as
-// before: a KTX2 image is skipped for its fallback (no decoder), and a refused one is refused at its decode
+// keeps (and each clone copies) is ten characters at most. Whether an image is decoded is the parser's decision: a
+// KTX2 image (no decoder) and an AVIF image (with a budget) are skipped for their fallback
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/ktx2', 'image/avif']
 
 // componentType: bytes of a component; type: components of an element

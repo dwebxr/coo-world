@@ -33,7 +33,10 @@ jobs:
     # Chromium and WebKit decide the result. The Firefox leg is advisory: its suites run to the end, a failing
     # one does not fail the job, and the last step lists what failed as a warning on the run.
     name: e2e (${{ matrix.engine }}${{ matrix.engine == 'firefox' && ', advisory' || '' }})
-    runs-on: ubuntu-latest
+    # a fixed image, not ubuntu-latest: the browsers Playwright installs are built per Ubuntu release, and the
+    # pinned Playwright has none for a release newer than itself (the label moved to 26.04 and every leg failed
+    # at "Install browser"). Move this together with a Playwright upgrade.
+    runs-on: ubuntu-24.04
     # software-rendered Chromium runs the simulated-time suites far below real time (physics-boundary alone can take 20+ min)
     timeout-minutes: 60
     strategy:
@@ -163,7 +166,7 @@ jobs:
     name: e2e
     if: ${{ always() }}
     needs: e2e
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: read
     steps:

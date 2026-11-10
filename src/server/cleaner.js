@@ -24,8 +24,10 @@ import { assetName, assetsUrlProblem, previewValue, scriptSource } from '../core
 // ASSUMPTIONS. The server process is the only writer of the store, the trash and the database while it starts
 // (uploads are not accepted until cleaning has finished; other processes changing those files at the same moment are
 // not supported). Database tables are read whole, as the world itself reads them when it starts; the read limit
-// applies to each value, not to a table's total. With the local store a removal is recoverable for CLEAN_TRASH_DAYS;
-// with S3 it is not (turn on bucket versioning).
+// applies to each value, not to a table's total. The assets URL serves each store file's own bytes: a redirect, a
+// rewrite or a cache in front of it that answers a file's URL with something else is not supported (the clean-up
+// reads the store, the world loads what the URL serves). With the local store a removal is recoverable for
+// CLEAN_TRASH_DAYS; with S3 it is not (turn on bucket versioning).
 //
 // What keeps a file is its name, not a URL: no reference is resolved to decide it. The corpus (every persisted
 // entity; every kept blueprint and collection blueprint, both as stored and as hydration sanitises it; settings; user

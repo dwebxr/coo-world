@@ -43,6 +43,8 @@ import { isPrimitive } from '../../src/core/extras/scriptPrimitives.js'
 import { jsonCopy } from '../../src/core/extras/scriptText.js'
 import * as joinBudget from '../../src/core/extras/joinBudget.js'
 import { resolveAssetFile } from '../../src/core/extras/resolveAssetFile.js'
+import { createOutboundFetch } from '../../src/core/extras/outboundFetch.js'
+import { LoadingManager } from 'three'
 
 class System extends EventEmitter {
   constructor(world) {
@@ -117,6 +119,8 @@ export function loadClient(file, name, context = {}) {
     ...assetURL,
     ...joinBudget,
     resolveAssetFile,
+    createOutboundFetch,
+    LoadingManager,
     ...context,
   }
   const code = source.replace(/^import[\s\S]*?from ['"][^'"]+['"]\n/gm, '').replace(/^export /gm, '')

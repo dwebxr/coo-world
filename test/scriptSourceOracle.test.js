@@ -6,9 +6,9 @@ import { loadClient } from './lib/clientHarness.mjs'
 import { ASSET_PROTOCOL, resolveReference, scriptSource } from '../src/core/extras/assetURL.js'
 
 // scriptSource says "this script is the store file X for certain" only where the runtime loads exactly X, on the
-// server and on a client. The oracles are the real code: World.resolveURL, then ServerLoader.fetchText (with fetch
-// stubbed to record the request) for the server, and the URL a browser's fetch requests (resolveURL's result resolved
-// against the page) for a client, for a page at the origin root and at a sub-path, and for three assets bases (the
+// server and on a client. The oracles are the real code: World.resolveURL, then ServerLoader.fetchText (with its
+// outbound request function replaced by one that records the request) for the server, and the URL a browser's
+// fetch requests (resolveURL's result resolved against the page) for a client, for a page at the origin root and at a sub-path, and for three assets bases (the
 // page's origin, another origin, a path prefix), over a few thousand generated spellings. Codex:
 // `https:/world.example/assets/<hash>.js` was certain because new URL() normalises it, while the loader requested
 // https://https/world.example/...
@@ -23,10 +23,16 @@ const resolveURL = new Function(
 )(ASSET_PROTOCOL, resolveReference)
 
 const requested = []
+// the server loader fetches through its outbound request function (outboundFetch.js); the stand-in records the URL
+// it is asked for, which is the request it would make
+const recordRequest = async url => {
+  requested.push(String(url))
+  return { ok: true, status: 200, text: async () => 'code', arrayBuffer: async () => new ArrayBuffer(0) }
+}
 const ServerLoader = loadClient('core/systems/ServerLoader.js', 'ServerLoader', {
+  createOutboundFetch: () => recordRequest,
   fetch: async url => {
-    requested.push(url)
-    return { text: async () => 'code', arrayBuffer: async () => new ArrayBuffer(0) }
+    throw new Error(`the server loader used the global fetch for ${url}`)
   },
   fs: { readFile: async file => `file:${file}` },
   path,

@@ -116,9 +116,23 @@ Configures custom UI for your app. See [Props](/docs/scripting/app/Props.md) for
 When an app is removed or rebuilt (its blueprint changed, it crashed), the engine tears its run down in this order:
 the run's `destroy` listeners, then its controls (their `onRelease`), its player handles (their effects end: `onEnd`),
 its nodes (its own and those it placed in world space), its listeners, its update registration, its requests, its
-object URLs and its timers. Your script can still run during that: from those callbacks, from a world listener an
-event it emits reaches, and from anything it defined on an object the engine reads while unmounting (for example an
-accessor on a node's `matrixWorld`). Two kinds of things behave differently:
+object URLs and its timers. A crash tears the run down the same way, at once, whether or not the crash block can be
+shown. Your script can still run during that: from those callbacks and from a world listener an event it emits
+reaches. (The engine's own math objects a handle gives you, such as a node's `matrixWorld`, are sealed, so the engine
+does not read anything a script defined on them; see [Utils](/docs/scripting/Utils.md).)
+
+A call can also run your code while it reads its arguments: a getter on an options object, a `toString` on a name,
+a `valueOf` on a number. If that code ends the run (it removes or rebuilds the app), the call makes nothing for the
+run: a method that makes something the run owns (a listener, a control, an effect, a voice level, a node placement,
+fields) reads its arguments first, then checks that the run that called it is still current and that its stage has not
+begun, and only then makes it. Such a call throws `[app] this app has stopped`. The same holds for the engine callbacks a call itself causes, such as the `onEnd` of the
+effect `applyEffect` replaces or of a handle a lookup evicts: the run is checked again after them.
+
+A rebuild or removal asked for during a teardown (by a host listener of an event the script emits from `destroy`)
+waits until that teardown has finished. A rebuild asked for that way takes its place in the build order when it is
+asked for: a newer build (a blueprint change that arrives meanwhile) supersedes it, and a removal wins over both.
+
+Two kinds of things behave differently:
 
 **What the run owns** is released at teardown and cannot be made again by the run once its stage has begun; a handle
 kept to it does nothing afterwards:

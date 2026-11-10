@@ -63,10 +63,28 @@ A node is counted for the app it is mounted for. Moving a mounted node (also one
 `world.add`) under another node unmounts it and mounts it again at its new place, so it is counted at its new depth.
 A node that was never placed in the world (or under a mounted node) is not mounted by setting `active = true`.
 
-A node belongs to the app run that created or mounted it. Once that run has ended (the app was removed or rebuilt),
-or while its nodes are being torn down, every method and setter of the node throws `[app] this app has stopped`;
-getters keep reading. A node that is not mounted does not play, animate or load (an audio's `play()`, a skinned mesh's
-`play()`, a UI image's `src`), and nothing mounts or rebuilds under a node while it unmounts.
+A node belongs to the app run that created, loaded or mounted it: a node made with `app.create`, a tree
+`world.load()` returned (its root, its children and their clones), and every node of the app's model, also one below
+an inactive node that has never mounted. Once that run has ended (the app was removed or rebuilt), or while its nodes
+are being torn down, every method and setter of the node throws `[app] this app has stopped`; getters keep reading. A
+node that is not mounted does not play, animate or load (an audio's `play()`, a skinned mesh's `play()`, a UI image's
+`src`), and nothing mounts or rebuilds under a node while it unmounts.
+
+A handle follows its node. If another app's live run places the node (it was handed that app's way, and that app adds
+it with `world.add` or under one of its own nodes), the node then belongs to that run: every handle of the node, also
+one the first app kept, works again for as long as that run lasts and stops with it, and that run's teardown releases
+what the node holds.
+
+A node keeps plain values. A setter that takes a number, a string or a boolean refuses an object that only stands
+for one (a boxed `new Number(1)` or `new String('red')`, a Proxy); `active`, a joint's limits and `collide`, and an
+LOD's `insert(node, maxDistance)` refuse objects too. An array a node gives back (a UI's `padding`, `margin` and
+`scaler`, a particles node's `shape`, `bursts` and `spritesheet`) is the node's own frozen copy of what was set:
+changing it throws a `TypeError`; set the property again instead.
+
+A node handle's setters and methods act on the handle they are read from. An object that inherits from the handle
+(`Object.create(node)`) works like the handle; a setter copied onto another object
+(`Object.defineProperties({}, Object.getOwnPropertyDescriptors(node))`) or called without a receiver throws
+`[node] not a node`. A method can be taken off the handle and called on its own, and keeps its `name` and `length`.
 
 An app's root (what its `app` stands for) stays where its app placed it: adding another app's root throws
 `[node.add] cannot add another app's root node`, and so does adding an app's own root under a node that is not

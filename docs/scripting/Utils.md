@@ -47,6 +47,18 @@ replace or delete anything on a class or its prototype (`Vector3.prototype.foo =
 The objects you create from them are yours and stay ordinary, mutable objects. To extend a class, write a
 function that takes the object, or subclass it (`class MyVector extends Vector3 { … }`).
 
+The engine's own math objects that a handle gives you by reference are sealed. These are a node's `position`,
+`quaternion`, `rotation`, `scale` and `matrixWorld`, a joint's offsets, rotations and `axis`, a UI's
+`offset`, a control's camera (`position`, `quaternion`, `rotation`) and pose and stick vectors, a skinned mesh bone's
+transform (`getBone()`), and a particles node's `force`, `velocityLinear` and `velocityOrbital`. You change their
+values as usual (`node.position.x = 1`, `.set(…)`, `.copy(…)`), but adding, redefining or deleting a property on
+one (`Object.defineProperty(node.position, 'x', …)`, `node.position.foo = 1`, replacing a method) throws a
+`TypeError`, and so does assigning a matrix's `elements` or redefining one of its entries: `elements` is a
+`Float64Array` the matrix keeps. A component given an object instead of a number (`node.position.x = { … }`) is stored
+as `NaN`, without calling the object's `valueOf`. Getters that compute a value (a player's `position`,
+`getBoneTransform()`, `getWorldMatrix()`, a pointer's coordinates, a material's `color`) return a new object on each
+read, which is yours.
+
 `Object3D` is not available. Use nodes (`app.create('group')`) for hierarchies and the classes above for math.
 
 ---
@@ -65,7 +77,8 @@ A `fetch(url, options)` function is available for making network requests. It fo
 
 A blob returned by `fetch()` is the only value `URL.createObjectURL(blob)` accepts. The object URL belongs to the app
 run whose `fetch()` returned the blob: at most 256 of them are live per run (`URL.revokeObjectURL(url)` frees one, and
-revokes only URLs made this way), every one is revoked when the run ends, and none is made for a run that has ended
+revokes only URLs made this way), every one is revoked when the run ends (it is removed or rebuilt, or it crashes,
+whether or not the crash block can be shown), and none is made for a run that has ended
 (`[app] this app has stopped`). The object URL serves the bytes with the response's media type when it is a common image, audio, video or model type (for example `image/png`, `audio/mpeg`, `video/mp4`, `model/gltf-binary`); any other type is served as `application/octet-stream`.
 
 ```javascript

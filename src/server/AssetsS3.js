@@ -42,6 +42,11 @@ async function readBody(response, limit) {
     }
     return Buffer.concat(chunks)
   }
+  // a body that is not a stream is taken whole: only when its declared length is within the limit
+  const declared = Number(response.ContentLength)
+  if (Number.isFinite(limit) && !(Number.isFinite(declared) && declared >= 0)) {
+    throw Object.assign(new Error('a body of unknown length'), { code: 'UNBOUNDED' })
+  }
   const bytes = await body.transformToByteArray()
   if (bytes.length > limit) throw tooLarge(limit)
   return Buffer.from(bytes)

@@ -241,6 +241,62 @@ test('clean-up trash: every indexed copy is tried, newest first; if none is ther
   assert.equal(v.inTrash('2026-09-02', name('old-unrelated')), true, 'not purged')
 })
 
+// Codex: a referenced file both in the store and in an expired trash folder; another process removed the store copy
+// after it was listed, so it was never restored and its trashed copy was purged (outside the assumptions, but cheap)
+test('clean-up trash: before the purge, a kept file gone from the store since it was listed comes back from the trash', async t => {
+  const w = await world(t)
+  w.trash('2026-09-01', KEPT, 'trashed copy')
+  const list = w.assets.list.bind(w.assets)
+  w.assets.list = async () => {
+    const listing = await list()
+    fs.rmSync(path.join(w.assets.dir, KEPT))
+    return listing
+  }
+  await w.run()
+  assert.equal(fs.readFileSync(path.join(w.assets.dir, KEPT), 'utf8'), 'trashed copy')
+  assert.ok(
+    w.warnings.includes(`[clean] ${KEPT} was gone from the store since it was listed; its trashed copy came back`)
+  )
+  // and when its trashed copy is gone too, the trash is not purged
+  const v = await world(t)
+  v.trash('2026-09-01', KEPT)
+  v.trash('2026-09-02', name('unrelated'))
+  const listing = v.assets.list.bind(v.assets)
+  v.assets.list = async () => {
+    const names = await listing()
+    fs.rmSync(path.join(v.assets.dir, KEPT))
+    return names
+  }
+  const indexed = v.assets.trashed.bind(v.assets)
+  v.assets.trashed = async () => {
+    const index = await indexed()
+    fs.rmSync(path.join(v.trashDir, '2026-09-01', KEPT))
+    return index
+  }
+  await v.run()
+  assert.ok(
+    v.warnings.includes(
+      `[clean] ${KEPT} is gone from the store and its trashed copy could not come back; the trash is not purged this run`
+    ),
+    v.warnings.join('\n')
+  )
+  assert.equal(v.inTrash('2026-09-02', name('unrelated')), true, 'not purged')
+})
+
+// Codex: removing the limit from the read of a trashed script left every test passing
+test('clean-up trash: a trashed script is read with the read limit too', async t => {
+  const w = await world(t)
+  const script = name('big-script', 'js')
+  w.trash('2026-11-05', script, 'x'.repeat(4096))
+  w.tables.blueprints[0] = row({ id: 'bp', version: 0, model: `asset://${KEPT}`, script: `asset://${script}` })
+  await w.run({ readLimit: 1024 })
+  assert.equal(w.inStore(GONE), true, 'nothing removed')
+  assert.ok(
+    w.warnings.at(-1).includes(`script ${script} named by blueprint \\"bp\\" (TOO_LARGE)`),
+    w.warnings.join('\n')
+  )
+})
+
 test('clean-up trash: CLEAN_TRASH_DAYS=0 removes every folder, one dated in the future included', async t => {
   const w = await world(t)
   w.trash('2026-12-31', name('future')) // a clock that ran ahead when it was moved

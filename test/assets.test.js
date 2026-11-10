@@ -288,6 +288,8 @@ function fakeS3() {
         const body = typeof object === 'string' ? Buffer.from(object) : object.body
         return {
           Body: { transformToByteArray: async () => new Uint8Array(body) },
+          // S3 declares every object's length
+          ContentLength: body.length,
           ContentEncoding: typeof object === 'string' ? undefined : object.encoding,
         }
       }
@@ -453,6 +455,49 @@ test('s3 assets: readText holds the object and every decoding stage to its limit
   // under the limit, as before
   objects.set('world/ok.js', { body: zlib.gzipSync('fine'), encoding: 'gzip' })
   assert.equal(await assets.readText('ok.js', { limit: 1024 }), 'fine')
+})
+
+// A gzip member whose header carries a comment of `size` bytes (FCOMMENT): its decoded data is only `text`, so all
+// the size is in the stage before
+function gzipWithComment(text, size) {
+  const data = Buffer.from(text)
+  const header = Buffer.from([0x1f, 0x8b, 8, 0x10, 0, 0, 0, 0, 0, 0xff])
+  const trailer = Buffer.alloc(8)
+  trailer.writeUInt32LE(zlib.crc32(data), 0)
+  trailer.writeUInt32LE(data.length, 4)
+  return Buffer.concat([header, Buffer.alloc(size, 0x61), Buffer.from([0]), zlib.deflateRawSync(data), trailer])
+}
+
+// Codex: the limit on the first of two decoding stages was not guarded by any test
+test('s3 assets: the first of two decoding stages is held to the limit, though the final text is small', async t => {
+  const { assets, objects } = s3(t)
+  const inner = gzipWithComment('ok', 2000)
+  assert.equal(zlib.gunzipSync(inner).toString(), 'ok')
+  objects.set('world/stages.js', { body: zlib.gzipSync(inner), encoding: 'gzip, gzip' })
+  assert.ok(zlib.gzipSync(inner).length < 100)
+  await assert.rejects(assets.readText('stages.js', { limit: 1024 }), { code: 'ERR_BUFFER_TOO_LARGE' })
+  assert.equal(await assets.readText('stages.js', { limit: 4096 }), 'ok')
+})
+
+test('s3 assets: a body that is not a stream is taken only with a declared length within the limit', async t => {
+  const { assets, client } = s3(t)
+  client.send = async () => ({ Body: { transformToByteArray: async () => assert.fail('read without a length') } })
+  await assert.rejects(assets.readText('x.js', { limit: 1024 }), { code: 'UNBOUNDED' })
+  client.send = async () => ({
+    ContentLength: 2,
+    Body: { transformToByteArray: async () => new Uint8Array([111, 107]) },
+  })
+  assert.equal(await assets.readText('x.js', { limit: 1024 }), 'ok')
+})
+
+// Codex: the size was checked, then the file read without a bound, so one that grew in between was read whole
+test('local assets: readText counts while it reads: a file that grew since its size was seen is refused', async t => {
+  const lying = { ...fs.promises, stat: async () => ({ size: 10, isFile: () => true, isDirectory: () => false }) }
+  const { assets, init, dir } = await localAssets(t, { fs: lying })
+  await init()
+  fs.writeFileSync(path.join(dir, 'grew.js'), 'g'.repeat(2048))
+  await assert.rejects(assets.readText('grew.js', { limit: 1024 }), { code: 'TOO_LARGE' })
+  assert.equal(await assets.readText('grew.js', { limit: 2048 }), 'g'.repeat(2048))
 })
 
 test('local assets: readText and readTrashedText refuse a file larger than the limit before reading it', async t => {

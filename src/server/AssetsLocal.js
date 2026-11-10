@@ -78,7 +78,7 @@ export class AssetsLocal {
   // `limit`: a larger file throws TOO_LARGE before it is read
   async readText(name, { limit = Infinity } = {}) {
     if (assetName(`asset://${name}`) === null) throw new Error('invalid asset name')
-    return readTextFile(path.join(this.dir, name), limit)
+    return readTextFile(path.join(this.dir, name), limit, this.fsp)
   }
 
   // free and total bytes of the volume holding the assets dir
@@ -169,7 +169,7 @@ export class AssetsLocal {
   async readTrashedText(name, days = [], { limit = Infinity } = {}) {
     if (assetName(`asset://${name}`) === null) throw new Error('invalid asset name')
     for (const day of days) {
-      const text = await readTextFile(path.join(this.trashDir, day, name), limit)
+      const text = await readTextFile(path.join(this.trashDir, day, name), limit, this.fsp)
       if (text !== null) return text
     }
     return null
@@ -246,17 +246,32 @@ export class AssetsLocal {
   }
 }
 
-// a file's text, or null when it does not exist; one larger than `limit` bytes throws TOO_LARGE before it is read
-async function readTextFile(file, limit) {
+// A file's text, or null when it does not exist. Read through one open handle, counting: more than `limit` bytes
+// throws TOO_LARGE as soon as byte limit + 1 is read, so a file that grows or is replaced while it is read is held
+// to the limit too. `fsp`: the promise API (tests inject one).
+export async function readTextFile(file, limit = Infinity, fsp = fs.promises) {
+  let handle
   try {
-    if (Number.isFinite(limit)) {
-      const { size } = await fs.stat(file)
-      if (size > limit) throw Object.assign(new Error(`larger than ${limit} bytes`), { code: 'TOO_LARGE' })
-    }
-    return await fs.readFile(file, 'utf8')
+    handle = await fsp.open(file, 'r')
   } catch (err) {
     if (err.code === 'ENOENT') return null
     throw err
+  }
+  try {
+    const chunks = []
+    let total = 0
+    const chunk = Buffer.alloc(64 * 1024)
+    for (;;) {
+      const room = Number.isFinite(limit) ? limit + 1 - total : chunk.length
+      const { bytesRead } = await handle.read(chunk, 0, Math.min(chunk.length, room), null)
+      if (bytesRead === 0) break
+      total += bytesRead
+      if (total > limit) throw Object.assign(new Error(`larger than ${limit} bytes`), { code: 'TOO_LARGE' })
+      chunks.push(Buffer.from(chunk.subarray(0, bytesRead)))
+    }
+    return Buffer.concat(chunks, total).toString('utf8')
+  } finally {
+    await handle.close()
   }
 }
 

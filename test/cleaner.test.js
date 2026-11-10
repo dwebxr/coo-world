@@ -358,14 +358,41 @@ test('cleaner: a model named in a script by any URL spelling is kept (S3 behind 
 })
 
 // Codex: ASSETS_BASE_URL=//cdn.example/assets (start-up accepts it) made every asset:// reference look external, and
-// the models were deleted
-test('cleaner: an assets URL that is not an absolute http(s) URL deletes nothing', async t => {
-  for (const assetsUrl of ['//cdn.example/assets', '/assets', 'assets', 'ftp://cdn.example/assets', '', undefined]) {
+// the models were deleted; then `https:/host/assets` and `https://host/assets?rev=1` gave false certainty (with the
+// query one, the clean-up read <H>.glb and then deleted it)
+test('cleaner: an assets URL that is not clean deletes nothing, and the log says why', async t => {
+  for (const [assetsUrl, why] of [
+    ['//cdn.example/assets', 'it does not start with a lower-case http:// or https://'],
+    ['/assets', 'it does not start with a lower-case http:// or https://'],
+    ['assets', 'it does not start with a lower-case http:// or https://'],
+    ['ftp://cdn.example/assets', 'it does not start with a lower-case http:// or https://'],
+    ['', 'not set'],
+    [undefined, 'not set'],
+    ['https:/world.example/assets', 'it does not start with a lower-case http:// or https://'],
+    ['HTTPS://world.example/assets', 'it does not start with a lower-case http:// or https://'],
+    ['https://world.example/assets?rev=1', 'it has a query or a fragment'],
+    ['https://world.example/assets#x', 'it has a query or a fragment'],
+    ['https://user:pw@world.example/assets', 'it has userinfo'],
+    ['https://world.example\\assets', 'it has a backslash'],
+    ['https://world.example/a/../assets', 'it has a dot segment'],
+    ['https://World.example/assets', 'it is not in its normalised form'],
+    ['https://world.example:443/assets', 'it is not in its normalised form'],
+  ]) {
     const f = fixture(t)
     await f.run({ assetsUrl, localStore: true })
     assert.deepEqual(f.deleted, [], String(assetsUrl))
     assert.equal(f.warnings.length, 1)
-    assert.match(f.warnings[0], /^\[clean\] skipped all deletion: the assets URL is not an absolute http\(s\) URL/)
+    assert.match(
+      f.warnings[0],
+      /^\[clean\] skipped all deletion: the assets URL .* is not a clean absolute http\(s\) URL/
+    )
+    assert.ok(f.warnings[0].includes(`(${why})`), `${assetsUrl}: ${f.warnings[0]}`)
+  }
+  // clean ones: with or without a trailing slash, at the origin root or under a path
+  for (const assetsUrl of ['https://world.example/assets', 'https://world.example/assets/', 'https://cdn.example']) {
+    const f = fixture(t)
+    await f.run({ assetsUrl, localStore: true })
+    assert.deepEqual(f.warnings, [], assetsUrl)
   }
 })
 
@@ -520,7 +547,8 @@ test('cleaner: a name a URL holds with a tab, CR or LF inside is kept, and so is
   f.scripts.set('split.js', "world.load('model', 'asset://splitdep.glb')")
   await f.run()
   assert.deepEqual(f.warnings, [])
-  assert.deepEqual(f.scriptReads, ['split.js'])
+  // `it.js` (the token after the line break) is a .js literal the listing does not hold: asked for, absent, nothing
+  assert.deepEqual([...f.scriptReads].sort(), ['it.js', 'split.js'])
   assert.deepEqual(f.deleted.at(-1), ['assets', ['unused.glb']])
 })
 
@@ -679,6 +707,134 @@ test('cleaner: a collection blueprint is scanned as hydration loads it too, and 
   assert.deepEqual(f.warnings, [])
   assert.deepEqual(f.scriptReads, ['ccut.js'])
   assert.deepEqual(f.deleted.at(-1), ['assets', ['unused.glb']])
+})
+
+// Codex: `?from=asset%3A%2F%2Fa%09bc.glb` decodes to asset://a<TAB>bc.glb, which a URL loads as abc.glb, but the
+// decoded text was scanned without joining across the tab
+test('cleaner: a tab, CR or LF that decoding brings into a name is dropped as a URL drops it, through every layer', async t => {
+  const f = fixture(t)
+  for (const name of ['abc.glb', 'def.glb', 'ghi.glb', 'jkl.glb', 'mno.glb']) f.files.add(name)
+  f.tables.entities[0] = row({
+    ...appData(),
+    props: {
+      tab: 'https://page.example/?from=asset%3A%2F%2Fa%09bc.glb',
+      cr: 'https://page.example/?from=asset%3A%2F%2Fd%0Def.glb',
+      lf: 'https://page.example/?from=asset%3A%2F%2Fg%0Ahi.glb',
+      // encoded twice, and five times
+      twice: 'https://page.example/?from=asset%253A%252F%252Fj%2509kl.glb',
+      five: `https://page.example/?from=m%${'25'.repeat(4)}09no.glb`,
+    },
+  })
+  await f.run()
+  assert.deepEqual(f.warnings, [])
+  assert.deepEqual(f.deleted.at(-1), ['assets', ['unused.glb']])
+})
+
+// the explicit keep of a script the clean-up is certain about, as an invariant of its own (Codex: with an unclean
+// assets base a script could be read and still not be kept; such a base now stops the clean-up, and this holds anyway)
+test('cleaner: the name scan keeps a file by name when asked, in any case, and tells once', () => {
+  const createNameScan = load('server/cleaner.js', 'createNameScan', {
+    assets: {},
+    collections: {},
+    fs: fs.promises,
+    path,
+  })
+  const told = []
+  const scanner = createNameScan(['root.js', 'Other.glb'], file => told.push(file))
+  scanner.keep('ROOT.JS')
+  scanner.keep('root.js')
+  scanner.keep('missing.js')
+  assert.deepEqual([...scanner.kept], ['root.js'])
+  assert.deepEqual(told, ['root.js'])
+})
+
+// Codex: both stores list content-hash names only, so a named helper.js (hand-placed, bundled-style) was never read
+// and the model only it named was deleted
+test('cleaner: a .js literal the listing leaves out is asked for; read when it exists, nothing when it does not', async t => {
+  const f = fixture(t)
+  f.files.add('dep.glb')
+  f.files.add('deeper.glb')
+  f.tables.blueprints[0] = row({ id: 'bp', version: 0, model: 'asset://used.glb', script: 'asset://root.js' })
+  f.files.add('root.js')
+  f.scripts.set('root.js', "import('asset://helper.js'); const x = 'asset://gone-helper.js'")
+  // not listed, but there: read, and what it names is kept, through another unlisted one
+  f.scripts.set('helper.js', "world.load('model', 'asset://dep.glb'); const y = 'ai.js'")
+  f.scripts.set('ai.js', "world.load('model', 'asset://deeper.glb')")
+  await f.run()
+  assert.deepEqual(f.warnings, [], 'gone-helper.js is not there: it names nothing and stops nothing')
+  assert.deepEqual([...f.scriptReads].sort(), ['ai.js', 'gone-helper.js', 'helper.js', 'root.js'])
+  assert.deepEqual(f.deleted.at(-1), ['assets', ['unused.glb']])
+  // one that is there but cannot be read stops the clean-up
+  const g = fixture(t)
+  g.tables.blueprints[0] = row({ id: 'bp', version: 0, model: 'asset://used.glb', props: { s: 'helper.js' } })
+  g.scripts.set('helper.js', Object.assign(new Error('denied'), { code: 'EACCES' }))
+  await g.run()
+  assert.deepEqual(g.deleted, [])
+  assert.deepEqual(g.warnings, ['[clean] skipped all deletion: could not read ["script helper.js (EACCES)"]'])
+})
+
+test('cleaner: more than 4,096 unlisted .js literals stop the clean-up', async t => {
+  const f = fixture(t)
+  const names = Array.from({ length: 4097 }, (_, i) => `s${i}.js`).join(' ')
+  f.tables.entities[0] = row({ ...appData(), props: { names } })
+  await f.run()
+  assert.deepEqual(f.deleted, [])
+  assert.deepEqual(f.warnings, [
+    '[clean] skipped all deletion: more than 4096 .js names that are not in the store listing; the clean-up asks for at most that many',
+  ])
+  assert.equal(f.scriptReads.length, 4096)
+})
+
+// Codex: a 4,271-byte entity row was scanned with readLimit 1024
+test('cleaner: a database value larger than the read limit is not scanned: nothing is deleted', async t => {
+  for (const [where, set] of [
+    ['entity "app"', f => (f.tables.entities[0] = row({ ...appData(), props: { pad: 'p'.repeat(2000) } }))],
+    ['blueprint "bp"', f => (f.tables.blueprints[0] = row({ id: 'bp', version: 0, props: { pad: 'p'.repeat(2000) } }))],
+    ['settings', f => (f.tables.config[0].value = JSON.stringify({ pad: 'p'.repeat(2000) }))],
+    ['user "u"', f => f.tables.users.push({ id: 'u', avatar: `https://a.example/${'p'.repeat(2000)}` })],
+  ]) {
+    const f = fixture(t)
+    set(f)
+    await f.run({ ...f.store, readLimit: 1024 })
+    assert.deepEqual(f.deleted, [], where)
+    assert.deepEqual(f.warnings, [
+      `[clean] skipped all deletion: could not read ["${where.replace(/"/g, '\\"')} (larger than 1024 bytes)"]`,
+    ])
+  }
+})
+
+// Codex: storage.json's size was checked, then the file read without a bound, so one that grew in between was read
+test('cleaner: storage.json is read with a counting bound, whatever its size said before', async t => {
+  const f = fixture(t)
+  fs.writeFileSync(f.storageFile, JSON.stringify({ note: 'x'.repeat(2000) }))
+  // a file system whose stat reports a small file (it grew after): only a bound counted while reading holds
+  const lying = { ...fs.promises, stat: async () => ({ size: 10, isDirectory: () => false, isFile: () => true }) }
+  const Cleaner = load('server/cleaner.js', 'Cleaner', {
+    assets: { list: async () => f.files, readText: async () => null },
+    collections: f.collections,
+    fs: lying,
+    path,
+  })
+  await new Cleaner().init({ db: f.db, storageFile: f.storageFile, ...f.store, readLimit: 1024 })
+  assert.deepEqual(f.deleted, [])
+  assert.deepEqual(f.warnings, ['[clean] skipped all deletion: could not read ["storage.json (TOO_LARGE)"]'])
+})
+
+// Codex: 16,000 places with an undecidable run took 2.7 s, each checked against all the earlier ones (40,000 here:
+// about 10 s that way, milliseconds with a Set)
+test('cleaner: many places with an undecidable run cost linear time; the log names the first 20', async t => {
+  const f = fixture(t)
+  for (let i = 0; i < 40000; i++) f.tables.users.push({ id: `u${i}`, avatar: `%${'25'.repeat(9)}61.glb` })
+  const started = performance.now()
+  await f.run()
+  const ms = performance.now() - started
+  assert.ok(ms < 3000, `${ms} ms`)
+  assert.deepEqual(f.deleted, [])
+  const first = Array.from({ length: 20 }, (_, i) => `user "u${i}"`)
+  assert.ok(
+    f.warnings[0].startsWith(`[clean] skipped all deletion: ${JSON.stringify(first)} and 39980 more hold`),
+    f.warnings[0].slice(0, 200)
+  )
 })
 
 test('cleaner: assets the store could not delete are reported, not counted as deleted', async t => {

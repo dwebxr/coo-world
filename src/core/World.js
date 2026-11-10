@@ -261,7 +261,7 @@ export class World extends EventEmitter {
   resolveURL(url) {
     if (!url) return url
     url = url.trim()
-    if (url.startsWith('blob')) {
+    if (url.startsWith('blob:')) {
       return url
     }
     if (url.startsWith('asset://')) {

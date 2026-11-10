@@ -154,6 +154,59 @@ test('emotes a remote player keeps sending are bounded, and a failed one is forg
   instance.destroy()
 })
 
+test('emote and locomotion playback options: a finite speed in [0.01, 100] or 1; l and g are exact flags', async t => {
+  silence(t)
+  const { THREE } = m
+  // every action the real mixer hands out, with the clip it was made for
+  const actions = []
+  const clipAction = THREE.AnimationMixer.prototype.clipAction
+  THREE.AnimationMixer.prototype.clipAction = function (clip, ...rest) {
+    const action = clipAction.call(this, clip, ...rest)
+    actions.push({ name: clip.name, action })
+    return action
+  }
+  t.after(() => (THREE.AnimationMixer.prototype.clipAction = clipAction))
+  const hooks = makeHooks([])
+  hooks.loader.load = async (type, url) => ({ toClip: () => new THREE.AnimationClip(url, 1, []) })
+  const instance = m.createVRMFactory(makeVRM(), () => {}).create(new THREE.Matrix4(), hooks, null)
+  await new Promise(resolve => setImmediate(resolve))
+  // the built-in locomotion clips carry their speed in the url (asset://mp-walk.glb?s=1.5)
+  const walk = actions.find(entry => entry.name === 'asset://mp-walk.glb?s=1.5')
+  assert.equal(walk.action.timeScale, 1.5)
+  assert.equal(actions.find(entry => entry.name === 'asset://mp-idle.glb').action.timeScale, 1)
+  for (const [speed, expected] of [
+    [undefined, 1],
+    ['', 1],
+    ['NaN', 1],
+    ['Infinity', 1],
+    ['1e309', 1],
+    ['-Infinity', 1],
+    ['0', 1],
+    ['-1', 1],
+    ['0.009', 1],
+    ['100.001', 1],
+    ['0.01', 0.01],
+    ['100', 100],
+    ['2.5', 2.5],
+  ]) {
+    for (const [flags, loop] of [
+      ['', true],
+      ['&l=0&g=1', false],
+      ['&l=false&g=true', true],
+    ]) {
+      const url = `asset://wave.glb?${speed === undefined ? '' : `s=${speed}`}${flags}`
+      instance.setEmote(null)
+      instance.setEmote(url)
+      await new Promise(resolve => setImmediate(resolve))
+      const { action } = actions.findLast(entry => entry.name === url)
+      assert.equal(action.timeScale, expected, url)
+      assert.equal(action.loop, loop ? THREE.LoopRepeat : THREE.LoopOnce, url)
+      assert.equal(action.clampWhenFinished, !loop, url)
+    }
+  }
+  instance.destroy()
+})
+
 test('an emote file without an animation or a scene root is a failed load, and odd tracks are tolerated', () => {
   const { THREE } = m
   assert.throws(() => m.createEmoteFactory({ animations: [], scene: new THREE.Group() }, 'x'), /no animation/)

@@ -16,6 +16,77 @@ import Hls from 'hls.js/dist/hls.js'
 
 // THREE.Cache.enabled = true
 
+// What this client will download and decode for one asset. Files in the world's own store are already capped by
+// the upload limit; a URL from somewhere else (a remote avatar, a model or image a script names) has no such
+// limit, and every client that sees it loads it.
+const MiB = 1024 * 1024
+const MAX_BYTES = {
+  script: 2 * MiB,
+  image: 32 * MiB,
+  texture: 32 * MiB,
+  hdr: 64 * MiB,
+  audio: 64 * MiB,
+  model: 64 * MiB,
+  avatar: 64 * MiB,
+  emote: 32 * MiB,
+}
+const MAX_BYTES_DEFAULT = 64 * MiB
+// decoded size: an image this large is about 150 MB of pixels before mipmaps (an 8192 x 4096 sky fits)
+const MAX_IMAGE_PIXELS = 36_000_000
+// downloads kept for re-use (exports, the file fields). Files of the world's own store are always kept; of the
+// others only the most recent few, and none above this size
+const REMOTE_FILE_LIMIT = 16
+const REMOTE_FILE_MAX_BYTES = 16 * MiB
+// results (models, textures, clips) kept for URLs outside the world's store, least recently used first out. What
+// is in use stays alive through its users; this bounds what a stream of new URLs can pin
+const REMOTE_RESULT_LIMIT = 128
+
+// reads a response body up to a limit, so an endless or oversized download ends instead of filling memory
+async function readBody(resp, maxBytes, signal) {
+  const declared = Number(resp.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > maxBytes) throw new Error(`file is larger than ${maxBytes} bytes`)
+  if (!resp.body?.getReader) {
+    const blob = await resp.blob()
+    if (blob.size > maxBytes) throw new Error(`file is larger than ${maxBytes} bytes`)
+    return blob
+  }
+  const reader = resp.body.getReader()
+  const chunks = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > maxBytes) {
+      signal?.abort?.()
+      await reader.cancel().catch(() => {})
+      throw new Error(`file is larger than ${maxBytes} bytes`)
+    }
+    chunks.push(value)
+  }
+  return new Blob(chunks, { type: resp.headers.get('content-type') || '' })
+}
+
+// an <img> for a file; rejects when the browser cannot decode it or it is larger than the pixel budget
+function decodeImage(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    const src = URL.createObjectURL(file)
+    img.onload = () => {
+      if (img.naturalWidth * img.naturalHeight > MAX_IMAGE_PIXELS) {
+        URL.revokeObjectURL(src)
+        return reject(new Error(`image is larger than ${MAX_IMAGE_PIXELS} pixels`))
+      }
+      resolve(img)
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(src)
+      reject(new Error('image could not be decoded'))
+    }
+    img.src = src
+  })
+}
+
 /**
  * Client Loader System
  *
@@ -29,6 +100,8 @@ export class ClientLoader extends System {
     this.files = new Map()
     this.promises = new Map()
     this.results = new Map()
+    this.remoteFiles = new Set() // urls outside the world's store whose file is kept, oldest first
+    this.remoteKeys = new Set() // load keys outside the world's store, least recently used first
     this.rgbeLoader = new RGBELoader()
     this.texLoader = new TextureLoader()
     this.gltfLoader = new GLTFLoader()
@@ -101,16 +174,51 @@ export class ClientLoader extends System {
     return file
   }
 
-  loadFile = async url => {
+  // whether a resolved URL is in the world's own asset store (uploads there are already size-limited)
+  isOwnAsset(url) {
+    const base = this.world.assetsUrl
+    return typeof base === 'string' && base.length > 0 && url.startsWith(`${base}/`)
+  }
+
+  loadFile = async (url, maxBytes = MAX_BYTES_DEFAULT) => {
     url = this.world.resolveURL(url)
     if (this.files.has(url)) {
       return this.files.get(url)
     }
-    const resp = await fetch(url)
-    const blob = await resp.blob()
+    const controller = typeof AbortController === 'function' ? new AbortController() : null
+    const resp = await fetch(url, controller ? { signal: controller.signal } : undefined)
+    // an error page is not the asset: it used to be parsed as the model, image or script
+    if (!resp.ok) throw new Error(`asset request failed: HTTP ${resp.status}`)
+    const blob = await readBody(resp, maxBytes, controller)
     const file = new File([blob], url.split('/').pop(), { type: blob.type })
-    this.files.set(url, file)
+    this.keepFile(url, file)
     return file
+  }
+
+  keepFile(url, file) {
+    if (this.isOwnAsset(url)) return this.files.set(url, file)
+    if (file.size > REMOTE_FILE_MAX_BYTES) return
+    this.remoteFiles.delete(url)
+    this.remoteFiles.add(url)
+    this.files.set(url, file)
+    for (const old of this.remoteFiles) {
+      if (this.remoteFiles.size <= REMOTE_FILE_LIMIT) break
+      this.remoteFiles.delete(old)
+      this.files.delete(old)
+    }
+  }
+
+  // results for URLs outside the world's store are kept up to a bound, least recently used first out
+  trackResult(key, url) {
+    if (this.isOwnAsset(this.world.resolveURL(url))) return
+    this.remoteKeys.delete(key)
+    this.remoteKeys.add(key)
+    for (const old of this.remoteKeys) {
+      if (this.remoteKeys.size <= REMOTE_RESULT_LIMIT) break
+      this.remoteKeys.delete(old)
+      this.promises.delete(old)
+      this.results.delete(old)
+    }
   }
 
   async load(type, url) {
@@ -119,6 +227,7 @@ export class ClientLoader extends System {
     }
     const key = `${type}/${url}`
     if (this.promises.has(key)) {
+      if (this.remoteKeys.has(key)) this.trackResult(key, url)
       return this.promises.get(key)
     }
     if (type === 'video') {
@@ -130,10 +239,13 @@ export class ClientLoader extends System {
       this.promises.set(key, promise)
       return promise
     }
-    const promise = this.loadFile(url).then(async file => {
+    const promise = this.loadFile(url, MAX_BYTES[type] ?? MAX_BYTES_DEFAULT).then(async file => {
       if (type === 'hdr') {
         const buffer = await file.arrayBuffer()
         const result = this.rgbeLoader.parse(buffer)
+        if (result.width * result.height > MAX_IMAGE_PIXELS) {
+          throw new Error(`image is larger than ${MAX_IMAGE_PIXELS} pixels`)
+        }
         // we just mimicing what rgbeLoader.load() does behind the scenes
         const texture = new THREE.DataTexture(result.data, result.width, result.height)
         texture.colorSpace = THREE.LinearSRGBColorSpace
@@ -147,28 +259,19 @@ export class ClientLoader extends System {
         return texture
       }
       if (type === 'image') {
-        return new Promise(resolve => {
-          const img = new Image()
-          img.onload = () => {
-            this.results.set(key, img)
-            resolve(img)
-            // URL.revokeObjectURL(img.src)
-          }
-          img.src = URL.createObjectURL(file)
-        })
+        const img = await decodeImage(file)
+        this.results.set(key, img)
+        return img
       }
       if (type === 'texture') {
-        return new Promise(resolve => {
-          const img = new Image()
-          img.onload = () => {
-            const texture = this.texLoader.load(img.src)
-            texture.colorSpace = THREE.SRGBColorSpace
-            this.results.set(key, texture)
-            resolve(texture)
-            URL.revokeObjectURL(img.src)
-          }
-          img.src = URL.createObjectURL(file)
-        })
+        // the decoded element is the texture's image: no second load of the same object URL
+        const img = await decodeImage(file)
+        const texture = new THREE.Texture(img)
+        texture.colorSpace = THREE.SRGBColorSpace
+        texture.needsUpdate = true
+        this.results.set(key, texture)
+        URL.revokeObjectURL(img.src)
+        return texture
       }
       if (type === 'model') {
         const buffer = await file.arrayBuffer()
@@ -205,6 +308,15 @@ export class ClientLoader extends System {
       }
     })
     this.promises.set(key, promise)
+    this.trackResult(key, url)
+    // a failed load is not kept: the asset may exist a moment later (an upload still in flight, a network blip),
+    // and a kept rejection used to make it unloadable until the page was reloaded
+    promise.catch(() => {
+      if (this.promises.get(key) === promise) {
+        this.promises.delete(key)
+        this.remoteKeys.delete(key)
+      }
+    })
     return promise
   }
 
@@ -358,7 +470,11 @@ function buildAvatarResult(glb, world, file, vrmHooks) {
  *
  * Shared between ClientLoader.js (createVideoFactory) and ClientLiveKit.js (createPlayerScreen).
  */
-export function prepareVideoElement(elem, state, { trackDuration = false, forcePlayOnMetadata = true, logDimensions = false } = {}) {
+export function prepareVideoElement(
+  elem,
+  state,
+  { trackDuration = false, forcePlayOnMetadata = true, logDimensions = false } = {}
+) {
   return new Promise(resolve => {
     let playing = false
     let data = false

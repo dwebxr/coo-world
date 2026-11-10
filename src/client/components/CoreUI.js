@@ -617,8 +617,8 @@ function LoadingOverlay({ world }) {
       <div className='loading-image' />
       <div className='loading-shade' />
       <div className='loading-info'>
-        {title && <div className='loading-title'>{title}</div>}
-        {desc && <div className='loading-desc'>{desc}</div>}
+        {toText(title) && <div className='loading-title'>{toText(title)}</div>}
+        {toText(desc, 4096) && <div className='loading-desc'>{toText(desc, 4096)}</div>}
         <div className='loading-track'>
           <div className='loading-bar' />
         </div>

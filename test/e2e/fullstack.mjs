@@ -512,9 +512,10 @@ async function probes(admin, watcher) {
     const [accepted, long, minted, emoji1, emoji2] = got.map(m => m.data)
     eq(
       JSON.stringify(Object.keys(accepted).sort()),
-      JSON.stringify(['body', 'createdAt', 'from', 'fromId', 'id']),
+      JSON.stringify(['body', 'createdAt', 'from', 'fromId', 'id', 'kind']),
       'fields'
     )
+    eq(accepted.kind, 'player', 'a player line, stamped by the server')
     ok(
       typeof accepted.id === 'string' && accepted.id.length > 0 && accepted.id !== 'p4-chat',
       `the id is minted by the server (${accepted.id})`

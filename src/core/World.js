@@ -286,10 +286,12 @@ export class World extends EventEmitter {
       world: this,
       phase: `hot ${phase}`,
     })
-    const label = owner?.data?.id ?? item.id ?? 'none'
-    const where = `${phase} (${owner?.isApp ? 'app' : owner?.isPlayer ? 'player' : 'item'} ${String(label).slice(0, 64)})`
+    const id = owner?.data?.id ?? item.id
+    const label = typeof id === 'string' || typeof id === 'number' ? String(id).slice(0, 64) : 'none'
+    const where = `${phase} (${owner?.isApp ? 'app' : owner?.isPlayer ? 'player' : 'item'} ${label})`
     if (owner?.isApp) {
-      if (item !== owner) this.hot.delete(item)
+      // out until the app's crash rebuild makes what it needs hot again
+      this.hot.delete(item)
       if (trapped) return
       if (!owner.crashed) {
         try {

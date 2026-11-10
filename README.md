@@ -232,6 +232,9 @@ npm start
 # Clean orphaned assets (experimental)
 npm run world:clean
 
+# List the model, avatar and emote files the loaders' limits refuse (read-only; run before upgrading a world)
+npm run models:check -- world/assets
+
 # Viewer only (development)
 npm run viewer:dev
 

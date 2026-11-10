@@ -354,7 +354,7 @@ test('a turn is held through the parse: a fifth read waits until one of four par
   await tick()
   assert.equal(reads.length, 4)
   // the four reads end; their parses do not
-  for (const read of reads) read.resolve(Buffer.from('glb'))
+  for (const read of reads) read.resolve(Buffer.from(emptyGltf))
   for (let i = 0; i < 5; i++) await tick()
   assert.equal(parses.length, 4, 'four parses running')
   assert.equal(reads.length, 4, 'the fifth read has not started: parsing keeps the turn')
@@ -382,7 +382,7 @@ test('a read or a parse that never ends is given up at its deadline, and destroy
   const parses = heldParses(loader)
   const loads = Array.from({ length: 6 }, (_, i) => loader.load('emote', `asset://s${i}.glb`))
   await tick()
-  for (const read of reads) read.resolve(Buffer.from('glb'))
+  for (const read of reads) read.resolve(Buffer.from(emptyGltf))
   for (let i = 0; i < 5; i++) await tick()
   assert.equal(parses.length, 4)
   // four parses that never end: just before their deadline nothing has moved, at it the four loads fail
@@ -410,7 +410,7 @@ test('a read or a parse that never ends is given up at its deadline, and destroy
   const more = Array.from({ length: 6 }, (_, i) => loader.load('model', `asset://d${i}.glb`))
   await tick()
   assert.equal(reads.length, 10)
-  reads[6].resolve(Buffer.from('glb'))
+  reads[6].resolve(Buffer.from(emptyGltf))
   for (let i = 0; i < 5; i++) await tick()
   loader.destroy()
   for (const load of more) await assert.rejects(load, /destroyed/)
@@ -420,7 +420,7 @@ test('a read or a parse that never ends is given up at its deadline, and destroy
     reads.slice(7, 10).every(read => read.signal.aborted),
     'the reads in progress were told to stop'
   )
-  for (const read of reads.slice(7)) read.resolve(Buffer.from('glb'))
+  for (const read of reads.slice(7)) read.resolve(Buffer.from(emptyGltf))
   for (let i = 0; i < 5; i++) await tick()
   assert.equal(reads.length, 10, 'nothing else was read')
   assert.equal(parses.length, 5, 'a read that ends after destroy() parses nothing')
@@ -428,7 +428,7 @@ test('a read or a parse that never ends is given up at its deadline, and destroy
   const after = loader.load('model', 'asset://after.glb')
   await tick()
   assert.equal(reads.length, 11)
-  reads[10].resolve(Buffer.from('glb'))
+  reads[10].resolve(Buffer.from(emptyGltf))
   for (let i = 0; i < 5; i++) await tick()
   parses.at(-1).onLoad({})
   assert.ok(await after)
@@ -442,7 +442,7 @@ test('a parse that completes before its deadline timer runs is accepted, however
   const late = loader.load('model', 'asset://late.glb')
   const stuck = loader.load('model', 'asset://stuck.glb')
   await tick()
-  for (const read of reads) read.resolve(Buffer.from('glb'))
+  for (const read of reads) read.resolve(Buffer.from(emptyGltf))
   for (let i = 0; i < 5; i++) await tick()
   assert.equal(parses.length, 2)
   // the clock moves past the deadline while the timer does not run, as when a parse blocks the event loop for

@@ -25,6 +25,7 @@ import * as joinBudget from '../../src/core/extras/joinBudget.js'
 import { resolveAssetFile } from '../../src/core/extras/resolveAssetFile.js'
 import { createOutboundFetch } from '../../src/core/extras/outboundFetch.js'
 import { LoadingManager } from 'three'
+import * as gltfLimits from '../../src/core/extras/gltfLimits.js'
 
 class System extends EventEmitter {
   constructor(world) {
@@ -78,6 +79,7 @@ export function loadClient(file, name, context = {}) {
     resolveAssetFile,
     createOutboundFetch,
     LoadingManager,
+    ...gltfLimits,
     ...context,
   }
   const code = source.replace(/^import[\s\S]*?from ['"][^'"]+['"]\n/gm, '').replace(/^export /gm, '')

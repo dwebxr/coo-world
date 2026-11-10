@@ -651,6 +651,11 @@ export function checkGLTF(data, limits = GLTF_LIMITS, budget = null) {
     for (const name of ['EXT_texture_webp', 'EXT_texture_avif', 'KHR_texture_basisu']) {
       index(object(textureExtensions[name], name).source, 'images', `texture ${i} ${name} source`)
     }
+    // an image this client decodes: its own source, or a WebP one. A KTX2 or AVIF image is skipped for the source
+    // (its fallback); without one the parser read a missing image (a TypeError, "reading 'uri'")
+    if (texture.source === undefined && textureExtensions.EXT_texture_webp?.source === undefined) {
+      refuse(`texture ${i} has no image this client decodes (no source; a KTX2 or AVIF image is not decoded)`)
+    }
   })
   // every texture reference in a material, its extensions included: a `...Texture` object with an index
   collections.materials.forEach((material, i) => {

@@ -779,6 +779,19 @@ test('a URI has no line break, and a data: URI the shape of one: its header a na
   refused(image(`data:image/png;x=${'1'.repeat(1020)},AAAA`), /a data: header 1032 characters long, more than 1024/)
 })
 
+test('a texture has an image this client decodes: its own source, or a WebP one', () => {
+  // the reviewer's probe: an optional KTX2 or AVIF texture with no fallback source failed in the parser with a
+  // TypeError ("reading 'uri'"); it is refused with its reason
+  const texture = def =>
+    doc({ images: [{ uri: 'data:image/png;base64,AAAA' }, { uri: 'data:image/ktx2;base64,AAAA' }], textures: [def] })
+  for (const name of ['KHR_texture_basisu', 'EXT_texture_avif']) {
+    refused(texture({ extensions: { [name]: { source: 1 } } }), /texture 0 has no image this client decodes/)
+    assert.ok(checkGLTF(text(texture({ source: 0, extensions: { [name]: { source: 1 } } }))), `${name} with a fallback`)
+  }
+  refused(texture({}), /texture 0 has no image this client decodes/)
+  assert.ok(checkGLTF(text(texture({ extensions: { EXT_texture_webp: { source: 0 } } }))), 'a WebP image alone')
+})
+
 test('extras are small: each object’s, and all the parsed scene holds, as the userData every clone copies', () => {
   // extras and extensions become an object's userData, copied (as JSON) with every clone: at most 64 KiB of JSON an
   // object (the most in the bundled files and VRoid's samples: 1,957), counting every extension (which of them the

@@ -115,7 +115,7 @@ export class UI extends Node {
 
     this.ui = this
 
-    this._offset._onChange = () => this.rebuild()
+    this._offset._onChange(() => this.rebuild())
   }
 
   build() {
@@ -408,7 +408,7 @@ export class UI extends Node {
     this._doubleside = source._doubleside
     this._billboard = source._billboard
     this._pivot = source._pivot
-    this._offset = source._offset
+    this._offset.copy(source._offset)
     this._scaler = source._scaler
     this._pointerEvents = source._pointerEvents
 

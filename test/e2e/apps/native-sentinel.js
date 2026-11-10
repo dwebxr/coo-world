@@ -1,82 +1,15 @@
-// Test-only instrumentation of the currently mutable THREE prototypes. Never inspect components here.
-const prototypes = [
-  ['Vector3', Vector3.prototype],
-  ['StockVector3', Object.getPrototypeOf(new Object3D().position)],
-  ['Quaternion', Quaternion.prototype],
-  ['Euler', Euler.prototype],
-  ['Matrix4', Matrix4.prototype],
-]
-const saved = []
-let armed = false
-let total = 0
-let methods = {}
+// Test-only. The instrumentation itself lives on the host side (test/e2e/lib/script-class-hook.js): the engine
+// freezes the math classes before any script runs, so a script cannot wrap their methods. The hook, installed
+// by the e2e harness before the engine starts, wraps them while that is still possible and leaves a test
+// method on Vector3 (`__e2eSentinel`) that this app drives. Never inspect components here.
 let selfTest = null
 const check = (value, message) => {
   if (!value) throw new Error(message)
 }
-const inspect = (value, method, slot) => {
-  try {
-    if (value !== null && typeof value === 'object' && 'ptr' in value) {
-      total++
-      const key = `${method}:${slot}`
-      methods[key] = (methods[key] || 0) + 1
-    }
-  } catch {
-    // A hostile Proxy's has trap must not change the original method's behavior.
-  }
-}
-const wrap = (fn, method) =>
-  function (...args) {
-    inspect(this, method, 'this')
-    for (const arg of args) inspect(arg, method, 'argument')
-    const result = Reflect.apply(fn, this, args)
-    inspect(result, method, 'return')
-    return result
-  }
-function arm() {
-  check(!armed, 'sentinel already armed')
-  total = 0
-  methods = {}
-  armed = true
-  try {
-    for (const [name, proto] of prototypes) {
-      for (const key of Reflect.ownKeys(proto)) {
-        if (key === 'constructor') continue
-        const original = Object.getOwnPropertyDescriptor(proto, key)
-        const replacement = { ...original }
-        const label = `${name}.${String(key)}`
-        if (typeof original.value === 'function') replacement.value = wrap(original.value, label)
-        // getters are left alone: their receiver is the THREE instance and they return numbers, so they cannot carry
-        // a native, and wrapping every component read made software-rendered CI browsers too slow to simulate
-        if (original.set) replacement.set = wrap(original.set, `${label}.set`)
-        saved.push({ proto, key, original })
-        Object.defineProperty(proto, key, replacement)
-      }
-    }
-  } catch (err) {
-    disarm()
-    throw err
-  }
-}
-function disarm() {
-  let failure
-  try {
-    for (const { proto, key, original } of saved) {
-      try {
-        Object.defineProperty(proto, key, original)
-        const restored = Object.getOwnPropertyDescriptor(proto, key)
-        for (const field of Reflect.ownKeys(original)) {
-          check(restored[field] === original[field], `descriptor not restored: ${String(key)}.${field}`)
-        }
-      } catch (err) {
-        failure ??= err
-      }
-    }
-  } finally {
-    saved.length = 0
-    armed = false
-  }
-  if (failure) throw failure
+const sentinel = command => {
+  const probe = new Vector3()
+  check(typeof probe.__e2eSentinel === 'function', 'sentinel hook not installed in this realm')
+  return JSON.parse(probe.__e2eSentinel(command))
 }
 function behavior() {
   let changes = 0
@@ -84,7 +17,9 @@ function behavior() {
   v._onChange(() => changes++)
   const chaining = v.set(1, 2, 3) === v && v.copy(new Vector3(4, 5, 6)) === v
   v.x = 7
-  const stock = new Object3D().position.set(1, 2, 3)
+  // THREE's own Vector3 class, as the interpolation classes use it
+  const StockVector3 = new LerpVector3(new Vector3(), 0.2).previous.constructor
+  const stock = new StockVector3(1, 2, 3)
   const q = new Quaternion().set(0, 0, 0, 1)
   q.x = 0.25
   const e = new Euler()
@@ -103,33 +38,41 @@ function behavior() {
 function start() {
   const before = behavior()
   try {
-    arm()
+    sentinel('arm')
     const v = new Vector3().copy({ ptr: 1, x: 0, y: 0, z: 0 })
+    const { total, descriptors } = sentinel('report')
     check(total === 1, `sentinel copy self-test: expected 1, got ${total}`)
     check(v.x === 0 && v.y === 0 && v.z === 0, 'sentinel changed copy result')
     check(behavior() === before, 'sentinel changed chaining/accessors/iteration/callbacks')
-    selfTest = { violations: total, behavior: JSON.parse(before), descriptors: saved.length }
+    selfTest = { violations: total, behavior: JSON.parse(before), descriptors }
   } finally {
-    disarm()
+    sentinel('disarm')
   }
   // Start a fresh count after the positive self-test, before any scenario.
-  arm()
+  sentinel('arm')
 }
 app.state = { ready: true }
 app.on('probe:command', ({ seq, command }) => {
   let result
   try {
     if (command === 'arm') start()
-    if (command === 'disarm') disarm()
-    result = { seq, ok: true, armed, total, methods: { ...methods }, selfTest }
+    const { armed, total, methods } = sentinel(command === 'disarm' ? 'disarm' : 'report')
+    result = { seq, ok: true, armed, total, methods, selfTest }
   } catch (err) {
     try {
-      disarm()
-    } finally {
-      result = { seq, ok: false, error: String(err.message) }
+      sentinel('disarm')
+    } catch {
+      // the hook is missing: the error below already says so
     }
+    result = { seq, ok: false, error: String(err.message) }
   }
   app.state.last = result
   if (world.isServer) app.send('report', result)
 })
-app.on('destroy', disarm)
+app.on('destroy', () => {
+  try {
+    sentinel('disarm')
+  } catch {
+    // nothing to disarm
+  }
+})

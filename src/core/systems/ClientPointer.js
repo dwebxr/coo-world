@@ -73,26 +73,34 @@ const PointerEvents = {
 
 const CURSOR_DEFAULT = 'default'
 
-class PointerEvent {
-  constructor() {
-    this.type = null
-    this._propagationStopped = false
-  }
-
-  set(type) {
-    this.type = type
-    this._propagationStopped = false
-  }
-
-  stopPropagation() {
-    this._propagationStopped = true
-  }
+// What a pointer callback of an app script receives: a new frozen object for every call. The engine used to pass
+// one shared, mutable event object to every app, so a script could replace its methods (or those of its class)
+// for the engine and for the other apps. `stopped()` stays with the engine.
+export function createPointerEvent(type) {
+  let propagationStopped = false
+  const event = Object.freeze({
+    type,
+    stopPropagation: Object.freeze(() => {
+      propagationStopped = true
+    }),
+  })
+  return { event, stopped: () => propagationStopped }
 }
 
-class PointerState {
+// calls one script callback (without a receiver) and reports whether it stopped propagation
+function dispatch(callback, type) {
+  const { event, stopped } = createPointerEvent(type)
+  try {
+    callback.call(undefined, event)
+  } catch (err) {
+    console.error(err)
+  }
+  return stopped()
+}
+
+export class PointerState {
   constructor() {
     this.activePath = new Set()
-    this.event = new PointerEvent()
     this.cursor = CURSOR_DEFAULT
     this.pressedNodes = new Set()
   }
@@ -108,29 +116,16 @@ class PointerState {
     // pointer leave events bubble up from leaf
     // (script callbacks run without a receiver; the path holds raw nodes)
     for (let j = oldPath.length - 1; j >= i; j--) {
-      if (oldPath[j].onPointerLeave) {
-        this.event.set(PointerEvents.LEAVE)
-        try {
-          oldPath[j].onPointerLeave?.call(undefined, this.event)
-        } catch (err) {
-          console.error(err)
-        }
-        // if (this.event._propagationStopped) break
-      }
+      const onPointerLeave = oldPath[j].onPointerLeave
+      // a leave is delivered to the whole path: stopPropagation does not apply to it
+      if (onPointerLeave) dispatch(onPointerLeave, PointerEvents.LEAVE)
       this.activePath.delete(oldPath[j])
     }
 
     // pointer enter events bubble down from divergence
     for (let j = i; j < newPath.length; j++) {
-      if (newPath[j].onPointerEnter) {
-        this.event.set(PointerEvents.ENTER)
-        try {
-          newPath[j].onPointerEnter?.call(undefined, this.event)
-        } catch (err) {
-          console.error(err)
-        }
-        if (this.event._propagationStopped) break
-      }
+      const onPointerEnter = newPath[j].onPointerEnter
+      if (onPointerEnter && dispatch(onPointerEnter, PointerEvents.ENTER)) break
       this.activePath.add(newPath[j])
     }
 
@@ -153,15 +148,11 @@ class PointerState {
     if (pointerPressed) {
       for (let i = newPath.length - 1; i >= 0; i--) {
         const node = newPath[i]
-        if (node.onPointerDown) {
-          this.event.set(PointerEvents.DOWN)
-          try {
-            node.onPointerDown.call(undefined, this.event)
-          } catch (err) {
-            console.error(err)
-          }
+        const onPointerDown = node.onPointerDown
+        if (onPointerDown) {
+          const stopped = dispatch(onPointerDown, PointerEvents.DOWN)
           this.pressedNodes.add(node)
-          if (this.event._propagationStopped) break
+          if (stopped) break
         }
       }
     }
@@ -169,15 +160,8 @@ class PointerState {
     // handle pointer up events
     if (pointerReleased) {
       for (const node of this.pressedNodes) {
-        if (node.onPointerUp) {
-          this.event.set(PointerEvents.UP)
-          try {
-            node.onPointerUp.call(undefined, this.event)
-          } catch (err) {
-            console.error(err)
-          }
-          if (this.event._propagationStopped) break
-        }
+        const onPointerUp = node.onPointerUp
+        if (onPointerUp && dispatch(onPointerUp, PointerEvents.UP)) break
       }
       this.pressedNodes.clear()
     }

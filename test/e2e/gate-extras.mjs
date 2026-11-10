@@ -319,15 +319,38 @@ try {
 
     // Safari moves Tab between form fields only; Option+Tab reaches buttons
     const TAB = ENGINE === 'webkit' ? 'Alt+Tab' : 'Tab'
-    const fresh = async (timings, prepare) => {
+    const fresh = async (timings, prepare, { url = server.url, waitUntil = 'domcontentloaded' } = {}) => {
       const context = await browser.newContext()
       const probe = await context.newPage()
+      const errors = []
+      probe.on('pageerror', error => errors.push(String(error)))
       await probe.addInitScript(t => {
         window.__worldBootTimings = t
       }, timings)
       await prepare?.(probe)
-      await probe.goto(server.url, { waitUntil: 'domcontentloaded' })
-      return { context, probe }
+      await probe.goto(url, { waitUntil })
+      return { context, probe, errors }
+    }
+    // waits for a message box; when it does not come, the failure says what the page looked like, since a bare
+    // timeout cannot tell "the timings were not applied" from "the message could not be shown" from "the app drew"
+    const shown = async (probe, selector, timeout, errors) => {
+      try {
+        await probe.locator(selector).waitFor({ state: 'visible', timeout })
+      } catch {
+        const state = await probe
+          .evaluate(() => ({
+            timings: window.__worldBootTimings ?? null,
+            readyState: document.readyState,
+            body: !!document.body,
+            boxes: [...document.querySelectorAll('.boot-error')].map(box => box.className),
+            rootChildren: document.getElementById('root')?.childNodes.length ?? null,
+            boot: typeof window.__worldBoot,
+          }))
+          .catch(error => ({ evaluate: String(error) }))
+        throw new Error(
+          `${selector} not visible after ${timeout} ms; page: ${JSON.stringify(state)}; errors: ${JSON.stringify(errors)}`
+        )
+      }
     }
     const closeStaysClosed = async probe => {
       const box = probe.locator('.boot-error')
@@ -339,14 +362,14 @@ try {
     // 1. SES lockdown fails (an undeletable property on an intrinsic, as a script added by the browser could
     //    leave): nothing is drawn, so the message comes in the middle with the cause, and Reload has focus
     {
-      const { context, probe } = await fresh({ error: 500, slow: 4000 }, p =>
+      const { context, probe, errors } = await fresh({ error: 500, slow: 4000 }, p =>
         p.addInitScript(() => {
           Object.defineProperty(Array.prototype, '__bootProbe', { value: 1, configurable: false })
         })
       )
       try {
         const box = probe.locator('.boot-error.blocking')
-        await box.waitFor({ state: 'visible', timeout: 30000 * TIMEOUT_SCALE })
+        await shown(probe, '.boot-error.blocking', 30000 * TIMEOUT_SCALE, errors)
         eq(await box.locator('.boot-error-title').textContent(), 'This browser could not start the world.', 'title')
         const detail = await box.locator('.boot-error-detail').textContent()
         await probe.screenshot({ path: path.join(OUT, `extras-${ENGINE}-boot-error.png`) })
@@ -369,7 +392,7 @@ try {
     // 2. the app script is blocked (no error at all) and an error comes from another origin ("Script error."):
     //    that error alone is not a failure; at the slow mark the page says the world did not start
     {
-      const { context, probe } = await fresh({ error: 300, slow: 3000 }, async p => {
+      const { context, probe, errors } = await fresh({ error: 300, slow: 3000 }, async p => {
         await p.route(/\.js(\?|$)/, route =>
           route.request().url().includes('/env.js') ? route.continue() : route.abort()
         )
@@ -383,7 +406,7 @@ try {
         await sleep(1500)
         ok(await probe.evaluate(() => !document.querySelector('.boot-error')), 'no failure from Script error. alone')
         const box = probe.locator('.boot-error.blocking')
-        await box.waitFor({ state: 'visible', timeout: 15000 * TIMEOUT_SCALE })
+        await shown(probe, '.boot-error.blocking', 15000 * TIMEOUT_SCALE, errors)
         eq(await box.locator('.boot-error-title').textContent(), 'The world did not start.', 'blocked title')
         ok((await box.locator('.boot-error-detail').textContent()).includes('another origin'), 'opaque detail')
         await closeStaysClosed(probe)
@@ -463,12 +486,69 @@ try {
         })
       })
       try {
-        await probe.locator('.boot-error.blocking').waitFor({ state: 'visible', timeout: 15000 * TIMEOUT_SCALE })
-        await probe.locator('.boot-error.notice').waitFor({ state: 'visible', timeout: 30000 * TIMEOUT_SCALE })
+        await shown(probe, '.boot-error.blocking', 15000 * TIMEOUT_SCALE, probeErrors)
+        await shown(probe, '.boot-error.notice', 30000 * TIMEOUT_SCALE, probeErrors)
         ok(await probe.evaluate(() => !document.querySelector('.boot-error.blocking')), 'moved out of the middle')
         eq(probeErrors.length, 0, probeErrors.join(' | '))
       } finally {
         await context.close()
+      }
+    }
+
+    // 6. the head of the document arrives and the rest stalls past the slow mark (a slow or interrupted
+    //    connection): the timer fires while there is no <body> yet. The message must still come once the document
+    //    is there (it used to throw on the missing body and then never show anything: a black page for good)
+    {
+      const HOLD = 3000
+      const splitter = http.createServer(async (req, res) => {
+        try {
+          const upstream = await fetch(`http://127.0.0.1:${PORT}${req.url}`, {
+            headers: { 'accept-encoding': 'identity' },
+          })
+          const body = Buffer.from(await upstream.arrayBuffer())
+          const headers = {}
+          upstream.headers.forEach((value, name) => {
+            if (!['content-encoding', 'content-length', 'transfer-encoding', 'connection'].includes(name)) {
+              headers[name] = value
+            }
+          })
+          res.writeHead(upstream.status, headers)
+          if (req.url !== '/') return res.end(body)
+          const html = body.toString()
+          const cut = html.indexOf('</head>') + '</head>'.length
+          ok(cut > '</head>'.length, 'the document has a head to split after')
+          res.write(html.slice(0, cut))
+          await sleep(HOLD)
+          res.end(html.slice(cut))
+        } catch (error) {
+          res.destroy(error)
+        }
+      })
+      await new Promise((resolve, reject) => splitter.once('error', reject).listen(PORT + 2, '127.0.0.1', resolve))
+      const { context, probe, errors } = await fresh(
+        { error: 300, slow: 1000 },
+        p =>
+          p.route(/\.js(\?|$)/, route =>
+            route.request().url().includes('/env.js') ? route.continue() : route.abort()
+          ),
+        { url: `http://127.0.0.1:${PORT + 2}/`, waitUntil: 'commit' }
+      )
+      try {
+        // the slow mark (1 s) passes while only the head is there
+        await sleep(1500)
+        eq(await probe.evaluate(() => !!document.body), false, 'the body has not arrived at the slow mark')
+        await shown(probe, '.boot-error.blocking', 15000 * TIMEOUT_SCALE, errors)
+        eq(
+          await probe.locator('.boot-error.blocking .boot-error-title').textContent(),
+          'The world did not start.',
+          'the message comes once the document is there'
+        )
+        eq(errors.length, 0, `no error from the watchdog itself: ${errors.join(' | ')}`)
+        await closeStaysClosed(probe)
+      } finally {
+        await context.close()
+        await new Promise(resolve => splitter.close(resolve))
+        splitter.closeAllConnections?.()
       }
     }
 

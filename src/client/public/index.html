@@ -97,8 +97,22 @@
           if (typeof value === 'string') return value
           return String(value.message || value)
         }
+        var waitingForBody = false
         var show = function (kind, title, cause) {
           if (ready || dismissed || box) return
+          // A timer can fire before the parser has made <body> (the head has arrived, the rest of the document is
+          // slow or stalled). Appending then throws, and with `box` already set no later message could be shown:
+          // the page stayed black for good. Wait for the document instead.
+          if (!document.body) {
+            if (!waitingForBody) {
+              waitingForBody = true
+              document.addEventListener('DOMContentLoaded', function () {
+                waitingForBody = false
+                show(kind, title, cause)
+              })
+            }
+            return
+          }
           box = document.createElement('div')
           box.className = 'boot-error ' + kind
           box.setAttribute('role', 'alert')

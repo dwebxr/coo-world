@@ -28,8 +28,8 @@ function problem(reply) {
 
 // Asks a process that preloads memory-probe.js, spawned with an 'ipc' stdio entry, for its memory. Each request
 // sends { type: 'e2e-memory', id } with a fresh id and resolves with the reply that carries that id, once checked:
-// { heapUsed, external, rss } in bytes. Replies with any other id are ignored, among them the late reply to a
-// request that timed out. Requests run one at a time, so collections do not overlap.
+// { heapUsed, external, rss } in bytes. Replies with any other id are ignored. Only one request is active at a time;
+// the probe may still answer a request that timed out, later, and that reply is ignored too.
 // A request rejects with MemoryProbeTimeout when no reply comes within `timeout` (scaled like every harness wait,
 // and cut to `limit` ms when given), and at once with a plain error when the process exits, the channel closes or
 // the reply is malformed.
@@ -93,10 +93,12 @@ export function memoryReader(child) {
 // absolute deadline `timeout` ms from now, scaled like every harness wait: no request starts after the deadline,
 // each request gets at most the time left (`limit`), and a reading that comes back after the deadline fails the wait
 // however low it is. A request that times out (MemoryProbeTimeout) only means not settled yet; any other error ends
-// the wait at once. `clock` ({ now, sleep }) is there for the tests.
+// the wait at once. The deadline is kept on a monotonic clock, so that setting the wall clock neither stretches nor
+// cuts it; `limit` is a duration, and memoryReader's timers are monotonic too. `clock` ({ now, sleep }) is there for
+// the tests.
 export async function waitForMemoryToSettle(
   read,
-  { baseline, bound, timeout, interval = 1000, clock = { now: Date.now, sleep } }
+  { baseline, bound, timeout, interval = 1000, clock = { now: () => performance.now(), sleep } }
 ) {
   const total = timeout * TIMEOUT_SCALE
   const deadline = clock.now() + total

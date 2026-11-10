@@ -318,7 +318,15 @@ test('a request fails at once when the process exits or the channel closes, not 
 // what it returns: { ms, value }, { ms, timeout: true } (cut to the request's limit, like memoryReader) or
 // { ms, error }
 function scripted(steps) {
-  const clock = { t: 0, now: () => clock.t, sleep: async ms => (clock.t += ms) }
+  const clock = {
+    t: 0,
+    sleeps: [],
+    now: () => clock.t,
+    sleep: async ms => {
+      clock.sleeps.push(ms)
+      clock.t += ms
+    },
+  }
   const calls = []
   const read = async ({ limit }) => {
     const step = steps[calls.length]
@@ -390,4 +398,31 @@ test('the flood step ends at once on an error other than a timeout', async () =>
   ])
   await assert.rejects(settle(run), error => error === exited)
   assert.equal(run.calls.length, 2)
+})
+
+test('the flood step sleeps only the time left before its deadline, and asks no more after it', async () => {
+  const run = scripted([{ ms: DEADLINE - 1, value: 300 }])
+  await assert.rejects(settle(run), /out of time \(last reading: 300 MiB;/)
+  assert.deepEqual(run.clock.sleeps, [1])
+  assert.equal(run.calls.length, 1)
+})
+
+test('the flood step never reads the wall clock, so setting it does not move the deadline', async () => {
+  const wall = Date.now
+  Date.now = () => {
+    throw new Error('the wall clock was read')
+  }
+  try {
+    // the default clock
+    assert.equal(await waitForMemoryToSettle(async () => 120, { baseline: 100, bound: 48, timeout: 60000 }), 120)
+    // a given clock is the only one used
+    const run = scripted([
+      { ms: 100, value: 300 },
+      { ms: 15000, timeout: true },
+      { ms: 100, value: 140 },
+    ])
+    assert.equal(await settle(run), 140)
+  } finally {
+    Date.now = wall
+  }
 })

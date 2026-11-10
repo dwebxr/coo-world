@@ -31,6 +31,12 @@ const CACHE_LIMIT = 512
 // it, so the rest wait holding nothing yet: at most this many files (up to 32 MiB each from a remote URL) are held
 // for a parse, however many loads are asked for at once
 const MODEL_TURNS = 4
+// How long a turn's read and its parse may each take. Past either the load fails and its turn goes to the next
+// one, so a read or a parse that never ends cannot hold up the loads behind it; whatever the stuck work holds
+// stays until it ends, if it ever does. The read has a remote load's deadline (the outbound request ends at the
+// same time), a local read too; a parse gets a generous fixed one
+const READ_DEADLINE_MS = REMOTE_LOAD.timeoutMs
+const PARSE_DEADLINE_MS = 60_000
 // every avatar is the same stub on the server (nothing is fetched), so they share one entry whatever URL a player
 // names
 const AVATAR_KEY = 'avatar/*'
@@ -64,7 +70,7 @@ export class ServerLoader extends System {
     this.promises = new Map()
     this.results = new Map()
     this.settled = new WeakSet() // promises of loads that have finished
-    this.turns = { active: 0, waiting: [] } // model and emote loads reading or parsing, and those waiting
+    this.turns = { active: new Set(), waiting: [] } // model and emote loads reading or parsing, and those waiting
     this.rgbeLoader = new RGBELoader()
     this.gltfLoader = new GLTFLoader(createEmbeddedOnlyManager())
     this.outbound = null
@@ -240,24 +246,40 @@ export class ServerLoader extends System {
     })
   }
 
-  // runs `work` in one of MODEL_TURNS, in the order asked; until a turn is free it waits without having started
-  inTurn(work) {
+  // Reads, then parses what was read, in one of MODEL_TURNS, in the order asked: until a turn is free the load
+  // waits without having started. The turn is held through both, each within its deadline, and goes to the next
+  // load once the load settles (or is given up: a deadline, or destroy())
+  inTurn(read, parse) {
     return new Promise((resolve, reject) => {
-      const run = () => {
-        this.turns.active++
-        let result
-        try {
-          result = Promise.resolve(work())
-        } catch (err) {
-          result = Promise.reject(err)
-        }
-        result.then(resolve, reject).finally(() => {
-          this.turns.active--
-          this.turns.waiting.shift()?.run()
-        })
+      const turn = { done: false, timer: null }
+      turn.settle = (ok, value) => {
+        if (turn.done) return
+        turn.done = true
+        clearTimeout(turn.timer)
+        this.turns.active.delete(turn)
+        if (ok) resolve(value)
+        else reject(value)
+        this.turns.waiting.shift()?.run()
       }
-      if (this.turns.active < MODEL_TURNS) run()
-      else this.turns.waiting.push({ run, reject })
+      const within = (ms, what, step) =>
+        new Promise((done, fail) => {
+          clearTimeout(turn.timer)
+          turn.timer = setTimeout(() => fail(new Error(`a model's ${what} took longer than ${ms / 1000} s`)), ms)
+          turn.timer?.unref?.() // a deadline does not keep a closing process alive
+          Promise.resolve().then(step).then(done, fail)
+        })
+      turn.run = () => {
+        this.turns.active.add(turn)
+        within(READ_DEADLINE_MS, 'read', read)
+          // a load given up while reading parses nothing
+          .then(data => (turn.done ? undefined : within(PARSE_DEADLINE_MS, 'parse', () => parse(data))))
+          .then(
+            value => turn.settle(true, value),
+            err => turn.settle(false, err)
+          )
+      }
+      if (this.turns.active.size < MODEL_TURNS) turn.run()
+      else this.turns.waiting.push(turn)
     })
   }
 
@@ -266,25 +288,31 @@ export class ServerLoader extends System {
   task(type, url) {
     if (type === 'model') {
       return () =>
-        this.inTurn(async () => {
-          const node = glbToNodes(await this.parseGLB(await this.fetchArrayBuffer(url)), this.world)
-          return {
-            toNodes() {
-              return node.clone(true)
-            },
+        this.inTurn(
+          () => this.fetchArrayBuffer(url),
+          async arrayBuffer => {
+            const node = glbToNodes(await this.parseGLB(arrayBuffer), this.world)
+            return {
+              toNodes() {
+                return node.clone(true)
+              },
+            }
           }
-        })
+        )
     }
     if (type === 'emote') {
       return () =>
-        this.inTurn(async () => {
-          const factory = createEmoteFactory(await this.parseGLB(await this.fetchArrayBuffer(url)), url)
-          return {
-            toClip(options) {
-              return factory.toClip(options)
-            },
+        this.inTurn(
+          () => this.fetchArrayBuffer(url),
+          async arrayBuffer => {
+            const factory = createEmoteFactory(await this.parseGLB(arrayBuffer), url)
+            return {
+              toClip(options) {
+                return factory.toClip(options)
+              },
+            }
           }
-        })
+        )
     }
     if (type === 'avatar') {
       // NOTE: we can't load vrms on the server yet but we don't need 'em anyway
@@ -355,8 +383,11 @@ export class ServerLoader extends System {
   }
 
   destroy() {
-    // loads still waiting for a turn never start; those reading or parsing finish and write nothing
-    for (const turn of this.turns.waiting.splice(0)) turn.reject(new Error('the server loader was destroyed'))
+    // loads still waiting for a turn never start, and those reading or parsing fail now and give their turns back
+    // (their work may still finish; it writes nothing)
+    const destroyed = () => new Error('the server loader was destroyed')
+    for (const turn of this.turns.waiting.splice(0)) turn.settle(false, destroyed())
+    for (const turn of [...this.turns.active]) turn.settle(false, destroyed())
     this.promises.clear()
     this.results.clear()
     this.preloadItems = []

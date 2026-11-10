@@ -323,19 +323,101 @@ test('at most four models or emotes are read and parsed at once; the others wait
   }
   assert.equal((await Promise.all(loads)).length, 10)
   assert.ok(most <= 4, `${most} parsed at once`)
-  assert.equal(loader.turns.active, 0)
+  assert.equal(loader.turns.active.size, 0)
+})
 
-  // destroy(): loads still waiting never start; those reading finish and write nothing
-  const next = Array.from({ length: 6 }, (_, i) => loader.load('model', `asset://n${i}.gltf`))
+// parses held by the test: `parses` lists { onLoad, onError } in the order they started
+function heldParses(loader) {
+  const parses = []
+  loader.gltfLoader.parse = (data, base, onLoad, onError) => parses.push({ onLoad, onError })
+  return parses
+}
+const settled = async (promise, ticks = 5) => {
+  let state = 'pending'
+  promise.then(
+    () => (state = 'resolved'),
+    () => (state = 'rejected')
+  )
+  for (let i = 0; i < ticks; i++) await tick()
+  return state
+}
+
+test('a turn is held through the parse: a fifth read waits until one of four parses ends, in the order asked', async () => {
+  const { reads, readFile } = deferredReads()
+  const loader = makeLocalLoader(readFile)
+  const parses = heldParses(loader)
+  const loads = Array.from({ length: 7 }, (_, i) => loader.load('model', `asset://p${i}.glb`))
   await tick()
-  assert.equal(reads.length, 14)
+  assert.equal(reads.length, 4)
+  // the four reads end; their parses do not
+  for (const read of reads) read.resolve(Buffer.from('glb'))
+  for (let i = 0; i < 5; i++) await tick()
+  assert.equal(parses.length, 4, 'four parses running')
+  assert.equal(reads.length, 4, 'the fifth read has not started: parsing keeps the turn')
+  // a parse that succeeds gives its turn to the next load asked
+  parses[0].onLoad({})
+  assert.equal(await settled(loads[0]), 'resolved')
+  assert.equal(reads.length, 5)
+  assert.equal(reads[4].name, 'p4.glb')
+  // and one that fails does too
+  parses[2].onError(new Error('not a model'))
+  assert.equal(await settled(loads[2]), 'rejected')
+  await assert.rejects(loads[2], /not a model/)
+  assert.equal(reads.length, 6)
+  assert.equal(reads[5].name, 'p5.glb')
+  assert.equal(await settled(loads[1]), 'pending', 'the others are untouched')
+  assert.equal(loader.turns.active.size, 4)
+  assert.equal(loader.turns.waiting.length, 1)
   loader.destroy()
-  for (const waiting of next.slice(4)) await assert.rejects(waiting, /destroyed/)
-  for (const read of reads.slice(10)) read.resolve(Buffer.from(emptyGltf))
-  await Promise.all(next.slice(0, 4))
-  assert.equal(reads.length, 14, 'nothing else was read')
+})
+
+test('a read or a parse that never ends is given up at its deadline, and destroy() releases every turn', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { reads, readFile } = deferredReads()
+  const loader = makeLocalLoader(readFile)
+  const parses = heldParses(loader)
+  const loads = Array.from({ length: 6 }, (_, i) => loader.load('emote', `asset://s${i}.glb`))
+  await tick()
+  for (const read of reads) read.resolve(Buffer.from('glb'))
+  for (let i = 0; i < 5; i++) await tick()
+  assert.equal(parses.length, 4)
+  // four parses that never end: just before their deadline nothing has moved, at it the four loads fail
+  t.mock.timers.tick(59_999)
+  assert.equal(await settled(loads[0]), 'pending')
+  t.mock.timers.tick(1)
+  for (const load of loads.slice(0, 4)) await assert.rejects(load, /parse took longer than 60 s/)
+  for (let i = 0; i < 5; i++) await tick()
+  // their turns went to the two waiting loads, whose reads never end
+  assert.equal(reads.length, 6)
+  t.mock.timers.tick(30_000)
+  for (const load of loads.slice(4)) await assert.rejects(load, /read took longer than 30 s/)
+  assert.equal(loader.turns.active.size, 0)
+  // a parse that ends after its load was given up changes nothing
+  parses[0].onLoad({})
   assert.equal(loader.results.size, 0)
-  assert.equal(loader.turns.active, 0)
+
+  // destroy(): the loads reading or parsing fail at once and give their turns back; the waiting ones never start
+  const more = Array.from({ length: 6 }, (_, i) => loader.load('model', `asset://d${i}.glb`))
+  await tick()
+  assert.equal(reads.length, 10)
+  reads[6].resolve(Buffer.from('glb'))
+  for (let i = 0; i < 5; i++) await tick()
+  loader.destroy()
+  for (const load of more) await assert.rejects(load, /destroyed/)
+  assert.equal(loader.turns.active.size, 0)
+  assert.equal(loader.turns.waiting.length, 0)
+  for (const read of reads.slice(7)) read.resolve(Buffer.from('glb'))
+  for (let i = 0; i < 5; i++) await tick()
+  assert.equal(reads.length, 10, 'nothing else was read')
+  assert.equal(parses.length, 5, 'a read that ends after destroy() parses nothing')
+  // the loader goes on: a new load gets a turn at once
+  const after = loader.load('model', 'asset://after.glb')
+  await tick()
+  assert.equal(reads.length, 11)
+  reads[10].resolve(Buffer.from('glb'))
+  for (let i = 0; i < 5; i++) await tick()
+  parses.at(-1).onLoad({})
+  assert.ok(await after)
 })
 
 test('one resource has one cache entry whatever its spelling; a query names another one', async () => {

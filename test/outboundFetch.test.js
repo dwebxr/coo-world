@@ -1,6 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
+import net from 'node:net'
+import v8 from 'node:v8'
+import vm from 'node:vm'
 import zlib from 'node:zlib'
 
 import {
@@ -10,10 +13,15 @@ import {
   isPublicAddress,
 } from '../src/core/extras/outboundFetch.js'
 
+const unhandled = []
+process.on('unhandledRejection', err => unhandled.push(err))
+v8.setFlagsFromString('--expose-gc')
+const gc = vm.runInNewContext('gc')
+
 // a local server; `handler` gets (req, res). Connections are counted so a test can assert none was made.
-async function serve(t, handler) {
-  const state = { requests: [], connections: 0 }
-  const server = http.createServer((req, res) => {
+async function serve(t, handler, options = {}) {
+  const state = { requests: [], connections: 0, sockets: [] }
+  const server = http.createServer(options, (req, res) => {
     const chunks = []
     req.on('data', chunk => chunks.push(chunk))
     req.on('end', () => {
@@ -22,7 +30,10 @@ async function serve(t, handler) {
       handler(req, res, entry)
     })
   })
-  server.on('connection', () => state.connections++)
+  server.on('connection', socket => {
+    state.connections++
+    state.sockets.push(socket)
+  })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   t.after(() => {
     server.closeAllConnections?.()
@@ -36,6 +47,56 @@ async function serve(t, handler) {
 // production policy for everything except the one local test server
 const allowLocal = address => address === '127.0.0.1' || isPublicAddress(address)
 const code = expected => err => err instanceof OutboundError && err.code === expected
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+async function waitFor(predicate, ms, what) {
+  const until = Date.now() + ms
+  while (!predicate()) {
+    if (Date.now() > until) assert.fail(`timed out waiting for ${what}`)
+    await sleep(5)
+  }
+}
+
+// A stand-in for node:dns's Resolver. `table[host]` is a list of addresses (split into A and AAAA by family),
+// or { A, AAAA } where each is a list or an error code; a host not in the table is ENOTFOUND
+const dnsError = errorCode => Object.assign(new Error(errorCode), { code: errorCode })
+function resolverFor(table, calls = []) {
+  const reply = (host, type, callback) => {
+    calls.push(`${type} ${host}`)
+    setImmediate(() => {
+      const entry = table[host]
+      if (entry === undefined) return callback(dnsError('ENOTFOUND'))
+      const value = Array.isArray(entry)
+        ? entry.filter(address => net.isIP(address) === (type === 'A' ? 4 : 6))
+        : entry[type]
+      if (typeof value === 'string') return callback(dnsError(value))
+      if (!value || !value.length) return callback(dnsError('ENODATA'))
+      callback(null, value)
+    })
+  }
+  return () => ({
+    resolve4: (host, callback) => reply(host, 'A', callback),
+    resolve6: (host, callback) => reply(host, 'AAAA', callback),
+    cancel() {},
+  })
+}
+
+test('the budget covers what a request holds: handing the body over makes no copy of it', async t => {
+  // first in this file and after a collection, so no earlier garbage can be collected meanwhile and hide a copy
+  const size = 4 * 1024 * 1024
+  const payload = Buffer.alloc(size, 1)
+  const local = await serve(t, (req, res) => res.end(payload))
+  const fetch = createOutboundFetch({ isAllowedAddress: allowLocal, maxBytes: size, budgetBytes: size })
+  gc()
+  const before = process.memoryUsage().arrayBuffers
+  const response = await fetch(local.origin)
+  const allocated = (process.memoryUsage().arrayBuffers - before) / size
+  // the socket's reads (Node's parser copies a body out of them) and the chunks received: twice the body. An
+  // assembled copy and the Response's own copy of it came to four or five times
+  assert.ok(allocated < 3, `${allocated.toFixed(2)} times the body allocated by the time it is handed over`)
+  assert.equal((await response.arrayBuffer()).byteLength, size)
+  // charged once: the whole budget is free again after the hand-over
+  assert.equal((await (await fetch(local.origin)).arrayBuffer()).byteLength, size)
+})
 
 test('isPublicAddress: private, loopback, link-local, metadata, mapped and special ranges are not public', () => {
   for (const address of [
@@ -58,8 +119,10 @@ test('isPublicAddress: private, loopback, link-local, metadata, mapped and speci
     '::ffff:10.0.0.1',
     '::ffff:169.254.169.254',
     'fe80::1',
+    'fe80::1%lo0',
     'fc00::1',
     'fdaa:0:1::3',
+    'fec0::1',
     'ff02::1',
     '64:ff9b::7f00:1',
     '2002:7f00:1::',
@@ -69,8 +132,55 @@ test('isPublicAddress: private, loopback, link-local, metadata, mapped and speci
   ]) {
     assert.equal(isPublicAddress(address), false, address)
   }
-  for (const address of ['8.8.8.8', '1.1.1.1', '172.32.0.1', '100.128.0.1', '2606:4700:4700::1111', '::ffff:8.8.8.8']) {
+  for (const address of [
+    '8.8.8.8',
+    '1.1.1.1',
+    '172.32.0.1',
+    '100.128.0.1',
+    '2606:4700:4700::1111',
+    '2a00:1450:4001::1',
+    '2001:200::1', // just past 2001::/23
+    '3fff:1000::1', // just past 3fff::/20
+    '::ffff:8.8.8.8',
+    '::ffff:808:808',
+  ]) {
     assert.equal(isPublicAddress(address), true, address)
+  }
+})
+
+test('isPublicAddress: IPv6 is public only in global unicast outside its special ranges, in every spelling', () => {
+  // [literal, the form the WHATWG URL parser normalises it to]: both are refused
+  for (const [literal, normalized] of [
+    ['::127.0.0.1', '::7f00:1'], // IPv4-compatible
+    ['::ffff:0:127.0.0.1', '::ffff:0:7f00:1'], // IPv4-translated
+    ['::ffff:0:8.8.8.8', '::ffff:0:808:808'], // translated, whatever the IPv4 address
+    ['::8.8.8.8', '::808:808'], // compatible, whatever the IPv4 address
+    ['100:0:0:1::1', '100:0:0:1::1'], // dummy prefix
+    ['100::1', '100::1'], // discard
+    ['3fff::1', '3fff::1'], // documentation
+    ['3fff:fff::1', '3fff:fff::1'], // documentation, the end of the /20
+    ['5f00::1', '5f00::1'], // segment routing
+    ['4000::1', '4000::1'], // reserved
+    ['1::1', '1::1'], // reserved
+    ['e000::1', 'e000::1'], // reserved
+    ['::2', '::2'],
+    ['0:0:0:0:0:0:0:1', '::1'], // loopback written out
+    ['64:ff9b::127.0.0.1', '64:ff9b::7f00:1'], // NAT64
+    ['64:ff9b:1::1', '64:ff9b:1::1'], // local NAT64
+    ['2001::1', '2001::1'], // Teredo
+    ['2001:0:4136:e378:8000:63bf:3fff:fdd2', '2001:0:4136:e378:8000:63bf:3fff:fdd2'], // Teredo, written out
+    ['2001:2::1', '2001:2::1'], // benchmarking
+    ['2001:20::1', '2001:20::1'], // ORCHIDv2
+    ['2001:1ff::1', '2001:1ff::1'], // the end of 2001::/23
+    ['2001:db8:85a3::8a2e:370:7334', '2001:db8:85a3::8a2e:370:7334'], // documentation
+    ['2002:c0a8:101::1', '2002:c0a8:101::1'], // 6to4 of 192.168.1.1
+    ['2002:808:808::1', '2002:808:808::1'], // 6to4, whatever the IPv4 address
+    ['FE80::1', 'fe80::1'],
+    ['0:0:0:0:0:ffff:127.0.0.1', '::ffff:7f00:1'], // IPv4-mapped loopback
+  ]) {
+    assert.equal(new URL(`http://[${literal}]/`).hostname, `[${normalized}]`, literal)
+    assert.equal(isPublicAddress(literal), false, literal)
+    assert.equal(isPublicAddress(normalized), false, normalized)
   }
 })
 
@@ -79,17 +189,22 @@ test('with the production policy an address that is not public is refused before
   const fetch = createOutboundFetch()
   for (const url of [
     `http://127.0.0.1:${local.port}/`,
-    `http://localhost.:${local.port}/`, // resolved by the real resolver below
+    `http://localhost.:${local.port}/`, // resolved by the real resolver
     `http://2130706433:${local.port}/`, // 127.0.0.1 as one number
     `http://0x7f.0.0.1:${local.port}/`,
     `http://127.1:${local.port}/`,
     `http://[::1]:${local.port}/`,
     `http://[::ffff:127.0.0.1]:${local.port}/`,
     `http://[::ffff:7f00:1]:${local.port}/`,
+    `http://[::127.0.0.1]:${local.port}/`,
+    `http://[::ffff:0:127.0.0.1]:${local.port}/`,
+    `http://[64:ff9b::127.0.0.1]:${local.port}/`,
     'http://169.254.169.254/latest/meta-data/',
     'http://10.0.0.1/',
     'http://[fdaa::3]/',
     'http://0.0.0.0/',
+    'http://[3fff::1]/',
+    'http://[4000::1]/',
   ]) {
     await assert.rejects(
       fetch(url),
@@ -102,41 +217,68 @@ test('with the production policy an address that is not public is refused before
 
 test('a name is refused when any of its addresses is not public, and the answer that was checked is the one used', async t => {
   const local = await serve(t, (req, res) => res.end('ok'))
-  const answers = {
-    'mixed.test': [
-      { address: '8.8.8.8', family: 4 },
-      { address: '127.0.0.1', family: 4 },
-    ],
-    'private.test': [{ address: '10.1.2.3', family: 4 }],
-    'mapped.test': [{ address: '::ffff:127.0.0.1', family: 6 }],
-    'empty.test': [],
-  }
-  const lookups = []
-  const lookup = (host, options, callback) => {
-    lookups.push(host)
-    if (host === 'gone.test') return callback(Object.assign(new Error('nope'), { code: 'ENOTFOUND' }))
-    callback(null, answers[host])
-  }
-  const fetch = createOutboundFetch({ lookup })
-  for (const host of ['mixed.test', 'private.test', 'mapped.test']) {
+  const calls = []
+  const resolver = resolverFor(
+    {
+      'mixed.test': ['8.8.8.8', '127.0.0.1'],
+      'mixed6.test': { A: ['8.8.8.8'], AAAA: ['fd00::1'] },
+      'private.test': ['10.1.2.3'],
+      'mapped.test': { A: 'ENODATA', AAAA: ['::ffff:127.0.0.1'] },
+      'compatible.test': { A: 'ENODATA', AAAA: ['::7f00:1'] },
+      'empty.test': { A: 'ENODATA', AAAA: 'ENODATA' },
+      'broken.test': { A: 'ESERVFAIL', AAAA: 'ENODATA' },
+    },
+    calls
+  )
+  const fetch = createOutboundFetch({ resolver })
+  for (const host of ['mixed.test', 'mixed6.test', 'private.test', 'mapped.test', 'compatible.test']) {
     await assert.rejects(fetch(`http://${host}:${local.port}/`), code('address'), host)
   }
-  await assert.rejects(fetch(`http://empty.test:${local.port}/`), code('dns'))
-  await assert.rejects(fetch(`http://gone.test:${local.port}/`), code('dns'))
+  await assert.rejects(
+    fetch(`http://empty.test:${local.port}/`),
+    err => code('dns')(err) && /no address/.test(err.message)
+  )
+  await assert.rejects(
+    fetch(`http://gone.test:${local.port}/`),
+    err => code('dns')(err) && /ENOTFOUND/.test(err.message)
+  )
+  await assert.rejects(
+    fetch(`http://broken.test:${local.port}/`),
+    err => code('dns')(err) && /ESERVFAIL/.test(err.message)
+  )
   assert.equal(local.connections, 0)
+  // both families are asked for every name
+  assert.deepEqual(calls.slice(0, 2).sort(), ['A mixed.test', 'AAAA mixed.test'])
 
   // rebinding: the resolver answers a public address first and a private one afterwards. The name is resolved
   // once, and the connection goes to the address that passed the check
-  let calls = 0
-  const rebinding = (host, options, callback) => {
-    calls++
-    callback(null, [{ address: calls === 1 ? '127.0.0.1' : '10.9.9.9', family: 4 }])
+  let resolutions = 0
+  const rebinding = () => {
+    resolutions++
+    return resolverFor({ 'rebind.test': [resolutions === 1 ? '127.0.0.1' : '10.9.9.9'] })()
   }
-  const pinned = createOutboundFetch({ lookup: rebinding, isAllowedAddress: allowLocal })
+  const pinned = createOutboundFetch({ resolver: rebinding, isAllowedAddress: allowLocal })
   const response = await pinned(`http://rebind.test:${local.port}/x`)
   assert.equal(await response.text(), 'ok')
-  assert.equal(calls, 1)
+  assert.equal(resolutions, 1)
   assert.equal(local.requests[0].headers.host, `rebind.test:${local.port}`)
+
+  // the first IPv4 answer is used when there is one; a family that fails or has no data leaves the other one
+  const connected = []
+  const record = address => {
+    connected.push(address)
+    return address === '127.0.0.1' || address === '::1'
+  }
+  const both = createOutboundFetch({
+    resolver: resolverFor({
+      'both.test': ['::1', '127.0.0.1'],
+      'v4.test': { A: ['127.0.0.1'], AAAA: 'ETIMEOUT' },
+    }),
+    isAllowedAddress: record,
+  })
+  assert.equal(await (await both(`http://both.test:${local.port}/`)).text(), 'ok')
+  assert.equal(connected.at(-1), '127.0.0.1', 'the socket check saw the IPv4 address')
+  assert.equal(await (await both(`http://v4.test:${local.port}/`)).text(), 'ok')
 })
 
 test('only http and https, no credentials in the URL, known methods', async () => {
@@ -148,6 +290,7 @@ test('only http and https, no credentials in the URL, known methods', async () =
   await assert.rejects(fetch('http://user:pass@8.8.8.8/'), code('url'))
   await assert.rejects(fetch('http://8.8.8.8/', { method: 'CONNECT' }), code('method'))
   await assert.rejects(fetch('http://8.8.8.8/', { method: 'TRACE' }), code('method'))
+  await assert.rejects(fetch('http://8.8.8.8/', { method: 5 }), code('method'))
 })
 
 test('a request reaches a permitted server with its method, headers and body, and the response is a standard Response', async t => {
@@ -158,7 +301,7 @@ test('a request reaches a permitted server with its method, headers and body, an
   const fetch = createOutboundFetch({ isAllowedAddress: allowLocal })
   const response = await fetch(`${local.origin}/path?q=1`, {
     method: 'post',
-    headers: { 'X-Custom': 'yes', Host: 'evil.example', 'Content-Length': '999', Connection: 'upgrade', skipped: 5 },
+    headers: { 'X-Custom': 'yes', Host: 'evil.example', 'Content-Length': '999', Connection: 'upgrade' },
     body: 'hello',
   })
   assert.equal(response instanceof Response, true)
@@ -171,12 +314,161 @@ test('a request reaches a permitted server with its method, headers and body, an
   assert.equal(sent.url, '/path?q=1')
   assert.equal(sent.headers['content-length'], '5')
   assert.equal(sent.headers['accept-encoding'], 'gzip, deflate')
-  assert.equal(sent.headers.skipped, undefined)
-  // typed arrays, ArrayBuffers and Blobs are accepted as bodies
-  for (const body of [new Uint8Array([104, 105]), new Uint8Array([104, 105]).buffer, new Blob(['hi'])]) {
+  // typed arrays, DataViews, ArrayBuffers and Blobs are accepted as bodies
+  const bytes = new Uint8Array([0, 104, 105, 0])
+  for (const body of [
+    new Uint8Array([104, 105]),
+    new Uint8Array([104, 105]).buffer,
+    bytes.subarray(1, 3),
+    new DataView(bytes.buffer, 1, 2),
+    new Blob(['hi']),
+  ]) {
     assert.equal((await (await fetch(local.origin, { method: 'PUT', body })).json()).body, 'hi')
   }
-  await assert.rejects(fetch(local.origin, { method: 'POST', body: { not: 'bytes' } }), code('body'))
+})
+
+test('request options as fetch has them: redirect modes, the inferred Content-Type, OPTIONS; anything else is refused', async t => {
+  const local = await serve(t, (req, res, entry) => {
+    if (req.url === '/moved') return res.writeHead(302, { location: '/final' }).end('moved here')
+    res.end(JSON.stringify({ url: req.url, method: entry.method, type: entry.headers['content-type'] || null }))
+  })
+  const fetch = createOutboundFetch({ isAllowedAddress: allowLocal })
+  const json = async (path, init) => (await fetch(`${local.origin}${path}`, init)).json()
+
+  // follow (the default) follows; manual hands the redirect back as received; error rejects
+  assert.equal((await json('/moved')).url, '/final')
+  assert.equal((await json('/moved', { redirect: 'follow' })).url, '/final')
+  const requests = local.requests.length
+  const manual = await fetch(`${local.origin}/moved`, { redirect: 'manual' })
+  assert.equal(manual.status, 302)
+  assert.equal(manual.headers.get('location'), '/final')
+  assert.equal(await manual.text(), 'moved here')
+  await assert.rejects(fetch(`${local.origin}/moved`, { redirect: 'error' }), code('redirect'))
+  assert.equal(local.requests.length, requests + 2, 'neither followed the redirect')
+
+  // Content-Type as fetch infers it, unless the caller set one
+  assert.equal((await json('/', { method: 'POST', body: 'text' })).type, 'text/plain;charset=UTF-8')
+  assert.equal(
+    (await json('/', { method: 'POST', body: new Blob(['{}'], { type: 'application/json' }) })).type,
+    'application/json'
+  )
+  assert.equal((await json('/', { method: 'POST', body: new Blob(['x']) })).type, null)
+  assert.equal((await json('/', { method: 'POST', body: new Uint8Array([1]) })).type, null)
+  assert.equal(
+    (await json('/', { method: 'POST', body: 'x', headers: { 'Content-Type': 'application/x-thing' } })).type,
+    'application/x-thing'
+  )
+
+  // OPTIONS is a method; mode, credentials and cache mean nothing on the server and are ignored
+  assert.equal((await json('/', { method: 'OPTIONS' })).method, 'OPTIONS')
+  assert.equal((await json('/', { mode: 'cors', credentials: 'include', cache: 'no-store' })).method, 'GET')
+  assert.equal((await json('/', { keepalive: undefined })).method, 'GET')
+
+  for (const init of [
+    { redirect: 'bogus' },
+    { keepalive: true },
+    { integrity: 'sha256-x' },
+    { referrer: 'https://example.com/' },
+    { signal: {} },
+    { duplex: 'half' },
+  ]) {
+    await assert.rejects(fetch(local.origin, init), code('option'), JSON.stringify(init))
+  }
+  await assert.rejects(fetch(local.origin, 'not options'), code('option'))
+  await assert.rejects(fetch(local.origin, { body: 'x' }), code('body'), 'GET with a body')
+  await assert.rejects(fetch(local.origin, { method: 'HEAD', body: 'x' }), code('body'))
+})
+
+test('headers are validated and bounded before anything is sent; a bad one is a clear refusal, not a timeout', async t => {
+  const local = await serve(t, (req, res, entry) => res.end(JSON.stringify(entry.headers)))
+  const fetch = createOutboundFetch({ isAllowedAddress: allowLocal, timeoutMs: 5000 })
+  const many = Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`x-h${i}`, 'v']))
+  for (const headers of [
+    { 'x-bad': 'a\nb' },
+    { 'x-bad': 'a\rb' },
+    { 'x-bad': 'a\u0000b' },
+    { 'x-bad': 'café☃' },
+    { 'bad name': 'v' },
+    { 'x-number': 5 },
+    many,
+    { 'x-large': 'v'.repeat(16 * 1024) },
+    'x-not: headers',
+  ]) {
+    const started = Date.now()
+    await assert.rejects(fetch(local.origin, { headers }), code('header'), JSON.stringify(headers).slice(0, 40))
+    assert.ok(Date.now() - started < 1000, 'refused at once')
+  }
+  assert.equal(local.connections, 0)
+  // 64 headers fit; values are trimmed as fetch trims them, and names that differ in case are combined
+  const sixtyFour = Object.fromEntries(Array.from({ length: 64 }, (_, i) => [`x-h${i}`, 'v']))
+  assert.equal((await (await fetch(local.origin, { headers: sixtyFour })).json())['x-h63'], 'v')
+  const seen = await (
+    await fetch(local.origin, { headers: { 'X-A': ' one \t', 'x-a': 'two', 'x-trailing': 'value\r\n' } })
+  ).json()
+  assert.equal(seen['x-a'], 'one, two')
+  assert.equal(seen['x-trailing'], 'value')
+  // a Headers object and [name, value] pairs work as they do with fetch
+  assert.equal((await (await fetch(local.origin, { headers: new Headers({ 'x-b': '1' }) })).json())['x-b'], '1')
+  assert.equal((await (await fetch(local.origin, { headers: [['x-c', '2']] })).json())['x-c'], '2')
+  await sleep(20)
+  assert.deepEqual(unhandled, [])
+})
+
+test('a request body is admitted, sized and read under the deadline; only the listed types are accepted', async t => {
+  const local = await serve(t, (req, res, entry) => res.end(entry.body))
+  const fetch = createOutboundFetch({
+    isAllowedAddress: allowLocal,
+    maxRequestBytes: 10,
+    concurrency: 1,
+    timeoutMs: 150,
+  })
+  // sizes are checked before a body is converted: a string by its UTF-8 length, a Blob before it is read
+  await assert.rejects(fetch(local.origin, { method: 'POST', body: 'x'.repeat(11) }), code('too_large'))
+  await assert.rejects(fetch(local.origin, { method: 'POST', body: 'é'.repeat(6) }), code('too_large'))
+  await assert.rejects(fetch(local.origin, { method: 'POST', body: new Uint8Array(11) }), code('too_large'))
+  let reads = 0
+  class CountingBlob extends Blob {
+    arrayBuffer() {
+      reads++
+      return super.arrayBuffer()
+    }
+  }
+  await assert.rejects(
+    fetch(local.origin, { method: 'POST', body: new CountingBlob(['x'.repeat(11)]) }),
+    code('too_large')
+  )
+  assert.equal(reads, 0, 'the Blob was not read')
+  assert.equal(
+    await (await fetch(local.origin, { method: 'POST', body: new CountingBlob(['0123456789']) })).text(),
+    '0123456789'
+  )
+  for (const body of [{ not: 'bytes' }, new URLSearchParams('a=b'), { arrayBuffer: async () => new ArrayBuffer(1) }]) {
+    await assert.rejects(fetch(local.origin, { method: 'POST', body }), code('body'))
+  }
+  assert.equal(local.connections, 1)
+
+  // a body that never finishes reading holds the request's slot, and the deadline and the caller's abort end it
+  class StuckBlob extends Blob {
+    arrayBuffer() {
+      return new Promise(() => {})
+    }
+  }
+  const started = Date.now()
+  const stuck = fetch(local.origin, { method: 'POST', body: new StuckBlob(['x']) })
+  await assert.rejects(fetch(local.origin), code('busy'), 'the stuck request holds the only slot')
+  await assert.rejects(stuck, code('timeout'))
+  assert.ok(Date.now() - started < 1000)
+  const controller = new AbortController()
+  const aborted = fetch(local.origin, { method: 'POST', body: new StuckBlob(['x']), signal: controller.signal })
+  controller.abort()
+  await assert.rejects(aborted, code('aborted'))
+  const preAborted = AbortSignal.abort()
+  await assert.rejects(
+    fetch(local.origin, { method: 'POST', body: new StuckBlob(['x']), signal: preAborted }),
+    code('aborted')
+  )
+  // every slot came back
+  assert.equal(await (await fetch(local.origin, { method: 'POST', body: 'ok' })).text(), 'ok')
 })
 
 test('gzip and deflate are decoded; Brotli and unknown encodings are refused', async t => {
@@ -187,17 +479,42 @@ test('gzip and deflate are decoded; Brotli and unknown encodings are refused', a
     if (kind === 'deflate') return res.writeHead(200, { 'content-encoding': 'deflate' }).end(zlib.deflateSync(text))
     if (kind === 'br') return res.writeHead(200, { 'content-encoding': 'br' }).end(zlib.brotliCompressSync(text))
     if (kind === 'bad') return res.writeHead(200, { 'content-encoding': 'gzip' }).end('not gzip')
+    if (kind === 'plain') return res.writeHead(200, { 'content-length': '1000' }).end(text)
     res.writeHead(200, { 'content-encoding': 'zstd' }).end(text)
   })
   const fetch = createOutboundFetch({ isAllowedAddress: allowLocal })
   for (const kind of ['gzip', 'deflate']) {
     const response = await fetch(`${local.origin}/${kind}`)
     assert.equal((await response.text()).length, 1000)
+    // the body is handed over decoded: its transfer's encoding and length no longer apply
     assert.equal(response.headers.get('content-encoding'), null)
+    assert.equal(response.headers.get('content-length'), null)
   }
+  assert.equal((await fetch(`${local.origin}/plain`)).headers.get('content-length'), '1000')
   await assert.rejects(fetch(`${local.origin}/br`), code('encoding'))
   await assert.rejects(fetch(`${local.origin}/zstd`), code('encoding'))
   await assert.rejects(fetch(`${local.origin}/bad`), code('network'))
+})
+
+test('a response without a body is not decoded, whatever its Content-Encoding says', async t => {
+  const local = await serve(t, (req, res) => {
+    const status = Number(req.url.slice(1)) || 200
+    res.writeHead(status, { 'content-encoding': 'gzip', 'content-length': status === 200 ? '20' : '0', etag: '"v1"' })
+    res.end()
+  })
+  const fetch = createOutboundFetch({ isAllowedAddress: allowLocal })
+  const head = await fetch(`${local.origin}/`, { method: 'HEAD' })
+  assert.equal(head.status, 200)
+  assert.equal(await head.text(), '')
+  // the headers describe the representation and stay as received
+  assert.equal(head.headers.get('content-encoding'), 'gzip')
+  assert.equal(head.headers.get('content-length'), '20')
+  for (const status of [204, 205, 304]) {
+    const response = await fetch(`${local.origin}/${status}`)
+    assert.equal(response.status, status)
+    assert.equal(await response.text(), '')
+    assert.equal(response.headers.get('etag'), '"v1"')
+  }
 })
 
 test('the decoded body is capped: a large response and a compression bomb both stop at the limit', async t => {
@@ -251,28 +568,174 @@ test('one deadline covers connecting, redirects and the body; a caller can abort
   await assert.rejects(fetch(`${local.origin}/ok`, { signal: controller.signal }), code('aborted'))
 })
 
+test('the deadline covers a connection that never completes its handshake', async t => {
+  // accepts TCP and never answers TLS: the request is never even sent
+  const closed = []
+  const server = net.createServer(socket => {
+    socket.resume() // reads the ClientHello, so the client's close is seen
+    socket.on('close', () => closed.push(Date.now()))
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  const { port } = server.address()
+  const fetch = createOutboundFetch({
+    resolver: resolverFor({ 'stall.test': ['127.0.0.1'] }),
+    isAllowedAddress: allowLocal,
+    timeoutMs: 200,
+  })
+  const started = Date.now()
+  await assert.rejects(fetch(`https://stall.test:${port}/`), code('timeout'))
+  assert.ok(Date.now() - started < 1500, 'ended near its deadline')
+  await waitFor(() => closed.length === 1, 1000, 'the stalled connection to close')
+})
+
+test('the deadline covers resolving the name: a slow answer is cancelled, and its slot comes back only once it has ended', async () => {
+  let outstanding = 0
+  let cancels = 0
+  const resolver = () => {
+    const queries = []
+    const query = (host, callback) => {
+      outstanding++
+      queries.push(callback)
+    }
+    return {
+      resolve4: query,
+      resolve6: query,
+      cancel() {
+        cancels++
+        // c-ares answers a cancel with ECANCELLED for every query, a little later
+        setTimeout(() => {
+          for (const callback of queries.splice(0)) {
+            outstanding--
+            callback(dnsError('ECANCELLED'))
+          }
+        }, 100)
+      },
+    }
+  }
+  const fetch = createOutboundFetch({ resolver, concurrency: 1, timeoutMs: 100 })
+  const started = Date.now()
+  await assert.rejects(fetch('http://slow.test/'), code('timeout'))
+  assert.ok(Date.now() - started < 1000, 'the caller hears of the timeout at the deadline')
+  assert.equal(cancels, 1)
+  assert.equal(outstanding, 2)
+  // the queries are still running: the request still holds its slot
+  await assert.rejects(fetch('http://10.0.0.1/'), code('busy'))
+  await waitFor(() => outstanding === 0, 1000, 'the cancelled queries to end')
+  await sleep(0)
+  // admitted again (and refused for its own reason)
+  await assert.rejects(fetch('http://10.0.0.1/'), code('address'))
+
+  // repeated timeouts and aborts leave nothing running behind them
+  for (let i = 0; i < 5; i++) {
+    await assert.rejects(fetch(`http://slow-${i}.test/`), code('timeout'))
+    await waitFor(() => outstanding === 0, 1000, 'the queries to end')
+    await sleep(0)
+  }
+  const controller = new AbortController()
+  const aborted = fetch('http://slow.test/', { signal: controller.signal })
+  await waitFor(() => outstanding === 2, 1000, 'the queries to start')
+  controller.abort()
+  await assert.rejects(aborted, code('aborted'))
+  await waitFor(() => outstanding === 0, 1000, 'the aborted queries to end')
+  assert.equal(cancels, 7)
+})
+
+test('the connected address is checked again before anything is sent', async t => {
+  const local = await serve(t, (req, res) => res.end('reached'))
+  // the answer passes and the connection does not: it stands for a destination that changed in between
+  let checks = 0
+  const isAllowedAddress = address => address === '127.0.0.1' && ++checks === 1
+  const fetch = createOutboundFetch({ resolver: resolverFor({ 'pinned.test': ['127.0.0.1'] }), isAllowedAddress })
+  await assert.rejects(
+    fetch(`http://pinned.test:${local.port}/`),
+    err => code('address')(err) && /connected to an address/.test(err.message)
+  )
+  assert.equal(checks, 2)
+  await waitFor(() => local.connections === 1, 1000, 'the server to see the connection')
+  await sleep(50)
+  assert.equal(local.requests.length, 0, 'no request was written to the connection')
+
+  // a check that throws ends the request at once instead of escaping as an exception
+  const throwing = createOutboundFetch({
+    resolver: resolverFor({ 'pinned.test': ['127.0.0.1'] }),
+    isAllowedAddress: () => {
+      if (++checks > 3) throw new Error('broken policy')
+      return true
+    },
+    timeoutMs: 5000,
+  })
+  const started = Date.now()
+  await assert.rejects(throwing(`http://pinned.test:${local.port}/`), code('network'))
+  assert.ok(Date.now() - started < 1000)
+})
+
+test('every request has a connection of its own', async t => {
+  const local = await serve(t, (req, res) => res.end('ok'), { keepAlive: true, keepAliveTimeout: 5000 })
+  const fetch = createOutboundFetch({ isAllowedAddress: allowLocal })
+  for (let i = 0; i < 3; i++) assert.equal(await (await fetch(local.origin)).text(), 'ok')
+  assert.equal(local.connections, 3)
+  assert.ok(local.requests.every(request => request.headers.connection === 'close'))
+  await waitFor(() => local.sockets.every(socket => socket.destroyed), 1000, 'the connections to close')
+})
+
+test('a redirect that is followed is not read: its connection closes at once, whatever its body', async t => {
+  const redirects = {}
+  const local = await serve(t, (req, res) => {
+    if (req.url === '/endless' || req.url === '/large') {
+      // a redirect whose body never ends, and one whose body is far larger than maxBytes
+      const length = req.url === '/large' ? { 'content-length': String(256 * 1024 * 1024) } : {}
+      res.writeHead(302, { location: '/final', ...length })
+      const state = { sent: 0, closed: false }
+      redirects[req.url] = state
+      const chunk = Buffer.alloc(64 * 1024)
+      const pump = () => {
+        while (!res.destroyed && res.write(chunk, err => err || (state.sent += chunk.length)));
+      }
+      res.on('drain', pump)
+      res.on('close', () => (state.closed = true))
+      return pump()
+    }
+    res.end('final')
+  })
+  const maxBytes = 4 * 1024 * 1024
+  const fetch = createOutboundFetch({ isAllowedAddress: allowLocal, maxBytes, budgetBytes: maxBytes, timeoutMs: 5000 })
+  for (const path of ['/endless', '/large']) {
+    assert.equal(await (await fetch(`${local.origin}${path}`)).text(), 'final', path)
+    await waitFor(() => redirects[path].closed, 1000, `the ${path} redirect's connection to close`)
+    assert.ok(redirects[path].sent < maxBytes, `${path}: ${redirects[path].sent} bytes left the server`)
+  }
+})
+
 test('redirects are followed here, hop by hop through the same checks', async t => {
   const other = await serve(t, (req, res, entry) => res.end(JSON.stringify({ at: 'other', headers: entry.headers })))
   const local = await serve(t, (req, res, entry) => {
     const [path, arg] = req.url.slice(1).split('?')
     if (path === 'to-private') return res.writeHead(302, { location: 'http://10.0.0.1/secret' }).end()
     if (path === 'to-metadata') return res.writeHead(307, { location: 'http://169.254.169.254/latest/' }).end()
+    if (path === 'to-compatible') return res.writeHead(307, { location: 'http://[::127.0.0.1]/' }).end()
     if (path === 'to-file') return res.writeHead(302, { location: 'file:///etc/passwd' }).end()
     if (path === 'to-other') return res.writeHead(302, { location: `http://localhost:${other.port}/landed` }).end()
     if (path === 'loop') return res.writeHead(302, { location: `/loop?${Number(arg || 0) + 1}` }).end()
     if (path === 'see-other') return res.writeHead(303, { location: '/final' }).end()
     if (path === 'keep') return res.writeHead(307, { location: '/final' }).end()
     if (path === 'bad') return res.writeHead(302, { location: 'http://[' }).end()
+    if (path === 'nowhere') return res.writeHead(302).end('no location')
     res.end(JSON.stringify({ method: entry.method, body: entry.body, type: entry.headers['content-type'] || null }))
   })
-  const lookup = (host, options, callback) => callback(null, [{ address: '127.0.0.1', family: 4 }])
-  const fetch = createOutboundFetch({ isAllowedAddress: allowLocal, lookup, maxRedirects: 3 })
+  const resolver = resolverFor({ localhost: ['127.0.0.1'] })
+  const fetch = createOutboundFetch({ isAllowedAddress: allowLocal, resolver, maxRedirects: 3 })
   await assert.rejects(fetch(`${local.origin}/to-private`), code('address'))
   await assert.rejects(fetch(`${local.origin}/to-metadata`), code('address'))
+  await assert.rejects(fetch(`${local.origin}/to-compatible`), code('address'))
   await assert.rejects(fetch(`${local.origin}/to-file`), code('scheme'))
   await assert.rejects(fetch(`${local.origin}/bad`), code('url'))
   await assert.rejects(fetch(`${local.origin}/loop`), code('redirects'))
   assert.equal(local.requests.filter(r => r.url.startsWith('/loop')).length, 4) // the first and three redirects
+  // a redirect status without a Location is the response
+  const nowhere = await fetch(`${local.origin}/nowhere`)
+  assert.equal(nowhere.status, 302)
+  assert.equal(await nowhere.text(), 'no location')
   // 303 turns a POST into a GET without its body; 307 keeps both
   const init = { method: 'POST', body: 'data', headers: { 'content-type': 'text/plain' } }
   assert.deepEqual(await (await fetch(`${local.origin}/see-other`, init)).json(), {
@@ -308,17 +771,18 @@ test('concurrency: a cap for all callers and one per key; over it a request is r
   const b1 = fetch(local.origin, {}, { key: 'b' })
   await assert.rejects(fetch(local.origin, {}, { key: 'c' }), code('busy'))
   await assert.rejects(fetch(local.origin), code('busy'))
-  while (waiting.length < 3) await new Promise(resolve => setTimeout(resolve, 5))
+  while (waiting.length < 3) await sleep(5)
   for (const res of waiting) res.end('done')
   assert.deepEqual(await Promise.all([a1, a2, b1].map(async p => (await p).text())), ['done', 'done', 'done'])
   // every slot is free again, also after failures
   await assert.rejects(fetch('http://10.0.0.1/', {}, { key: 'a' }), code('address'))
+  await assert.rejects(fetch(local.origin, { headers: { 'x-bad': 'a\nb' } }, { key: 'a' }), code('header'))
   const again = [
     fetch(local.origin, {}, { key: 'a' }),
     fetch(local.origin, {}, { key: 'a' }),
     fetch(local.origin, {}, { key: 'b' }),
   ]
-  while (waiting.length < 6) await new Promise(resolve => setTimeout(resolve, 5))
+  while (waiting.length < 6) await sleep(5)
   for (const res of waiting.slice(3)) res.end('again')
   assert.deepEqual(await Promise.all(again.map(async p => (await p).text())), ['again', 'again', 'again'])
 })
@@ -332,14 +796,14 @@ test('all responses in flight share one memory budget', async t => {
   })
   const fetch = createOutboundFetch({ isAllowedAddress: allowLocal, maxBytes: 80_000, budgetBytes: 100_000 })
   const first = fetch(local.origin)
-  while (waiting.length < 1) await new Promise(resolve => setTimeout(resolve, 5))
+  while (waiting.length < 1) await sleep(5)
   // the second response's 60,000 bytes do not fit next to the first's
   await assert.rejects(fetch(local.origin), code('busy'))
   waiting[0].end()
   assert.equal((await (await first).arrayBuffer()).byteLength, 60_000)
   // released: the same request fits now
   const third = fetch(local.origin)
-  while (waiting.length < 3) await new Promise(resolve => setTimeout(resolve, 5))
+  while (waiting.length < 3) await sleep(5)
   waiting[2].end()
   assert.equal((await (await third).arrayBuffer()).byteLength, 60_000)
 })
@@ -379,4 +843,6 @@ test('responses without a body, error statuses and a dropped connection', async 
   assert.equal(await head.text(), '')
   await assert.rejects(fetch(`${local.origin}/drop`), code('network'))
   await assert.rejects(fetch(`${local.origin}/cut`), code('network'))
+  await sleep(20)
+  assert.deepEqual(unhandled, [])
 })

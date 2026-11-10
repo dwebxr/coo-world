@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import zlib from 'node:zlib'
 import Fastify from 'fastify'
 import { bundleServer } from './lib/serverBundle.mjs'
 import { isTempName, removeTempFiles, writeFileAtomic } from '../src/server/atomicWrite.js'
@@ -282,8 +283,13 @@ function fakeS3() {
       commands.push({ name, input: command.input })
       if (name === 'GetObjectCommand') {
         if (!objects.has(command.input.Key)) throw Object.assign(new Error('missing'), { name: 'NoSuchKey' })
-        const text = objects.get(command.input.Key)
-        return { Body: { transformToString: async () => text } }
+        // an object is its text, or { body, encoding } as stored with a Content-Encoding
+        const object = objects.get(command.input.Key)
+        const body = typeof object === 'string' ? Buffer.from(object) : object.body
+        return {
+          Body: { transformToByteArray: async () => new Uint8Array(body) },
+          ContentEncoding: typeof object === 'string' ? undefined : object.encoding,
+        }
       }
       if (name === 'HeadObjectCommand') {
         if (!objects.has(command.input.Key)) throw Object.assign(new Error('missing'), { name: 'NotFound' })
@@ -382,6 +388,24 @@ test('s3 assets: readText reads an object, null when it does not exist', async t
   assert.equal(await assets.readText('app.js'), 'asset://a.glb')
   assert.equal(await assets.readText('missing.js'), null)
   await assert.rejects(assets.readText('../x'), /invalid asset name/)
+})
+
+// Codex: an object stored with Content-Encoding: gzip is decoded by the HTTP path that runs it, but readText gave the
+// clean-up the compressed bytes, so the models it names were deleted
+test('s3 assets: readText undoes a stored gzip or deflate encoding; any other, or one that does not decode, throws', async t => {
+  const { assets, objects } = s3(t)
+  const source = "world.load('model', 'asset://zipped.glb')"
+  objects.set('world/gz.js', { body: zlib.gzipSync(source), encoding: 'gzip' })
+  objects.set('world/df.js', { body: zlib.deflateSync(source), encoding: 'deflate' })
+  objects.set('world/raw.js', { body: zlib.deflateRawSync(source), encoding: 'Deflate' })
+  objects.set('world/two.js', { body: zlib.gzipSync(zlib.deflateSync(source)), encoding: 'deflate, gzip' })
+  objects.set('world/id.js', { body: Buffer.from(source), encoding: 'identity' })
+  for (const name of ['gz.js', 'df.js', 'raw.js', 'two.js', 'id.js'])
+    assert.equal(await assets.readText(name), source, name)
+  objects.set('world/br.js', { body: zlib.brotliCompressSync(source), encoding: 'br' })
+  await assert.rejects(assets.readText('br.js'), { code: 'ENCODING' })
+  objects.set('world/bad.js', { body: Buffer.from('not gzip'), encoding: 'gzip' })
+  await assert.rejects(assets.readText('bad.js'), { code: 'Z_DATA_ERROR' })
 })
 
 test('s3 assets: only a definite missing key is "no such script"; any other failure is thrown to the cleaner', async t => {

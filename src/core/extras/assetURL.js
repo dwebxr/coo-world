@@ -49,34 +49,36 @@ export function isAbsoluteHttpURL(value) {
   }
 }
 
+// a `.` or `..` path segment, with either separator the URL parser accepts for http(s)
+const DOT_SEGMENT = /(?:^|[/\\])\.{1,2}(?:[/\\]|$)/
+
 // Where a blueprint's script comes from, as far as the server can know it for certain (the start-up clean-up):
-// - { source: 'none' }: no script (not a string, empty once trimmed) or a URL whose scheme parses as blob: (a
-//   browser tab's own object, which nobody else can load);
+// - { source: 'none' }: no script: not a string, empty once trimmed, or a value starting with a lower-case `blob:`,
+//   which resolveReference leaves as it is (what URL.createObjectURL returns: a browser tab's own object, which
+//   nobody else can load). `Blob:x` or `blob/x` is not one: the runtime turns them into a request elsewhere;
 // - { source: 'store', name }: a file of the asset store, only when the reference (trimmed, as the loaders take it)
-//   is the canonical asset://<name> or an absolute URL directly under the absolute assets URL `assetsUrl` (one valid
-//   name, no ?query, #hash or percent-encoding);
+//   is the canonical asset://<name>, or an absolute http(s) URL whose normalised form is directly under the
+//   absolute assets URL `assetsUrl` and whose own text has no `?`, `#`, `%` or dot segment (so the file the server
+//   reads by that name is the one requested);
 // - { source: 'unknown' }: anything else. Another origin; a page path such as /assets/x.js or blob/../assets/x.js,
 //   which lands wherever the page is served from (a proxy can put another application there); a query, an encoded
-//   name or a `..`; a string that does not parse. The source that runs cannot be read for certain.
+//   name or a dot segment; a string the URL parser refuses. The source that runs cannot be read for certain.
 export function scriptSource(value, assetsUrl) {
   const ref = loaderReference(value)
   if (typeof ref !== 'string' || !ref) return { source: 'none' }
+  if (ref.startsWith('blob:')) return { source: 'none' }
   const canonical = assetName(ref)
   if (canonical) return { source: 'store', name: canonical }
+  if (!isAbsoluteHttpURL(assetsUrl) || /[?#%]/.test(ref) || DOT_SEGMENT.test(ref)) return { source: 'unknown' }
   let url
   try {
     url = new URL(ref)
   } catch {
     return { source: 'unknown' }
   }
-  if (url.protocol === 'blob:') return { source: 'none' }
-  if (!isAbsoluteHttpURL(assetsUrl) || (url.protocol !== 'http:' && url.protocol !== 'https:')) {
-    return { source: 'unknown' }
-  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return { source: 'unknown' }
   const root = new URL(assetsUrl.endsWith('/') ? assetsUrl : `${assetsUrl}/`)
-  if (url.origin !== root.origin || !url.pathname.startsWith(root.pathname) || url.search || url.hash) {
-    return { source: 'unknown' }
-  }
+  if (url.origin !== root.origin || !url.pathname.startsWith(root.pathname)) return { source: 'unknown' }
   const name = assetName(ASSET_PROTOCOL + url.pathname.slice(root.pathname.length))
   return name ? { source: 'store', name } : { source: 'unknown' }
 }

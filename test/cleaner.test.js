@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { load, appData } from './lib/persistenceHarness.mjs'
+import { loaderReference, resolveReference, scriptSource } from '../src/core/extras/assetURL.js'
 
 const row = data => ({ id: data.id, data: JSON.stringify(data) })
 
@@ -167,7 +168,7 @@ test('cleaner: a storage.json that cannot be read or parsed deletes nothing; a q
   fs.writeFileSync(f.storageFile, '{"half":')
   await f.run()
   assert.deepEqual(f.deleted, [])
-  assert.deepEqual(f.warnings, ['[clean] skipped all deletion: could not read ["storage.json does not parse"]'])
+  assert.deepEqual(f.warnings, ['[clean] skipped all deletion: could not read ["storage.json does not parse as JSON"]'])
   // Storage moves such a file aside at start-up: its text is still scanned
   fs.renameSync(f.storageFile, `${f.storageFile}.corrupt-2026-11-10T00-00-00-000Z`)
   fs.appendFileSync(`${f.storageFile}.corrupt-2026-11-10T00-00-00-000Z`, '"asset://quarantined.glb"')
@@ -202,19 +203,13 @@ test('cleaner: asset:// literals in the scripts of kept blueprints count as refe
   ])
 })
 
-test('cleaner: a script that cannot be read deletes nothing; a missing one names nothing', async t => {
+test('cleaner: a script that cannot be read deletes nothing', async t => {
   const f = fixture(t)
   f.tables.blueprints[0] = row({ id: 'bp', version: 0, model: 'asset://used.glb', script: 'asset://app.js' })
   f.scripts.set('app.js', Object.assign(new Error('denied'), { code: 'EACCES' }))
   await f.run()
   assert.deepEqual(f.deleted, [])
   assert.deepEqual(f.warnings, ['[clean] skipped all deletion: could not read ["script app.js (EACCES)"]'])
-  f.scripts.delete('app.js')
-  await f.run()
-  assert.deepEqual(f.deleted, [
-    ['blueprints', 'orphan'],
-    ['assets', ['unused.glb']],
-  ])
 })
 
 test('cleaner: props holding a non-string url (or an empty asset://) are skipped, not a reason to stop cleaning', async t => {
@@ -258,10 +253,21 @@ test('cleaner: a kept script that is not a store file for certain stops all dele
     'asset://x.js?v=2',
     'asset://x.js#main',
     'asset://%61.js',
-    // under the assets URL, but not directly or with a query
+    // under the assets URL, but not directly, or with a query, fragment, `%` or dot segment in its text (Codex: an
+    // empty `?`/`#` or a normalised `..` used to pass)
     'https://world.example/assets/sub/x.js',
     'https://world.example/assets/x.js?v=2',
+    'https://world.example/assets/x.js?',
+    'https://world.example/assets/x.js#',
+    'https://world.example/assets/%61.js',
+    'https://world.example/assets/./x.js',
+    'https://world.example/assets/sub/../x.js',
+    'https://world.example/assets\\sub\\..\\x.js',
     'https://world.example/other/x.js',
+    // Codex: these parse as blob: but the runtime fetches them (https://Blob:443/app.js is a host named blob)
+    'Blob:443/app.js',
+    'BLOB:https://world.example/1234',
+    'blob/x.js',
     // the URL parser refuses these
     'https://exa mple.com/app.js',
     'http://[::1/app.js',
@@ -272,8 +278,8 @@ test('cleaner: a kept script that is not a store file for certain stops all dele
     assert.deepEqual(f.deleted, [], script)
     assert.deepEqual(f.warnings, [UNCERTAIN(['bp'])], script)
   }
-  // a collection blueprint counts the same; an orphan's (deleted with it), a blob: URL (by its parsed scheme: a
-  // browser tab's own object) and white space alone (no script) do not
+  // a collection blueprint counts the same; an orphan's (deleted with it), a lower-case blob: URL (what
+  // createObjectURL returns: a browser tab's own object) and white space alone (no script) do not
   const f = fixture(t)
   f.collections.blueprints.add({ id: 'collection', version: 0, script: 'https://code.example/c.js' })
   await f.run()
@@ -283,7 +289,6 @@ test('cleaner: a kept script that is not a store file for certain stops all dele
     ['orphan', 'https://code.example/orphan.js'],
     ['bp', 'blob:nodedata:x'],
     ['bp', ' blob:https://world.example/1234'],
-    ['bp', 'Blob:https://world.example/1234'],
     ['bp', '  \n'],
   ]) {
     const g = fixture(t)
@@ -352,21 +357,23 @@ test('cleaner: an assets URL that is not an absolute http(s) URL deletes nothing
   }
 })
 
-// Codex: with S3 behind a CDN, a script missing from the bucket may still be served (cached) and run; taking the
-// miss as "names nothing" deleted what it loads. Locally the file system is the store, so a miss names nothing.
-test('cleaner: a store script missing from S3 deletes nothing; one missing locally names nothing', async t => {
-  const f = fixture(t)
-  f.tables.blueprints[0] = row({ id: 'bp', version: 0, model: 'asset://used.glb', script: 'asset://gone.js' })
-  await f.run({ assetsUrl: 'https://cdn.example/assets', localStore: false })
-  assert.deepEqual(f.deleted, [])
-  assert.deepEqual(f.warnings, [
-    '[clean] skipped all deletion: could not read ["script gone.js (not in the S3 store; a CDN may still serve it)"]',
-  ])
-  const g = fixture(t)
-  g.tables.blueprints[0] = row({ id: 'bp', version: 0, model: 'asset://used.glb', script: 'asset://gone.js' })
-  await g.run()
-  assert.deepEqual(g.warnings, [])
-  assert.deepEqual(g.deleted.at(-1), ['assets', ['unused.glb']])
+// Codex: with a CDN in front of the store (S3, or a local store behind ASSETS_BASE_URL=https://cdn…), a script
+// missing from the store may still be served from a cache and run; taking the miss as "names nothing" deleted what
+// it loads. A missing store script now stops deletion in every configuration, and the log names the blueprint.
+test('cleaner: a store script that is missing deletes nothing, on S3 and locally, and says which blueprint names it', async t => {
+  for (const options of [
+    { assetsUrl: 'https://cdn.example/assets', localStore: false },
+    { assetsUrl: 'https://cdn.example/assets', localStore: true },
+    { assetsUrl: 'https://world.example/assets', localStore: true },
+  ]) {
+    const f = fixture(t)
+    f.tables.blueprints[0] = row({ id: 'bp', version: 0, model: 'asset://used.glb', script: 'asset://gone.js' })
+    await f.run(options)
+    assert.deepEqual(f.deleted, [], JSON.stringify(options))
+    assert.deepEqual(f.warnings, [
+      '[clean] skipped all deletion: could not read ["script gone.js named by blueprint \\"bp\\" is missing (a CDN or cache may still serve it; remove or replace it)"]',
+    ])
+  }
 })
 
 // the two gaps Codex found in both earlier versions
@@ -455,6 +462,109 @@ test('cleaner: unreferenced files are still deleted, with their count; a dry run
   assert.deepEqual(f.deleted.at(-1), ['assets', ['gone1.glb', 'gone2.png', 'unused.glb']])
   assert.ok(logs.includes('[clean] 3 assets can be deleted'), logs.join('\n'))
   assert.ok(logs.includes('[clean] 3 assets deleted'), logs.join('\n'))
+})
+
+// Codex: `Blob:443/app.js` parses as blob: but World.resolveURL fetches https://Blob:443/app.js. The exemption is
+// exactly what the runtime leaves as a blob: URL
+test('cleaner: "no script" is what the runtime leaves as a blob: URL, nothing else (derived from resolveReference)', () => {
+  const assetsUrl = 'https://world.example/assets'
+  const spellings = [
+    'blob:https://world.example/1234',
+    ' blob:nodedata:x ',
+    'blob:',
+    'Blob:443/app.js',
+    'BLOB:https://world.example/1234',
+    'blob/x.js',
+    'blob/../assets/x.js',
+    'blobs:x',
+    ' blob x',
+  ]
+  for (const spelling of spellings) {
+    const trimmed = loaderReference(spelling)
+    const runtimeBlob = resolveReference(spelling, assetsUrl) === trimmed && trimmed.startsWith('blob:')
+    assert.equal(scriptSource(spelling, assetsUrl).source === 'none', runtimeBlob, spelling)
+  }
+})
+
+// Codex: a URL holding a tab, CR or LF inside a name still loads (the URL parser drops them), but the scan split the
+// name; and a script scriptSource identifies was read but not kept
+test('cleaner: a name a URL holds with a tab, CR or LF inside is kept, and so is a script named that way', async t => {
+  const f = fixture(t)
+  for (const name of ['tabbed.glb', 'cr.glb', 'lf.glb', 'split.js', 'splitdep.glb']) f.files.add(name)
+  f.tables.entities[0] = row({
+    ...appData(),
+    props: {
+      a: 'https://cdn.example/assets/tab\tbed.glb',
+      b: 'https://cdn.example/assets/c\rr.glb',
+      c: 'https://cdn.example/assets/l\nf.glb',
+    },
+  })
+  f.tables.blueprints[0] = row({
+    id: 'bp',
+    version: 0,
+    model: 'asset://used.glb',
+    script: 'https://world.example/assets/spl\nit.js',
+  })
+  f.scripts.set('split.js', "world.load('model', 'asset://splitdep.glb')")
+  await f.run()
+  assert.deepEqual(f.warnings, [])
+  assert.deepEqual(f.scriptReads, ['split.js'])
+  assert.deepEqual(f.deleted.at(-1), ['assets', ['unused.glb']])
+})
+
+// Codex: hydration cuts a blueprint's model and script at 2,048 characters; the clean-up read the stored record, so
+// it saw `<name>extra` where the loader loads <name>, deleted the model, and read a script that does not exist
+test('cleaner: a blueprint is scanned as stored and as hydration loads it; the script that runs is the one read', async t => {
+  const f = fixture(t)
+  for (const name of ['cutmodel.glb', 'cut.js', 'cutdep.glb']) f.files.add(name)
+  const base = 'https://cdn.example/'
+  const model = `${base}${'x'.repeat(2048 - base.length - '/../cutmodel.glb'.length)}/../cutmodel.glb`
+  const script = `${' '.repeat(2048 - 'asset://cut.js'.length)}asset://cut.js`
+  assert.equal(model.length, 2048)
+  assert.equal(script.length, 2048)
+  f.tables.blueprints[0] = row({ id: 'bp', version: 0, model: `${model}extra`, script: `${script}extra` })
+  f.scripts.set('cut.js', "world.load('model', 'asset://cutdep.glb')")
+  await f.run()
+  assert.deepEqual(f.warnings, [])
+  assert.deepEqual(f.scriptReads, ['cut.js'])
+  assert.deepEqual(f.deleted.at(-1), ['assets', ['unused.glb', 'used.glb']])
+})
+
+test('cleaner: a store file a blueprint names as its script is read whatever its extension', async t => {
+  const f = fixture(t)
+  for (const name of ['code.glb', 'codedep.png']) f.files.add(name)
+  f.tables.blueprints[0] = row({ id: 'bp', version: 0, model: 'asset://used.glb', script: 'asset://code.glb' })
+  f.scripts.set('code.glb', "world.load('image', 'asset://codedep.png')")
+  await f.run()
+  assert.deepEqual(f.warnings, [])
+  assert.deepEqual(f.scriptReads, ['code.glb'])
+  assert.deepEqual(f.deleted.at(-1), ['assets', ['unused.glb']])
+})
+
+test('cleaner: a name encoded three times, or between hyphens, is found too', async t => {
+  const f = fixture(t)
+  for (const name of ['thrice.glb', 'dash.glb']) f.files.add(name)
+  // t is %74; encoded again %2574, and again %252574
+  f.tables.entities[0] = row({ ...appData(), props: { a: 'asset://%252574hrice.glb', b: 'list: -dash.glb-' } })
+  await f.run()
+  assert.deepEqual(f.warnings, [])
+  assert.deepEqual(f.deleted.at(-1), ['assets', ['unused.glb']])
+})
+
+test('cleaner: a dry run names at most 50 of the assets it would remove, and says how many more', async t => {
+  const logs = []
+  const f = fixture(t)
+  t.mock.method(console, 'log', line => logs.push(line))
+  const names = Array.from({ length: 60 }, (_, i) => `gone${String(i).padStart(2, '0')}.glb`)
+  for (const name of names) f.files.add(name)
+  process.env.CLEAN = 'dryrun'
+  await f.run()
+  assert.deepEqual(f.deleted, [])
+  const all = [...names, 'unused.glb'].sort()
+  assert.ok(
+    logs.includes(`[clean] 61 assets can be deleted: ${JSON.stringify(all.slice(0, 50))} and 11 more`),
+    logs.join('\n')
+  )
 })
 
 test('cleaner: assets the store could not delete are reported, not counted as deleted', async t => {

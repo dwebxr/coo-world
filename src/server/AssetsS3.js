@@ -8,6 +8,7 @@ import {
 } from '@aws-sdk/client-s3'
 import fs from 'fs-extra'
 import path from 'path'
+import zlib from 'node:zlib'
 import { computeAssetFilename, isUploadedAssetFilename } from './assetFilename'
 import { createOnce } from './coalesce'
 import { assetName } from '../core/extras/assetURL'
@@ -15,6 +16,30 @@ import { assetHeaders, extensionOf } from './uploadPolicy'
 
 // DeleteObjects takes at most 1000 keys per request
 const DELETE_BATCH = 1000
+
+// An object's text as an HTTP client receives it (readText, for the clean-up): a stored Content-Encoding is undone
+// the way the server's fetch undoes it, gzip and deflate, in the reverse of the order they were applied. Any other
+// coding (br, which the server's fetch never decodes, compress, zstd) or one that does not decode cannot be read
+// for certain: it throws, and the clean-up deletes nothing.
+function decodeObject(bytes, encoding) {
+  let buffer = Buffer.from(bytes)
+  const codings = String(encoding ?? '')
+    .split(',')
+    .map(coding => coding.trim().toLowerCase())
+    .filter(coding => coding && coding !== 'identity')
+  for (const coding of codings.reverse()) {
+    if (coding === 'gzip' || coding === 'x-gzip') buffer = zlib.gunzipSync(buffer)
+    else if (coding === 'deflate') {
+      // the zlib format HTTP means by deflate, or the raw one some servers send
+      try {
+        buffer = zlib.inflateSync(buffer)
+      } catch {
+        buffer = zlib.inflateRawSync(buffer)
+      }
+    } else throw Object.assign(new Error(`content encoding ${coding} is not read`), { code: 'ENCODING' })
+  }
+  return buffer.toString('utf8')
+}
 
 export class AssetsS3 {
   // `client`: an S3 client to use instead of one built from ASSETS_S3_URI (tests)
@@ -257,7 +282,7 @@ export class AssetsS3 {
     if (assetName(`asset://${name}`) === null) throw new Error('invalid asset name')
     try {
       const response = await this.client.send(new GetObjectCommand({ Bucket: this.bucketName, Key: this.getKey(name) }))
-      return await response.Body.transformToString('utf-8')
+      return decodeObject(await response.Body.transformToByteArray(), response.ContentEncoding)
     } catch (error) {
       if (error?.name === 'NoSuchKey' || error?.Code === 'NoSuchKey') return null
       throw error

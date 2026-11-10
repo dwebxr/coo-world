@@ -184,7 +184,7 @@ test('server ai: a refused or cut-off reply replaces no script; the next request
   const modified = []
   ai.assets = { upload: async file => uploads.push(file) }
   ai.world = {
-    blueprints: { get: () => blueprint, modify: change => modified.push(change) },
+    blueprints: { get: () => blueprint, canFit: () => true, modify: change => modified.push(change) },
     loader: { get: () => ({ code: 'app.on("update", () => {})' }) },
     network: { stopping: false, markBlueprintDirty() {}, send() {} },
   }

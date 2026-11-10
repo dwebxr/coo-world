@@ -17,7 +17,8 @@ import { PROTOCOL_VERSION, writePacket } from '../core/packets'
 import { buildPublicEnv } from '../core/extras/publicEnv'
 import { readJWT } from '../core/utils-server'
 import { getDB } from './db'
-import { Storage } from './Storage'
+import { Storage, readStorageLimitsEnv } from './Storage'
+import { installShutdown, stopApps } from './shutdown'
 import { assets } from './assets'
 import { collections } from './collections'
 import { cleaner } from './cleaner'
@@ -56,6 +57,14 @@ if (!(maxUploadSize > 0)) {
 }
 const uploadLimitsConfig = readUploadLimitsEnv(process.env) // UPLOAD_*; throws on a bad value
 const connectionLimitsConfig = readConnectionLimitsEnv(process.env) // WS_CONNECT_*; throws on a bad value
+const storageLimits = readStorageLimitsEnv(process.env) // STORAGE_*; throws on a bad value
+// days the clean-up keeps what it removes in <world>/assets-trash (ASSETS=local); 0 deletes at once
+const cleanTrashDays = ['', undefined].includes(process.env.CLEAN_TRASH_DAYS)
+  ? 30
+  : Number(process.env.CLEAN_TRASH_DAYS)
+if (!Number.isSafeInteger(cleanTrashDays) || cleanTrashDays < 0) {
+  throw new Error('[envs] CLEAN_TRASH_DAYS must be a whole number of days, 0 or more')
+}
 if (!process.env.PUBLIC_WS_URL) {
   throw new Error('[envs] PUBLIC_WS_URL not set')
 }
@@ -79,6 +88,21 @@ if (process.env.ASSETS_BASE_URL.endsWith('/')) {
 if (process.env.ASSETS === 's3' && !process.env.ASSETS_S3_URI) {
   throw new Error(`[envs] ASSETS_S3_URI must be set when using ASSETS=s3`)
 }
+// every join snapshot carries these; its size bound counts them at these lengths (joinBudget.js SNAPSHOT_FIXED_BYTES)
+for (const [name, max] of [
+  ['ASSETS_BASE_URL', 1024],
+  ['PUBLIC_API_URL', 1024],
+  ['LIVEKIT_WS_URL', 1024],
+  ['AI_PROVIDER', 128],
+  ['AI_MODEL', 128],
+  ['AI_EFFORT', 128],
+]) {
+  if ((process.env[name] || '').length > max) throw new Error(`[envs] ${name} must be at most ${max} characters`)
+}
+
+// SIGINT/SIGTERM from here on (shutdown.js): during start-up the process just exits; once the world exists (below,
+// before its scripts start) the final save runs under a deadline
+const shutdown = installShutdown()
 
 const fastify = Fastify({ logger: { level: 'error' } })
 
@@ -94,14 +118,35 @@ await collections.init({ rootDir, worldDir })
 // init db
 const db = await getDB({ worldDir })
 
-// init cleaner
-await cleaner.init({ db })
+// init cleaner (before storage is opened: it reads storage.json itself, read-only)
+const storageFile = path.join(worldDir, '/storage.json')
+// the assets URL tells it which scripts are store files for certain; with ASSETS=local (an assets directory) what
+// it removes goes to the trash for CLEAN_TRASH_DAYS
+await cleaner.init({
+  db,
+  storageFile,
+  assetsUrl: assets.url,
+  localStore: Boolean(assets.dir),
+  trashDays: cleanTrashDays,
+  // the largest file it reads: a script came through an upload (PUBLIC_MAX_UPLOAD_SIZE), storage.json is held to
+  // STORAGE_MAX_BYTES; a larger one (an older limit, a hand-made file) stops the clean-up
+  readLimit: Math.max(maxUploadSize * 1024 * 1024, storageLimits.maxBytes || 0),
+})
 
 // init storage
-const storage = new Storage(path.join(worldDir, '/storage.json'))
+const storage = new Storage(storageFile, { limits: storageLimits })
 
 // create world
 const world = createServerWorld()
+// from now on a stop saves: world.init hydrates the apps and starts their scripts before the server listens
+shutdown.attach({
+  network: world.network,
+  stopWorld: () => {
+    world.server.destroy()
+    stopApps(world)
+  },
+  closeServer: () => fastify.close(),
+})
 await world.init({
   assetsDir: assets.dir,
   assetsUrl: assets.url,
@@ -109,7 +154,14 @@ await world.init({
   assets,
   storage,
   collections: collections.list,
+  maxUploadSize,
 })
+// World.start() does not wait for the systems: no connection is taken before the network has loaded the world, the
+// user ids and the join-state accounting (it refuses any that arrives earlier, too)
+await world.network.ready
+// the join snapshot's fixed part for this configuration (its tokens, URLs and largest joiner), measured before
+// anyone can join: world growth and visitors' joins count it (joinBudget.js)
+await world.network.measureFixedBytes()
 
 fastify.register(cors)
 fastify.register(compress, compressOptions())
@@ -265,14 +317,3 @@ async function worldNetwork(fastify) {
 }
 
 console.log(`server listening on port ${port}`)
-
-// Graceful shutdown
-process.on('SIGINT', async () => {
-  await fastify.close()
-  process.exit(0)
-})
-
-process.on('SIGTERM', async () => {
-  await fastify.close()
-  process.exit(0)
-})

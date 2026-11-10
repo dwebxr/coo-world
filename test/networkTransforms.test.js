@@ -40,6 +40,10 @@ function fixture(spawnRow) {
     entities: {
       get: id => entities.get(id),
       serialize: () => [...entities.values()].map(entity => entity.data),
+      // the join-state budget is not under test here (blueprintEnforcement.test.js)
+      canFitApp: () => true,
+      measureApp() {},
+      trackApp() {},
       add(data) {
         // onConnection runs in a VM; policies and entity data share the host realm in production.
         data = { ...data }

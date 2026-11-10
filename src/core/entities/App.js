@@ -67,7 +67,13 @@ export class App extends Entity {
     return node
   }
 
+  // the apps were stopped for good (server shutdown, shutdown.js stopApps): no build may start or go on
+  halted() {
+    return this.world.appsStopped === true
+  }
+
   async build(crashed) {
+    if (this.halted()) return
     this.building = true
     const n = ++this.n
     const failureVersion = this.physicsFailureVersion
@@ -122,7 +128,7 @@ export class App extends Entity {
       root = glb.toNodes()
     }
     // if a new build happened while we were fetching, stop here
-    if (this.n !== n || this.world.fatalError) return
+    if (this.n !== n || this.world.fatalError || this.halted()) return
     // unbuild any previous version
     this.unbuild()
     // mode
@@ -149,7 +155,7 @@ export class App extends Entity {
       (this.mode === Modes.ACTIVE || (this.mode === Modes.MOVING && !this.resetOnMove))
     // (this.mode === Modes.ACTIVE && script && !crashed) ||
     // (this.mode === Modes.MOVING && !this.resetOnMove && !this.scriptError)
-    if (this.n !== n || this.world.fatalError) return
+    if (this.n !== n || this.world.fatalError || this.halted()) return
     if (this.physicsFailureVersion !== failureVersion) {
       this.building = false
       return

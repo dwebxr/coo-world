@@ -9,7 +9,10 @@ import { appPersistenceData, persistenceRecord } from '../extras/persistenceReco
 import * as THREE from '../extras/three'
 import { Ranks } from '../extras/ranks'
 import {
+  PLAYER_NAME_MAX_LENGTH,
+  SESSION_AVATAR_MAX_LENGTH,
   isAvatarUrl,
+  isBoundedJsonObject,
   sanitizeAppModify,
   sanitizeAppRelease,
   sanitizeEntityAdd,
@@ -26,6 +29,20 @@ import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from 
 import { internalEvents } from '../extras/internalEvents'
 import { createInboundGate, createInboundScheduler, packetNodeLimit } from '../extras/inboundPolicy'
 import { SNAPSHOT_CAP, createWriteLedger } from '../extras/writeLedger'
+import {
+  GROWTH_RESERVE_BYTES,
+  OWN_AVATAR_MAX_LENGTH,
+  RANKED_RESERVE_PLAYERS,
+  SNAPSHOT_FIXED_BYTES,
+  SNAPSHOT_STEP_NAMES,
+  encodeSnapshot,
+  envelopeBytes,
+  fitsJoinState,
+  joinStateBytes,
+  joinStateReport,
+  settingsBytes,
+  visitorShortfall,
+} from '../extras/joinBudget'
 import { briefError, createLogOnce } from '../extras/logOnce'
 import { readInboundPacket } from '../../server/inboundDecode'
 import * as solanaGating from '../../server/solana-gating'
@@ -67,6 +84,8 @@ export class ServerNetwork extends System {
     this.ids = -1
     this.sockets = new Map()
     this.connecting = new Set() // user ids reserved while their connection is still being set up
+    // every user id this world has issued (start-up read and new users): a new app id may not be one of them
+    this.userIds = new Set()
     this.socketIntervalId = setInterval(() => this.checkSockets(), PING_RATE * 1000)
     this.saveTimerId = null
     this.stopping = false
@@ -86,8 +105,10 @@ export class ServerNetwork extends System {
     this.writer = createWriteLedger({ log: line => console.error(line) })
   }
 
-  init({ db, tokenBalanceService, evmHoldings, tipWatcher, evmSignatureVerifier }) {
+  // maxUploadSize: PUBLIC_MAX_UPLOAD_SIZE as index.js parsed it (MB); the join snapshot carries the number
+  init({ db, maxUploadSize, tokenBalanceService, evmHoldings, tipWatcher, evmSignatureVerifier }) {
     this.db = db
+    this.maxUploadSize = maxUploadSize
     this.tokenBalanceService = solanaGating.TOKEN_GATING_ENABLED
       ? (tokenBalanceService ?? createTokenBalanceService({ readRaw: createSolanaRpc().readRaw }))
       : null
@@ -109,7 +130,18 @@ export class ServerNetwork extends System {
     this.tipAnnounce = { queue: [], tokens: evmGating.TIP_ANNOUNCE_BURST, at: Date.now(), timer: null, last: new Map() }
   }
 
-  async start() {
+  // World.start() does not wait for this. Until `ready` settles (spawn, blueprints, apps, settings, the user ids and
+  // the join-state accounting all loaded) no connection or packet is taken (onConnection, admit); the server
+  // listens only after it (index.js)
+  start() {
+    this.starting = true
+    this.ready = this.hydrate().finally(() => {
+      this.starting = false
+    })
+    return this.ready
+  }
+
+  async hydrate() {
     // get spawn
     const spawnRow = await this.db('config').where('key', 'spawn').first()
     this.spawn = null
@@ -181,6 +213,21 @@ export class ServerNetwork extends System {
     } catch (err) {
       console.error(err)
     }
+    // the user ids, so that no new app takes one: an app holding the id of a user who is away would otherwise make
+    // that user's next join collide with it (ids only, about 60 bytes each in memory)
+    try {
+      for (const row of await this.db('users').select('id')) this.userIds.add(row.id)
+    } catch (err) {
+      console.error(
+        `[network] user ids could not be read (${briefError(err)}); an app that takes one is moved to a new id when that user joins`
+      )
+    }
+    // the join snapshot's world state (joinBudget.js): a world stored over the budget loads whole, is reported,
+    // and only shrinks from here. Collections are the operator's files and do not change while the server runs
+    this.settingsBytes = settingsBytes(this.world.settings.serialize())
+    this.collectionsBytes = settingsBytes(this.world.collections?.serialize() ?? [])
+    const joinReport = joinStateReport(this.world, { snapshotCap: SNAPSHOT_CAP })
+    if (joinReport) console.warn(joinReport)
     // watch settings changes
     this.world.settings.on('change', this.saveSettings)
     // queue first save
@@ -309,7 +356,7 @@ export class ServerNetwork extends System {
 
   // Admission charges the bytes and nodes before the inbox retains a copy.
   admit(socket, packet) {
-    if (this.stopping) return false
+    if (this.stopping || this.starting) return false
     return this.gate.admit(socket, packet, { builder: socket.player?.isBuilder() === true })
   }
 
@@ -384,11 +431,84 @@ export class ServerNetwork extends System {
     const settled = appPersistenceData(data, change)
     if (settled.mover || settled.uploader) return
     const record = persistenceRecord(settled)
-    this.dirtyApps.set(settled.id, { revision: ++this.persistenceRevision, record })
+    this.dirtyApps.set(settled.id, { ...this.replacementOf(settled.id), revision: ++this.persistenceRevision, record })
   }
 
   markAppDeleted(id) {
-    this.dirtyApps.set(id, { revision: ++this.persistenceRevision, record: null })
+    this.dirtyApps.set(id, { ...this.replacementOf(id), revision: ++this.persistenceRevision, record: null })
+  }
+
+  // a later change to a re-keyed app (rekeyApp) keeps the old row's removal with it until it is written
+  replacementOf(id) {
+    const replaces = this.dirtyApps.get(id)?.replaces
+    return replaces === undefined ? {} : { replaces }
+  }
+
+  // An app that holds a joining user's id moves to a fresh id, with its blueprint, transform, pinned flag and state
+  // (when it is plain bounded JSON; anything else a script put there, a throwing getter or a Proxy included, becomes
+  // {}). Its script starts again; a move or upload in progress is dropped. Broadcast as a removal and an addition.
+  // One migration that cannot lose the app: the record under the new id is queued first, as a row that replaces
+  // the old one (saveDirty writes both in one transaction where the database has them, the new row before the old
+  // one's removal otherwise), and only then is the old entity torn down, whose failure does not stop the move. An
+  // interruption at any point leaves the record under the old id, the new one, or (without a transaction) both;
+  // a duplicate left that way is moved again at that user's next join.
+  rekeyApp(entity) {
+    const old = entity.data
+    let id
+    do id = uuid()
+    while (this.world.entities.get(id) || this.userIds.has(id))
+    let state = {}
+    try {
+      if (isBoundedJsonObject(old.state)) state = JSON.parse(JSON.stringify(old.state))
+    } catch {
+      // script state that cannot be read as JSON never stops the move or the join
+    }
+    const data = {
+      id,
+      type: 'app',
+      blueprint: old.blueprint,
+      position: [...old.position],
+      quaternion: [...old.quaternion],
+      scale: [...old.scale],
+      mover: null,
+      uploader: null,
+      pinned: old.pinned === true,
+      state,
+    }
+    // the replacement first; a pending change under the old id is folded into it
+    this.dirtyApps.delete(old.id)
+    this.dirtyApps.set(id, {
+      revision: ++this.persistenceRevision,
+      record: persistenceRecord(appPersistenceData(data)),
+      replaces: old.id,
+    })
+    try {
+      this.world.entities.remove(old.id)
+    } catch (err) {
+      this.logOnce(
+        this,
+        `rekey-teardown:${old.id}`,
+        `[network] app teardown failed while moving it: ${briefError(err)}`
+      )
+      // the entity is gone from the world all the same
+      this.world.entities.items.delete(old.id)
+      this.world.entities.untrackApp?.(old.id)
+    }
+    // the old row is removed by the replacement's own write, never on its own before it
+    this.dirtyApps.delete(old.id)
+    this.send('entityRemoved', old.id)
+    this.send('entityAdded', data)
+    try {
+      this.world.entities.add(data)
+    } catch (err) {
+      // the record is queued: the app comes back at the next start
+      this.logOnce(this, `rekey-add:${id}`, `[network] app could not be started under its new id: ${briefError(err)}`)
+    }
+    this.logOnce(
+      this,
+      `rekey:${old.id}`,
+      `[network] app ${previewValue(old.id, 16)} held the id of a joining user and now has id ${previewValue(id, 16)}`
+    )
   }
 
   save = () => {
@@ -404,6 +524,23 @@ export class ServerNetwork extends System {
     return promise
   }
 
+  // past the final save's deadline (flushBeforeExit): no further row is started
+  saveExpired() {
+    if (!this.flushExpired && this.flushDeadline && Date.now() >= this.flushDeadline) this.flushExpired = true
+    return this.flushExpired
+  }
+
+  // Each row is its own write, as before: a row that fails stays dirty and the others are still saved. They are
+  // not grouped in transactions, because on Postgres one failing statement aborts the whole transaction (the rows
+  // after it would fail with it). better-sqlite3 runs each statement synchronously and knex settles it in a
+  // microtask, so the loop yields a turn of the event loop after every row: the deadline timer, other timers and a
+  // second signal run between rows, and the deadline is also checked by the clock before each one. On Postgres the
+  // queries are asynchronous anyway; a statement already sent finishes or is cut off by the exit.
+  // The one exception is a row that replaces another (rekeyApp): its insert and the old row's removal are one
+  // transaction where the database has them, and otherwise the insert comes first, so the app is never lost.
+  // The server's database is always knex (db.js, SQLite or Postgres), which has transactions: the path without one
+  // is for stand-in databases only (tests). An interrupted re-key there can leave the app under both ids, and
+  // nothing at start-up merges the two.
   async saveDirty() {
     const counts = { blueprints: 0, apps: 0, deleted: 0 }
     const now = moment().toISOString()
@@ -411,17 +548,29 @@ export class ServerNetwork extends System {
       ['blueprints', this.dirtyBlueprints],
       ['entities', this.dirtyApps],
     ]) {
-      for (const [id, { revision, record }] of [...dirty]) {
-        if (this.flushExpired) return
+      for (const [id, { revision, record, replaces }] of [...dirty]) {
+        if (this.saveExpired()) return
+        await new Promise(resolve => setImmediate(resolve))
+        if (this.saveExpired()) return
         try {
-          if (record === null) {
-            await this.db(table).where('id', id).delete()
-            counts.deleted++
-          } else {
-            await this.db(table)
+          const upsert = db =>
+            db(table)
               .insert({ ...record, createdAt: now, updatedAt: now })
               .onConflict('id')
               .merge({ ...record, updatedAt: now })
+          if (record === null) {
+            await this.db(table).where('id', id).delete()
+            if (replaces !== undefined) await this.db(table).where('id', replaces).delete()
+            counts.deleted++
+          } else if (replaces !== undefined && typeof this.db.transaction === 'function') {
+            await this.db.transaction(async trx => {
+              await upsert(trx)
+              await trx(table).where('id', replaces).delete()
+            })
+            counts.apps++
+          } else {
+            await upsert(this.db)
+            if (replaces !== undefined) await this.db(table).where('id', replaces).delete()
             counts[table === 'blueprints' ? 'blueprints' : 'apps']++
           }
           if (dirty.get(id)?.revision === revision) dirty.delete(id)
@@ -445,11 +594,16 @@ export class ServerNetwork extends System {
 
   async flushBeforeExit(deadlineMs) {
     this.stopForFatal()
+    this.flushDeadline = Date.now() + deadlineMs
     const config = new Set()
     for (const [key, saved] of this.loadedConfig) {
       const data = key === 'settings' ? this.world.settings.serialize() : this.spawn
       if (this.dirtyConfig.has(key) || JSON.stringify(data) !== saved) config.add(key)
     }
+    // the script storage file (world.set) is written by its own queue, alongside the database writes. Its flush
+    // refuses every later world.set, and it counts as saved only if, at the very end, nothing it accepted is unwritten
+    const storage = typeof this.world.storage?.flush === 'function' ? this.world.storage : null
+    let storageSaved = !storage
     let timer
     const flush = async () => {
       await Promise.all([this.savePromise, this.configPromise])
@@ -463,9 +617,16 @@ export class ServerNetwork extends System {
         })(),
       ])
     }
+    const flushStorage = async () => {
+      if (storage) await storage.flush()
+    }
+    const incomplete = () => {
+      if (storage) storageSaved = storage.saved()
+      return this.dirtyBlueprints.size || this.dirtyApps.size || config.size || !storageSaved
+    }
     try {
       await Promise.race([
-        flush(),
+        Promise.all([flush(), flushStorage()]),
         new Promise((resolve, reject) => {
           timer = setTimeout(() => {
             this.flushExpired = true
@@ -473,15 +634,15 @@ export class ServerNetwork extends System {
           }, deadlineMs)
         }),
       ])
-      if (this.dirtyBlueprints.size || this.dirtyApps.size || config.size) {
+      if (incomplete()) {
         throw new Error('final save incomplete')
       }
       console.log('[network] final save complete')
     } finally {
       clearTimeout(timer)
-      if (this.dirtyBlueprints.size || this.dirtyApps.size || config.size) {
+      if (incomplete()) {
         console.error(
-          `[network] not persisted: blueprints=${JSON.stringify([...this.dirtyBlueprints.keys()])} apps=${JSON.stringify([...this.dirtyApps.keys()])} config=${JSON.stringify([...config])}`
+          `[network] not persisted: blueprints=${JSON.stringify([...this.dirtyBlueprints.keys()])} apps=${JSON.stringify([...this.dirtyApps.keys()])} config=${JSON.stringify([...config])} storage=${storageSaved ? 'saved' : 'unsaved'}`
         )
       }
     }
@@ -495,9 +656,15 @@ export class ServerNetwork extends System {
     }
     const value = JSON.stringify(data)
     this.dirtyConfig.set(key, value)
+    // past the final save's deadline (saveExpired)
+    const expired = () => this.flushExpired || Date.now() >= (this.flushDeadline ?? Infinity)
     const promise = (this.configPromise || Promise.resolve())
       .then(async () => {
-        if (this.flushExpired) return false
+        if (expired()) return false
+        // a turn of the event loop between queued writes, as in saveDirty: a synchronous database would otherwise
+        // run the whole queue before a timer or a signal is seen
+        await new Promise(resolve => setImmediate(resolve))
+        if (expired()) return false
         try {
           if (this.loadedConfig.get(key) !== value) {
             await this.db('config').insert({ key, value }).onConflict('key').merge({ value })
@@ -521,8 +688,79 @@ export class ServerNetwork extends System {
     return this.saveConfig('settings', this.world.settings.serialize())
   }
 
+  // A joining player's record, as the join snapshot carries it and the player is added with (onConnection). Its
+  // own avatar is the one part of it no step drops: a stored value longer than the policy allows (only legacy data
+  // can be) falls back to the default.
+  joinRecord(id, { name, avatar, sessionAvatar, rank }) {
+    return {
+      id,
+      type: 'player',
+      position: this.spawn.position.slice(),
+      quaternion: this.spawn.quaternion.slice(),
+      owner: id, // deprecated, same as userId
+      userId: id, // deprecated, same as userId
+      name,
+      health: HEALTH_MAX,
+      avatar: typeof avatar === 'string' && avatar.length <= OWN_AVATAR_MAX_LENGTH ? avatar : 'asset://avatar.vrm',
+      sessionAvatar: sessionAvatar || null,
+      rank,
+      enteredAt: Date.now(),
+    }
+  }
+
+  // The join snapshot. Every value from the environment is the one the server uses: the upload size as the number
+  // index.js parsed, the URLs and AI names as given (index.js limits their length).
+  snapshotState(id, { livekit, authToken, entities }) {
+    return {
+      id,
+      serverTime: performance.now(),
+      assetsUrl: process.env.ASSETS_BASE_URL,
+      apiUrl: process.env.PUBLIC_API_URL,
+      maxUploadSize: this.maxUploadSize,
+      collections: this.world.collections.serialize(),
+      settings: this.world.settings.serialize(),
+      chat: this.world.chat.serialize(),
+      ai: this.world.ai.serialize(),
+      blueprints: this.world.blueprints.serialize(),
+      entities,
+      livekit,
+      authToken,
+      hasAdminCode: !!process.env.ADMIN_CODE,
+    }
+  }
+
+  // The fixed part of a join snapshot at its largest for this configuration (joinBudget.js), measured once before
+  // anyone can join (index.js): the envelope of a joiner with a 64-character id, the longest name and avatars the
+  // rules allow and float transforms, with its real session and voice tokens (a voice token grows with
+  // LIVEKIT_API_KEY). World growth counts it, and so does each visitor's join when it is larger than their own.
+  async measureFixedBytes() {
+    const id = 'i'.repeat(64)
+    const wide = n => '€'.repeat(n) // a 3-byte character: the most a UTF-16 unit costs in UTF-8
+    const record = {
+      ...this.joinRecord(id, {
+        name: wide(PLAYER_NAME_MAX_LENGTH),
+        avatar: wide(OWN_AVATAR_MAX_LENGTH),
+        sessionAvatar: wide(SESSION_AVATAR_MAX_LENGTH),
+        rank: Ranks.ADMIN,
+      }),
+      position: [0.5, 0.5, 0.5],
+      quaternion: [0.5, 0.5, 0.5, 0.5],
+      emote: null,
+    }
+    const livekit = await this.world.livekit.serialize(id)
+    const authToken = await createJWT({ userId: id })
+    this.fixedBytes = envelopeBytes(this.snapshotState(id, { livekit, authToken, entities: [record] }), id)
+    if (this.fixedBytes > SNAPSHOT_FIXED_BYTES) {
+      console.warn(
+        `[network] the join snapshot's fixed part measures ${this.fixedBytes} bytes, more than the ${SNAPSHOT_FIXED_BYTES} expected (a long LIVEKIT_API_KEY, LIVEKIT_WS_URL or other URL?); world growth and visitors are held to the measured size`
+      )
+    }
+    return this.fixedBytes
+  }
+
   async onConnection(ws, params) {
-    if (this.stopping) return ws.close()
+    // still loading (start): the user ids and the join-state accounting are not complete yet
+    if (this.stopping || this.starting) return ws.close()
     let cancelled = false
     // a wait that ends early when this connection closes (the takeover ping)
     let stopWaiting = null
@@ -564,6 +802,7 @@ export class ServerNetwork extends System {
         if (cancelled) return
         if (auth) {
           user = await this.db('users').where('id', auth.userId).first()
+          if (user) this.userIds.add(user.id)
           if (cancelled) return
         }
       }
@@ -575,6 +814,8 @@ export class ServerNetwork extends System {
           rank: 0,
           createdAt: moment().toISOString(),
         }
+        // reserved before the row exists, so a join cancelled from here on still keeps the id from apps
+        this.userIds.add(user.id)
         await this.db('users').insert(user)
         if (cancelled) return
         authToken = await createJWT({ userId: user.id })
@@ -641,29 +882,67 @@ export class ServerNetwork extends System {
       const livekit = await this.world.livekit.serialize(user.id)
       if (cancelled) return
 
+      // an app holding this user's id (stored before new app ids were kept apart from user ids): it moves to a new
+      // id and the player joins. Nothing awaits between here and the player's add
+      const holder = this.world.entities.get(user.id)
+      if (holder?.isApp) this.rekeyApp(holder)
+
+      // The joiner's record and the snapshot are made before the player is added (nothing awaits from here on), so
+      // a refused join leaves nothing behind. The snapshot carries the record as the player will hold it once added
+      // (PlayerRemote sets a missing emote to null).
+      const record = this.joinRecord(user.id, {
+        name: name || sanitizeName(user.name) || 'Anonymous',
+        avatar: user.avatar || this.world.settings.avatar?.url || 'asset://avatar.vrm',
+        sessionAvatar: avatar,
+        rank: user.rank,
+      })
+      const state = this.snapshotState(user.id, {
+        livekit,
+        authToken,
+        entities: [...this.world.entities.serialize(), { ...record, emote: null }],
+      })
+      const refuseJoin = (reason, detail) => {
+        this.logOnce(this, `join-refused:${reason}`, `[network] ${detail}`)
+        this.write(ws, writePacket('kick', 'player_limit'), { name: 'kick' })
+        ws.close()
+      }
+      // A visitor (no rank of builder or above stored on the user) joins only while the bound leaves room for
+      // ranked users and growth after them (joinBudget.js visitorShortfall), so a crowd of visitors cannot keep an
+      // admin out or stop building. A user with a stored rank skips this: an admin can always come into a world that
+      // is over its budget or crowded, to shrink or moderate it, and only the snapshot's real size counts for them.
+      if (!(user.rank >= Ranks.BUILDER)) {
+        const envelope = envelopeBytes(state, user.id)
+        const shortfall = visitorShortfall(this.world, envelope)
+        if (shortfall === 'world') {
+          return refuseJoin(
+            shortfall,
+            `a visitor was turned away: the world's state (${joinStateBytes(this.world)} bytes counted) and the snapshot's fixed part (${Math.max(envelope, this.fixedBytes ?? SNAPSHOT_FIXED_BYTES)} bytes) leave the join snapshot no room for visitors; users with a stored rank of builder or above can still join, and visitors can again once the world is smaller`
+          )
+        }
+        if (shortfall) {
+          return refuseJoin(
+            shortfall,
+            `a visitor was turned away: with ${this.world.entities.players?.size ?? 0} players here, the join snapshot keeps its last room for ${RANKED_RESERVE_PLAYERS} users with a stored rank of builder or above and ${GROWTH_RESERVE_BYTES / 1024} KiB of world growth; the world's size, not playerLimit or WS_MAX_SOCKETS, is the limit here`
+          )
+        }
+      }
+      // the one hard condition, for everyone: the real snapshot, after the steps it needs (what no budget tracks is
+      // dropped step by step until it fits, joinBudget.js encodeSnapshot), fits its cap
+      const { packet: snapshot, steps } = encodeSnapshot(state, { selfId: user.id })
+      if (!snapshot || snapshot.length > SNAPSHOT_CAP) {
+        return refuseJoin(
+          'snapshot',
+          `a player was turned away: the join snapshot is ${snapshot ? `${snapshot.length} bytes` : 'not encodable'} after every step, over its cap (${SNAPSHOT_CAP}); joins fit again once the world's state, or the number of players here, is smaller`
+        )
+      }
+
       // create socket
       socket = new Socket({ id: user.id, ws, network: this })
       socket.wallet = solanaGating.createWalletSession()
       socket.evmWallet = evmGating.createEvmWalletSession()
 
       // spawn player
-      socket.player = this.world.entities.add(
-        {
-          id: user.id,
-          type: 'player',
-          position: this.spawn.position.slice(),
-          quaternion: this.spawn.quaternion.slice(),
-          owner: socket.id, // deprecated, same as userId
-          userId: user.id, // deprecated, same as userId
-          name: name || sanitizeName(user.name) || 'Anonymous',
-          health: HEALTH_MAX,
-          avatar: user.avatar || this.world.settings.avatar?.url || 'asset://avatar.vrm',
-          sessionAvatar: avatar || null,
-          rank: user.rank,
-          enteredAt: Date.now(),
-        },
-        true
-      )
+      socket.player = this.world.entities.add(record, true)
 
       socket.player.rankRevision = 0
       socket.player.rankWritesPending = 0
@@ -679,25 +958,14 @@ export class ServerNetwork extends System {
         write.then(done, done)
       }
 
-      // send snapshot
-      const snapshot = writePacket('snapshot', {
-        id: socket.id,
-        serverTime: performance.now(),
-        assetsUrl: process.env.ASSETS_BASE_URL,
-        apiUrl: process.env.PUBLIC_API_URL,
-        maxUploadSize: process.env.PUBLIC_MAX_UPLOAD_SIZE,
-        collections: this.world.collections.serialize(),
-        settings: this.world.settings.serialize(),
-        chat: this.world.chat.serialize(),
-        ai: this.world.ai.serialize(),
-        blueprints: this.world.blueprints.serialize(),
-        entities: this.world.entities.serialize(),
-        livekit,
-        authToken,
-        hasAdminCode: !!process.env.ADMIN_CODE,
-      })
-
-      if (snapshot.length > SNAPSHOT_CAP) throw new Error('snapshot too large')
+      // send the snapshot made above
+      if (steps.length) {
+        this.logOnce(
+          this,
+          `snapshot-steps:${steps.join(',')}`,
+          `[network] the join snapshot did not fit its cap (${SNAPSHOT_CAP}); sent without ${steps.map(step => SNAPSHOT_STEP_NAMES[step]).join(', ')}: ${snapshot.length} bytes`
+        )
+      }
       if (!this.write(ws, snapshot, { name: 'snapshot', snapshot: true })) throw new Error('snapshot write failed')
 
       this.sockets.set(socket.id, socket)
@@ -1549,15 +1817,28 @@ export class ServerNetwork extends System {
     const { ok, value: safe } = sanitizeBlueprintAdd(blueprint, {
       onUnknownKey: key => this.logOnce(socket, 'blueprint-unknown', `blueprint: unknown key ${key}`),
     })
-    const fits = ok && this.world.blueprints.canFit(safe, true)
+    // an add never replaces: changing a blueprint takes blueprintModified and its version rule
+    const existing = ok ? this.world.blueprints.get(safe.id) : undefined
+    const fits = ok && !existing && this.world.blueprints.canFit(safe, true)
     if (!fits) {
       // Clients announce the blueprint immediately before the entity that uses it.
       if (typeof blueprint?.id === 'string') {
         socket.refusedBlueprint = { id: blueprint.id, expiresAt: Date.now() + 10000 }
       }
-      return ok
-        ? this.logOnce(socket, 'blueprint-add-budget', 'onBlueprintAdded: world blueprint budget exceeded')
-        : this.logOnce(socket, 'blueprint-add-invalid', 'onBlueprintAdded: invalid blueprint')
+      if (existing) {
+        // the sender replaced its own copy: give it the stored one back
+        this.revertBlueprint(socket, existing)
+        return this.logOnce(socket, 'blueprint-add-exists', 'onBlueprintAdded: blueprint id already exists')
+      }
+      if (!ok) return this.logOnce(socket, 'blueprint-add-invalid', 'onBlueprintAdded: invalid blueprint')
+      const refusal = this.world.blueprints.budgetRefusal(safe, true)
+      return this.logOnce(
+        socket,
+        `blueprint-add-${refusal}`,
+        refusal === 'world'
+          ? 'onBlueprintAdded: world is full (join-state budget exceeded)'
+          : 'onBlueprintAdded: world blueprint budget exceeded'
+      )
     }
     if (socket.refusedBlueprint?.id === safe.id) socket.refusedBlueprint = null
     this.markBlueprintDirty(safe)
@@ -1589,7 +1870,14 @@ export class ServerNetwork extends System {
     // if new version is greater than current version, allow it
     if (safe.version > blueprint.version) {
       if (!this.world.blueprints.canFit(safe)) {
-        this.logOnce(socket, 'blueprint-modify-budget', 'onBlueprintModified: world blueprint budget exceeded')
+        const refusal = this.world.blueprints.budgetRefusal(safe)
+        this.logOnce(
+          socket,
+          `blueprint-modify-${refusal}`,
+          refusal === 'world'
+            ? 'onBlueprintModified: world is full (join-state budget exceeded)'
+            : 'onBlueprintModified: world blueprint budget exceeded'
+        )
         this.revertBlueprint(socket, blueprint)
         return
       }
@@ -1631,10 +1919,16 @@ export class ServerNetwork extends System {
     // clients may only add apps, with a fresh id and an existing blueprint
     const safe = sanitizeEntityAdd(data, socket.id, {
       blueprintExists: id => !!this.world.blueprints.get(id),
-      entityExists: id => !!this.world.entities.get(id),
+      // ids share one map with players, and any user (present or not) may join as a player under their id
+      entityExists: id => !!this.world.entities.get(id) || this.userIds.has(id),
     })
     if (!safe) {
       return this.logOnce(socket, 'entity-invalid', `onEntityAdded: invalid entity: ${String(data?.id).slice(0, 64)}`)
+    }
+    if (!this.world.entities.canFitApp(safe.id, safe)) {
+      // the id is new here, so the sender's optimistic copy is the only one to take back
+      socket.send('entityRemoved', safe.id)
+      return this.logOnce(socket, 'entity-add-budget', 'onEntityAdded: world is full (join-state budget exceeded)')
     }
     this.markAppDirty(safe)
     this.send('entityAdded', safe, socket.id)
@@ -1713,9 +2007,23 @@ export class ServerNetwork extends System {
           `onEntityModified: no permitted fields: ${String(data.id).slice(0, 64)}`
         )
       }
+      // only the blueprint id and a client-set state change an app's join-snapshot size (joinBudget.js)
+      const sized =
+        Object.prototype.hasOwnProperty.call(safe, 'blueprint') || Object.prototype.hasOwnProperty.call(safe, 'state')
+      if (sized && !this.world.entities.canFitApp(entity.data.id, safe)) {
+        this.logOnce(socket, 'entity-modify-budget', 'onEntityModified: world is full (join-state budget exceeded)')
+        // the sender applied its change: the stored fields it touched go back (a server script owns the state)
+        const revert = { id: entity.data.id }
+        for (const key of Object.keys(safe)) {
+          if (key !== 'id' && key !== 'state') revert[key] = entity.data[key]
+        }
+        if (Object.keys(revert).length > 1) socket.send('entityModified', revert)
+        return
+      }
       this.markAppDirty(entity.data, safe)
       this.send('entityModified', safe, socket.id)
       entity.modify(safe)
+      if (sized) this.world.entities.trackApp(entity.data.id, this.world.entities.measureApp(entity.data.id, safe))
     }
   }
 
@@ -1764,7 +2072,16 @@ export class ServerNetwork extends System {
         `onSettingsModified: invalid value for ${String(key).slice(0, 64)}`
       )
     }
+    // settings are part of the join snapshot's world state (joinBudget.js): measured as they would be
+    const next = settingsBytes({ ...this.world.settings.serialize(), [key]: result.value })
+    if (!fitsJoinState(this.world, next - (this.settingsBytes || 0))) {
+      this.logOnce(socket, 'setting-budget', 'onSettingsModified: world is full (join-state budget exceeded)')
+      // the sender applied its value locally before sending: it gets the stored one back
+      socket.send('settingsModified', { key, value: this.world.settings.serialize()[key] })
+      return
+    }
     this.world.settings.set(key, result.value)
+    this.settingsBytes = settingsBytes(this.world.settings.serialize())
     this.send('settingsModified', { key, value: result.value }, socket.id)
     // the sender applied its value locally before sending; correct it if it was adjusted
     if (result.changed) socket.send('settingsModified', { key, value: result.value })

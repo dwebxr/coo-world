@@ -332,8 +332,12 @@ const STRING_KEYS = new Set([
   'shader',
   'specVersion',
 ])
-// the images this client decodes; an image's mimeType is kept in its texture's userData, copied with each clone
-const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
+// the image media types a valid file may carry: the three this client decodes, and the two the vendored parser's
+// plugins name for images reached through an extension (KHR_texture_basisu's image/ktx2, EXT_texture_avif's
+// image/avif; getImageURIMimeType and the AVIF support check). A fixed list, so the mimeType each texture's userData
+// keeps (and each clone copies) is ten characters at most. Whether an image is decoded is the parser's decision, as
+// before: a KTX2 image is skipped for its fallback (no decoder), and a refused one is refused at its decode
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/ktx2', 'image/avif']
 
 // componentType: bytes of a component; type: components of an element
 const COMPONENT_BYTES = { 5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126: 4 }
@@ -590,10 +594,10 @@ export function checkGLTF(data, limits = GLTF_LIMITS, budget = null) {
     if (typeof image.uri === 'string' && image.uri.trim().toLowerCase().startsWith('blob:')) {
       refuse(`image ${i} names a blob: URL`)
     }
-    // kept in its texture's userData, which three.js copies with every clone of the texture: one of the types this
-    // client decodes (a document's own string of any length was copied in every texture slot of every outline)
+    // kept in its texture's userData, which three.js copies with every clone of the texture: one of a fixed list of
+    // image types (a document's own string of any length was copied in every texture slot of every outline)
     if (image.mimeType !== undefined && !IMAGE_TYPES.includes(image.mimeType)) {
-      refuse(`image ${i} mimeType is not image/png, image/jpeg or image/webp`)
+      refuse(`image ${i} mimeType is not one of ${IMAGE_TYPES.join(', ')}`)
     }
   })
   // a sampler's filters and wrapping: numbers (the parser looks each up for every texture using the sampler)

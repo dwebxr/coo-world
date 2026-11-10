@@ -889,12 +889,17 @@ test('three-vrm walks are counted in objects of the scene graph, as the plugins 
       MTOON_TEXTURE_SLOTS * largest
   )
   // the reviewer's probe: a 100,000-character mimeType, copied in each of nine slots of 100 outline clones (180 MB
-  // from a 0.11 MB file, 0.88 MB counted). A mimeType is one of the three types this client decodes now
+  // from a 0.11 MB file, 0.88 MB counted). A mimeType is one of a fixed list now: the three types this client
+  // decodes, and the KTX2 and AVIF types a valid file carries for the images its extensions name (with a fallback)
   const mime = heavy(1)
   mime.images = [{ bufferView: 0, mimeType: 'image/png' + 'x'.repeat(100) }]
-  refused(mime, /image 0 mimeType is not image\/png, image\/jpeg or image\/webp/)
+  refused(mime, /image 0 mimeType is not one of image\/png, image\/jpeg, image\/webp, image\/ktx2, image\/avif/)
   mime.images[0].mimeType = 'image/gif'
-  refused(mime, /image 0 mimeType is not/)
+  refused(mime, /image 0 mimeType is not one of/)
+  for (const type of ['image/png', 'image/jpeg', 'image/webp', 'image/ktx2', 'image/avif']) {
+    mime.images[0].mimeType = type
+    assert.ok(checkGLTF(text(mime)), type)
+  }
   // texture-transform binds: each clones every texture slot of each material it binds (once per mesh using the
   // material, VRM 1; once per material found by name and its outline copy, VRM 0)
   const transforms = (binds, meshes = 3) => {

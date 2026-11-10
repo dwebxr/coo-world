@@ -53,14 +53,13 @@ const REMOTE_RESULT_LIMIT = 128
 const STALL_MS = 30_000
 const DOWNLOAD_MS = 120_000
 // transfers (download and decode) at once: the world's own store and other hosts have pools of their own, so slow
-// hosts cannot hold up the world's assets. A request waiting for a slot has not opened its download
+// hosts cannot hold up the world's assets. A request waiting for a slot has not opened its download. This is also
+// the bound on the bytes in flight: each transfer is within its kind's limit (a stated length over it is refused
+// before reading, a body that grows past it is cut off), so downloads from other hosts hold at most 4 x 64 MiB =
+// 256 MiB at the very worst, and the world's own at most 8 x the upload limit (or the kind's limit, if larger).
+// Responses are decoded, so a stated length does not bound the body, and no tighter promise is made
 const OWN_TRANSFERS = 8
 const REMOTE_TRANSFERS = 4
-// bytes that downloads from other hosts may hold at once: each reserves its stated length (or its kind's cap when
-// it states none) before it reads, and waits while that does not fit. One alone always fits (the largest cap is
-// 64 MiB). A body longer than it said (a compressed response states the compressed length) grows its reservation
-// up to its cap without waiting, so the most held is still bounded by the pool times the largest cap
-const REMOTE_BYTE_BUDGET = 128 * MiB
 // requests for other hosts waiting or running at once; past this a new one fails at once and is not kept. The
 // world's own requests are not capped in number (a large world preloads every asset at once), only in concurrency
 const REMOTE_REQUEST_LIMIT = 256
@@ -299,15 +298,12 @@ export class ClientLoader extends System {
     this.stallMs = STALL_MS
     this.downloadMs = DOWNLOAD_MS
     this.remoteFileMaxBytes = REMOTE_FILE_MAX_BYTES
-    // bounded transfers: slots per pool, bytes reserved by downloads from other hosts, requests for other hosts
+    // bounded transfers: slots per pool, requests for other hosts
     this.pools = createPools()
-    this.remoteByteBudget = REMOTE_BYTE_BUDGET
-    this.reserved = 0
-    this.byteQueue = []
     this.remoteRequestLimit = REMOTE_REQUEST_LIMIT
     this.remoteRequests = 0
-    // downloads in progress, per resource url: marked stale when a newer file is put or the kept one removed, so
-    // they do not write theirs over it
+    // transfers asked for, per resource url, from the moment they are queued: marked stale when a newer file is put
+    // or the kept one removed, so they do not write theirs over it
     this.transfers = new Map()
     // bumped by destroy(): nothing that started before writes afterwards
     this.life = 0
@@ -476,52 +472,70 @@ export class ClientLoader extends System {
   loadFile = async (url, { maxBytes, name } = {}) => {
     const resource = this.resourceURL(url)
     const limit = maxBytes ?? this.maxBytes(null, resource)
-    const life = this.life
     let file = this.cachedFile(resource)
     if (file) {
       if (file.size > limit) throw tooLarge(limit)
     } else {
       const remote = !this.isOwnAsset(resource)
       const leave = this.enter(remote)
+      const transfer = this.beginTransfer(resource, remote)
       try {
-        const release = await this.acquire(remote)
-        try {
-          file = await this.fetchFile(resource, limit, remote, life)
-        } finally {
-          release()
-        }
+        file = await this.transferFile(resource, limit, transfer)
       } finally {
+        this.endTransfer(transfer)
         leave()
       }
     }
     return name ? renamed(file, name) : file
   }
 
-  // the file for a load that holds a transfer slot: kept, or downloaded
-  async readFile(resource, limit, remote, life) {
+  // A transfer is filed from the moment it is asked for, so a newer file put while it waits for a slot or
+  // downloads marks it stale (invalidate). `life`: the loader's lifecycle it belongs to
+  beginTransfer(resource, remote) {
+    const transfer = { resource, remote, stale: false, life: this.life, fail: null }
+    let list = this.transfers.get(resource)
+    if (!list) this.transfers.set(resource, (list = new Set()))
+    list.add(transfer)
+    return transfer
+  }
+
+  endTransfer(transfer) {
+    const list = this.transfers.get(transfer.resource)
+    if (!list) return
+    list.delete(transfer)
+    if (list.size === 0) this.transfers.delete(transfer.resource)
+  }
+
+  // waits for a slot, then reads the file (and, with `decode`, turns it into the result while it holds the slot). A
+  // request from before destroy() fails before it takes a slot and again after it got one; the cache is read only
+  // once the slot is granted, so a file put while the request waited is the one used
+  async transferFile(resource, limit, transfer, decode) {
+    if (transfer.life !== this.life) throw destroyedError()
+    const release = await this.acquire(transfer.remote)
+    try {
+      if (transfer.life !== this.life) throw destroyedError()
+      const file = await this.readFile(resource, limit, transfer)
+      return decode ? await decode(file) : file
+    } finally {
+      release()
+    }
+  }
+
+  // the file for a transfer that holds a slot: kept, or downloaded
+  async readFile(resource, limit, transfer) {
     const file = this.cachedFile(resource)
-    if (!file) return this.fetchFile(resource, limit, remote, life)
+    if (!file) return this.fetchFile(resource, limit, transfer)
     // the same limit as a download: a file kept from another kind of load (or setFile) is checked again
     if (file.size > limit) throw tooLarge(limit)
     return file
   }
 
-  // downloads a file and keeps it, unless a newer file was put for the url meanwhile or the loader was destroyed.
-  // `life`: when the request that wants it began (one granted a slot just before destroy() may resume after it)
-  async fetchFile(resource, limit, remote, life) {
-    const transfer = { resource, remote, stale: false, life, fail: null }
-    let list = this.transfers.get(resource)
-    if (!list) this.transfers.set(resource, (list = new Set()))
-    list.add(transfer)
-    try {
-      const blob = await this.download(resource, limit, transfer)
-      const file = new File([blob], resource.split('/').pop(), { type: blob.type })
-      if (!transfer.stale && transfer.life === this.life) this.keepFile(resource, file)
-      return file
-    } finally {
-      list.delete(transfer)
-      if (list.size === 0 && this.transfers.get(resource) === list) this.transfers.delete(resource)
-    }
+  // downloads a file and keeps it, unless a newer file was put for the url meanwhile or the loader was destroyed
+  async fetchFile(resource, limit, transfer) {
+    const blob = await this.download(resource, limit, transfer)
+    const file = new File([blob], resource.split('/').pop(), { type: blob.type })
+    if (!transfer.stale && transfer.life === this.life) this.keepFile(resource, file)
+    return file
   }
 
   // requests for other hosts are capped while they wait or run; returns the function that leaves the count
@@ -560,51 +574,13 @@ export class ClientLoader extends System {
     })
   }
 
-  // waits, in order of asking, until `bytes` fit in the budget for downloads from other hosts (one alone always
-  // fits). `race` ends the wait when the transfer is abandoned
-  async reserveBytes(bytes, race) {
-    const life = this.life
-    const waiter = { bytes, granted: false, grant: null }
-    const granted = new Promise(resolve => (waiter.grant = resolve))
-    this.byteQueue.push(waiter)
-    this.grantBytes()
-    try {
-      await race(granted)
-    } catch (err) {
-      const at = this.byteQueue.indexOf(waiter)
-      if (at >= 0) this.byteQueue.splice(at, 1)
-      else if (waiter.granted) this.releaseBytes(bytes, life)
-      throw err
-    }
-  }
-
-  grantBytes() {
-    while (this.byteQueue.length) {
-      const head = this.byteQueue[0]
-      if (this.reserved > 0 && this.reserved + head.bytes > this.remoteByteBudget) break
-      this.byteQueue.shift()
-      this.reserved += head.bytes
-      head.granted = true
-      head.grant()
-    }
-  }
-
-  releaseBytes(bytes, life) {
-    if (!bytes || life !== this.life) return
-    this.reserved -= bytes
-    this.grantBytes()
-  }
-
   // one transfer, abandoned (and its connection aborted) on any refusal: an error status, a size over the limit, no
-  // data for stallMs, longer than downloadMs in all, or destroy(). From another host it holds a byte reservation
-  // while it reads
+  // data for stallMs, longer than downloadMs in all, or destroy()
   async download(url, maxBytes, transfer) {
     const controller = new AbortController()
-    const life = this.life
     let failure = null
     let stall
     let abandoned
-    let held = 0
     const ended = new Promise((resolve, reject) => (abandoned = reject))
     ended.catch(() => {})
     const fail = err => {
@@ -615,16 +591,10 @@ export class ClientLoader extends System {
     }
     transfer.fail = fail
     // a request from before destroy() does not start a transfer after it
-    if (transfer.life !== life) fail(destroyedError())
-    const onData = size => {
+    if (transfer.life !== this.life) fail(destroyedError())
+    const onData = () => {
       clearTimeout(stall)
       stall = setTimeout(() => fail(new Error(`download stalled: no data for ${this.stallMs / 1000} s`)), this.stallMs)
-      // a body longer than it said grows its reservation (up to its cap) without waiting
-      if (transfer.remote && size > held && life === this.life) {
-        const next = Math.min(maxBytes, Math.max(size, held * 2))
-        this.reserved += next - held
-        held = next
-      }
     }
     const deadline = setTimeout(
       () => fail(new Error(`download took longer than ${this.downloadMs / 1000} s`)),
@@ -632,26 +602,13 @@ export class ClientLoader extends System {
     )
     // a wait ends when the transfer is abandoned, also where the transport does not honour the abort
     const race = promise => Promise.race([promise, ended])
-    onData(0)
+    onData()
     try {
       if (failure) throw failure
       const resp = await race(fetch(url, { signal: controller.signal }))
-      onData(0)
+      onData()
       // an error page is not the asset: it used to be parsed as the model, image or script
       if (!resp.ok) throw new Error(`asset request failed: HTTP ${resp.status}`)
-      if (transfer.remote) {
-        const length = resp.headers.get('content-length')
-        const declared = length === null ? NaN : Number(length)
-        // a stated length over the limit is refused by readBody before anything is read
-        if (!(declared > maxBytes)) {
-          const bytes = Number.isFinite(declared) && declared >= 0 ? declared : maxBytes
-          // waiting for the budget is not a stall of the host
-          clearTimeout(stall)
-          await this.reserveBytes(bytes, race)
-          held = bytes
-          onData(0)
-        }
-      }
       return await readBody(resp, maxBytes, race, onData)
     } catch (err) {
       fail(err)
@@ -659,8 +616,7 @@ export class ClientLoader extends System {
     } finally {
       clearTimeout(deadline)
       clearTimeout(stall)
-      this.releaseBytes(held, life)
-      held = 0
+      transfer.fail = null
     }
   }
 
@@ -736,21 +692,19 @@ export class ClientLoader extends System {
     }
     // past the cap for other hosts this fails at once and nothing is kept
     const leave = this.enter(remote)
-    const life = this.life
+    const transfer = this.beginTransfer(resource, remote)
     let file = null
     return this.register(
       key,
       remote,
       async () => {
         try {
-          const release = await this.acquire(remote)
-          try {
-            file = await this.readFile(resource, this.maxBytes(type, resource), remote, life)
-            return await this.decode(type, url, file)
-          } finally {
-            release()
-          }
+          return await this.transferFile(resource, this.maxBytes(type, resource), transfer, read => {
+            file = read
+            return this.decode(type, url, read)
+          })
         } finally {
+          this.endTransfer(transfer)
           leave()
         }
       },
@@ -845,15 +799,13 @@ export class ClientLoader extends System {
   }
 
   // nothing that started before writes afterwards: transfers are aborted, requests waiting for a slot fail, and the
-  // reservations and counts start again
+  // counts start again
   destroy() {
     this.life++
     for (const list of this.transfers.values()) for (const transfer of list) transfer.fail?.(destroyedError())
     this.transfers.clear()
     for (const pool of Object.values(this.pools)) for (const waiter of pool.queue) waiter.reject(destroyedError())
     this.pools = createPools()
-    this.byteQueue = []
-    this.reserved = 0
     this.remoteRequests = 0
     this.files.clear()
     this.promises.clear()

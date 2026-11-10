@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import * as THREE from 'three'
 import { loadClient } from './lib/clientHarness.mjs'
 import { png, pngChunk, jpeg, webp, gif } from './lib/imageBytes.mjs'
-import { MAX_IMAGE_PIXELS, imageType, readImageHeader } from '../src/core/extras/imageHeader.js'
+import { MAX_IMAGE_PIXELS, readImageHeader } from '../src/core/extras/imageHeader.js'
 
 // The browser's loader with its real code and a fake network: what it accepts, refuses, keeps and forgets.
 // The parsers are stand-ins the tests steer (test/clientLoaderGLTF.test.js runs the real GLTF parser).
@@ -50,7 +50,6 @@ const ClientLoader = loadClient('core/systems/ClientLoader.js', 'ClientLoader', 
   emoteUrls: [],
   Hls: class {},
   MAX_IMAGE_PIXELS,
-  imageType,
   readImageHeader,
 })
 
@@ -765,22 +764,21 @@ test('own-store loads proceed while stalled transfers from other hosts hold thei
     signals.every(signal => signal.aborted),
     'active transfers are aborted'
   )
-  assert.equal(loader.reserved, 0)
   assert.equal(loader.remoteRequests, 0)
   assert.equal(loader.pools.remote.queue.length, 0)
 })
 
 test('the deadlines of a download start when it does: waiting in the queue is neither a stall nor overtime', async t => {
-  // a body of ten 10-byte chunks, one every 15 ms (150 ms in all, never 40 ms without data)
+  // a body of twelve chunks, one every 50 ms: 600 ms in all, never 500 ms without data (ten times the gap)
   const trickle = () => {
     let sent = 0
     return new Response(
       new ReadableStream(
         {
           async pull(controller) {
-            await new Promise(resolve => setTimeout(resolve, 15))
+            await new Promise(resolve => setTimeout(resolve, 50))
             controller.enqueue(new Uint8Array(10))
-            if (++sent === 10) controller.close()
+            if (++sent === 12) controller.close()
           },
         },
         { highWaterMark: 0 }
@@ -790,113 +788,86 @@ test('the deadlines of a download start when it does: waiting in the queue is ne
   fakeNetwork(t, () => ({ response: trickle }))
   const loader = makeLoader()
   loader.pools.remote.limit = 1
-  loader.stallMs = 40
-  loader.downloadMs = 200
-  // the second waits about 150 ms for the first: more than stallMs; the two together take more than downloadMs
+  loader.stallMs = 500
+  loader.downloadMs = 1000
+  // the second waits about 600 ms for the first (more than stallMs), and the two take about 1200 ms (more than
+  // downloadMs): both complete, since each one's deadlines start with its own transfer
   const started = Date.now()
-  const loads = [
-    loader.load('script', 'https://elsewhere.example/1.js'),
-    loader.load('script', 'https://elsewhere.example/2.js'),
-  ]
-  const scripts = await Promise.all(loads)
-  assert.ok(Date.now() - started > 250, `${Date.now() - started} ms`)
+  const first = loader.load('script', 'https://elsewhere.example/1.js')
+  const second = loader.load('script', 'https://elsewhere.example/2.js')
+  const scripts = await Promise.all([first, second])
+  assert.ok(Date.now() - started > 1000, `${Date.now() - started} ms`)
   assert.deepEqual(
     scripts.map(script => script.code.length),
-    [100, 100]
+    [120, 120]
   )
 })
 
-test('downloads from other hosts reserve their stated length (or cap) before reading, wait while it does not fit, and give it back', async t => {
-  // a body of `chunks` chunks of 10 bytes, one every 15 ms
-  const trickle = (chunks, headers) => {
-    const state = { pulls: 0 }
-    state.response = () =>
-      new Response(
-        new ReadableStream(
-          {
-            async pull(controller) {
-              state.pulls++
-              await new Promise(resolve => setTimeout(resolve, 15))
-              controller.enqueue(new Uint8Array(10))
-              if (state.pulls === chunks) controller.close()
-            },
-          },
-          { highWaterMark: 0 }
-        ),
-        { headers }
-      )
-    return state
-  }
-  const bodies = {
-    a: trickle(6, { 'content-length': '60' }),
-    b: trickle(6, { 'content-length': '60' }),
-    unstated: gatedBody(20),
-  }
-  // states 10 bytes, sends 50, then waits before it ends
-  const longer = { pulls: 0 }
-  let endLonger
-  const longerEnds = new Promise(resolve => (endLonger = resolve))
-  longer.response = () =>
-    new Response(
-      new ReadableStream(
-        {
-          async pull(controller) {
-            if (++longer.pulls === 1) return controller.enqueue(new Uint8Array(50))
-            await longerEnds
-            controller.close()
-          },
-        },
-        { highWaterMark: 0 }
-      ),
-      { headers: { 'content-length': '10' } }
-    )
-  bodies.longer = longer
-  const stalls = () =>
-    new Response(new ReadableStream({ pull: () => new Promise(() => {}) }), { headers: { 'content-length': '30' } })
-  fakeNetwork(t, url => {
-    const name = url.split('/').pop().split('.')[0]
-    if (bodies[name]) return { response: bodies[name].response }
-    if (name === 'missing') return { status: 404 }
-    if (name === 'stalls') return { response: stalls }
-    if (name === 'over') return { body: new Uint8Array(3 * MiB) }
-    return { body: '// own', headers: { 'content-length': '6' } }
-  })
+test('a queued download is filed when it is asked for: a file put while it waits is the one used, not overwritten', async t => {
+  const gates = []
+  const requests = fakeNetwork(t, url => ({
+    response: () => new Promise(resolve => gates.push(() => resolve(new Response(`old ${url.split('/').pop()}`)))),
+  }))
   const loader = makeLoader()
-  loader.remoteByteBudget = 100
-  loader.stallMs = 40
-  // 60 + 60 does not fit in 100: b waits until a is read (90 ms, longer than stallMs: waiting is not a stall)
-  const started = Date.now()
-  const a = loader.load('script', 'https://elsewhere.example/a.js')
-  const b = loader.load('script', 'https://elsewhere.example/b.js')
-  while (bodies.a.pulls < 3) await tick()
-  assert.equal(loader.reserved, 60)
-  assert.equal(bodies.b.pulls, 0, 'b waits for the budget before reading')
-  assert.equal((await a).code.length, 60)
-  assert.equal((await b).code.length, 60)
-  assert.ok(Date.now() - started >= 150, 'b was read after a')
-  assert.equal(loader.reserved, 0)
-  // no stated length: the kind's cap (2 MiB for a script), which fits because it is alone
-  const unstated = loader.load('script', 'https://elsewhere.example/unstated.js')
-  while (bodies.unstated.pulls === 0) await tick()
-  assert.equal(loader.reserved, 2 * MiB)
-  bodies.unstated.release()
-  await unstated
-  // a body longer than it said grows its reservation while it reads, and gives it back
-  const longerLoad = loader.load('script', 'https://elsewhere.example/longer.js')
-  while (longer.pulls < 2) await tick()
-  assert.equal(loader.reserved, 50, 'the reservation grew to the bytes read')
-  endLonger()
-  assert.equal((await longerLoad).code.length, 50)
-  assert.equal(loader.reserved, 0)
-  // failures give their reservation back too: an error status, a stall, a body over the limit
-  await assert.rejects(loader.load('script', 'https://elsewhere.example/missing.js'), /HTTP 404/)
-  await assert.rejects(loader.load('script', 'https://elsewhere.example/stalls.js'), /stalled/)
-  await assert.rejects(loader.load('script', 'https://elsewhere.example/over.js'), /larger than/)
-  assert.equal(loader.reserved, 0)
-  assert.equal(loader.byteQueue.length, 0)
-  // the world's own downloads do not reserve
-  await loader.load('script', 'asset://own.js')
-  assert.equal(loader.reserved, 0)
+  loader.pools.remote.limit = 1
+  // the pool is held by another download; a loadFile and a load of the same url wait behind it
+  const holder = loader.load('script', 'https://elsewhere.example/holder.js')
+  await tick()
+  const queued = loader.loadFile('https://elsewhere.example/m.js')
+  const queuedLoad = loader.load('script', 'https://elsewhere.example/n.js')
+  await tick()
+  const newer = new File(['// newer'], 'm.js')
+  loader.setFile('https://elsewhere.example/m.js', newer)
+  loader.setFile('https://elsewhere.example/n.js', new File(['// newer n'], 'n.js'))
+  gates.shift()()
+  await holder
+  // after the slot is granted the cache is read again: the newer files are used, nothing is downloaded
+  assert.equal(await queued, newer)
+  assert.equal((await queuedLoad).code, '// newer n')
+  assert.deepEqual([...requests], ['https://elsewhere.example/holder.js'])
+  assert.equal(loader.getFile('https://elsewhere.example/m.js'), newer)
+  // a download already running when a newer file is put does not overwrite it either
+  const running = loader.loadFile('https://elsewhere.example/r.js')
+  while (gates.length === 0) await tick()
+  const picked = new File(['// picked'], 'r.js')
+  loader.setFile('https://elsewhere.example/r.js', picked)
+  gates.shift()()
+  assert.equal(await (await running).text(), 'old r.js', 'the caller gets what it downloaded')
+  assert.equal(loader.getFile('https://elsewhere.example/r.js'), picked)
+})
+
+test('a request from before destroy() does not join the next lifecycle: it fails before it takes a slot', async t => {
+  const gates = []
+  const requests = fakeNetwork(t, url =>
+    url.endsWith('/held.js')
+      ? { response: () => new Promise(resolve => gates.push(() => resolve(new Response('// held')))) }
+      : { body: '// x' }
+  )
+  const loader = makeLoader()
+  loader.pools.own.limit = 1
+  const holder = loader.loadFile('asset://hold.js')
+  // asked for before destroy(); the load's work starts only after it
+  const before = [loader.load('script', 'asset://a.js'), loader.loadFile('asset://b.js')]
+  loader.destroy()
+  // the next lifecycle's only slot is taken at once by a download that waits
+  loader.pools.own.limit = 1
+  const held = loader.loadFile('asset://held.js')
+  // the old requests fail at once instead of queueing behind it
+  const settled = await Promise.race([
+    Promise.allSettled(before),
+    new Promise(resolve => setTimeout(() => resolve('still waiting'), 1000)),
+  ])
+  assert.notEqual(settled, 'still waiting', 'an old request joined the new queue')
+  for (const result of settled) {
+    assert.equal(result.status, 'rejected')
+    assert.match(result.reason.message, /destroyed/)
+  }
+  await holder.catch(() => {})
+  while (gates.length === 0) await tick()
+  gates.shift()()
+  assert.equal(await (await held).text(), '// held')
+  assert.equal((await loader.load('script', 'asset://c.js')).code, '// x')
+  assert.ok(!requests.includes(`${ASSETS}/a.js`) && !requests.includes(`${ASSETS}/b.js`))
 })
 
 test('a download that finishes after a newer file was put for its url, or after destroy(), does not write its file', async t => {

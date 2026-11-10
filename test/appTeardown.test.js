@@ -423,6 +423,87 @@ test('world nodes: a node another app took over is not torn down (or removed) by
   assert.equal(b.liveNodes, 0)
 })
 
+test("app roots: another app's root cannot be moved into an app's tree or world space", async () => {
+  const shared = {}
+  const own = []
+  const { world, app: a } = makeWorld((world, app) => {
+    shared.aApp = app
+    app.add(app.create('group'))
+    // an app moving its own root keeps working as before
+    try {
+      world.add(app)
+      own.push('added')
+    } catch (err) {
+      own.push(err.message)
+    }
+  })
+  await tick()
+  assert.deepEqual(own, ['added'])
+  const aBefore = { live: a.liveNodes, world: [...a.worldNodes], mounted: mountedNodes(a).length }
+  const seen = []
+  const b = addApp(world, 'b', (world, app) => {
+    const local = app.create('group')
+    app.add(local)
+    const outside = app.create('group')
+    world.add(outside)
+    const detached = app.create('group')
+    for (const attempt of [
+      () => world.add(shared.aApp),
+      () => world.attach(shared.aApp),
+      () => app.add(shared.aApp),
+      () => local.add(shared.aApp),
+      () => outside.add(shared.aApp),
+      () => detached.add(shared.aApp),
+    ]) {
+      try {
+        attempt()
+        seen.push('moved')
+      } catch (err) {
+        seen.push(err.message)
+      }
+    }
+  })
+  await tick()
+  assert.equal(seen.length, 6)
+  for (const message of seen) assert.match(message, /cannot add another app's root node/)
+  assert.equal(a.liveNodes, aBefore.live)
+  assert.deepEqual([...a.worldNodes], aBefore.world)
+  assert.equal(mountedNodes(a).length, aBefore.mounted)
+  assert.equal(a.root.parent, null)
+  assert.equal(a.root._nodeOwner, a)
+  assert.equal(b.liveNodes, 3, 'its root, its local node and its world-space node')
+  assert.equal(b.worldNodes.size, 1)
+  const bWorld = [...b.worldNodes]
+  a.destroy()
+  assert.equal(b.liveNodes, 3, 'deleting the other app does not disturb it')
+  assert.deepEqual([...b.worldNodes], bWorld)
+  assert.equal(mountedNodes(b).length, 3)
+  b.destroy()
+  assert.equal(b.liveNodes, 0)
+})
+
+test("app roots: a former owner's teardown leaves its old root alone once another app holds it", async () => {
+  const shared = {}
+  const { world, app: a } = makeWorld((world, app) => {
+    // its own root under its own world-space node: allowed, as before
+    shared.holder = app.create('group')
+    world.add(shared.holder)
+    shared.holder.add(app)
+  })
+  await tick()
+  assert.equal(a.root.parent?.ctx?.entity, a)
+  const b = addApp(world, 'b', world => {
+    // a world-space node of another app (an ordinary node) can be taken over, with what is under it
+    world.add(shared.holder)
+  })
+  await tick()
+  assert.equal(b.liveNodes, 3, 'its root, the holder and the root under it')
+  a.destroy()
+  assert.equal(b.liveNodes, 3, "the former owner's teardown does not unmount what the other app holds")
+  b.destroy()
+  assert.equal(b.liveNodes, 0)
+})
+
 test('world nodes: a world-space node moved under a node leaves its app world-node list', async () => {
   const shared = {}
   const { app } = makeWorld((world, app) => {

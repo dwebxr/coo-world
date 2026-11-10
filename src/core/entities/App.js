@@ -151,6 +151,8 @@ export class App extends Entity {
     // scripts change this copy, never the shared blueprint (other instances, the snapshot and the sidebar read that)
     this.props = copyProps(blueprint.props)
     this.root = root
+    // what the app proxy stands for: no other app can move it into its own tree or world space (nodeLimits.js)
+    root._appRoot = this
     if (!blueprint.scene) {
       this.root.position.fromArray(this.data.position)
       this.root.quaternion.fromArray(this.data.quaternion)
@@ -280,8 +282,13 @@ export class App extends Entity {
       }
     }
     this.players = null
-    // deactivate local node
-    stage('root', () => this.root?.deactivate())
+    // deactivate local node (unless another app now holds it: one that took over a world-space node of this app's
+    // with this app's root moved under it)
+    stage('root', () => {
+      const root = this.root
+      if (root?.mounted && root._nodeOwner !== this) return
+      root?.deactivate()
+    })
     // deactivate world nodes
     // (only nodes this app still owns: one another app took over left this list when it moved)
     for (const node of [...this.worldNodes]) {

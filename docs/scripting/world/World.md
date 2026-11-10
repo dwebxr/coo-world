@@ -64,6 +64,9 @@ Whether the script is currently executing on the client.
 
 Adds a node into world-space, outside of the apps local hierarchy.
 
+Another app's root (the node its `app` stands for) cannot be added, to world space or under a node: `world.add`,
+`world.attach` and `node.add` throw `[…] cannot add another app's root node`. An app can still move its own root.
+
 ### `.remove(node)`
 
 Removes a node from world-space, outside of the apps local hierarchy.

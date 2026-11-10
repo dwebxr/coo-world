@@ -28,3 +28,22 @@ export function unplaceWorldNode(node) {
   owner.worldNodes?.delete(node)
   node._worldOwner = null
 }
+
+// App roots: the node an app's `app` proxy stands for (App.build marks it `_appRoot`) is placed and torn down by its
+// app. It cannot be moved into another app's tree or world-space list (its app's teardown would unmount it there);
+// an app moving its own root keeps working as before.
+export function assertMovableRoot(node, entity, where) {
+  if (node?._appRoot && node._appRoot !== entity) throw new Error(`[${where}] cannot add another app's root node`)
+}
+
+// the app a tree belongs to: the app whose root, or whose world-space node, is at its top (null for a tree that is
+// not placed anywhere)
+export function treeApp(node) {
+  let top = node
+  let steps = 0
+  while (top.parent) {
+    if (++steps > NODE_CLIMB_LIMIT) return null
+    top = top.parent
+  }
+  return top._appRoot || top._worldOwner || null
+}

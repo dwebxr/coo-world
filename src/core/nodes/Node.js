@@ -7,6 +7,8 @@ import {
   NODE_DEPTH_LIMIT,
   NODE_LIMIT,
   NodeLimitError,
+  assertMovableRoot,
+  treeApp,
   unplaceWorldNode,
 } from '../extras/nodeLimits.js'
 
@@ -141,6 +143,8 @@ export class Node {
     this._nodeDepth = 0
     // the app that placed this node in world space (nodeLimits.js placeWorldNode), while it is there
     this._worldOwner = null
+    // the app this node is the root of (App.build), which alone may move it (nodeLimits.js assertMovableRoot)
+    this._appRoot = null
   }
 
   // Mounts this node and its active descendants into `ctx` (the world and the entity that owns them). A mounted
@@ -199,6 +203,9 @@ export class Node {
       if (ancestor === node) throw new Error('[node] cannot add a node to itself or to one of its descendants')
       if (++steps > NODE_CLIMB_LIMIT) throw new Error('[node] node tree too deep or cyclic')
     }
+    // an app's root goes only where its own app placed the tree (not into a detached one, which could be mounted
+    // anywhere later)
+    if (node._appRoot) assertMovableRoot(node, treeApp(this), 'node.add')
     if (node.parent) {
       node.parent.remove(node)
     } else if (node.mounted) {

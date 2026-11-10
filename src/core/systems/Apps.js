@@ -6,7 +6,7 @@ import { readVec3, isFiniteF32, warnOnce } from '../extras/physxConvert.js'
 
 import { System } from './System'
 import { getNodeRef, resolveValueRef } from '../nodes/Node'
-import { NODE_CLIMB_LIMIT, placeWorldNode, unplaceWorldNode } from '../extras/nodeLimits.js'
+import { NODE_CLIMB_LIMIT, assertMovableRoot, placeWorldNode, unplaceWorldNode } from '../extras/nodeLimits.js'
 import { Layers } from '../extras/Layers'
 import { ControlPriorities } from '../extras/ControlPriorities'
 import { warn } from '../extras/warn'
@@ -92,6 +92,7 @@ export class Apps extends System {
           if (pNode != null) console.error('[world.add] expected a node')
           return
         }
+        assertMovableRoot(node, entity, 'world.add')
         if (node.parent) {
           node.parent.remove(node)
         } else if (node.mounted && node.ctx?.entity !== entity) {
@@ -119,6 +120,7 @@ export class Apps extends System {
           if (pNode != null) console.error('[world.attach] expected a node')
           return
         }
+        assertMovableRoot(node, entity, 'world.attach')
         const parent = node.parent
         if (!parent) return
         const finalMatrix = new THREE.Matrix4()

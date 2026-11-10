@@ -932,7 +932,7 @@ export class ServerNetwork extends System {
       if (!snapshot || snapshot.length > SNAPSHOT_CAP) {
         return refuseJoin(
           'snapshot',
-          `a player was turned away: the join snapshot is ${snapshot ? `${snapshot.length} bytes` : 'not encodable'} after every step, over its cap (${SNAPSHOT_CAP}); nobody can join until the world's state is smaller`
+          `a player was turned away: the join snapshot is ${snapshot ? `${snapshot.length} bytes` : 'not encodable'} after every step, over its cap (${SNAPSHOT_CAP}); joins fit again once the world's state, or the number of players here, is smaller`
         )
       }
 

@@ -12,6 +12,7 @@ import {
   snapshotBound,
   visitorShortfall,
 } from '../src/core/extras/joinBudget.js'
+import { Ranks } from '../src/core/extras/ranks.js'
 import { serverSource } from './lib/networkHarness.mjs'
 import { app, apps, fillTo, fixture, long, nextId } from './lib/joinFixture.mjs'
 
@@ -117,6 +118,41 @@ test('join budget: the snapshot carries the upload size the server parsed, never
 // records (the joins build real snapshots, so their size is kept small), a crowd put in place directly up to its last
 // member, who joins, and a world brought to its budget through the accounting where a case needs it (eight 60 KB
 // blueprints and the rest as operator collections).
+// The rule reads the rank stored on the user (the users row, `user.rank` in onConnection; after a takeover whose rank
+// write is still landing, the in-world rank that write stores). The world's rank setting (free build, or every
+// player an admin without ADMIN_CODE: Settings.effectiveRank) and a session-only token grant (rankGrants.js) are
+// effective ranks, not stored ones, so they do not skip it.
+test('join budget: the visitor rule reads the stored rank, not a free-build world rank or a token grant', async () => {
+  const f = fixture()
+  fillTo(f, 0)
+  // a wallet holder who came in early and was made builder by token: player.data only, the row keeps rank 0
+  f.users.set('wallet1', { id: 'wallet1', name: 'w', avatar: null, rank: Ranks.VISITOR })
+  assert.equal((await f.join({ authToken: 'wallet1' })).method, 'onSnapshot')
+  const holder = f.world.entities.get('wallet1')
+  holder.data.tokenGrantedRank = true
+  holder.modify({ rank: Ranks.BUILDER })
+  let count = 0
+  while (f.world.entities.players.size < visitorLimit(f.world)) f.world.entities.add(crowd(count++))
+  // free build: the world makes everyone a builder; a newcomer is still a visitor here
+  f.world.settings.rank = Ranks.BUILDER
+  f.world.settings.setHasAdminCode(true)
+  assert.equal(f.world.settings.effectiveRank, Ranks.BUILDER)
+  assert.equal((await f.join()).method, 'onKick')
+  // without ADMIN_CODE everyone is an admin in the world, and still a visitor here
+  f.world.settings.setHasAdminCode(false)
+  assert.equal(f.world.settings.effectiveRank, Ranks.ADMIN)
+  assert.equal((await f.join()).method, 'onKick')
+  // the token holder leaves (one more takes the place) and comes back: the grant was never stored
+  f.network.sockets.delete('wallet1')
+  f.world.entities.remove('wallet1')
+  f.world.entities.add(crowd(count++))
+  assert.equal(f.users.get('wallet1').rank, Ranks.VISITOR)
+  assert.equal((await f.join({ authToken: 'wallet1' })).method, 'onKick')
+  // once the rank is stored (persistRank), the same user skips the rule
+  f.users.get('wallet1').rank = Ranks.BUILDER
+  assert.equal((await f.join({ authToken: 'wallet1' })).method, 'onSnapshot')
+})
+
 test('join budget: visitors stop where ranked users and growth keep their room; a stored rank always gets in', async () => {
   const f = fixture()
   fillTo(f, 0)

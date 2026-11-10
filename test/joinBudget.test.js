@@ -10,6 +10,7 @@ import {
   WORLD_JOIN_BYTES,
   encodeSnapshot,
   joinStateBytes,
+  joinStateReport,
   snapshotBound,
   stateBytes,
 } from '../src/core/extras/joinBudget.js'
@@ -437,6 +438,23 @@ test('join budget: nothing is taken before the network has loaded; a join cancel
   assert.ok(f.network.userIds.has(inserted), 'its id is reserved all the same')
   f.network.onEntityAdded(f.builder, app(inserted))
   assert.equal(f.world.entities.get(inserted), undefined)
+})
+
+test('join budget: the start-up report says what is counted over the cap, not that every join fails', () => {
+  const world = {
+    blueprints: { bytes: 1100000, sizes: new Map([['bp', 1100000]]) },
+    entities: { appBytes: 0, appSizes: new Map() },
+    network: {},
+  }
+  const report = joinStateReport(world, { snapshotCap: SNAPSHOT_CAP })
+  assert.match(
+    report,
+    /as counted it is over the snapshot cap \(1047552\): visitors are refused, and a user with a stored rank joins only while the real snapshot fits/
+  )
+  assert.doesNotMatch(report, /joins fail/)
+  // under the cap, only the budget is mentioned
+  world.blueprints = { bytes: 900000, sizes: new Map([['bp', 900000]]) }
+  assert.doesNotMatch(joinStateReport(world, { snapshotCap: SNAPSHOT_CAP }), /snapshot cap/)
 })
 
 test('join budget: a world stored over the budget boots whole, reports, refuses growth and accepts a delete', async t => {

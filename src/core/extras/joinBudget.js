@@ -170,8 +170,11 @@ export function joinStateReport(world, { snapshotCap } = {}) {
         )} ${item.bytes}`
     )
     .join(', ')
+  // what is counted, not what a join is sent: the counted bytes are an upper bound, so a ranked user may still fit
   const cap =
-    snapshotCap && total > snapshotCap ? `; over the snapshot cap (${snapshotCap}): joins fail until it shrinks` : ''
+    snapshotCap && total > snapshotCap
+      ? `; as counted it is over the snapshot cap (${snapshotCap}): visitors are refused, and a user with a stored rank joins only while the real snapshot fits`
+      : ''
   return (
     `[network] world join-state budget exceeded at startup: bytes=${total} cap=${WORLD_JOIN_BYTES} ` +
     `(blueprints=${world.blueprints?.bytes || 0} apps=${world.entities?.appBytes || 0} settings=${world.network?.settingsBytes || 0} collections=${world.network?.collectionsBytes || 0}); ` +

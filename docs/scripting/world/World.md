@@ -175,7 +175,9 @@ server script. On a client both do nothing (`get` returns `undefined`).
   `get` returns `undefined`, and the file is left untouched for the operator.
 - Every server script in the world can read and overwrite every key, so prefix your keys (`myapp:scores`) and do
   not store secrets.
-- An asset is kept by the world's clean-up while a stored value mentions its `asset://…` URL.
+- An asset is kept by the world's clean-up while a stored value (or your script's source) contains its file name,
+  in any URL. A name your script assembles at run time (`'abc' + 'def.glb'`) or writes with JavaScript escapes
+  (`'\x61bc.glb'`) is not seen, and that asset is deleted at the next start-up: write asset names out in full.
 
 ### `.getQueryParam(key)`
 

@@ -698,6 +698,42 @@ test('own-store loads proceed while stalled transfers from other hosts hold thei
   assert.equal(loader.pools.remote.queue.length, 0)
 })
 
+test('the deadlines of a download start when it does: waiting in the queue is neither a stall nor overtime', async t => {
+  // a body of ten 10-byte chunks, one every 15 ms (150 ms in all, never 40 ms without data)
+  const trickle = () => {
+    let sent = 0
+    return new Response(
+      new ReadableStream(
+        {
+          async pull(controller) {
+            await new Promise(resolve => setTimeout(resolve, 15))
+            controller.enqueue(new Uint8Array(10))
+            if (++sent === 10) controller.close()
+          },
+        },
+        { highWaterMark: 0 }
+      )
+    )
+  }
+  fakeNetwork(t, () => ({ response: trickle }))
+  const loader = makeLoader()
+  loader.pools.remote.limit = 1
+  loader.stallMs = 40
+  loader.downloadMs = 200
+  // the second waits about 150 ms for the first: more than stallMs; the two together take more than downloadMs
+  const started = Date.now()
+  const loads = [
+    loader.load('script', 'https://elsewhere.example/1.js'),
+    loader.load('script', 'https://elsewhere.example/2.js'),
+  ]
+  const scripts = await Promise.all(loads)
+  assert.ok(Date.now() - started > 250, `${Date.now() - started} ms`)
+  assert.deepEqual(
+    scripts.map(script => script.code.length),
+    [100, 100]
+  )
+})
+
 test('downloads from other hosts reserve their stated length (or cap) before reading, wait while it does not fit, and give it back', async t => {
   // a body of `chunks` chunks of 10 bytes, one every 15 ms
   const trickle = (chunks, headers) => {
@@ -723,8 +759,26 @@ test('downloads from other hosts reserve their stated length (or cap) before rea
     a: trickle(6, { 'content-length': '60' }),
     b: trickle(6, { 'content-length': '60' }),
     unstated: gatedBody(20),
-    longer: gatedBody(50, { 'content-length': '10' }),
   }
+  // states 10 bytes, sends 50, then waits before it ends
+  const longer = { pulls: 0 }
+  let endLonger
+  const longerEnds = new Promise(resolve => (endLonger = resolve))
+  longer.response = () =>
+    new Response(
+      new ReadableStream(
+        {
+          async pull(controller) {
+            if (++longer.pulls === 1) return controller.enqueue(new Uint8Array(50))
+            await longerEnds
+            controller.close()
+          },
+        },
+        { highWaterMark: 0 }
+      ),
+      { headers: { 'content-length': '10' } }
+    )
+  bodies.longer = longer
   const stalls = () =>
     new Response(new ReadableStream({ pull: () => new Promise(() => {}) }), { headers: { 'content-length': '30' } })
   fakeNetwork(t, url => {
@@ -756,11 +810,11 @@ test('downloads from other hosts reserve their stated length (or cap) before rea
   bodies.unstated.release()
   await unstated
   // a body longer than it said grows its reservation while it reads, and gives it back
-  const longer = loader.load('script', 'https://elsewhere.example/longer.js')
-  while (bodies.longer.pulls === 0) await tick()
-  assert.equal(loader.reserved, 10)
-  bodies.longer.release()
-  assert.equal((await longer).code.length, 50)
+  const longerLoad = loader.load('script', 'https://elsewhere.example/longer.js')
+  while (longer.pulls < 2) await tick()
+  assert.equal(loader.reserved, 50, 'the reservation grew to the bytes read')
+  endLonger()
+  assert.equal((await longerLoad).code.length, 50)
   assert.equal(loader.reserved, 0)
   // failures give their reservation back too: an error status, a stall, a body over the limit
   await assert.rejects(loader.load('script', 'https://elsewhere.example/missing.js'), /HTTP 404/)

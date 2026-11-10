@@ -67,9 +67,10 @@ export class ServerLoader extends System {
 
   // Where a load reads its bytes: { file } or { remote }. An asset://<name> is a file directly inside the assets
   // directory when this world has one (server with ASSETS=local, through resolveAssetFile); otherwise (ASSETS=s3,
-  // the node agent) it is the assets URL over HTTP. http(s) URLs, and what World.resolveURL maps to one, are
-  // fetched. Anything else (absolute or relative paths, asset:// traversal, blob: and other schemes) throws
-  // here, so no other string reaches fs.readFile.
+  // the node agent) it is the assets URL over HTTP. http(s) URLs are fetched, and so is whatever
+  // World.resolveURL maps to one: `//host/x` and any bare string become `https://...`, which covers relative
+  // paths and spellings such as `file:///x` (a fetch of a host by that name, never a file). What throws here is
+  // an absolute path, `blob:`, an invalid asset:// name and a non-string, so no other string reaches fs.readFile.
   locate(url) {
     if (typeof url !== 'string') throw assetRefusal('not a string', url)
     const value = url.trim()

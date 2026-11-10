@@ -51,7 +51,7 @@ function quietly() {
   return { lines, restore: () => Object.assign(console, original) }
 }
 
-// a world with one app running `script`, a remote player 'p1' and a client control system
+// a world with one app running `script`, remote players 'p1' and 'p2' and a client control system
 function makeWorld(script, { isServer = false, livekit = false } = {}) {
   const world = Object.assign(new EventEmitter(), {
     network: { isServer, isClient: !isServer, id: 'me', send: () => true, asScript: fn => fn() },
@@ -76,9 +76,9 @@ function makeWorld(script, { isServer = false, livekit = false } = {}) {
       },
     },
   })
-  const player = {
+  const makePlayer = id => ({
     world,
-    data: { id: 'p1', owner: 'p1', health: 100 },
+    data: { id, owner: id, health: 100 },
     effects: [],
     setEffect(effect, onEnd) {
       this.effects.push(effect)
@@ -87,8 +87,10 @@ function makeWorld(script, { isServer = false, livekit = false } = {}) {
     modify(data) {
       Object.assign(this.data, data)
     },
-  }
-  world.entities.getPlayer = id => (id === 'p1' ? player : null)
+  })
+  const players = { p1: makePlayer('p1'), p2: makePlayer('p2') }
+  const player = players.p1
+  world.entities.getPlayer = id => (Object.hasOwn(players, id) ? players[id] : null)
   world.apps = new m.Apps(world)
   world.blueprints = new m.Blueprints(world)
   world.controls = new m.ClientControls(world)
@@ -103,7 +105,7 @@ function makeWorld(script, { isServer = false, livekit = false } = {}) {
     state: {},
   })
   world.entities.items.set('a', app)
-  return { world, app, player }
+  return { world, app, player, players }
 }
 
 // a second app with its own blueprint and script in the same world
@@ -344,6 +346,55 @@ test('player handles: a lookup from an effect callback during teardown does not 
   assert.notEqual(seen[2], seen[0], 'the new run has its own handle')
   // and it works in the new run
   assert.doesNotThrow(() => seen[2].hasEffect())
+})
+
+test('player handles: an effect callback during teardown cannot start a new effect or voice modifier', async () => {
+  const seen = []
+  const { world, app, players } = makeWorld(
+    world => {
+      const p = world.getPlayer('p1')
+      const q = world.getPlayer('p2') // drained after p: still uncleaned when p's callback runs
+      p.setVoiceLevel('global')
+      // the review's sequence: the effect's callback applies a new effect through the handle it kept
+      p.applyEffect({
+        freeze: true,
+        duration: 60,
+        onEnd: () => {
+          for (const attempt of [
+            () => p.applyEffect({ freeze: true, duration: 600 }),
+            () => q.applyEffect({ freeze: true, duration: 600 }),
+            () => p.setVoiceLevel('disabled'),
+            () => q.setVoiceLevel('global'),
+          ]) {
+            try {
+              attempt()
+              seen.push('accepted')
+            } catch (err) {
+              seen.push(err.message)
+            }
+          }
+          // ending what exists still works
+          p.setVoiceLevel(null)
+          q.cancelEffect()
+          seen.push('ended')
+        },
+      })
+    },
+    { isServer: true, livekit: true }
+  )
+  await tick()
+  assert.equal(world.livekit.modifiers.p1.size, 1)
+  // rebuild into a script that does nothing, then remove the app
+  world.scripts['s.js'] = () => {}
+  world.blueprints.modify({ id: 'bp', version: 1 })
+  await tick()
+  app.destroy()
+  const stopped = '[app] this app has stopped'
+  assert.deepEqual(seen, [stopped, stopped, stopped, stopped, 'ended'])
+  for (const id of ['p1', 'p2']) {
+    assert.equal(players[id].effects.at(-1) ?? null, null, `no effect of the old run is left on ${id}`)
+    assert.equal(world.livekit.modifiers[id]?.size ?? 0, 0, `no voice modifier is left on ${id}`)
+  }
 })
 
 test('world nodes: a node another app took over is not torn down (or removed) by its former owner', async () => {

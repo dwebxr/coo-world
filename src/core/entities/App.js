@@ -3,7 +3,12 @@ import { Entity } from './Entity'
 import { createNode } from '../extras/createNode'
 import { LerpVector3 } from '../extras/LerpVector3'
 import { LerpQuaternion } from '../extras/LerpQuaternion'
-import { cleanupPlayerProxy, createPlayerProxy, isPlayerProxyCurrent } from '../extras/createPlayerProxy'
+import {
+  cleanupPlayerProxy,
+  createPlayerProxy,
+  isPlayerProxyCurrent,
+  retirePlayerProxy,
+} from '../extras/createPlayerProxy'
 import { createEntityProxy } from '../extras/createEntityProxy'
 import { serializeError } from '../extras/serializeError'
 import { registerAppProxy } from '../nodes/refs'
@@ -260,11 +265,14 @@ export class App extends Entity {
     this.control = null
     // cancel any effects; the cleanups are host-private (createPlayerProxy) and each runs on its own. While they run
     // the run's registry is closing: a cleanup callback (an effect's onEnd) that looks a player up gets the stopped
-    // error instead of a new handle, so nothing of this run reaches the next one and the drain ends
+    // error instead of a new handle, so nothing of this run reaches the next one and the drain ends. Every handle
+    // is retired first: through a handle it kept, such a callback can end things but not start a new effect or
+    // voice modifier, which no cleanup would be left to undo
     const players = this.players
     if (players && players.run === this.deadHook) {
       players.closing = true
       players.cache.clear()
+      for (const proxy of players.owned) retirePlayerProxy(proxy)
       while (players.owned.size) {
         const [proxy] = players.owned
         players.owned.delete(proxy)

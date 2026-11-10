@@ -229,6 +229,10 @@ after that many seconds. `Infinity` never expires.
 
 **onEnd**: a function that should be called either at the end of the `duration` or when the player moves if `cancellable`.
 
+When the app stops or is rebuilt, its effects end and their `onEnd` runs. From there, the app's player handles can
+still end things (`cancelEffect`, `setVoiceLevel(null)`) but not start new ones: `applyEffect` and
+`setVoiceLevel(level)` throw `[app] this app has stopped`.
+
 ### `.screenshare(screenId)`
 
 Can only be called on a local player.

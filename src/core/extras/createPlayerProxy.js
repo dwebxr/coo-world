@@ -35,6 +35,14 @@ const cleanups = new WeakMap()
 // what the engine knows about each proxy (never read from the proxy itself, which a script can change)
 const handles = new WeakMap()
 
+// a retiring handle (its run is being torn down) accepts nothing new that a cleanup would have to undo (an effect, a
+// voice modifier): those calls throw the stopped error. Ending what exists (cancelEffect, an effect handle's
+// cancel, setVoiceLevel(null)) still works. App.unbuild retires every handle of the run before it runs any cleanup,
+// because a cleanup runs script code (an effect's onEnd) that may use any handle the run has.
+export function retirePlayerProxy(proxy) {
+  handles.get(proxy)?.retire()
+}
+
 // runs once per proxy
 export function cleanupPlayerProxy(proxy) {
   const cleanup = cleanups.get(proxy)
@@ -66,6 +74,7 @@ export function createPlayerProxy(entity, player) {
   const run = entity.deadHook
   let activeEffectConfig = null
   let voiceMod
+  let retiring = false
   // a client script changes another player only through a server script: on a remote player these calls
   // do nothing here, said once per method because scripts tend to call them every frame
   const warned = new Set()
@@ -241,6 +250,7 @@ export function createPlayerProxy(entity, player) {
       return !!player.data.effect
     },
     applyEffect(opts) {
+      if (retiring) throw stoppedError(entity)
       if (!opts) return
       const effect = {}
       // effect.id = uuid()
@@ -313,6 +323,8 @@ export function createPlayerProxy(entity, player) {
       world.livekit.setScreenShareTarget(targetId)
     },
     setVoiceLevel(level) {
+      // removing the modifier is how a script ends it, so only a new or changed level is refused
+      if (level && retiring) throw stoppedError(entity)
       if (!world.network.isServer) {
         return console.error(`[setVoiceLevel] must be applied on the server`)
       }
@@ -333,7 +345,7 @@ export function createPlayerProxy(entity, player) {
       }
     },
   }
-  handles.set(proxy, { player, run, entity })
+  handles.set(proxy, { player, run, entity, retire: () => (retiring = true) })
   cleanups.set(proxy, () => {
     try {
       activeEffectConfig?.onEnd()

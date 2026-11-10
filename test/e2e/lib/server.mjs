@@ -8,6 +8,10 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { BUILD_ROOT, E2E_DIR, REPO_ROOT, sleep } from './common.mjs'
+import { memoryReader } from './memory.mjs'
+
+const MEMORY_PROBE = path.join(E2E_DIR, 'lib', 'memory-probe.js')
+const MiB = 1024 * 1024
 
 export function serverEnv(port, world, extra = {}) {
   return {
@@ -56,17 +60,31 @@ export function serverEnv(port, world, extra = {}) {
 // `worldSource`: an existing world directory to copy (local runs with the 5-app world); without it the
 // server bootstraps the default world from src/world on first boot
 // `preload`: a script the server process imports before its own entry (node --import), eg a test hook
-export async function startServer({ port, worldSource, env = {}, logPath, timeout = 120000, preload }) {
+// `memoryProbe`: also preload memory-probe.js, start node with --expose-gc and open an IPC channel to it, for
+// server.retainedMiB()
+export async function startServer({
+  port,
+  worldSource,
+  env = {},
+  logPath,
+  timeout = 120000,
+  preload,
+  memoryProbe = false,
+}) {
   const world = `world-e2e-${Math.random().toString(36).slice(2, 8)}`
   const worldDir = path.join(BUILD_ROOT, world)
   if (worldSource) fs.cpSync(worldSource, worldDir, { recursive: true })
   else fs.mkdirSync(worldDir, { recursive: true })
   const log = logPath ? fs.openSync(logPath, 'w') : null
-  const nodeArgs = preload ? ['--import', pathToFileURL(preload).href] : []
+  const preloads = [preload, memoryProbe && MEMORY_PROBE].filter(Boolean)
+  const nodeArgs = [
+    ...(memoryProbe ? ['--expose-gc'] : []),
+    ...preloads.flatMap(file => ['--import', pathToFileURL(file).href]),
+  ]
   const child = spawn(process.execPath, [...nodeArgs, path.join(BUILD_ROOT, 'build/index.js')], {
     cwd: E2E_DIR,
     env: serverEnv(port, world, env),
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: memoryProbe ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'],
   })
   const server = { child, port, world, worldDir, url: `http://localhost:${port}/`, out: '', exited: null }
   const onData = data => {
@@ -76,6 +94,7 @@ export async function startServer({ port, worldSource, env = {}, logPath, timeou
   child.stdout.on('data', onData)
   child.stderr.on('data', onData)
   child.on('exit', code => (server.exited = code ?? 'signal'))
+  const readMemory = memoryProbe ? memoryReader(child) : null
   const deadline = Date.now() + timeout
   while (!server.out.includes(`server listening on port ${port}`)) {
     if (server.exited !== null) throw new Error(`server exited early (${server.exited}):\n${server.out.slice(-3000)}`)
@@ -84,11 +103,24 @@ export async function startServer({ port, worldSource, env = {}, logPath, timeou
   }
   server.count = text => server.out.split(text).length - 1
   server.lines = pattern => server.out.split('\n').filter(line => pattern.test(line))
+  // `heapUsed + external` after a full collection, in MiB (memory-probe.js). Unlike resident memory it does not
+  // depend on when the collector last ran. `options` and errors as for memoryReader() in memory.mjs.
+  server.retainedMiB = async options => {
+    if (!readMemory) throw new Error('retainedMiB() needs startServer({ memoryProbe: true })')
+    const { heapUsed, external } = await readMemory(options)
+    return Math.round((heapUsed + external) / MiB)
+  }
   server.stop = async () => {
     if (server.exited === null) {
+      const asked = Date.now()
       child.kill('SIGTERM')
       await Promise.race([once(child, 'exit'), sleep(5000)])
+      const how =
+        server.exited === null
+          ? 'did not exit within 5 s of SIGTERM and was killed'
+          : `exited (${server.exited}) ${Date.now() - asked} ms after SIGTERM`
       if (server.exited === null) child.kill('SIGKILL')
+      if (log !== null) fs.writeSync(log, `[harness] server ${how}\n`)
     }
     if (log !== null) fs.closeSync(log)
     fs.rmSync(worldDir, { recursive: true, force: true })

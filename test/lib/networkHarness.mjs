@@ -25,7 +25,7 @@ import {
   sanitizeSpawn,
 } from '../../src/core/extras/entityModifyPolicy.js'
 import { readInboundPacket } from '../../src/server/inboundDecode.js'
-import { sanitizeChatMessage } from '../../src/core/extras/chatPolicy.js'
+import { appChatLine, sanitizeChatMessage } from '../../src/core/extras/chatPolicy.js'
 import { eventPayload } from '../../src/core/extras/eventPayload.js'
 import * as solanaGating from '../../src/server/solana-gating.js'
 import * as evmGating from '../../src/server/evm-gating.js'
@@ -48,6 +48,7 @@ const names = [
   'start',
   'onDisconnect',
   'onChatAdded',
+  'onAppChat',
   'onCommand',
   'onModifyRank',
   'invalidateWallet',
@@ -158,6 +159,7 @@ function networkClass(context) {
     sanitizePersistedApp,
     sanitizeSpawn,
     sanitizeChatMessage,
+    appChatLine,
     eventPayload,
     isObject: value => value !== null && typeof value === 'object',
     ...context,

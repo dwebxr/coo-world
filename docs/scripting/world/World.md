@@ -151,13 +151,18 @@ Currently the only groups available are `environment` and `player`.
 
 Posts a line in the chat. `body` is the text (a number is converted; other values are refused; trimmed and cut to
 500 characters). `from` is an optional display name shown next to the app's name. With `broadcast` on the server the
-line goes to every client; with `broadcast` on a client it is sent to the server as the local player's own chat.
+line goes to every client. With `broadcast` on a client the line goes to the server as this app's line (not as the
+visitor's chat) and the server relays it to the other clients; the visitor's own client shows it at once.
 
-The line is always shown as this app's message, with the app's name: a script cannot post as a player or as the
+The line is always shown as an app's message, with the app's name: a script cannot post as a player or as the
 world. Any `fromId`, `id`, `kind` or other field in `msg` is ignored, a script's line never pops a player's chat
-bubble, and the `chat` event it fires has `kind: 'app'` and no `fromId`. Tip confirmations and world notices carry a
-marker in the chat that app lines cannot show, so a script line that reads like a tip announcement is never one;
-only the `tip` event is proof of a tip.
+bubble, and the `chat` event it fires (on the server too, for a relayed client line) has `kind: 'app'` and no
+`fromId`. Tip confirmations and world notices carry a marker in the chat that app lines cannot show, so a line that
+reads like a tip announcement but has no marker is never one; only the `tip` event is proof of a tip.
+
+App lines are untrusted text. The server names the app from its own blueprint, but it cannot tell an app's client
+script from a modified client: anyone in the world can post a line under the name of an app that exists in it. Such
+a line still shows as an app line and never carries the system or tip marker.
 
 ### `.getPlayer(playerId)`: Player
 

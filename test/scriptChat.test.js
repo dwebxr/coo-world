@@ -5,8 +5,12 @@ import { makeNetwork } from './lib/networkHarness.mjs'
 import { bundleClient, forgedElement, renderSafely } from './lib/renderHarness.mjs'
 import { chatEnvelope, scriptChatMessage } from '../src/core/extras/chatPolicy.js'
 import { strictDecode } from '../src/core/extras/strictDecode.js'
+import { packetNameById } from '../src/core/packets.js'
 
-const decode = packet => strictDecode(packet, { maxNodes: 8192, build: true }).value[1]
+const decodePacket = packet => {
+  const [id, data] = strictDecode(packet, { maxNodes: 8192, build: true }).value
+  return [packetNameById(id), data]
+}
 
 let ui
 before(async () => {
@@ -58,9 +62,70 @@ test("world.chat from a script: an app line, never a player's or the server's", 
       ['chat', 'app', undefined],
     ]
   )
-  // the broadcast copy (to the server, which stamps its own sender anyway) carries the same envelope
-  assert.equal(decode(world.packets[0]).kind, 'app')
-  assert.equal(decode(world.packets[0]).fromId, undefined)
+  // the broadcast goes to the server as the app's own line, never as this visitor's chat (chatAdded)
+  assert.deepEqual(world.packets.map(decodePacket), [
+    ['appChat', { id: 'app', body: 'Alice tipped Bob 100 JPYC', from: 'Alice' }],
+  ])
+})
+
+function appChatNetwork() {
+  const network = makeNetwork()
+  const stored = []
+  const relayed = []
+  const logs = []
+  network.logOnce = (_socket, key, line) => logs.push([key, line])
+  network.world.chat = { add: (msg, broadcast) => stored.push({ msg, broadcast }) }
+  network.world.entities = {
+    get: id =>
+      id === 'shop'
+        ? { isApp: true, blueprint: { name: 'Shop' } }
+        : id === 'bob'
+          ? { isPlayer: true, data: { id: 'bob' } }
+          : undefined,
+  }
+  network.send = (name, data, ignore) => relayed.push([name, data, ignore])
+  const socket = { id: 'bob', player: { data: { id: 'bob', name: 'Bob' } } }
+  return { network, stored, relayed, logs, socket }
+}
+
+test("appChat: a client script's broadcast reaches everyone as the app's line, named by the server", async () => {
+  const { network, stored, relayed, socket } = appChatNetwork()
+  await network.onAppChat(socket, {
+    id: 'shop',
+    body: ' Sale today ',
+    from: 'Clerk',
+    kind: 'tip',
+    fromId: 'alice',
+    app: 'System',
+    createdAt: 'forged',
+  })
+  assert.equal(stored.length, 1)
+  const { msg } = stored[0]
+  assert.equal(msg.kind, 'app')
+  assert.equal(msg.app, 'Shop', "the server's blueprint name, not the packet's")
+  assert.equal(msg.from, 'Clerk')
+  assert.equal(msg.body, 'Sale today')
+  assert.equal(msg.fromId, null)
+  assert.notEqual(msg.createdAt, 'forged')
+  assert.deepEqual(relayed, [['chatAdded', msg, 'bob']], 'relayed to the others, not back to the sender')
+})
+
+test('appChat: an unknown or non-app entity, or a message that is not text, is dropped and logged once', async () => {
+  const { network, stored, relayed, logs, socket } = appChatNetwork()
+  for (const data of [
+    { id: 'missing', body: 'x' },
+    { id: 'bob', body: 'x' },
+    { id: 'shop', body: { not: 'text' } },
+    { id: 'shop', body: '   ' },
+    { body: 'no id' },
+    'text',
+    null,
+  ]) {
+    await network.onAppChat(socket, data)
+  }
+  assert.deepEqual(stored, [])
+  assert.deepEqual(relayed, [])
+  assert.deepEqual([...new Set(logs.map(([key]) => key))].sort(), ['appChat-app', 'appChat-invalid'])
 })
 
 test('world.chat from a script: hostile values are read once and must be text', () => {

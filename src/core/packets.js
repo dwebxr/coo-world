@@ -49,6 +49,8 @@ const names = [
   'evmTipIntent',
   'evmTip',
   'evmTipStatus',
+  // client -> server: a client script's broadcast world.chat(); the server relays it as an app line (kind 'app')
+  'appChat',
 ]
 
 const byName = {}

@@ -88,6 +88,11 @@ export function scriptChatMessage(msg, appName) {
   } catch {
     from = undefined
   }
+  return appChatLine(body, from, appName)
+}
+
+// an app's chat line from values already read (a script's message, or an appChat packet relayed by the server)
+export function appChatLine(body, from, appName) {
   const safe = sanitizeChatMessage({ body: typeof body === 'number' ? String(body) : body })
   if (!safe) return null
   const name = sanitizeName(from)

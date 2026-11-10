@@ -58,6 +58,7 @@ const names = [
   'evmTipIntent',
   'evmTip',
   'evmTipStatus',
+  'appChat',
 ]
 
 function capitalize(str) {

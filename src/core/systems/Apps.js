@@ -164,7 +164,10 @@ export class Apps extends System {
         if (world.network.isServer) {
           return world.network.asScript(() => world.chat.add(message, broadcast), entity, 'chat')
         }
-        world.chat.add(message, broadcast)
+        world.chat.add(message, false)
+        // a client script's broadcast goes to the server as the app's own line (appChat), never as this visitor's
+        // chat: the server names the app from its own blueprint and relays it as kind 'app'
+        if (broadcast) world.network.send('appChat', { id: entity.data.id, body: message.body, from: message.from })
       },
       getPlayer(entity, playerId) {
         return entity.getPlayerProxy(playerId)

@@ -19,7 +19,7 @@ import {
   sanitizeSpawn,
 } from '../extras/entityModifyPolicy'
 import { createRelayDrop } from '../extras/playerRelayPolicy'
-import { sanitizeChatMessage } from '../extras/chatPolicy'
+import { appChatLine, sanitizeChatMessage } from '../extras/chatPolicy'
 import { sanitizeBlueprintAdd, sanitizeBlueprintModify, WORLD_BLUEPRINT_BYTES } from '../extras/blueprintPolicy'
 import { previewValue } from '../extras/assetURL'
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../extras/settingsPolicy'
@@ -745,6 +745,38 @@ export class ServerNetwork extends System {
       body: safe.body,
       createdAt: moment().toISOString(),
     }
+    this.world.chat.add(message, false)
+    this.send('chatAdded', message, socket.id)
+  }
+
+  // a client script's broadcast world.chat(): relayed as that app's line. Only the text and a display name come
+  // from the packet (through the script chat rules); the kind, the missing player id and the app's name (from the
+  // server's blueprint) are the server's. Any visitor may send it, since client scripts run in visitors' browsers
+  onAppChat = async (socket, data) => {
+    if (!isObject(data) || Array.isArray(data) || typeof data.id !== 'string') {
+      return this.logOnce(
+        socket,
+        'appChat-invalid',
+        `onAppChat: invalid message from ${socket.id} (further ones are not logged)`
+      )
+    }
+    const entity = this.world.entities.get(data.id)
+    if (!entity?.isApp) {
+      return this.logOnce(
+        socket,
+        'appChat-app',
+        `onAppChat: no such app from ${socket.id} (further ones are not logged)`
+      )
+    }
+    const line = appChatLine(data.body, data.from, entity.blueprint?.name)
+    if (!line) {
+      return this.logOnce(
+        socket,
+        'appChat-invalid',
+        `onAppChat: invalid message from ${socket.id} (further ones are not logged)`
+      )
+    }
+    const message = { id: uuid(), ...line, createdAt: moment().toISOString() }
     this.world.chat.add(message, false)
     this.send('chatAdded', message, socket.id)
   }

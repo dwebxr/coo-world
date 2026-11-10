@@ -175,7 +175,9 @@ a line still shows as an app line and never carries the system or tip marker.
 
 ### `.getPlayer(playerId)`: Player
 
-Returns a player. If no `playerId` is provided it returns the local player.
+Returns a player. If no `playerId` is provided it returns the local player. A player that is leaving (in a `leave`
+listener, say) is not returned (`null`); a handle kept from before still reads its last values, but starts no effect or
+voice level any more (`[player] this player has left`).
 
 ### `.getPlayers()`: [...Player]
 

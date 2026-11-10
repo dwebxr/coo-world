@@ -231,7 +231,8 @@ after that many seconds. `Infinity` never expires.
 
 When the app stops or is rebuilt, its effects end and their `onEnd` runs. From there, the app's player handles can
 still end things (`cancelEffect`, `setVoiceLevel(null)`) but not start new ones: `applyEffect` and
-`setVoiceLevel(level)` throw `[app] this app has stopped`.
+`setVoiceLevel(level)` throw `[app] this app has stopped` (see [App teardown](/docs/scripting/app/App.md#teardown)).
+On a handle whose player has left they throw `[player] this player has left`.
 
 ### `.screenshare(screenId)`
 

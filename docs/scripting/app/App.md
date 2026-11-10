@@ -110,3 +110,24 @@ Gives you control to listen for inputs and modify things like camera position. S
 #### `.configure(fields)`
 
 Configures custom UI for your app. See [Props](/docs/scripting/app/Props.md) for more info.
+
+## Teardown
+
+When an app is removed or rebuilt (its blueprint changed, it crashed), the engine tears its run down in this order:
+the run's `destroy` listeners, then its controls (their `onRelease`), its player handles (their effects end: `onEnd`),
+its nodes (its own and those it placed in world space), its listeners, its update registration, its requests and its
+timers. Your script can still run during that, from those callbacks and from any method it defined on an object the
+engine reads while unmounting (such as a node's `matrixWorld`). Once a stage has started, what it releases cannot be
+made again by that run:
+
+- from the start: `app.control()` throws `[app] this app has stopped` (in a `destroy` listener too);
+- from the player stage on: `world.getPlayer()` throws `[app] this app has stopped`, and no handle of the run starts an
+  effect or a voice level (`applyEffect`, `setVoiceLevel(level)` throw); ending them (`cancelEffect`,
+  `setVoiceLevel(null)`) still works;
+- from the node stage on: `world.add`, `world.attach` and adding a node to a mounted node of the app throw
+  `[app] this app has stopped`; anything else that would mount a node (`active = true`) mounts nothing;
+- listeners, `fetch` and `setTimeout` are refused from their own stages (no script code runs that late).
+
+Whatever the run makes before a stage (a player looked up in a `destroy` listener, a timer set from an effect's
+`onEnd`) is released by that stage. A removed app's script is also stopped once its `destroy` event is over, so
+during a removal those later callbacks can only end what the app started.

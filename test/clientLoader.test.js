@@ -4,7 +4,8 @@ import fs from 'node:fs'
 import * as THREE from 'three'
 import { loadClient } from './lib/clientHarness.mjs'
 import { png, pngChunk, jpeg, webp, gif } from './lib/imageBytes.mjs'
-import { MAX_IMAGE_PIXELS, readImageHeader } from '../src/core/extras/imageHeader.js'
+import { IMAGE_HEADER_BYTES, MAX_IMAGE_PIXELS, readImageHeader } from '../src/core/extras/imageHeader.js'
+import { isDataURI } from '../src/core/extras/gltfLimits.js'
 
 // The browser's loader with its real code and a fake network: what it accepts, refuses, keeps and forgets.
 // The parsers are stand-ins the tests steer (test/clientLoaderGLTF.test.js runs the real GLTF parser).
@@ -47,9 +48,11 @@ const ClientLoader = loadClient('core/systems/ClientLoader.js', 'ClientLoader', 
   checkGLTF: () => {},
   createGLTFBudget: () => null,
   GLTF_LIMITS: {},
+  isDataURI,
   isAppleMobile: () => false,
   emoteUrls: [],
   Hls: class {},
+  IMAGE_HEADER_BYTES,
   MAX_IMAGE_PIXELS,
   readImageHeader,
 })

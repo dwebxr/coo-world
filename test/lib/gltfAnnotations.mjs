@@ -36,12 +36,14 @@ export const ALLOWED = {
     MathUtils: 'arithmetic on numbers',
     Number: 'tests and conversions of one number',
   },
-  // functions the file is handed: settling its own promise, and handing the result (or the error) to its caller
+  // functions the file is handed: settling its own promise, and handing the result (or the error) to its caller;
+  // and the one it imports from gltfLimits.js
   identifiers: {
     resolve: 'settles a promise',
     reject: 'settles a promise',
     onLoad: "hands the result to the loader's caller",
     onError: "hands the error to the loader's caller",
+    isDataURI: 'a test of five characters (gltfLimits.js)',
   },
   qualified: {
     'Array.isArray': 'a type test',

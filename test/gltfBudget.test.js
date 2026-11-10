@@ -1116,10 +1116,13 @@ test('the parser never hands a data: or blob: URI to resolveURL: without the che
       })()
     )
   const parse = file => new GLTFLoader().parseAsync(file, '')
-  // a legitimate data: buffer loads; a data: image and an embedded one (a blob: URL the parser makes) load
-  assert.ok(
-    (await parse(withBuffer(`data:application/octet-stream;base64,${Buffer.alloc(36).toString('base64')}`))).scene
-  )
+  // a legitimate data: buffer loads (its scheme in either case); a data: image and an embedded one (a blob: URL the
+  // parser makes) load
+  for (const scheme of ['data:', 'DATA:']) {
+    assert.ok(
+      (await parse(withBuffer(`${scheme}application/octet-stream;base64,${Buffer.alloc(36).toString('base64')}`))).scene
+    )
+  }
   decoded = 0
   const good = `data:image/png;base64,${Buffer.from(png(16, 16)).toString('base64')}`
   const images = await parse(withImages([{ uri: good }, { bufferView: 1, mimeType: 'image/png' }]))

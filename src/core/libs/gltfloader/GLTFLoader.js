@@ -100,6 +100,8 @@ import {
 // HYP_IMPORT_CHANGE
 // import { toTrianglesDrawMode } from '../utils/BufferGeometryUtils.js';
 import { toTrianglesDrawMode } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+// COO_BUDGET: the one test of a data: URI the check, the budget and this parser share (pure: no three.js, no DOM)
+import { isDataURI } from '../../extras/gltfLimits.js';
 
 class GLTFLoader extends Loader {
 
@@ -2515,15 +2517,13 @@ function guarded( start ) {
 // COO_BUDGET: a buffer's or an image's URI for its loader. A data: or blob: URI is used as it is (what three.js's
 // LoaderUtils.resolveURL returns for one): resolveURL tests it with /^data:.*,.*$/i, which backtracks over every
 // comma before a line break, quadratically (a 98 KB file of commas blocked the main thread for 5 s; minutes at 1 MB).
-// A prefix test of five characters instead. This parser runs on the server too, with no budget or check before it
+// A test of the first five characters instead (isDataURI: the check's and the budget's own, the scheme in any case).
+// This parser runs on the server too, with no budget or check before it
 function resolveURI( uri, path ) {
 
-	if ( typeof uri === 'string' ) {
+	if ( isDataURI( uri ) ) return uri;
 
-		const scheme = uri.slice( 0, 5 ).toLowerCase(); // COO_EXEMPT: five characters; COO_EXEMPT: five characters
-		if ( scheme === 'data:' || scheme === 'blob:' ) return uri;
-
-	}
+	if ( typeof uri === 'string' && uri.slice( 0, 5 ).toLowerCase() === 'blob:' ) return uri; // COO_EXEMPT: five characters; COO_EXEMPT: five characters
 
 	return LoaderUtils.resolveURL( uri, path ); // COO_EXEMPT: a URI that is not data: or blob:, at most 2048 characters (checkGLTF), never fetched by the client
 
@@ -3338,7 +3338,7 @@ class GLTFParser {
 		const options = this.options;
 
 		// COO_BUDGET: a data: URI is decoded into a buffer (any other URI is refused before a fetch)
-		if ( this.budget && typeof bufferDef.uri === 'string' && bufferDef.uri.startsWith( 'data:' ) ) {
+		if ( this.budget && isDataURI( bufferDef.uri ) ) {
 
 			this.budget.bytes( Math.ceil( bufferDef.uri.length * 3 / 4 ), 'data: buffer' );
 
@@ -3571,7 +3571,7 @@ class GLTFParser {
 
 		// COO_BUDGET: a data: URI is the image's data, not its name: such a texture is cached by its image's index (a key
 		// of the whole URI was built and looked up for every texture). Any other URI is short (checkGLTF)
-		const dataURI = typeof sourceDef.uri === 'string' && sourceDef.uri.startsWith( 'data:' );
+		const dataURI = isDataURI( sourceDef.uri );
 		const cacheKey = ( dataURI ? 'image ' + sourceIndex : ( sourceDef.uri || sourceDef.bufferView ) ) + ':' + textureDef.sampler;
 
 		if ( this.textureCache[ cacheKey ] ) {

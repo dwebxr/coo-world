@@ -6,9 +6,9 @@ import { GLTFLoader } from '../src/core/libs/gltfloader/GLTFLoader.js'
 import { VRMLoaderPlugin } from '@pixiv/three-vrm'
 import { loadClient } from './lib/clientHarness.mjs'
 import { imageElementsPlugin } from '../src/core/extras/gltfImageElements.js'
-import { checkGLTF, createGLTFBudget, GLTF_LIMITS } from '../src/core/extras/gltfLimits.js'
+import { checkGLTF, createGLTFBudget, GLTF_LIMITS, isDataURI } from '../src/core/extras/gltfLimits.js'
 import { png } from './lib/imageBytes.mjs'
-import { MAX_IMAGE_PIXELS, readImageHeader } from '../src/core/extras/imageHeader.js'
+import { IMAGE_HEADER_BYTES, MAX_IMAGE_PIXELS, readImageHeader } from '../src/core/extras/imageHeader.js'
 
 // The browser's loader with the real (vendored) GLTF parser, its per-file budget and three-vrm's real plugin: a model, avatar or emote may only
 // use what is inside its file, embedded images still load (both the ImageBitmap path and the iPhone <img> path),
@@ -38,9 +38,11 @@ const ClientLoader = loadClient('core/systems/ClientLoader.js', 'ClientLoader', 
   checkGLTF,
   createGLTFBudget,
   GLTF_LIMITS,
+  isDataURI,
   isAppleMobile: () => apple,
   emoteUrls: [],
   Hls: class {},
+  IMAGE_HEADER_BYTES,
   MAX_IMAGE_PIXELS,
   readImageHeader,
 })
@@ -88,7 +90,7 @@ before(() => {
   const original = globals.fetch
   globalThis.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : input.url
-    if (url.startsWith('data:') || url.startsWith('blob:')) return original(input, init)
+    if (isDataURI(url) || url.startsWith('blob:')) return original(input, init)
     requests.push(url)
     const body = files[url]
     return body ? new Response(body) : new Response('not found', { status: 404 })
@@ -258,6 +260,12 @@ test('an image inside the file loads (ImageBitmap and <img> paths); an external 
     const image = mapOf(parsed).image
     assert.equal(iphone ? image.naturalWidth : image.width, 512, 'the embedded image went through the loader')
     assert.equal(iphone, image instanceof EventTarget, iphone ? 'an <img> element' : 'an ImageBitmap')
+    // a data: image whose scheme is in upper case: data to the check, the parser, the budget and the URL filter alike
+    // (the filter refused it, and the model loaded without its texture)
+    parsed = null
+    const upper = triangle({ image: `DATA:image/png;base64,${Buffer.from(png(64, 64)).toString('base64')}` })
+    await loader.load('model', serve(`upper-case-${iphone}.glb`, upper))
+    assert.ok(mapOf(parsed)?.image, 'the DATA: image loaded')
     // an image the file names elsewhere: the model loads without that texture, and nothing is requested
     requests.length = 0
     parsed = null

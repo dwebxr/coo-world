@@ -14,6 +14,10 @@
 // sky fits. The client loader and the model checks both use this
 export const MAX_IMAGE_PIXELS = 36_000_000
 
+// the first bytes of an image read for its header; the whole image only when its size is not settled within them
+// (the client loader's stand-alone images, and the data: images inside a model)
+export const IMAGE_HEADER_BYTES = 256 * 1024
+
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 
 const ascii = (bytes, at, text) => {

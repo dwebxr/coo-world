@@ -31,13 +31,13 @@
 //
 // Both throw a GLTFLimitError with the reason.
 
-import { MAX_IMAGE_PIXELS, readImageHeader } from './imageHeader.js'
+import { IMAGE_HEADER_BYTES, MAX_IMAGE_PIXELS, readImageHeader } from './imageHeader.js'
 
 const MiB = 1024 * 1024
 
 export const GLTF_LIMITS = Object.freeze({
   // structure (checkGLTF). The bundled avatar's JSON is 44 KB and nests 8 deep, its node tree 12 deep (the emotes': 14)
-  jsonBytes: 16 * MiB, // a GLB's JSON chunk
+  jsonBytes: 16 * MiB, // a GLB's JSON chunk; a .gltf's JSON without its data: URIs' payloads (those are data)
   jsonDepth: 64, // objects and lists inside each other
   nodeDepth: 256, // the parser loads a node's children recursively; a chain of thousands overflowed its stack
   listLength: 1 << 20, // any list in the document
@@ -252,33 +252,100 @@ export function readGLTF(data, limits = GLTF_LIMITS) {
     refuse('the JSON does not parse')
   }
   if (!isObject(json)) refuse('the JSON is not an object')
-  return { json, bin, jsonLength: text.length }
+  const glb = bytes.byteLength >= 4 && view.getUint32(0, true) === GLB_MAGIC
+  return { json, bin, jsonLength: text.length, glb }
 }
 
-// the bytes of a data: URI (base64 or percent-encoded)
-export function decodeDataURI(uri) {
+// Whether a URI is a data: URI: its scheme `data`, in any case (RFC 3986). The one test the check, the parser
+// (resolveURI, its texture cache, its buffer charge), the budget and the client's URL filter use, so they cannot
+// disagree about what is data and what names a file
+export function isDataURI(uri) {
+  if (typeof uri !== 'string' || uri.length < 5 || uri.charCodeAt(4) !== 58) return false
+  // (`| 0x20` lower-cases an ASCII letter; no other character becomes one of d, a, t)
+  return (
+    (uri.charCodeAt(0) | 0x20) === 100 &&
+    (uri.charCodeAt(1) | 0x20) === 97 &&
+    (uri.charCodeAt(2) | 0x20) === 116 &&
+    (uri.charCodeAt(3) | 0x20) === 97
+  )
+}
+
+// base64's alphabet: each character's six bits, -1 for any other
+const BASE64 = new Int8Array(128).fill(-1)
+for (let i = 0; i < 64; i++) {
+  BASE64['ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.charCodeAt(i)] = i
+}
+const isAsciiWhitespace = c => c === 9 || c === 10 || c === 12 || c === 13 || c === 32
+const hexValue = c => (c >= 48 && c <= 57 ? c - 48 : (c | 0x20) >= 97 && (c | 0x20) <= 102 ? (c | 0x20) - 87 : -1)
+
+// The payload of a data: URI (base64, as atob reads it, or percent-encoded): its decoded size, from one pass over it
+// that allocates nothing (a base64 payload that does not decode is refused there), and `decode(limit)`, its first
+// `limit` bytes decoded straight into one array of exactly that size: no intermediate string or list (an image's URI
+// may be as large as the file, and was decoded through an atob string and a list of numbers, about 20 times its size)
+export function dataURIPayload(uri) {
   const comma = uri.indexOf(',')
-  const payload = comma < 0 ? '' : uri.slice(comma + 1)
-  if (/;base64$/i.test(uri.slice(5, Math.max(comma, 5)))) {
-    let text
-    try {
-      text = atob(payload.replace(/[\t\n\f\r ]/g, ''))
-    } catch {
+  const start = comma < 0 ? uri.length : comma + 1
+  if (comma > 5 && /;base64$/i.test(uri.slice(5, comma))) {
+    // forgiving-base64: ASCII whitespace skipped, one or two `=` at the end when the rest is whole quanta
+    let count = 0
+    let padding = 0
+    for (let i = start; i < uri.length; i++) {
+      const c = uri.charCodeAt(i)
+      if (isAsciiWhitespace(c)) continue
+      if (c === 61) {
+        padding++
+        continue
+      }
+      if (padding > 0 || c >= 128 || BASE64[c] < 0) refuse('a data: URI is not valid base64')
+      count++
+    }
+    if (padding > 2 || (padding > 0 && (count + padding) % 4 !== 0) || count % 4 === 1) {
       refuse('a data: URI is not valid base64')
     }
-    return Uint8Array.from(text, char => char.charCodeAt(0))
-  }
-  const out = []
-  for (let i = 0; i < payload.length; i++) {
-    const hex = payload[i] === '%' ? payload.slice(i + 1, i + 3) : ''
-    if (/^[0-9a-f]{2}$/i.test(hex)) {
-      out.push(parseInt(hex, 16))
-      i += 2
-    } else {
-      out.push(payload.charCodeAt(i) & 0xff)
+    const size = Math.floor((count * 6) / 8)
+    return {
+      size,
+      decode(limit = size) {
+        const out = new Uint8Array(Math.min(size, limit))
+        let bits = 0
+        let buffer = 0
+        let o = 0
+        for (let i = start; i < uri.length && o < out.length; i++) {
+          const c = uri.charCodeAt(i)
+          if (isAsciiWhitespace(c) || c === 61) continue
+          buffer = ((buffer << 6) | BASE64[c]) & 0xffffff
+          bits += 6
+          if (bits >= 8) {
+            bits -= 8
+            out[o++] = (buffer >> bits) & 0xff
+          }
+        }
+        return out
+      },
     }
   }
-  return Uint8Array.from(out)
+  // percent-encoded: `%` and two hex digits a byte, any other character its low byte
+  let size = 0
+  for (let i = start; i < uri.length; i++, size++) {
+    if (uri.charCodeAt(i) === 37 && hexValue(uri.charCodeAt(i + 1)) >= 0 && hexValue(uri.charCodeAt(i + 2)) >= 0) i += 2
+  }
+  return {
+    size,
+    decode(limit = size) {
+      const out = new Uint8Array(Math.min(size, limit))
+      for (let i = start, o = 0; o < out.length; i++, o++) {
+        const high = uri.charCodeAt(i) === 37 ? hexValue(uri.charCodeAt(i + 1)) : -1
+        const low = high >= 0 ? hexValue(uri.charCodeAt(i + 2)) : -1
+        if (low >= 0) {
+          out[o] = (high << 4) | low
+          i += 2
+        } else {
+          out[o] = uri.charCodeAt(i) & 0xff
+        }
+      }
+      return out
+    },
+  }
 }
 
 // extensions a file may require: the ones this client's parser and plugins implement. Draco, meshopt and KTX2 need
@@ -373,7 +440,7 @@ const LINE_BREAK = /[\n\r\u2028\u2029]/
 // external files), at most uriLength
 function checkURI(uri, top, at, limits) {
   if (LINE_BREAK.test(uri)) refuse(`${place(top, at)} uri has a line break`)
-  if (!uri.startsWith('data:')) {
+  if (!isDataURI(uri)) {
     if (uri.length > limits.uriLength) {
       refuse(`${place(top, at)} uri is ${uri.length} characters long, more than ${limits.uriLength}`)
     }
@@ -399,6 +466,7 @@ function checkURI(uri, top, at, limits) {
       refuse(`${place(top, at)} uri is a data: URI with a parameter that is not name=value`)
     }
   })
+  return uri.length - comma - 1 // the payload: data, not structure
 }
 
 // The document's strings and keys, outside extras and the extensions nothing here reads: each one short (the names
@@ -407,12 +475,13 @@ function checkURI(uri, top, at, limits) {
 // the values the parser and three-vrm treat as strings, strings (STRING_KEYS). A step per value
 function checkText(json, limits, step) {
   let values = 0
+  let payloads = 0 // the data: URIs' payloads, in characters
   // `top`: the document's entry the value is in (a collection's, with `at`: its index), named only when refused
   const visit = (value, key, top, at, cap, depth) => {
     values++
     if (STRING_KEYS.has(key) && typeof value !== 'string') refuse(`${place(top, at)} ${key} is not a string`)
     if (typeof value === 'string') {
-      if (key === 'uri') checkURI(value, top, at, limits)
+      if (key === 'uri') payloads += checkURI(value, top, at, limits) || 0
       else if (value.length > cap)
         refuse(`${place(top, at)} ${key} is ${value.length} characters long, more than ${cap}`)
     } else if (Array.isArray(value)) {
@@ -439,6 +508,7 @@ function checkText(json, limits, step) {
   }
   visit(json, '', 'the document', undefined, limits.nameLength, 0)
   step(values, 'strings and keys')
+  return payloads
 }
 
 // `budget`: the file's budget (createGLTFBudget), made before the check: the check's own loops are charged to it as
@@ -448,12 +518,19 @@ export function checkGLTF(data, limits = GLTF_LIMITS, budget = null) {
   const step = (n, what) => {
     if (budget) budget.work(n, what)
   }
-  const { json, bin, jsonLength } = readGLTF(data, limits)
+  const { json, bin, jsonLength, glb } = readGLTF(data, limits)
   step(jsonLength, 'the JSON')
   if (!isObject(json.asset) || typeof json.asset.version !== 'string' || !/^2\./.test(json.asset.version)) {
     refuse('not a glTF 2.0 document')
   }
-  checkText(json, limits, step)
+  const payloads = checkText(json, limits, step)
+  // a .gltf's structure is held to a GLB's JSON chunk's limit (a GLB's chunk, its data: URIs with it, is held to it
+  // when read); the data: URIs' payloads are data, within the transfer limit, charged where they are decoded
+  if (!glb && jsonLength - payloads > limits.jsonBytes) {
+    refuse(
+      `the JSON is ${jsonLength - payloads} characters without its data: URIs' payloads, more than ${limits.jsonBytes}`
+    )
+  }
 
   // the structure: lists, objects, indices
   const list = (value, where, max = limits.listLength) => {
@@ -542,7 +619,7 @@ export function checkGLTF(data, limits = GLTF_LIMITS, budget = null) {
     // a GLB's first buffer is its binary chunk; any other buffer must be a data: URI
     if (buffer.uri === undefined) {
       if (i !== 0 || bin === null) refuse(`buffer ${i} has no data in the file`)
-    } else if (typeof buffer.uri !== 'string' || !buffer.uri.startsWith('data:')) {
+    } else if (!isDataURI(buffer.uri)) {
       refuse(`a model may not reference external files (buffer ${i})`)
     }
   })
@@ -1420,21 +1497,27 @@ export function createGLTFBudget({
       }
     },
     // an image named by URI: a data: URI is measured as embedded bytes (one that does not decode is refused, like any
-    // other image that is not one); a blob: URL is refused; any other URL is refused by the client's URL filter
-    // before a fetch, so nothing decodes it
+    // other image that is not one): its first IMAGE_HEADER_BYTES decoded for the header, the whole image only when its
+    // size is not settled within them (as for a stand-alone image), each array charged before it is made; a blob: URL
+    // is refused; any other URL is refused by the client's URL filter before a fetch, so nothing decodes it
     imageURI(uri, what) {
       if (typeof uri !== 'string') return
-      const scheme = uri.trim().toLowerCase()
-      if (scheme.startsWith('data:')) {
-        let bytes
+      if (isDataURI(uri)) {
+        let payload
         try {
-          bytes = decodeDataURI(uri)
+          payload = dataURIPayload(uri)
         } catch {
           fail(what, `${what} is a data: URI that does not decode`)
         }
+        budget.bytes(Math.min(payload.size, IMAGE_HEADER_BYTES), 'data: image')
+        let bytes = payload.decode(IMAGE_HEADER_BYTES)
+        if (payload.size > bytes.length && readImageHeader(bytes)?.incomplete) {
+          budget.bytes(payload.size, 'data: image')
+          bytes = payload.decode()
+        }
         return budget.image(bytes, what)
       }
-      if (scheme.startsWith('blob:')) fail(what, `${what} names a blob: URL`)
+      if (/^\s*blob:/i.test(uri)) fail(what, `${what} names a blob: URL`)
     },
   }
   return budget

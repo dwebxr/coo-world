@@ -11,8 +11,8 @@ import { glbToNodes } from '../extras/glbToNodes'
 import { createEmoteFactory } from '../extras/createEmoteFactory'
 import { formatBytes } from '../extras/formatBytes'
 import { imageElementsPlugin, isAppleMobile } from '../extras/gltfImageElements'
-import { checkGLTF, createGLTFBudget, GLTF_LIMITS } from '../extras/gltfLimits'
-import { MAX_IMAGE_PIXELS, readImageHeader } from '../extras/imageHeader'
+import { checkGLTF, createGLTFBudget, GLTF_LIMITS, isDataURI } from '../extras/gltfLimits'
+import { IMAGE_HEADER_BYTES, MAX_IMAGE_PIXELS, readImageHeader } from '../extras/imageHeader'
 import { emoteUrls } from '../extras/playerEmotes'
 import Hls from 'hls.js/dist/hls.js'
 
@@ -37,9 +37,9 @@ const MAX_BYTES = {
 const MAX_BYTES_DEFAULT = 64 * MiB
 // The pixel budget, MAX_IMAGE_PIXELS, is in imageHeader.js (shared with the model checks). It applies to images,
 // textures, HDRs and every texture inside a model, avatar or emote.
-// The bytes read for an image's size before it is decoded: enough for any PNG or WebP header, and for a JPEG whose
-// start of frame comes after its usual EXIF and colour-profile segments (a longer one is read whole).
-const IMAGE_HEADER_BYTES = 256 * 1024
+// The bytes read for an image's size before it is decoded (IMAGE_HEADER_BYTES, 256 KiB): enough for any PNG or WebP
+// header, and for a JPEG whose start of frame comes after its usual EXIF and colour-profile segments (a longer one is
+// read whole). The data: images inside a model are read the same way (gltfLimits.js)
 // downloads kept for re-use (exports, the file fields). Files of the world's own store are always kept; of the
 // others only the most recently used few, and none above this size
 const REMOTE_FILE_LIMIT = 16
@@ -210,7 +210,8 @@ function readHDRSize(buffer) {
 // the parser makes for embedded images get through. An external buffer fails the load; an external image leaves
 // its material without that texture (the parser's own handling of a texture that fails).
 function embeddedOnly(url) {
-  if (typeof url === 'string' && (url.startsWith('data:') || url.startsWith('blob:'))) return url
+  // (a data: URI's scheme in any case, as the check and the parser read it; a blob: URL is the parser's own)
+  if (isDataURI(url) || (typeof url === 'string' && url.startsWith('blob:'))) return url
   throw new Error(`a model may not reference external files (${String(url).slice(0, 100)})`)
 }
 

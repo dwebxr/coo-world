@@ -24,6 +24,14 @@ const randomFloat = num(100, 1000, 2);
 
 ---
 
+## `setTimeout`
+
+`setTimeout(fn, ms)` runs `fn` once after `ms` milliseconds and returns a number. Timers belong to the app's current
+run: they are all cancelled when the app is rebuilt, crashes or is removed. An app may have at most 1,024 timers
+pending at once; past that `setTimeout` throws.
+
+---
+
 ## Three.js
 
 Certain `three.js` classes and methods are exposed directly in the scripting API for your convenience.
@@ -41,7 +49,9 @@ A `fetch(url, options)` function is available for making network requests. It fo
 
 - `options` may contain `method`, `headers` (a plain object of string values), `body` (a string, an `ArrayBuffer`, a typed array, or a blob returned by `fetch()`), `mode`, `credentials`, `cache` and `redirect`. Other keys are ignored.
 - The response has `ok`, `status`, `statusText`, `headers` (a plain object) and the readers `json()`, `text()`, `arrayBuffer()` and `blob()`. Each reader can be used once.
-- Errors coming from the host (a failed reader, a rejected `world.load()`, a `world.*`/`app.*` method that throws) arrive as fresh built-in errors of the matching class (`Error`, `TypeError`, `RangeError`, ...) with `name`, `message` and `stack` only. Custom error classes and extra properties are not preserved.
+- A request that fails (network error, refused connection, invalid URL) rejects, like the standard `fetch`, usually with a `TypeError`. An HTTP error status is not a failure: it resolves with `ok: false`.
+- When the app stops (its blueprint changes, it crashes or it is removed), its open requests are aborted and their promises (and those of readers still waiting on a body) never settle, so no code of the stopped run continues.
+- Errors coming from the host (a failed request or reader, a rejected `world.load()`, a `world.*`/`app.*` method that throws) arrive as fresh built-in errors of the matching class (`Error`, `TypeError`, `RangeError`, ...) with `name`, `message` and `stack` only. Custom error classes and extra properties are not preserved.
 
 `blob()` resolves to a script-safe blob rather than a DOM `Blob`: an immutable object with `size`, `type`, `arrayBuffer()`, `text()` and `slice(start, end)`. It has no `stream()` or `bytes()`, `instanceof Blob` is false, and a slice always keeps the type of the response (a type argument is ignored). The whole body is read into memory when `blob()` resolves, so prefer `arrayBuffer()` or `text()` when you only need the bytes once.
 

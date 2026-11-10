@@ -80,23 +80,25 @@ function copyBytes(value) {
   return null
 }
 
-async function guarded(fn) {
+// a reader that fails after the app's run ended (its request was aborted by the unbuild) stays pending instead
+async function guarded(fn, isDead) {
   try {
     return await fn()
   } catch (err) {
+    if (isDead?.()) return new Promise(() => {})
     throw toScriptError(err)
   }
 }
 
-export function createScriptResponse(resp) {
+export function createScriptResponse(resp, isDead) {
   return {
     ok: resp.ok,
     status: resp.status,
     statusText: resp.statusText,
     headers: Object.fromEntries(resp.headers.entries()),
-    json: () => guarded(() => resp.json()),
-    text: () => guarded(() => resp.text()),
-    blob: () => guarded(async () => createScriptBlob(await resp.blob())),
-    arrayBuffer: () => guarded(() => resp.arrayBuffer()),
+    json: () => guarded(() => resp.json(), isDead),
+    text: () => guarded(() => resp.text(), isDead),
+    blob: () => guarded(async () => createScriptBlob(await resp.blob()), isDead),
+    arrayBuffer: () => guarded(() => resp.arrayBuffer(), isDead),
   }
 }

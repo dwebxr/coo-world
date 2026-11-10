@@ -9,6 +9,7 @@ import { serializeError } from '../extras/serializeError'
 import { registerAppProxy } from '../nodes/refs'
 import { createScriptTimers } from '../extras/scriptTimers'
 import { createScriptResponse, toHostFetchOptions } from '../extras/scriptFetch'
+import { toScriptError } from '../extras/scriptValues'
 import { copyProps } from '../extras/appFields'
 import { NodeLimitError } from '../extras/nodeLimits.js'
 import { createEventQueue } from '../extras/appEventQueue'
@@ -503,18 +504,39 @@ export class App extends Entity {
     )
   }
 
-  // scripts get a whitelisted request init and a response of plain values (see scriptFetch.js)
-  fetch = async (url, options = {}) => {
-    try {
-      const resp = await fetch(url, {
-        ...toHostFetchOptions(options),
-        signal: this.abortController.signal,
-      })
-      return createScriptResponse(resp)
-    } catch (err) {
-      console.error(err)
-      // this.crash()
-    }
+  // scripts get a whitelisted request init and a response of plain values (see scriptFetch.js). A failed request
+  // rejects with a script-safe error, like the standard fetch. Once the run that made the request has ended
+  // (rebuild, crash, removal: unbuild aborts the request) the promise stays pending, so nothing reaches a stopped
+  // script and the abort is not reported
+  fetch = (url, options = {}) => {
+    const run = this.deadHook
+    const signal = this.abortController?.signal
+    const isDead = () => run.dead || this.crashed || this.destroyed || !!this.world.fatalError
+    return new Promise((resolve, reject) => {
+      if (!signal || isDead()) return
+      let init
+      try {
+        init = { ...toHostFetchOptions(options), signal }
+      } catch (err) {
+        return reject(toScriptError(err))
+      }
+      let request
+      try {
+        request = fetch(url, init)
+      } catch (err) {
+        return reject(toScriptError(err))
+      }
+      Promise.resolve(request).then(
+        resp => {
+          if (isDead()) return
+          resolve(createScriptResponse(resp, isDead))
+        },
+        err => {
+          if (isDead() || signal.aborted) return
+          reject(toScriptError(err))
+        }
+      )
+    })
   }
 
   // scripts get an opaque handle; the timer itself stays host-private

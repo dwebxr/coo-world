@@ -15,8 +15,14 @@ export function getPhysicsTrapCount() {
   return traps
 }
 
+// a crashed app may still clean up from its destroy event (allowDestroy calls only); a removed app's script is
+// stopped once its destroy event is over (a promise or callback that resumes later is refused)
 export function assertScriptActive(entity, world = entity?.world, allowDestroy = false) {
-  if ((entity?.crashed && !(allowDestroy && entity.destroying)) || world?.fatalError) {
+  if (
+    (entity?.crashed && !(allowDestroy && entity.destroying)) ||
+    (entity?.destroyed && !entity.destroying) ||
+    world?.fatalError
+  ) {
     throw new Error(
       entity?.nativeFailure ? '[physics] disabled for this app after a native failure' : '[app] this app has stopped'
     )

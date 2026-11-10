@@ -94,17 +94,8 @@ test('createScriptResponse: plain values and four body readers, nothing else fro
   assert.equal(blob.type, 'text/html')
 })
 
-test('source scan: App.fetch exposes only the whitelisted shape and no resp.* passthrough', () => {
-  const app = read('src/core/entities/App.js')
-  const fetchBlock = app.slice(
-    app.indexOf('fetch = async (url, options = {}) =>'),
-    app.indexOf('setTimeout = (fn, ms) =>')
-  )
-  assert.ok(fetchBlock.length > 0)
-  assert.match(fetchBlock, /\.\.\.toHostFetchOptions\(options\)/)
-  assert.doesNotMatch(fetchBlock, /\.\.\.options\b/)
-  assert.match(fetchBlock, /return createScriptResponse\(resp\)/)
-  assert.doesNotMatch(fetchBlock, /resp\.(?!ok|status|statusText|headers|json|text|blob|arrayBuffer)/)
+// App.fetch itself is exercised with a stub host fetch in appFetch.test.js
+test('source scan: the script response reads no resp.* field beyond the whitelisted shape', () => {
   const scriptFetch = read('src/core/extras/scriptFetch.js')
   const passthrough = [...scriptFetch.matchAll(/resp\.([A-Za-z]+)/g)].map(m => m[1])
   assert.deepEqual([...new Set(passthrough)].sort(), [

@@ -243,11 +243,12 @@ export class ServerLoader extends System {
 
   // A model or emote is held to the limits a client applies to it (gltfLimits.js): the document is checked before
   // the parser runs, then the parse is charged to one budget per file (what it allocates, creates and iterates, and
-  // 10 s of time). A file every client would refuse is refused here too, with the same reason. With a budget the
-  // parser decodes the file's data: buffers and images itself and requests nothing (the server draws nothing: an
-  // image is sized and then fails to load as before, and the model is built without it).
+  // 10 s of time). A file every client would refuse is refused here too, with the same reason; the server is never
+  // the stricter one (it draws nothing, so the morph-target textures a client is charged for are not charged here).
+  // With a budget the parser decodes the file's data: buffers and images itself and requests nothing (an image is
+  // sized and then fails to load as before, and the model is built without it).
   async parseGLB(arrayBuffer) {
-    const budget = createGLTFBudget({ fileBytes: arrayBuffer.byteLength })
+    const budget = createGLTFBudget({ fileBytes: arrayBuffer.byteLength, renderer: false })
     checkGLTF(arrayBuffer, GLTF_LIMITS, budget)
     return this.gltfLoader.parseAsync(arrayBuffer, '', budget)
   }

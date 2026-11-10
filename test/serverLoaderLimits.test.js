@@ -4,6 +4,7 @@ import path from 'node:path'
 import { loadClient } from './lib/clientHarness.mjs'
 import { GLTFLoader } from '../src/core/libs/gltfloader/GLTFLoader.js'
 import { LoaderUtils } from 'three'
+import { checkGLTF, createGLTFBudget, GLTF_LIMITS } from '../src/core/extras/gltfLimits.js'
 
 // The server parses models and emotes with the limits a client applies (gltfLimits.js): the document is checked
 // first, the parse is charged to a budget, and with a budget the parser decodes the file's own data itself.
@@ -131,5 +132,99 @@ test('the billion-element accessor is refused before anything of that size is ma
   assert.ok(
     made.every(length => length < 1e6),
     `arrays asked for: ${made.join(', ')}`
+  )
+})
+
+// one triangle with one morph target (three more positions)
+const morphed = () => {
+  const data = Buffer.concat([Buffer.from(triangle.buffer), Buffer.from(new Float32Array(9).fill(0.5).buffer)])
+  const position = { componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] }
+  return new TextEncoder().encode(
+    JSON.stringify({
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, targets: [{ POSITION: 1 }] }] }],
+      accessors: [
+        { bufferView: 0, ...position },
+        { bufferView: 1, ...position, min: [0.5, 0.5, 0.5], max: [0.5, 0.5, 0.5] },
+      ],
+      bufferViews: [
+        { buffer: 0, byteLength: 36 },
+        { buffer: 0, byteOffset: 36, byteLength: 36 },
+      ],
+      buffers: [{ uri: `data:application/octet-stream;base64,${data.toString('base64')}`, byteLength: 72 }],
+    })
+  ).buffer
+}
+
+test('the server is not charged for morph-target textures, which only a renderer builds; a client is', async () => {
+  const charged = async options => {
+    const kinds = []
+    const data = morphed()
+    const budget = createGLTFBudget({
+      fileBytes: data.byteLength,
+      onCharge: (kind, n, what) => kinds.push(what),
+      ...options,
+    })
+    checkGLTF(data, GLTF_LIMITS, budget)
+    const glb = await new GLTFLoader().parseAsync(data, '', budget)
+    assert.equal(positions(glb).length, 9)
+    return kinds
+  }
+  assert.ok((await charged({})).includes('morph target texture'), 'a client pays for the texture it will build')
+  assert.ok((await charged({ maxTextureSize: 4096 })).includes('morph target texture'))
+  const server = await charged({ renderer: false })
+  assert.ok(!server.includes('morph target texture'), 'the server builds none and is charged for none')
+  // so the server is never the stricter one: everything else is charged alike
+  const rest = kinds => kinds.filter(what => what !== 'morph target texture')
+  assert.deepEqual(rest(server), rest(await charged({})))
+})
+
+test('an optional meshopt view without a decoder does not start a load nobody waits for', async t => {
+  // upstream asked for the compressed buffer before looking for a decoder and dropped the promise: a buffer that
+  // is then refused (here: one that does not decode) surfaced as an unhandled rejection after the load had settled
+  const unhandled = []
+  const note = reason => unhandled.push(String(reason?.message ?? reason))
+  process.on('unhandledRejection', note)
+  t.after(() => process.off('unhandledRejection', note))
+  const data = new TextEncoder().encode(
+    JSON.stringify({
+      asset: { version: '2.0' },
+      extensionsUsed: ['EXT_meshopt_compression'],
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] }],
+      bufferViews: [
+        {
+          buffer: 0,
+          byteLength: 36,
+          extensions: { EXT_meshopt_compression: { buffer: 1, byteLength: 4, count: 3, byteStride: 12 } },
+        },
+      ],
+      buffers: [
+        { uri: `data:application/octet-stream;base64,${base64}`, byteLength: 36 },
+        { uri: 'data:application/octet-stream;base64,@@@@', byteLength: 4 },
+      ],
+    })
+  ).buffer
+  // the parser with a budget and no check before it, so that the buffer that does not decode gets as far as it can
+  const requested = []
+  const budget = createGLTFBudget({ fileBytes: data.byteLength, renderer: false })
+  const dataBuffer = budget.dataBuffer.bind(budget)
+  budget.dataBuffer = (uri, ...rest) => {
+    requested.push(uri.slice(-8))
+    return dataBuffer(uri, ...rest)
+  }
+  const glb = await new GLTFLoader().parseAsync(data, '', budget)
+  assert.deepEqual(positions(glb), Array.from(triangle), 'the fallback data is used')
+  for (let i = 0; i < 5; i++) await tick()
+  assert.deepEqual(unhandled, [])
+  assert.ok(
+    requested.every(end => !end.endsWith('@@@@')),
+    requested.join(' ')
   )
 })

@@ -1677,7 +1677,6 @@ class GLTFMeshoptCompression {
 
 			const extensionDef = bufferView.extensions[ this.name ];
 
-			const buffer = this.parser.getDependency( 'buffer', extensionDef.buffer );
 			const decoder = this.parser.options.meshoptDecoder;
 
 			if ( ! decoder || ! decoder.supported ) {
@@ -1694,6 +1693,10 @@ class GLTFMeshoptCompression {
 				}
 
 			}
+
+			// asked for only when it will be used: upstream started this load before looking for a decoder and
+			// dropped its promise without one, so a refusal of that buffer later surfaced as an unhandled rejection
+			const buffer = this.parser.getDependency( 'buffer', extensionDef.buffer );
 
 			return buffer.then( ( res ) => { // COO_BUDGET: an arrow function, for this.parser
 
@@ -2679,8 +2682,9 @@ function addMorphTargets( geometry, targets, parser ) {
 		if ( hasMorphColor ) geometry.morphAttributes.color = morphColors;
 		geometry.morphTargetsRelative = true;
 
-		// COO_BUDGET: the morph-target texture the renderer will build for this geometry (once: geometries are shared)
-		if ( parser.budget ) parser.budget.bytes( morphTextureBytes( geometry, parser.budget.maxTextureSize ), 'morph target texture' );
+		// COO_BUDGET: the morph-target texture the renderer will build for this geometry (once: geometries are shared);
+		// not where nothing draws (the server's budget says so)
+		if ( parser.budget && parser.budget.morphTextures ) parser.budget.bytes( morphTextureBytes( geometry, parser.budget.maxTextureSize ), 'morph target texture' );
 
 		return geometry;
 

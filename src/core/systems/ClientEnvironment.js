@@ -78,6 +78,7 @@ export class ClientEnvironment extends System {
     this.skyN = 0
     this.bgUrl = null
     this.hdrUrl = null
+    this.failedAssets = new Set()
   }
 
   init({ baseEnvironment }) {
@@ -139,10 +140,13 @@ export class ClientEnvironment extends System {
     const fogColor = isString(node?._fogColor) ? node._fogColor : base.fogColor
 
     const n = ++this.skyN
-    let bgTexture
-    if (bgUrl) bgTexture = await this.world.loader.load('texture', bgUrl)
-    let hdrTexture
-    if (hdrUrl) hdrTexture = await this.world.loader.load('hdr', hdrUrl)
+    // each asset on its own: one that fails to load is reported and treated as not set, and the sun, fog and rotation
+    // below still apply (a refused background used to leave them all unapplied, as an unhandled rejection)
+    const [bgTexture, hdrTexture] = await Promise.all([
+      bgUrl ? this.loadAsset('texture', bgUrl) : null,
+      hdrUrl ? this.loadAsset('hdr', hdrUrl) : null,
+    ])
+    // a newer sky was asked for while these loaded: it wins
     if (n !== this.skyN) return
 
     if (bgTexture) {
@@ -193,6 +197,25 @@ export class ClientEnvironment extends System {
       fogNear,
       fogFar,
       fogColor,
+    }
+  }
+
+  // a sky texture or HDR, or null when it cannot be loaded. A failing url is reported once (until it loads again),
+  // not on every sky update
+  async loadAsset(type, url) {
+    const key = `${type}/${url}`
+    try {
+      const asset = await this.world.loader.load(type, url)
+      this.failedAssets.delete(key)
+      return asset
+    } catch (err) {
+      if (!this.failedAssets.has(key)) {
+        this.failedAssets.add(key)
+        console.warn(
+          `[environment] ${type} could not be loaded (${String(url).slice(0, 120)}): ${String(err?.message || err).slice(0, 160)}`
+        )
+      }
+      return null
     }
   }
 

@@ -237,38 +237,6 @@ test("a mesh's material belongs to its app run: kept past the app's teardown it 
   assert.equal(meshB.material.color.getHexString(), '00ff00')
 })
 
-test("a video's material is bound to its app run the same way", () => {
-  const entity = { isApp: true, data: { id: 'v' }, deadHook: { dead: false } }
-  const video = m.createNode('video')
-  // what mounting gives it: its app run and its own mesh
-  const offset = new m.THREE.Vector2()
-  video.ctx = { entity, run: entity.deadHook }
-  video.mesh = { material: { uniforms: { uOffset: { value: offset } } } }
-  const host = { video: video.getProxy() }
-  const result = run(
-    `'use strict'
-    const material = world.video.material
-    world.material = material
-    material.textureX = 0.25
-    let redefined = 'allowed'
-    try {
-      Object.defineProperty(material, 'textureX', { set() {} })
-    } catch (err) {
-      redefined = err.name
-    }
-    return { same: material === world.video.material, frozen: Object.isFrozen(material), redefined }
-  `,
-    host
-  )
-  assert.deepEqual(result, { same: true, frozen: true, redefined: 'TypeError' })
-  assert.equal(offset.x, 0.25)
-  entity.deadHook.dead = true
-  entity.deadHook = { dead: false }
-  assert.throws(() => run(`world.material.textureY = 0.5`, host), /this app has stopped/)
-  assert.equal(offset.y, 0)
-  assert.equal(run(`return world.material.textureX`, host), 0.25)
-})
-
 test('callbacks: a call or apply a script defines on its function is never what the engine invokes', () => {
   const host = { effects: [] }
   run(

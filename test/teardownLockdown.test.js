@@ -247,3 +247,49 @@ test("controls: a releasing control's onRelease unlocks only a lock it still hol
   assert.equal(world.controls.pointer.locked, false)
   assert.equal(lock.exit, 2)
 })
+
+test('video.material: nothing before the video is mounted; a kept one cannot act after its app is gone', async () => {
+  const { world } = makeWorld()
+  const a = addApp(
+    world,
+    'a',
+    `
+    const video = app.create('video')
+    // the review's reproduction: read before mounting
+    app.state.early = video.material
+    app.add(video)
+    const material = video.material
+    material.textureX = 0.25
+    let redefined = 'allowed'
+    try {
+      Object.defineProperty(material, 'textureY', { set() {} })
+    } catch (err) {
+      redefined = err.name
+    }
+    app.state.checks = { same: material === video.material, frozen: Object.isFrozen(material), redefined }
+    app.state.material = material
+    app.state.video = video
+    // unmounted again (in the same run): no material, as for a mesh
+    const other = app.create('video')
+    app.add(other)
+    app.remove(other)
+    app.state.unmounted = other.material
+  `
+  )
+  const b = addApp(world, 'b', `app.state.adopt = node => world.add(node)`)
+  await tick()
+  assert.equal(a.data.state.early, undefined, 'no material before mounting, as for a mesh')
+  assert.equal(a.data.state.unmounted, undefined, 'nor once unmounted')
+  assert.deepEqual({ ...a.data.state.checks }, { same: true, frozen: true, redefined: 'TypeError' })
+  const own = a.root.children.find(child => child.name === 'video')
+  assert.equal(own.mesh.material.uniforms.uOffset.value.x, 0.25, 'a write of the live run acts')
+  // B adopts the video (it mounts again, for B), then A is removed
+  b.data.state.adopt(a.data.state.video)
+  const node = [...b.worldNodes][0]
+  assert.ok(node.mesh, 'mounted for B')
+  a.destroy()
+  assert.throws(() => (a.data.state.material.textureX = 0.75), new RegExp(STOPPED.replace(/[[\]]/g, '\\$&')))
+  assert.equal(node.mesh.material.uniforms.uOffset.value.x, 0, "B's video is unchanged")
+  assert.equal(a.data.state.material.textureX, 0, 'reading still answers (it follows the mounted mesh)')
+  b.destroy()
+})

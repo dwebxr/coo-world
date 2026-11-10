@@ -12,8 +12,8 @@ export function materialForScript(node, facade) {
   if (facade === null || typeof facade !== 'object') return facade
   const run = node.ctx?.run
   const entity = node.ctx?.entity
-  // not mounted for an app run (only the host mounts such nodes): there is no run to bind to
-  if (!run || !entity) return facade
+  // not mounted for an app run (only the host mounts such nodes): there is no run to bind to, so no material either
+  if (!run || !entity) return undefined
   let facades = wrappers.get(run)
   if (!facades) wrappers.set(run, (facades = new WeakMap()))
   let wrapper = facades.get(facade)

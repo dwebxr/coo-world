@@ -6,7 +6,8 @@ A material on a [Mesh](/docs/scripting/Mesh.md) node.
 object (also for another mesh of the run that uses the same material), and the object is frozen, so nothing can be
 added to it or redefined on it. Once that app stops (it is removed or rebuilt), setting a property on a material
 kept from it throws `[app] this app has stopped`; reading still works. The app's own `destroy` handler still runs
-inside its run, so it can set a material back. Another app gets its own object for the same material.
+inside its run, so it can set a material back. Another app gets its own object for the same material. A mesh that
+is not mounted (not yet added to the app or to world space, or removed again) has no material: `undefined`.
 
 ## Properties
 

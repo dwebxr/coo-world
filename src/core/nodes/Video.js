@@ -866,24 +866,27 @@ export class Video extends Node {
     }
   }
 
+  // the material of the mounted video's mesh: none before it is mounted (or once unmounted), as for a Mesh, so a script
+  // only ever gets it bound to the app run the video is mounted for (Video's proxy, scriptMaterial.js)
   get material() {
+    if (!this.mesh) return undefined
     if (!this._materialProxy) {
       const self = this
       this._materialProxy = hardenForScripts({
         get textureX() {
-          return self.mesh.material.uniforms.uOffset.value.x
+          return self.mesh?.material.uniforms.uOffset.value.x
         },
         // read by the renderer every frame: a primitive finite number only
         set textureX(value) {
           if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error('[video] textureX not a number')
-          self.mesh.material.uniforms.uOffset.value.x = value
+          if (self.mesh) self.mesh.material.uniforms.uOffset.value.x = value
         },
         get textureY() {
-          return self.mesh.material.uniforms.uOffset.value.y
+          return self.mesh?.material.uniforms.uOffset.value.y
         },
         set textureY(value) {
           if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error('[video] textureY not a number')
-          self.mesh.material.uniforms.uOffset.value.y = value
+          if (self.mesh) self.mesh.material.uniforms.uOffset.value.y = value
         },
       })
     }

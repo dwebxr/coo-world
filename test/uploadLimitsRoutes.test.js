@@ -426,7 +426,7 @@ test('upload-check: its own per-minute bucket, which the post bucket does not sh
   }
 })
 
-test('free space: 507 at the floor (never above a fifth of the volume), fail open on error, skipped without statfs', async () => {
+test('free space: 507 at the floor (never above a fifth of the volume), 507 on error, skipped without statfs', async () => {
   const minFree = 100 * 1024 * 1024
   const assets = makeAssets()
   let space = { free: 0, total: 0 }
@@ -454,15 +454,31 @@ test('free space: 507 at the floor (never above a fifth of the volume), fail ope
     assert.equal((await post('builder', 'b.glb', glb('b'))).status, 200)
     space = { free: total * 0.2 + file.length - 1, total }
     assert.equal((await post('builder', 'c.glb', glb('c'))).status, 507)
-    // statfs failing is logged once and uploads proceed
-    space = new Error('EACCES')
-    assert.equal((await post('builder', 'c.glb', glb('c'))).status, 200)
-    assert.equal((await post('builder', 'd.glb', glb('d'))).status, 200)
-    assert.equal(warned.filter(l => /free space check unavailable/.test(l)).length, 1)
     assert.ok(
       warned.some(l => /free-space floor/.test(l)),
       'the 507 was logged for the operator'
     )
+    // free space that cannot be read is not assumed: 507 and nothing stored, logged once per kind of failure
+    const stored = assets.calls.length
+    space = Object.assign(new Error('permission denied'), { code: 'EACCES' })
+    assert.equal((await post('builder', 'c.glb', glb('c'))).status, 507)
+    assert.equal((await post('builder', 'd.glb', glb('d'))).status, 507)
+    space = Object.assign(new Error('i/o error'), { code: 'EIO' })
+    assert.equal((await post('builder', 'd.glb', glb('d'))).status, 507)
+    space = { free: NaN, total: 10 * 1024 * 1024 * 1024 }
+    assert.equal((await post('builder', 'd.glb', glb('d'))).status, 507, 'a statfs answer without figures')
+    assert.equal(assets.calls.length, stored)
+    assert.deepEqual(
+      warned.filter(l => /free space check unavailable/.test(l)),
+      [
+        '[upload] free space check unavailable (EACCES): refusing uploads until it works',
+        '[upload] free space check unavailable (EIO): refusing uploads until it works',
+        '[upload] free space check unavailable (no free space figures): refusing uploads until it works',
+      ]
+    )
+    // readable again: uploads proceed
+    space = { free: minFree + file.length, total: 10 * 1024 * 1024 * 1024 }
+    assert.equal((await post('builder', 'd.glb', glb('d'))).status, 200)
   } finally {
     console.warn = warn
     await close()

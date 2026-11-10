@@ -91,7 +91,13 @@ export class App extends Entity {
     return node
   }
 
+  // the apps were stopped for good (server shutdown, shutdown.js stopApps): no build may start or go on
+  halted() {
+    return this.world.appsStopped === true
+  }
+
   async build(crashed) {
+    if (this.halted()) return
     // asked for while this app's teardown is on the stack (a host listener of an event its script emitted from
     // destroy): it waits until the teardown has finished (unbuild)
     if (this.tearingDown) return this.deferTransition('build', crashed)
@@ -150,7 +156,7 @@ export class App extends Entity {
       root = glb.toNodes()
     }
     // if a new build happened while we were fetching, stop here
-    if (this.n !== n || this.world.fatalError) return
+    if (this.n !== n || this.world.fatalError || this.halted()) return
     // unbuild any previous version
     this.unbuild()
     // mode
@@ -192,7 +198,7 @@ export class App extends Entity {
       (this.mode === Modes.ACTIVE || (this.mode === Modes.MOVING && !this.resetOnMove))
     // (this.mode === Modes.ACTIVE && script && !crashed) ||
     // (this.mode === Modes.MOVING && !this.resetOnMove && !this.scriptError)
-    if (this.n !== n || this.world.fatalError) return
+    if (this.n !== n || this.world.fatalError || this.halted()) return
     if (this.physicsFailureVersion !== failureVersion) {
       this.building = false
       return
@@ -516,7 +522,8 @@ export class App extends Entity {
     this.world.setHot(this, false)
     const n = ++this.n // invalidate builds already waiting on assets
     queueMicrotask(() => {
-      if (this.n !== n || this.destroyed || this.world.fatalError) return
+      // (once the apps are stopped for good, App.halted, no destroy handler runs again: the server is shutting down)
+      if (this.n !== n || this.destroyed || this.world.fatalError || this.halted()) return
       // the crashed run is torn down now, through the same teardown as a removal, whether or not the crash block can
       // be loaded (it is shown by the build below, which can fail on its own). As soon as the current task's own code
       // has returned: a crash can be reported from inside a host loop (a physics step, the stage's clean pass) that

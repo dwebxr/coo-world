@@ -93,8 +93,9 @@ function fixture({ pause, fail, existing = false, auth = { userId: 'player' } } 
         return player
       },
       get: id => players.get(id),
+      // the snapshot is made before the player is added, so a failure here leaves no player to clean up
       serialize() {
-        if (fail === 'snapshot' || fail === 'cleanup') throw failure
+        if (fail === 'snapshot') throw failure
         return [...players.values()].map(player => player.data)
       },
     },
@@ -103,7 +104,8 @@ function fixture({ pause, fail, existing = false, auth = { userId: 'player' } } 
         assert.equal(name, 'enter')
         assert.ok(Object.isFrozen(data), 'the enter payload every app sees is frozen')
         assert.ok(network.sockets.has(data.playerId), 'socket is registered before enter')
-        if (fail === 'enter') throw failure
+        // 'cleanup': a failure after the player was added, whose clean-up throws too
+        if (fail === 'enter' || fail === 'cleanup') throw failure
         entered.push(data.playerId)
       },
     },
@@ -210,7 +212,7 @@ for (const fail of ['add-before', 'add-after', 'snapshot', 'write', 'enter', 'cl
     const f = fixture({ fail })
     await f.run()
     assert.equal(f.inserted.length, 1)
-    assert.equal(f.added.length, fail === 'add-before' ? 0 : 1)
+    assert.equal(f.added.length, fail === 'add-before' || fail === 'snapshot' ? 0 : 1)
     assert.equal(f.destroyed.length, f.added.length)
     assert.equal(f.players.size, 0)
     assert.equal(f.network.sockets.size, 0)
@@ -628,22 +630,41 @@ test('checkSockets: a connection being asked by a takeover is left to it', () =>
   assert.deepEqual(terminated, ['stale'])
 })
 
-test('onConnection: oversized and refused snapshots clean up the player before transport close', async () => {
-  for (const oversized of [false, true]) {
-    const f = fixture()
-    if (oversized) f.network.world.blueprints.serialize = () => 'x'.repeat(SNAPSHOT_CAP)
-    else f.network.write = () => false
-    await f.run()
-    assert.equal(f.destroyed.length, 1)
-    assert.equal(f.players.size, 0)
-    assert.equal(f.network.sockets.size, 0)
-    assert.equal(f.network.connecting.size, 0)
-    assert.deepEqual(f.ws.packets, [])
-    assert.deepEqual(f.ws.closeCodes, [1011])
-    assert.deepEqual(f.logs, [`onConnection: ${oversized ? 'snapshot too large' : 'snapshot write failed'}`])
-    f.ws.finishClose()
-    assert.equal(f.limits.stats().active, 0)
-  }
+test('onConnection: a refused snapshot write cleans up the player before transport close', async () => {
+  const f = fixture()
+  f.network.write = () => false
+  await f.run()
+  assert.equal(f.destroyed.length, 1)
+  assert.equal(f.players.size, 0)
+  assert.equal(f.network.sockets.size, 0)
+  assert.equal(f.network.connecting.size, 0)
+  assert.deepEqual(f.ws.packets, [])
+  assert.deepEqual(f.ws.closeCodes, [1011])
+  assert.deepEqual(f.logs, ['onConnection: snapshot write failed'])
+  f.ws.finishClose()
+  assert.equal(f.limits.stats().active, 0)
+})
+
+test('onConnection: a snapshot over its cap is refused before any player is added (player_limit kick)', async () => {
+  const f = fixture()
+  // over the cap in what it sends, not in what is counted (a world stored before the budget): the visitor passes
+  // the headroom rule and the real size refuses it
+  f.network.world.blueprints = { serialize: () => 'x'.repeat(SNAPSHOT_CAP) }
+  await f.run()
+  assert.equal(f.added.length, 0)
+  assert.equal(f.players.size, 0)
+  assert.equal(f.network.sockets.size, 0)
+  assert.equal(f.network.connecting.size, 0)
+  f.ws.drain()
+  assert.deepEqual(
+    f.ws.packets.map(packet => readPacket(packet)),
+    [['onKick', 'player_limit']]
+  )
+  assert.deepEqual(f.ws.closeCodes, [undefined])
+  assert.equal(f.logs.length, 1)
+  assert.match(f.logs[0], /^\[network\] a player was turned away: the join snapshot is \d+ bytes after every step/)
+  f.ws.finishClose()
+  assert.equal(f.limits.stats().active, 0)
 })
 
 test('onConnection: a snapshot near 900 KiB is the first write and completes a join', async () => {

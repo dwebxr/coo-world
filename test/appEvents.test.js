@@ -33,7 +33,8 @@ const make = ({ isServer = true, onScript } = {}) => {
   })
   const world = Object.assign(new EventEmitter(), {
     network: { isServer, isClient: !isServer, id: 0, send: () => true },
-    entities: { items: new Map(), remove: id => world.entities.items.delete(id) },
+    // stateEmptied: the join-state accounting a rebuild updates (joinBudget.test.js runs the real one)
+    entities: { items: new Map(), remove: id => world.entities.items.delete(id), stateEmptied() {} },
     events: { off() {} },
     setHot() {},
     loader: {

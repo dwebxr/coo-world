@@ -47,7 +47,12 @@ function makeApp(script, hostFetch = () => assert.fail('no fetch expected')) {
   })
   const world = Object.assign(new EventEmitter(), {
     network: { isServer: true, isClient: false, id: 0, send: () => true, asScript: fn => fn() },
-    entities: { items: new Map(), remove: id => world.entities.items.delete(id) },
+    entities: {
+      items: new Map(),
+      remove: id => world.entities.items.delete(id),
+      // (the join budget's record of a rebuilt app's emptied state, Entities.stateEmptied)
+      stateEmptied() {},
+    },
     events: { emit() {}, on() {}, off() {} },
     setHot() {},
     loader: { get: type => (type === 'script' ? { exec: script } : { toNodes: root }) },

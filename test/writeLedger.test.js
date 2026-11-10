@@ -25,6 +25,7 @@ import {
   WRITE_OVERHEAD,
 } from '../src/core/extras/writeLedger.js'
 import { fakeWs, makeNetwork, Socket, connectionMethod } from './lib/networkHarness.mjs'
+import { readPacket } from '../src/core/packets.js'
 
 const bytes = n => new Uint8Array(n)
 const addSocket = (network, id = 'player') => {
@@ -352,14 +353,16 @@ test('Apps: unknown players and internal-event refusals return false without sen
   assert.equal(logs.length, 2)
 })
 
-test('ServerNetwork: oversized snapshot closes with 1011 and never writes the snapshot', async () => {
+test('ServerNetwork: a snapshot over its cap after every step refuses the join (player_limit), never sent, no player added', async () => {
   const logs = []
   const network = makeNetwork(line => logs.push(line))
   network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
   network.connecting = new Set()
-  const user = { id: 'player', rank: 0 }
+  // a stored admin: the visitor headroom does not apply, only the snapshot's real size
+  const user = { id: 'player', rank: 2 }
   network.db = () => ({ where: () => ({ first: async () => user }) })
   const serial = { serialize: () => [] }
+  let added = 0
   network.world = {
     ...network.world,
     settings: { ...serial, playerLimit: 0 },
@@ -368,7 +371,7 @@ test('ServerNetwork: oversized snapshot closes with 1011 and never writes the sn
     chat: serial,
     ai: serial,
     blueprints: { serialize: () => 'x'.repeat(SNAPSHOT_CAP) },
-    entities: { ...serial, add: () => ({ data: user, destroy() {} }) },
+    entities: { ...serial, get: () => undefined, add: () => (added++, { data: user, destroy() {} }) },
     events: { emit() {} },
   }
   const method = connectionMethod({
@@ -386,9 +389,12 @@ test('ServerNetwork: oversized snapshot closes with 1011 and never writes the sn
     ws.closeCode = code
   }
   await method.call(network, ws, { authToken: 'valid' })
-  assert.equal(ws.closeCode, 1011)
-  assert.deepEqual(logs, ['onConnection: snapshot too large'])
-  assert.equal(ws.packets.length, 0)
+  assert.equal(ws.closeCode, undefined, 'an ordinary close after the kick')
+  assert.equal(logs.length, 1)
+  assert.match(logs[0], /^\[network\] a player was turned away: the join snapshot is \d+ bytes after every step/)
+  assert.equal(ws.packets.length, 1)
+  assert.deepEqual(readPacket(ws.packets[0]), ['onKick', 'player_limit'])
+  assert.equal(added, 0)
   assert.equal(network.sockets.size, 0)
 })
 

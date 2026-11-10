@@ -168,7 +168,12 @@ export function createSweep({ m, scripts, requests }) {
     const model = models || defaultModel
     const world = Object.assign(new EventEmitter(), {
       network: { isServer, isClient: !isServer, id: 'me', send: () => true, asScript: fn => fn() },
-      entities: { items: new Map(), remove: id => world.entities.items.delete(id) },
+      entities: {
+        items: new Map(),
+        remove: id => world.entities.items.delete(id),
+        // (the join budget's record of a rebuilt app's emptied state, Entities.stateEmptied)
+        stateEmptied() {},
+      },
       events: new EventEmitter(),
       hot: new Set(),
       setHot: (item, hot) => (hot ? world.hot.add(item) : world.hot.delete(item)),

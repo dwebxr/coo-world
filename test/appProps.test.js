@@ -42,7 +42,12 @@ function makeWorld(script, { props = { color: 'red', list: [1, 2] }, isServer = 
   })
   const world = Object.assign(new EventEmitter(), {
     network: { isServer, isClient: !isServer, id: 0, send: () => true, asScript: fn => fn() },
-    entities: { items: new Map(), remove: id => world.entities.items.delete(id) },
+    entities: {
+      items: new Map(),
+      remove: id => world.entities.items.delete(id),
+      // (the join budget's record of a rebuilt app's emptied state, Entities.stateEmptied)
+      stateEmptied() {},
+    },
     events: { emit() {}, on() {}, off() {} },
     setHot() {},
     loader: { get: type => (type === 'script' ? { exec: script } : { toNodes: root }) },

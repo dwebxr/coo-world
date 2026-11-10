@@ -27,6 +27,11 @@ import {
 import { readInboundPacket } from '../../src/server/inboundDecode.js'
 import { appChatLine, sanitizeChatMessage } from '../../src/core/extras/chatPolicy.js'
 import { eventPayload } from '../../src/core/extras/eventPayload.js'
+import {
+  isAdminOnlySettingKey,
+  isKnownSettingKey,
+  normalizeSettingValue,
+} from '../../src/core/extras/settingsPolicy.js'
 import * as solanaGating from '../../src/server/solana-gating.js'
 import * as evmGating from '../../src/server/evm-gating.js'
 import { parseTipAmount, tipAmountReason } from '../../src/core/extras/evmTokens.js'
@@ -40,12 +45,34 @@ import { createTokenBalanceService } from '../../src/server/tokenBalance.js'
 import { Ranks } from '../../src/core/extras/ranks.js'
 import { clientIpKeys } from '../../src/server/uploadLimits.js'
 import { previewValue } from '../../src/core/extras/assetURL.js'
+import {
+  GROWTH_RESERVE_BYTES,
+  OWN_AVATAR_MAX_LENGTH,
+  RANKED_RESERVE_PLAYERS,
+  SNAPSHOT_FIXED_BYTES,
+  SNAPSHOT_STEP_NAMES,
+  encodeSnapshot,
+  envelopeBytes,
+  fitsJoinState,
+  joinStateBytes,
+  joinStateReport,
+  settingsBytes,
+  visitorShortfall,
+} from '../../src/core/extras/joinBudget.js'
+import {
+  PLAYER_NAME_MAX_LENGTH,
+  SESSION_AVATAR_MAX_LENGTH,
+  isBoundedJsonObject,
+} from '../../src/core/extras/entityModifyPolicy.js'
 
 export const serverSource = fs.readFileSync(new URL('../../src/server/index.js', import.meta.url), 'utf8')
 const source = fs.readFileSync(new URL('../../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
 const names = [
   'init',
   'start',
+  'hydrate',
+  'saveDirty',
+  'saveExpired',
   'onDisconnect',
   'onChatAdded',
   'onAppChat',
@@ -79,7 +106,12 @@ const names = [
   'markBlueprintDirty',
   'markAppDirty',
   'markAppDeleted',
+  'rekeyApp',
+  'replacementOf',
   'saveConfig',
+  'joinRecord',
+  'snapshotState',
+  'measureFixedBytes',
   'preFixedUpdate',
   'asScript',
   'write',
@@ -98,6 +130,8 @@ const names = [
   'revertBlueprint',
   'onEntityAdded',
   'onEntityModified',
+  'onEntityRemoved',
+  'onSettingsModified',
   'onSpawnModified',
 ]
 const methods = names
@@ -126,6 +160,24 @@ function networkClass(context) {
     sanitizeBlueprintModify,
     WORLD_BLUEPRINT_BYTES,
     previewValue,
+    SNAPSHOT_CAP,
+    joinStateReport,
+    settingsBytes,
+    fitsJoinState,
+    envelopeBytes,
+    SNAPSHOT_FIXED_BYTES,
+    OWN_AVATAR_MAX_LENGTH,
+    PLAYER_NAME_MAX_LENGTH,
+    SESSION_AVATAR_MAX_LENGTH,
+    HEALTH_MAX: 100,
+    performance,
+    // the session token a join makes (the real one is a signed JWT; tests that need its size give their own)
+    createJWT: async ({ userId }) => `jwt.${userId}`,
+    isBoundedJsonObject,
+    isAdminOnlySettingKey,
+    isKnownSettingKey,
+    normalizeSettingValue,
+    setImmediate,
     defaultSpawn: '{"position":[0,0,0],"quaternion":[0,0,0,1]}',
     SAVE_INTERVAL: 0,
     // the server's values; tests that wait on them set network.takeoverPingMs / takeoverCloseMs instead
@@ -178,6 +230,7 @@ export function makeNetwork(log = () => {}, { context, tokenBalanceService, evmH
   network.id = 0
   network.sockets = new Map()
   network.connecting = new Set()
+  network.userIds = new Set()
   network.dirtyBlueprints = new Map()
   network.dirtyApps = new Map()
   network.loadedConfig = new Map()
@@ -254,8 +307,18 @@ export function connectionMethod(context) {
     TAKEOVER_CLOSE_MS: 2000,
     writePacket,
     SNAPSHOT_CAP,
+    SNAPSHOT_STEP_NAMES,
+    encodeSnapshot,
+    envelopeBytes,
+    visitorShortfall,
+    joinStateBytes,
+    RANKED_RESERVE_PLAYERS,
+    GROWTH_RESERVE_BYTES,
+    SNAPSHOT_FIXED_BYTES,
+    Ranks,
     Socket,
     briefError,
+    previewValue,
     solanaGating,
     evmGating,
     eventPayload,

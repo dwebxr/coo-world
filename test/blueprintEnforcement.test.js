@@ -25,6 +25,12 @@ function fixture() {
       this.items.set(data.id, entity)
       return entity
     },
+    // the join-state budget for apps is not under test here: test/joinBudget.test.js runs the real Entities
+    canFitApp: () => true,
+    measureApp() {},
+    trackApp() {},
+    stateEmptied() {},
+    emptiedStateBytes: () => 0,
   }
   world.blueprints = new Blueprints(world)
   const connect = id => {
@@ -83,15 +89,19 @@ test('blueprint enforcement: decoded adds and modifies store and broadcast only 
 test('blueprint enforcement: unknown names are escaped, cut to 32 characters and logged once per socket', () => {
   const f = fixture()
   const key = '\n"' + 'x'.repeat(30) + 'secret-key-tail'
-  for (const socket of [f.author, f.connect('author')]) {
-    f.send('blueprintAdded', { id: 'bp', version: 0, [key]: 'secret-value' }, socket)
+  for (const [id, socket] of [
+    ['bp', f.author],
+    ['bp2', f.connect('author')],
+  ]) {
+    f.send('blueprintAdded', { id, version: 0, [key]: 'secret-value' }, socket)
     for (let version = 1; version <= 20; version++) {
-      f.send('blueprintModified', { id: 'bp', version, [`other-${version}`]: 'secret-value' }, socket)
+      f.send('blueprintModified', { id, version, [`other-${version}`]: 'secret-value' }, socket)
     }
   }
   assert.deepEqual(f.logs, Array(2).fill(`blueprint: unknown key ${JSON.stringify(key.slice(0, 32))}`))
   assert.ok(f.logs.every(line => !line.includes('\n') && !line.includes('secret')))
   assert.deepEqual(f.world.blueprints.get('bp'), { id: 'bp', version: 20 })
+  assert.deepEqual(f.world.blueprints.get('bp2'), { id: 'bp2', version: 20 })
   assert.ok(f.packets().every(([, data]) => Object.keys(data).length === 2))
 })
 
@@ -234,9 +244,10 @@ test('blueprint enforcement: pending add refusal survives unrelated entities, ex
   f.send('entityAdded', app('expired', 'bp'))
   assert.ok(f.world.entities.get('expired'))
   assert.equal(f.author.refusedBlueprint, null)
-  f.send('blueprintAdded', { id: 'bp', version: -1 })
-  f.send('blueprintAdded', { id: 'bp', version: 1 })
-  f.send('entityAdded', app('retry', 'bp'))
+  // a valid retry under a new id (an add never replaces a stored blueprint)
+  f.send('blueprintAdded', { id: 'fresh', version: -1 })
+  f.send('blueprintAdded', { id: 'fresh', version: 0 })
+  f.send('entityAdded', app('retry', 'fresh'))
   assert.ok(f.world.entities.get('retry'))
   assert.equal(f.author.refusedBlueprint, null)
   assert.equal(f.packets(f.author).length, 0)
@@ -309,8 +320,9 @@ test('blueprint budget: modifications measure the merged blueprint and share the
   f.send('blueprintModified', { id: 'bp8', version: 1, props: {} })
   assert.ok(f.world.blueprints.bytes < before)
   assert.equal(f.world.blueprints.bytes, totalBytes(f.world.blueprints))
-  f.send('blueprintAdded', largeBlueprint('bp8', 30000))
-  assert.equal(f.world.blueprints.bytes, totalBytes(f.world.blueprints), 'replacement add subtracts the old size')
+  f.send('blueprintModified', { id: 'bp8', version: 2, props: { notes: 'n'.repeat(30000) } })
+  assert.equal(f.world.blueprints.get('bp8').props.notes.length, 30000)
+  assert.equal(f.world.blueprints.bytes, totalBytes(f.world.blueprints), 'a growing modify replaces the old size')
   f.world.blueprints.destroy()
   assert.equal(f.world.blueprints.bytes, 0)
   assert.equal(f.world.blueprints.sizes.size, 0)
@@ -336,7 +348,7 @@ test('blueprint budget: over-budget startup loads and warns, then allows only no
   assert.equal(f.world.blueprints.bytes, before)
   f.send('blueprintModified', { id: 'bp0', version: 1, props: { notes: 'n'.repeat(59000) } })
   assert.ok(f.world.blueprints.bytes < before && f.world.blueprints.bytes > WORLD_BLUEPRINT_BYTES)
-  f.send('blueprintAdded', largeBlueprint('bp1', 59000))
+  f.send('blueprintModified', { id: 'bp1', version: 1, props: { notes: 'n'.repeat(59000) } })
   assert.equal(f.world.blueprints.get('bp1').props.notes.length, 59000)
   assert.equal(f.world.blueprints.bytes, totalBytes(f.world.blueprints))
 })

@@ -4,43 +4,36 @@ import { assets } from './assets'
 import { collections } from './collections'
 import { isPlainObject } from '../core/extras/entityModifyPolicy.js'
 import { sanitizeBlueprintAdd } from '../core/extras/blueprintPolicy.js'
-import { assetName } from '../core/extras/assetURL.js'
+import { ASSET_PROTOCOL, assetName, loaderReference, referencedAssetNames } from '../core/extras/assetURL.js'
 
-// Inspect the persisted tree, including nested props and fields hydration may strip. A value that cannot name an
-// asset (a number where a url usually is, an `asset://` with no name) is skipped: it keeps nothing, and props
-// accept any JSON, so it must not turn cleaning off for the whole world.
+// Inspect the persisted tree, including nested props and fields hydration may strip. Each string is read the way
+// the loaders read a reference (assetURL.js referencedAssetNames: white space around it, a ?query or #hash, a
+// percent-encoded name), so a file a loader would load is kept. A value that cannot name an asset (a number where a
+// url usually is, an `asset://` with no name) is skipped: it keeps nothing, and props accept any JSON, so it must
+// not turn cleaning off for the whole world.
 function discoverAssets(data, found) {
   const pending = [data]
   while (pending.length) {
     const value = pending.pop()
     if (typeof value === 'string') {
-      if (value.startsWith('asset://')) {
-        const filename = value.slice(8).split(/[?#]/)[0]
-        if (filename) found.add(filename)
-      }
+      for (const name of referencedAssetNames(value)) found.add(name)
     } else if (value && typeof value === 'object') {
       for (const item of Object.values(value)) pending.push(item)
     }
   }
 }
 
-// a script value the server's loader fetches over the network (ServerLoader.locate): http(s), `//host/x` and any
-// other string that is not asset://, an absolute path or blob:
-function isRemoteScript(value) {
-  if (typeof value !== 'string') return false
-  const script = value.trim()
-  if (!script || script.startsWith('asset://') || script.startsWith('blob')) return false
-  return !script.startsWith('/') || script.startsWith('//')
-}
-
 // every asset://<name> inside a text (a stored value, a script's source): keep-more, so a name followed by
-// sentence punctuation is kept both with and without its trailing dots
-const ASSET_LITERAL = /asset:\/\/([A-Za-z0-9._-]{1,128})/g
+// sentence punctuation is kept both with and without its trailing dots, and a percent-encoded one as written and
+// decoded
+const ASSET_LITERAL = /asset:\/\/([A-Za-z0-9._%-]{1,384})/g
 function findAssetNames(text, found) {
-  for (const [, name] of text.matchAll(ASSET_LITERAL)) {
-    found.add(name)
-    const trimmed = name.replace(/\.+$/, '')
-    if (trimmed) found.add(trimmed)
+  for (const [, literal] of text.matchAll(ASSET_LITERAL)) {
+    for (const name of referencedAssetNames(ASSET_PROTOCOL + literal)) {
+      found.add(name)
+      const trimmed = name.replace(/\.+$/, '')
+      if (trimmed) found.add(trimmed)
+    }
   }
 }
 
@@ -98,11 +91,20 @@ class Cleaner {
     const blueprintsToDelete = []
     // the scripts of the blueprints that stay: their source can name assets no record mentions
     const scripts = new Set()
-    // kept blueprints whose script the server fetches from elsewhere (see isRemoteScript)
+    // kept blueprints whose script a loader would fetch from outside the asset store
     const remote = []
-    const keepScript = (id, script) => {
-      if (assetName(script)) scripts.add(assetName(script))
-      else if (isRemoteScript(script)) remote.push(String(id).slice(0, 24))
+    // A script as the loaders read it (loaderReference): none when empty or a blob: (a browser tab's own object,
+    // which no one else can load); a store file to read when it names one (a client loads asset://<name>?v=2 and a
+    // percent-encoded name too, so the decoded name is the file); anything else is fetched from elsewhere: an
+    // http(s) URL, `//host/x`, a bare `x.js` (https://x.js), a path (a client fetches it from the page's server), an
+    // asset:// name that leaves the store or ASSET:// (World.resolveURL turns it into https://ASSET://...).
+    const keepScript = (id, value) => {
+      const script = loaderReference(value)
+      if (typeof script !== 'string' || !script || script.startsWith('blob')) return
+      const names = referencedAssetNames(script)
+      const file = names[names.length - 1]
+      if (file !== undefined && assetName(ASSET_PROTOCOL + file) !== null) scripts.add(file)
+      else remote.push(String(id).slice(0, 24))
     }
     const blueprintRows = await db('blueprints')
     for (const row of blueprintRows) {
@@ -199,9 +201,10 @@ class Cleaner {
       console.warn(`[clean] skipped all deletion: could not read ${JSON.stringify(unreadable)}`)
       return
     }
-    // A script loaded from elsewhere may world.load assets no record names, and the clean-up does not fetch remote
-    // code at start-up. Unlike a missing file (it names nothing), it may name assets the server cannot see, so
-    // discovery is incomplete: nothing is deleted. The cost is disk that keeps growing, visibly, never lost data.
+    // A script loaded from elsewhere (keepScript) may world.load assets no record names, and the clean-up does not
+    // fetch remote code at start-up. Unlike a missing file (it names nothing), it may name assets the server cannot
+    // see, so discovery is incomplete: nothing is deleted. The cost is disk that keeps growing, visibly, never lost
+    // data.
     if (remote.length) {
       console.warn(
         `[clean] skipped all deletion: kept blueprints load their script from elsewhere ${JSON.stringify(remote)}; upload those scripts as assets (asset://) so the clean-up can read them`

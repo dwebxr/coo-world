@@ -1,4 +1,5 @@
 import { getPhysicsTrapCount } from './extras/physicsFailure.js'
+import { loaderReference } from './extras/assetURL.js'
 import * as THREE from './extras/three'
 import EventEmitter from 'eventemitter3'
 
@@ -260,7 +261,7 @@ export class World extends EventEmitter {
   // local assets only through resolveAssetFile (ServerLoader.locate), which keeps them inside the assets directory.
   resolveURL(url) {
     if (!url) return url
-    url = url.trim()
+    url = loaderReference(url)
     if (url.startsWith('blob')) {
       return url
     }

@@ -15,6 +15,32 @@ export function assetName(url) {
   return name
 }
 
+// A reference as every loader reads it: World.resolveURL (clients, the node agent and the server's remote loads) and
+// ServerLoader.locate take it without the white space around it. Anything that decides what a stored reference
+// loads (the start-up clean-up) reads it through this too, so it sees what a loader would load.
+export function loaderReference(value) {
+  return typeof value === 'string' ? value.trim() : value
+}
+
+// The asset-store files a reference can make a loader read, as names (an empty list for anything else). After
+// loaderReference, `asset://<name>` (the scheme in lower case, as both loaders test it) reads <name>; a client also
+// reads it when a ?query or #hash follows, or when the name is percent-encoded (its fetch of <assets>/<name>?v=2 or
+// <assets>/%61.glb is answered with that file), spellings the server's own loader refuses. Both the name as written
+// and the decoded one are given, so a caller that keeps files keeps either.
+export function referencedAssetNames(value) {
+  const ref = loaderReference(value)
+  if (typeof ref !== 'string' || !ref.startsWith(ASSET_PROTOCOL)) return []
+  const written = ref.slice(ASSET_PROTOCOL.length).split(/[?#]/)[0]
+  if (!written) return []
+  let decoded = written
+  try {
+    decoded = decodeURIComponent(written)
+  } catch {
+    // not valid percent-encoding: a fetch sends it as it is
+  }
+  return decoded === written ? [written] : [written, decoded]
+}
+
 // an http(s) URL that parses, with the literal lower-case prefix the server's loader fetches as remote
 export function isHttpURL(value) {
   if (typeof value !== 'string' || !/^https?:\/\//.test(value)) return false

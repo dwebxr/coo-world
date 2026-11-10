@@ -240,6 +240,14 @@ test('cleaner: a kept blueprint whose script is loaded from elsewhere stops all 
     'http://code.example/app.js',
     '//code.example/app.js',
     'code.example/app.js',
+    // a client fetches a path from the page's own server, which the clean-up cannot read by name
+    '/etc/app.js',
+    ' /assets/x.js ',
+    // World.resolveURL takes only a lower-case asset:// as an asset (this one becomes https://ASSET://x.js)
+    'ASSET://x.js',
+    // a name that leaves the store: a client's fetch of <assets>/../x.js reads another path
+    'asset://../x.js',
+    'asset://%2e%2e%2fx.js',
   ]) {
     const f = fixture(t)
     f.tables.blueprints[0] = row({ id: 'bp', version: 0, model: 'asset://used.glb', script })
@@ -249,7 +257,8 @@ test('cleaner: a kept blueprint whose script is loaded from elsewhere stops all 
       '[clean] skipped all deletion: kept blueprints load their script from elsewhere ["bp"]; upload those scripts as assets (asset://) so the clean-up can read them',
     ])
   }
-  // a collection blueprint counts the same; an orphan's (deleted with it) and a path or blob (never loaded) do not
+  // a collection blueprint counts the same; an orphan's (deleted with it), a blob (a browser tab's own object) and
+  // white space alone (no script) do not
   const f = fixture(t)
   f.collections.blueprints.add({ id: 'collection', version: 0, script: 'https://code.example/c.js' })
   await f.run()
@@ -257,8 +266,9 @@ test('cleaner: a kept blueprint whose script is loaded from elsewhere stops all 
   assert.match(f.warnings[0], /from elsewhere \["collection"\]/)
   for (const [where, script] of [
     ['orphan', 'https://code.example/orphan.js'],
-    ['bp', '/etc/app.js'],
     ['bp', 'blob:nodedata:x'],
+    ['bp', ' blob:nodedata:x'],
+    ['bp', '  \n'],
   ]) {
     const g = fixture(t)
     const data =
@@ -270,6 +280,35 @@ test('cleaner: a kept blueprint whose script is loaded from elsewhere stops all 
     assert.deepEqual(g.warnings, [], `${where} ${script}`)
     assert.deepEqual(g.deleted.at(-1), ['assets', ['unused.glb']])
   }
+})
+
+// Codex's probe: a stored " asset://<hash>.js " (the loaders trim it, so the app runs it) was neither kept nor read,
+// and both the script and the model only its source names were deleted
+test('cleaner: references are read as the loaders read them (white space, ?query or #hash, percent-encoding)', async t => {
+  const f = fixture(t)
+  for (const name of ['script.js', 'inner.glb', 'model.glb', 'a.png', 'q.js', 'qinner.glb', 'h.js', 'hinner.glb'])
+    f.files.add(name)
+  f.tables.blueprints[0] = row({
+    id: 'bp',
+    version: 0,
+    model: '  asset://model.glb\n',
+    script: ' asset://script.js ',
+    image: { url: '\tasset://%61.png' },
+  })
+  f.scripts.set('script.js', "world.load('model', ' asset://inner.glb ')")
+  // a client loads these two (its fetch reads q.js and h.js); the server's loader refuses them
+  f.collections.blueprints.add({ id: 'cq', version: 0, script: 'asset://q.js?v=2' })
+  f.collections.blueprints.add({ id: 'ch', version: 0, script: 'asset://h.js#main' })
+  f.scripts.set('q.js', 'const m = "asset://qinner.glb"')
+  f.scripts.set('h.js', 'const m = "asset://%68inner.glb"')
+  await f.run()
+  assert.deepEqual(f.warnings, [])
+  assert.deepEqual([...f.scriptReads].sort(), ['h.js', 'q.js', 'script.js'])
+  // only the two nothing names (the model replaced used.glb here)
+  assert.deepEqual(f.deleted, [
+    ['blueprints', 'orphan'],
+    ['assets', ['unused.glb', 'used.glb']],
+  ])
 })
 
 test('cleaner: assets the store could not delete are reported, not counted as deleted', async t => {

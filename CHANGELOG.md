@@ -117,6 +117,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - server: `/server stats` answers builders only.
 
 ### Fixed
+- client: a load that failed is tried again the next time the asset is asked for. The failure used to be kept for the session, so an asset whose upload finished a moment later could not be shown without a reload. An image that cannot be decoded now fails its load instead of leaving it pending for ever.
 - nodes: an in-place edit of a UI node's `offset` (`ui.offset.x = 5`) now rebuilds the UI. The node used to overwrite the vector's `_onChange` method instead of registering a callback. A cloned UI node gets its own offset vector instead of sharing the source's.
 - wallet: the WalletConnect "Open HashPort Wallet" link opens the app with the connection request.
   - **Before.** HashPort's universal link (https://link.wallet.hashport.com) did not reach the app on an iPhone. Its page sent the player to the App Store, and the pairing link was lost.
@@ -147,6 +148,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - apps: `setSessionAvatar('')` on the local player clears the session avatar again, as it did before the avatar URL policy.
 
 ### Security
+- client: an avatar, emote or model that another user supplies can no longer stop rendering for the people who see it.
+  - **Avatars.** A VRM without a neck bone (optional in VRM 1.0) made `aimBone` throw on every frame for every client within 40 m, and the frame loop has no way to skip one avatar. The bones the engine needs (hips, head, upper arms) are now checked while the file loads, so an unusable avatar is refused with a reason and the default is shown; optional bones are skipped where they are used.
+  - **Emotes.** Each avatar keeps at most 16 emote clips mixed (a remote player picks the URLs, and each new query string used to add a clip for good). A failed emote is reported and forgotten instead of leaving an unhandled rejection. An emote file without an animation fails its load with a reason.
+  - **Models.** A wind material on a model whose file gives no position bounds threw inside the shader hook on every frame; the height is now measured once when the model loads.
+- client: the loader checks what it downloads.
+  - **Status.** A 404 or 5xx page is a failed load. It used to be parsed as the model, image or script.
+  - **Size.** A download stops at a limit for its kind (2 MiB scripts, 32 MiB images and emotes, 64 MiB models, avatars, audio and HDRs), whether the size is declared, real or endless. Images and HDRs above 36 megapixels are refused after decoding. Files in the world's own store were already limited at upload; this is for URLs from elsewhere.
+  - **Memory.** Files and results for URLs outside the world's store are kept up to a bound, least recently used first out.
 - server: a blueprint's `script` or `model` could name any file the server can read. Builder rank (which holding the token can give) was enough to set `script` to `/proc/self/environ` or `asset://../../x`. The server then read the file on every rebuild, and the AI `edit` and `fix` actions sent its text to the AI provider and saved the reply as an asset, so the server's secrets could leave through the AI. `model: '/dev/zero'` could exhaust the server's memory, and node agents read such paths on their own machine.
   - **Loading.** The server and the node agent read a local file only for `asset://<name>` (letters, digits, `.`, `_` and `-`, up to 128 characters), and only from directly inside the assets directory. No other value is ever read from disk. A path (`/…`), `blob:` and an invalid `asset://` name are refused with the reason and a short prefix of the value. With `ASSETS=s3`, and on the node agent, `asset://<name>` still loads from the assets URL. Remote loads are unchanged: an http(s) URL is fetched, and so is what the loader has always turned into one (`//host/x` and a bare `host/x` become `https://…`, which includes spellings such as `file:///x`); limiting where the server may fetch from is a separate change.
   - **Blueprints.** A new blueprint, or a change that sets `model`, `script` or `image.url`, must give `asset://<name>` or an http(s) URL with a lower-case `http://`/`https://` prefix. The client refuses anything else with a toast, the server with a revert. A stored blueprint that already holds another value still loads as it is, and changes to its other fields are accepted.

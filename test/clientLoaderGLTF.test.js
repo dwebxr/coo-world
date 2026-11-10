@@ -214,10 +214,11 @@ test('a model or emote that names an external buffer is refused before anything 
   assert.equal(parsed.scene.getObjectByName('tri').geometry.attributes.position.count, 3)
 })
 
-test('the parser refuses at the allocation: a file of a few hundred bytes declaring a billion vertices', async () => {
+test('the parser refuses before the allocation: a file of a few hundred bytes declaring a billion vertices', async () => {
   const loader = makeLoader()
-  // one accessor of a billion VEC3 floats with no data, in a scene: the parser would zero-fill 12 GB; its budget
-  // refuses at the charge made just before that allocation. (Without the scene the parser never loads the accessor.)
+  // one accessor of a billion VEC3 floats with no data, in a scene: the parser would zero-fill 12 GB. The mesh's
+  // use of it is charged at its size (3,000,000,000 steps of work) before the accessor is loaded. (Without the scene
+  // the parser never loads the accessor.)
   const file = new TextEncoder().encode(
     JSON.stringify({
       asset: { version: '2.0' },
@@ -231,13 +232,13 @@ test('the parser refuses at the allocation: a file of a few hundred bytes declar
   for (const type of ['model', 'emote', 'avatar']) {
     await assert.rejects(
       loader.load(type, serve(`declared-${type}.gltf`, file)),
-      /would allocate more than \d+ bytes \(at accessor without data\)/,
+      /the parser would take more than \d+ steps/,
       type
     )
   }
   await assert.rejects(
     loader.insert('model', 'asset://picked.gltf', new File([file], 'picked.gltf')),
-    /would allocate more than/
+    /would take more than/
   )
   // and the files are not kept
   assert.equal(loader.hasFile('asset://declared-model.gltf'), false)

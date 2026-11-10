@@ -314,6 +314,25 @@ test('accessors are what the parser and three.js assume of them: animations, ski
     animated({}, 'translation', { skins: [{ joints: [0, 0], inverseBindMatrices: 5 }] }),
     /not a float 4x4 matrix per joint/
   )
+  // Codex's probe: times of 2 keyframes at a byteStride of 8 reached the track as 4 floats (with 6 CUBICSPLINE
+  // values, a sample size of 1.5). An animation's accessors, and a skin's matrices, are read as their arrays: they
+  // may not be interleaved (a stride equal to the element size is not interleaving)
+  const interleaved = (view, accessor, more) => {
+    const json = animated(more?.sampler ?? {}, 'translation', more?.extra)
+    json.bufferViews[view] = {
+      ...json.bufferViews[view],
+      byteLength: json.bufferViews[view].byteLength * 2,
+      ...accessor,
+    }
+    return json
+  }
+  refused(interleaved(0, { byteStride: 8 }), /animation 0 sampler 0 input or output is interleaved/)
+  refused(interleaved(1, { byteStride: 16 }), /input or output is interleaved/)
+  assert.ok(checkGLTF(text(interleaved(0, { byteStride: 4 }))), 'a stride of one element')
+  refused(
+    interleaved(5, { byteStride: 128 }, { extra: { skins: [{ joints: [0], inverseBindMatrices: 5 }] } }),
+    /skin 0 inverseBindMatrices are interleaved/
+  )
 
   // primitives: attributes of one count, targets of the same, indices unsigned and not interleaved, as many
   // targets on every primitive of a mesh
@@ -424,6 +443,16 @@ test('the node hierarchy is a tree of bounded depth', () => {
   // a wide tree is fine (and checked in linear time)
   const wide = [{ children: Array.from({ length: 60000 }, (_, i) => i + 1) }, ...Array(60000).fill({})]
   assert.equal(checkGLTF(text(doc({ nodes: wide }))).nodes, 60001)
+  // a scene's roots: each once, a child of no node, in no other scene. The parser re-parents a root it meets again,
+  // a search and a splice of its old parent's children each time (Codex's probe: 1000 roots listed twice shifted
+  // 999,000 entries); such a scene never loaded as written
+  const roots = (scenes, nodes = [{}, {}, {}]) => doc({ nodes, scenes: scenes.map(list => ({ nodes: list })) })
+  assert.ok(checkGLTF(text(roots([[0, 1], [2]]))))
+  refused(roots([[0, 1, 0]]), /scene 0 lists node 0 twice/)
+  refused(roots([[0, 1]], [{ children: [1] }, {}]), /scene 0 lists node 1, which is a child of another node/)
+  refused(roots([[0], [1, 0]]), /node 0 is a root of scenes 0 and 1/)
+  const thousand = Array.from({ length: 1000 }, (_, i) => i)
+  refused(roots([[...thousand, ...thousand]], Array(1000).fill({})), /scene 0 lists node 0 twice/)
 })
 
 test('three-vrm: expression binds, material binds and spring colliders are counted as the plugins expand them', () => {
@@ -581,6 +610,34 @@ test('three-vrm walks are counted in objects of the scene graph, as the plugins 
   const plain = outlined(300)
   plain.materials = [{}]
   assert.equal(checkGLTF(text(plain)).vrm.outlineDraws, 0)
+  // and each outline material three-vrm clones copies its material's userData (extras, and the extensions the parser
+  // does not handle, as JSON) and its textures' (their images' extras): Codex's probe, 50 outlined primitives on one
+  // material with 1000 small objects in its extras, made 50 copies of them while nothing was charged
+  const heavy = (n, objects = 1000) => {
+    const json = outlined(1)
+    json.meshes = [{ primitives: Array(n).fill({ attributes: { POSITION: 0 }, material: 0 }) }]
+    json.materials[0].extras = { list: Array.from({ length: objects }, (_, i) => ({ i })) }
+    return json
+  }
+  const one =
+    8192 +
+    2 * JSON.stringify(heavy(1).materials[0].extras).length +
+    2 * JSON.stringify(heavy(1).materials[0].extensions).length
+  assert.equal(checkGLTF(text(heavy(50))).vrm.outlineCopyBytes, 50 * one)
+  // (200 on one geometry draw 80,000 groups, inside that cap; their copies are not)
+  refused(heavy(200, 5000), /three-vrm outlineCopyBytes: \d+, more than 16777216/)
+  // a texture's image extras are copied with it
+  const textured = heavy(1)
+  textured.materials[0].extensions.VRMC_materials_mtoon.shadeMultiplyTexture = { index: 0 }
+  textured.textures = [{ source: 0 }]
+  textured.images = [{ bufferView: 0, mimeType: 'image/png', extras: { note: 'x'.repeat(100) } }]
+  assert.equal(
+    checkGLTF(text(textured)).vrm.outlineCopyBytes,
+    8192 +
+      2 * JSON.stringify(textured.materials[0].extras).length +
+      2 * JSON.stringify(textured.materials[0].extensions).length +
+      2 * JSON.stringify(textured.images[0].extras).length
+  )
 })
 
 test('the bundled avatar, emotes and models pass, with their three-vrm counts', () => {
@@ -597,6 +654,7 @@ test('the bundled avatar, emotes and models pass, with their three-vrm counts', 
     firstPersonWork: 62,
     constraints: 0,
     outlineDraws: 2,
+    outlineCopyBytes: 8192 + 4,
   })
   for (const name of [
     'world/assets/mp-idle.glb',
@@ -628,12 +686,25 @@ test('the budget: bytes beyond twice the file, counts per kind, image decodes si
   const work = createGLTFBudget({ limits: { ...GLTF_LIMITS, work: 10 } })
   work.work(10, 'ten')
   assert.throws(() => work.work(1, 'one more'), /the parser would take more than 10 steps \(at one more\)/)
-  assert.equal(GLTF_LIMITS.work, 2 ** 26)
+  assert.equal(GLTF_LIMITS.work, 2 ** 25)
+  assert.equal(createGLTFBudget({ fileBytes: 1000 }).maxWork, 2 ** 25 + 1000, 'and a step per byte of the file')
   assert.throws(() => createGLTFBudget().work(NaN, 'x'), /impossible amount of work/)
   assert.throws(
     () => createGLTFBudget().refuse('a document rule', 'x'),
     error => error.isGLTFLimit && error.message === 'model file: a document rule'
   )
+  // the time backstop: a monotonic clock, looked at by every charge (work each 65,536 steps); refused once
+  let now = 0
+  const timed = createGLTFBudget({ now: () => now })
+  timed.bytes(1, 'early')
+  now = GLTF_LIMITS.parseMilliseconds + 1
+  assert.throws(() => timed.count('nodes'), /the parse took more than 10 s \(at nodes\)/)
+  timed.count('nodes')
+  timed.work(1, 'a step')
+  const walks = createGLTFBudget({ now: () => now, limits: { ...GLTF_LIMITS, parseMilliseconds: 5 } })
+  now += 10
+  for (let i = 0; i < 65535; i++) walks.work(1, 'a walk')
+  assert.throws(() => walks.work(1, 'a walk'), /the parse took more than 0.005 s/)
   const counts = createGLTFBudget()
   counts.count('scenes', 64)
   assert.throws(() => counts.count('scenes'), /scenes: 65, more than 64/)

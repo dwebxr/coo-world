@@ -3,15 +3,22 @@
 //
 // - checkGLTF(data): before parsing. The container and the document's structure: chunk lengths, the JSON's size and
 //   nesting, every index a non-negative integer in range, every list a real list within a length, the node
-//   hierarchy a tree of bounded depth, no glTF 1.0 leftovers the parser still honours, required extensions this
-//   client can load; the accessors what the parser and three.js assume of them (an animation's keyframe times and
-//   values per keyframe, a skin's matrices, a primitive's counts and indices, strides and lengths: a fractional
-//   value size made three's interpolants loop forever); and three-vrm's work counted in the units its plugins
-//   iterate (three-vrm is not vendored, so it is bounded before it runs).
+//   hierarchy a tree of bounded depth, a scene's roots each once and in one scene, no glTF 1.0 leftovers the parser
+//   still honours, required extensions this client can load; the accessors what the parser and three.js assume of
+//   them (an animation's keyframe times and values per keyframe, not interleaved, a skin's matrices, a primitive's
+//   counts and indices, strides and lengths: a fractional value size made three's interpolants loop forever); and
+//   three-vrm's work counted in the units its plugins iterate (three-vrm is not vendored, so it is bounded before
+//   it runs, by upper bounds computed from the document).
 // - createGLTFBudget(): the per-file budget the vendored GLTFLoader (src/core/libs/gltfloader/GLTFLoader.js, see its
-//   COO_BUDGET and COO_WORK sites) charges where it allocates, copies, clones or creates objects, where it loops or
-//   walks as far as the document says, and where it is about to decode an image. Nothing is predicted: what the
-//   parser does is what is counted.
+//   COO_BUDGET and COO_WORK sites) charges before it allocates, copies, clones, creates or decodes; work charged by
+//   reference (each use of an accessor at its size, each object placed under a parent at what moving it costs,
+//   each clone at what it copies, each loop or walk the document sizes); and a wall-clock limit, looked at by every
+//   charge. Nothing is predicted: what the parser does is what is counted.
+//
+// The contract, as it is: the limits bound what the vendored parser itself allocates, creates and decodes, and the
+// work it does, charged before it happens. Cost inside three.js and three-vrm that is proportional to those charges
+// is covered by them. Cost there that multiplies in ways the charges do not capture is not proven absent; the time
+// limit refuses the parse at the next charge after it, but cannot interrupt one long loop inside a library.
 //
 // Both throw a GLTFLimitError with the reason.
 
@@ -30,9 +37,16 @@ export const GLTF_LIMITS = Object.freeze({
   // the bufferViews are each a copy of the file's data). The bundled avatar's parse allocates 17.8 MB: twice its
   // 4.8 MB, and 8.1 MB more (its face's morph-target texture and the copy of its texture image)
   allocatedBytes: 64 * MiB,
-  // steps of the loops and walks the document sizes and no byte charge bounds (sparse entries, subtree walks, the
-  // entries of each list the parser goes through). The bundled avatar's parse takes 673, an emote's about 600
-  work: 1 << 26,
+  // steps of work, beyond one per byte of the file: every use of an accessor at its size (elements x components),
+  // each object placed under a parent at what three.js goes through to move it, each clone at what it copies, and
+  // the loops and walks the document sizes (sparse entries, subtree walks, the entries of each list the parser goes
+  // through). An honest file goes through its accessors about once: the bundled avatar takes 981,151 steps for its
+  // 4.8 MB, an emote 2,850 to 54,456
+  work: 1 << 25,
+  // the parse's wall time, checked at every charge (the backstop for what multiplies past the charges). It cannot
+  // interrupt one long loop inside three.js or three-vrm, only refuse at the next charge after it. The bundled
+  // avatar's check and parse take about 3 ms in Node on a desktop (a browser also waits for its image decode)
+  parseMilliseconds: 10000,
   // objects it creates, per file, counting every clone (a mesh used by several nodes is instantiated per node)
   counts: Object.freeze({
     scenes: 64,
@@ -74,6 +88,9 @@ export const GLTF_LIMITS = Object.freeze({
     firstPersonWork: 1 * MiB, // every node, the subtree of each with a mesh, and each annotation it searches
     constraints: 4096,
     outlineDraws: 131072, // draws outlines add: two per outlined mesh sharing a geometry, for each use of it
+    // what the outline material three-vrm clones for each outlined primitive copies: the material's userData (its
+    // extras and the extensions the parser does not handle) and each texture's (its image's extras), as JSON text
+    outlineCopyBytes: 16 * MiB,
   }),
 })
 
@@ -410,6 +427,11 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
     }
   })
   const accessors = collections.accessors
+  const tight = accessor => {
+    const stride =
+      accessor.bufferView === undefined ? undefined : collections.bufferViews[accessor.bufferView].byteStride
+    return stride === undefined || stride === COMPONENT_BYTES[accessor.componentType] * TYPE_SIZES[accessor.type]
+  }
   collections.images.forEach((image, i) => {
     index(image.bufferView, 'bufferViews', `image ${i} bufferView`)
     if (image.uri !== undefined && typeof image.uri !== 'string') refuse(`image ${i} uri is not a string`)
@@ -500,6 +522,7 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
       if (matrices.type !== 'MAT4' || matrices.componentType !== FLOAT || matrices.count < joints.length) {
         refuse(`skin ${i} inverseBindMatrices are not a float 4x4 matrix per joint`)
       }
+      if (!tight(matrices)) refuse(`skin ${i} inverseBindMatrices are interleaved`)
     }
   })
   collections.animations.forEach((animation, i) => {
@@ -519,6 +542,9 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
       if (input.type !== 'SCALAR' || input.componentType !== FLOAT || input.count < 1) {
         refuse(`${where} input is not a float time per keyframe`)
       }
+      // the track gets the accessors' arrays as they are: interleaved, they hold other data (times of 2 keyframes
+      // at a byteStride of 8 were 4 floats, and a fractional sample size looped three's interpolant forever)
+      if (!tight(input) || !tight(accessors[sampler.output])) refuse(`${where} input or output is interleaved`)
     })
     items(animation.channels, `animation ${i} channels`).forEach((channel, k) => {
       const where = `animation ${i} channel ${k}`
@@ -606,6 +632,20 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
     }
   }
   if (order.length !== nodes.length) refuse('the node hierarchy is not a tree')
+  const sceneOf = new Map()
+  collections.scenes.forEach((scene, i) => {
+    for (const root of list(scene.nodes, `scene ${i} nodes`)) {
+      if (parents[root] !== -1) refuse(`scene ${i} lists node ${root}, which is a child of another node`)
+      if (sceneOf.has(root)) {
+        refuse(
+          sceneOf.get(root) === i
+            ? `scene ${i} lists node ${root} twice`
+            : `node ${root} is a root of scenes ${sceneOf.get(root)} and ${i}`
+        )
+      }
+      sceneOf.set(root, i)
+    }
+  })
 
   return checkVRM(json, collections, parents, order, limits, { list, object, items, index })
 }
@@ -632,6 +672,7 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
     firstPersonWork: 0,
     constraints: 0,
     outlineDraws: 0,
+    outlineCopyBytes: 0,
   }
   const v0 = extensions.VRM === undefined ? null : object(extensions.VRM, 'VRM')
   const vrm1 = extensions.VRMC_vrm === undefined ? null : object(extensions.VRMC_vrm, 'VRMC_vrm')
@@ -923,6 +964,42 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
       for (const primitive of primitivesOf(node.mesh)) counts.outlineDraws += groups.get(keyOf(primitive)) || 0
     })
   }
+  // and the outline material it clones for each such primitive of each mesh: MToon is a ShaderMaterial, so the clone
+  // copies the material's userData as JSON (its extras and the extensions the parser does not handle, which include
+  // the MToon extension itself) and clones each texture of its uniforms with its userData (the image's extras). As
+  // JSON text, two bytes a character (an upper bound: under VRM 0 every image may be one of its textures), and
+  // 8 KiB for the uniforms, the material object and the MToon extension a VRM 0 material is converted to
+  const text = value => (value === undefined ? 0 : 2 * (JSON.stringify(value) || '').length)
+  const imageExtras = textureIndex => text(collections.images[collections.textures[textureIndex]?.source]?.extras)
+  const allImageExtras = collections.textures.reduce((sum, _, t) => sum + imageExtras(t), 0)
+  const copies = new Map()
+  const copyBytes = m => {
+    if (!copies.has(m)) {
+      const material = materials[m]
+      let bytes = 8192 + text(material.extras) + text(material.extensions)
+      if (v0) {
+        bytes += allImageExtras
+      } else {
+        const visit = value => {
+          if (Array.isArray(value)) return value.forEach(visit)
+          if (!isObject(value)) return
+          for (const [key, entry] of Object.entries(value)) {
+            if (key === 'extras') continue
+            if (/Texture$/.test(key) && isObject(entry)) bytes += imageExtras(entry.index)
+            visit(entry)
+          }
+        }
+        visit(material)
+      }
+      copies.set(m, bytes)
+    }
+    return copies.get(m)
+  }
+  collections.meshes.forEach(mesh => {
+    for (const primitive of list(mesh.primitives, 'primitives')) {
+      if (outlined(primitive.material)) counts.outlineCopyBytes += copyBytes(primitive.material)
+    }
+  })
 
   for (const [name, value] of Object.entries(counts)) {
     if (value > caps[name]) refuse(`three-vrm ${name}: ${value}, more than ${caps[name]}`)
@@ -943,12 +1020,32 @@ function primitiveKey(primitive) {
   return key
 }
 
-// The per-file budget the parser charges (see the COO_BUDGET sites in the vendored GLTFLoader). `fileBytes`: the
-// file's size (its data is copied twice: the GLB's binary chunk, then the bufferViews). `onCharge(kind, n, what,
-// total)`: told of every charge (tests)
-export function createGLTFBudget({ fileBytes = 0, limits = GLTF_LIMITS, onCharge } = {}) {
+// The per-file budget the parser charges (see the COO_BUDGET and COO_WORK sites in the vendored GLTFLoader).
+// `fileBytes`: the file's size (its data is copied twice: the GLB's binary chunk, then the bufferViews; and an honest
+// file's accessors are gone through about once). `onCharge(kind, n, what, total)`: told of every charge (tests).
+// `now`: a monotonic clock in milliseconds (tests)
+export function createGLTFBudget({
+  fileBytes = 0,
+  limits = GLTF_LIMITS,
+  onCharge,
+  now = () => globalThis.performance.now(),
+} = {}) {
   const maxBytes = limits.allocatedBytes + 2 * fileBytes
+  const maxWork = limits.work + fileBytes
   const used = { bytes: 0, pixels: 0, work: 0, counts: {} }
+  // the wall-clock backstop: every charge looks at the time (work only each 65,536 steps, since walks charge a step
+  // per object). Once refused it stays quiet: the parse has failed, and the parts still running are bounded by the
+  // other limits (refusing them all would reject promise chains nothing waits on any more)
+  const started = now()
+  let unclocked = 0
+  let timedOut = false
+  const clock = what => {
+    unclocked = 0
+    if (!timedOut && now() - started > limits.parseMilliseconds) {
+      timedOut = true
+      fail(what, `the parse took more than ${limits.parseMilliseconds / 1000} s (at ${what})`)
+    }
+  }
   // every later charge of the kind refused is refused too (its total stays past the limit), so a part of the parse
   // still running (promise chains the parser started side by side) allocates, or walks, nothing more than the
   // limits allow. (Refusing every kind after the first refusal would reject chains nothing waits on any more.)
@@ -959,13 +1056,16 @@ export function createGLTFBudget({ fileBytes = 0, limits = GLTF_LIMITS, onCharge
   const budget = {
     used,
     maxBytes,
+    maxWork,
     bytes(n, what) {
+      clock(what)
       if (!Number.isFinite(n) || n < 0) fail(what, `${what}: an impossible size`)
       used.bytes += n
       onCharge?.('bytes', n, what, used.bytes)
       if (used.bytes > maxBytes) fail(what, `the parser would allocate more than ${maxBytes} bytes (at ${what})`)
     },
     count(kind, n = 1) {
+      clock(kind)
       const limit = limits.counts[kind]
       if (limit === undefined) throw new Error(`gltf budget: unknown count ${kind}`)
       const total = (used.counts[kind] || 0) + n
@@ -973,12 +1073,14 @@ export function createGLTFBudget({ fileBytes = 0, limits = GLTF_LIMITS, onCharge
       onCharge?.('count', n, kind, total)
       if (total > limit) fail(kind, `${kind}: ${total}, more than ${limit}`)
     },
-    // steps of a loop or walk the document sizes, charged before it runs (or, for a walk, at each object visited)
+    // steps of work, charged before they are taken (or, for a walk, at each object visited)
     work(n, what) {
+      unclocked += n
+      if (unclocked >= 65536) clock(what)
       if (!Number.isFinite(n) || n < 0) fail(what, `${what}: an impossible amount of work`)
       used.work += n
       onCharge?.('work', n, what, used.work)
-      if (used.work > limits.work) fail(what, `the parser would take more than ${limits.work} steps (at ${what})`)
+      if (used.work > maxWork) fail(what, `the parser would take more than ${maxWork} steps (at ${what})`)
     },
     // a document the parser cannot use (a rule of the specification it would otherwise loop or write on through)
     refuse(reason, what) {
@@ -986,6 +1088,7 @@ export function createGLTFBudget({ fileBytes = 0, limits = GLTF_LIMITS, onCharge
     },
     // an image about to be decoded, sized from its header (embedded images must be PNG, JPEG or WebP)
     image(bytes, what) {
+      clock(what)
       const header = readImageHeader(bytes)
       if (!header) fail(what, `${what} is not a PNG, JPEG or WebP image`)
       if (header.malformed) fail(what, `${what} is a malformed ${header.type} (${header.malformed})`)

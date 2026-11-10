@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { GLTFLoader } from '../src/core/libs/gltfloader/GLTFLoader.js'
 import { VRMLoaderPlugin } from '@pixiv/three-vrm'
-import { Object3D } from 'three'
+import { Object3D, SkinnedMesh } from 'three'
 import { checkGLTF, createGLTFBudget, GLTF_LIMITS } from '../src/core/extras/gltfLimits.js'
 import { png, jpeg } from './lib/imageBytes.mjs'
 import { glb } from './lib/glb.mjs'
@@ -71,9 +71,11 @@ async function refusedAt(file, what, reason, options) {
   assert.equal(err.isGLTFLimit, true, String(err))
   assert.match(err.message, reason)
   const first = err.charges.findIndex(c => c.kind === 'refused')
-  assert.equal(err.charges[first].what, what, `refused at ${err.charges[first].what}`)
+  const at = err.charges[first].what
+  if (what instanceof RegExp) assert.match(at, what, `refused at ${at}`)
+  else assert.equal(at, what, `refused at ${at}`)
   // the charge that passed the limit is recorded just before its refusal (a document rule has none)
-  const cause = err.charges[first - 1]?.what === what && err.charges[first - 1].kind !== 'refused' ? first - 1 : first
+  const cause = err.charges[first - 1]?.what === at && err.charges[first - 1].kind !== 'refused' ? first - 1 : first
   const bytes = err.charges.slice(0, cause).filter(c => c.kind === 'bytes')
   assert.ok((bytes.at(-1)?.total ?? 0) <= err.budget.maxBytes, 'no allocation before the refusal passed the limit')
   const limitOf = c =>
@@ -217,20 +219,29 @@ test('each instance of a mesh is counted: its clone, its morph influences and it
     err.before.filter(c => c.what === 'clone').length,
     err.before.filter(c => c.what === 'meshInstances').length - 1
   )
+  // and a step per morph influence it copies
+  assert.ok(err.before.filter(c => c.what === 'clone influences').every(c => c.kind === 'work' && c.n === 1000))
+  assert.ok(err.before.filter(c => c.what === 'clone influences').length > 200)
   // 20,000 characters of extras copied into every instance (as JSON, with each clone)
   const extras = { text: 'x'.repeat(20000) }
   const limits = { ...GLTF_LIMITS, allocatedBytes: 4 * MiB }
   const copies = await refusedAt(glb(base(200, extras), positions), 'userData copy', /would allocate more than/, {
     limits,
   })
-  assert.ok(copies.before.filter(c => c.what === 'userData copy').every(c => c.n >= 40000))
+  assert.ok(copies.before.filter(c => c.what === 'userData copy' && c.kind === 'bytes').every(c => c.n >= 40000))
+  // each copy also goes through every character of it: a step each
+  const copied = copies.before.filter(c => c.what === 'userData copy')
+  for (let i = 0; i + 1 < copied.length; i += 2)
+    assert.deepEqual([copied[i + 1].kind, copied[i + 1].n], ['work', copied[i].n / 2])
 })
 
 test('scenes, cameras and other collections the parser creates eagerly are counted', async () => {
   const scenes = glb({ asset: { version: '2.0' }, scenes: Array.from({ length: 1000 }, () => ({})) })
   const err = await refusedAt(scenes, 'scenes', /scenes: 65, more than 64/)
   assert.equal(err.before.filter(c => c.what === 'scenes').length, 65, 'the 65th scene was refused before it was made')
-  assert.equal(err.budget.used.counts.scenes, 65)
+  // the parser starts every scene (each start is guarded, so none is left without a handler) and each later one is
+  // refused at its charge, before it is made
+  assert.equal(err.charges.filter(c => c.kind === 'refused' && c.what === 'scenes').length, 1000 - 64)
   const cameras = glb({
     asset: { version: '2.0' },
     cameras: Array.from({ length: 2000 }, () => ({ type: 'perspective', perspective: { yfov: 1, znear: 0.1 } })),
@@ -525,10 +536,219 @@ test('a weights channel walks the subtree of its node: a step of work for each o
   const { gltf, charges } = await parse(walk(100))
   assert.equal(gltf.animations[0].tracks.length, 100, 'a track per channel (one mesh with morph targets)')
   assert.equal(charges.filter(c => c.what === 'weights channel walk').length, 100 * 100)
+  // (the walks and the tracks' keyframes are charged in turn, channel by channel: either may be the step past the
+  // limit, which is 20,000 steps plus one per byte of the file)
   const limits = { ...GLTF_LIMITS, work: 20000 }
-  await refusedAt(walk(200), 'weights channel walk', /the parser would take more than 20000 steps \(at weights/, {
-    limits,
+  const file = walk(200)
+  await refusedAt(
+    file,
+    /^(weights channel walk|track keyframes)$/,
+    new RegExp(`more than ${20000 + file.byteLength} steps`),
+    {
+      limits,
+    }
+  )
+})
+
+// a skinned mesh of `primitives` primitives, all on the same `vertices`-vertex accessors (one shared geometry);
+// `weights` and `joints`: those accessors' counts
+function skinned({ primitives, vertices, weights = vertices, joints = vertices }) {
+  const bin = new Uint8Array(vertices * 12 + joints * 4 + weights * 16 + 64)
+  new Float32Array(bin.buffer, vertices * 12 + joints * 4, weights * 4).fill(0.25)
+  new Float32Array(bin.buffer, bin.length - 64, 16).set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
+  return glb(
+    {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0, 1] }],
+      nodes: [{ mesh: 0, skin: 0 }, {}],
+      skins: [{ joints: [1], inverseBindMatrices: 3 }],
+      meshes: [{ primitives: Array(primitives).fill({ attributes: { POSITION: 0, JOINTS_0: 1, WEIGHTS_0: 2 } }) }],
+      accessors: [
+        vec3(vertices, { bufferView: 0, min: [0, 0, 0], max: [0, 0, 0] }),
+        { bufferView: 1, componentType: 5121, type: 'VEC4', count: joints },
+        { bufferView: 2, componentType: 5126, type: 'VEC4', count: weights },
+        { bufferView: 3, componentType: 5126, type: 'MAT4', count: 1 },
+      ],
+      bufferViews: [
+        { buffer: 0, byteLength: vertices * 12 },
+        { buffer: 0, byteOffset: vertices * 12, byteLength: joints * 4 },
+        { buffer: 0, byteOffset: vertices * 12 + joints * 4, byteLength: weights * 16 },
+        { buffer: 0, byteOffset: bin.length - 64, byteLength: 64 },
+      ],
+      buffers: [{ byteLength: bin.length }],
+    },
+    bin
+  )
+}
+
+test('each mesh made is charged every accessor its primitives use, even when they share one geometry', async t => {
+  // Codex's probe: 50 skinned primitives on one shared 2000-vertex geometry normalised 100,000 skin weights while 270
+  // steps were charged. Each primitive's accessors are charged for each mesh made of them: 50 x 2000 x (3 + 4 + 4)
+  let normalised = 0
+  const normalize = SkinnedMesh.prototype.normalizeSkinWeights
+  t.mock.method(SkinnedMesh.prototype, 'normalizeSkinWeights', function () {
+    normalised += this.geometry.attributes.skinWeight.count
+    return normalize.call(this)
   })
+  const { budget, charges } = await parse(skinned({ primitives: 50, vertices: 2000 }))
+  assert.equal(normalised, 50 * 2000)
+  assert.equal(budget.used.counts.primitives, 1, 'one geometry')
+  assert.deepEqual(
+    charges.filter(c => c.what === 'mesh accessors').map(c => c.n),
+    [50 * 2000 * (3 + 4 + 4)]
+  )
+  // ten times the primitives, within a smaller limit: refused before the meshes are made
+  normalised = 0
+  const limits = { ...GLTF_LIMITS, work: 500000 }
+  await refusedAt(
+    skinned({ primitives: 500, vertices: 200 }),
+    'mesh accessors',
+    /the parser would take more than \d+ steps/,
+    {
+      limits,
+    }
+  )
+  assert.equal(normalised, 0, 'nothing normalised')
+  // and a skinned primitive's joints and weights are one per vertex, on the real attributes (not checked before)
+  await refusedAt(
+    skinned({ primitives: 1, vertices: 30, weights: 20 }),
+    'skinned mesh',
+    /mesh 0 is skinned without joints and weights for each vertex/
+  )
+})
+
+test('an animation track gets whole keyframes from tight arrays, asserted on the arrays themselves', async () => {
+  // Codex's probe: times of 2 keyframes at a byteStride of 8 reached the track as 4 floats; with 6 CUBICSPLINE VEC3
+  // values that is a sample size of 1.5, and three's interpolant looped on `i !== 1.5`. checkGLTF refuses the layout
+  // (gltfLimits.test.js); the parser refuses it too, on the arrays it would hand three.js
+  const bin = new Uint8Array(16 + 72)
+  new Float32Array(bin.buffer, 0, 4).set([0, 99, 1, 99])
+  const animated = (timesView, interpolation = 'CUBICSPLINE', values = 6) =>
+    glb(
+      {
+        asset: { version: '2.0' },
+        ...scene,
+        nodes: [{ name: 'n' }],
+        animations: [
+          {
+            samplers: [{ input: 0, output: 1, interpolation }],
+            channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
+          },
+        ],
+        accessors: [
+          { bufferView: 0, componentType: 5126, type: 'SCALAR', count: 2, min: [0], max: [1] },
+          { bufferView: 1, componentType: 5126, type: 'VEC3', count: values },
+        ],
+        bufferViews: [timesView, { buffer: 0, byteOffset: 16, byteLength: 72 }],
+        buffers: [{ byteLength: bin.length }],
+      },
+      bin
+    )
+  await refusedAt(
+    animated({ buffer: 0, byteLength: 16, byteStride: 8 }),
+    'animation track',
+    /an animation channel of node 0 has no whole number of values per keyframe/
+  )
+  // a fractional value size from counts alone (5 values for 2 LINEAR keyframes), past a missing check
+  await refusedAt(animated({ buffer: 0, byteLength: 8 }, 'LINEAR', 5), 'animation track', /no whole number of values/)
+  // interleaved times whose ratio happens to be whole (4 floats, 4 LINEAR values): the times are not the keyframes'
+  await refusedAt(
+    animated({ buffer: 0, byteLength: 16, byteStride: 8 }, 'LINEAR', 4),
+    'animation track',
+    /no whole number/
+  )
+  // tight times: the track is made, and its keyframes are charged as work
+  const { gltf, charges } = await parse(animated({ buffer: 0, byteLength: 8 }))
+  assert.equal(gltf.animations[0].tracks[0].getValueSize(), 9)
+  assert.deepEqual(
+    charges.filter(c => c.what === 'track keyframes').map(c => c.n),
+    [2 + 18]
+  )
+})
+
+test('placing an object is charged what three.js goes through to take it from its old parent', async () => {
+  // Codex's probe: a scene listing 1000 empty roots twice re-parented each one, a search and a splice of the scene's
+  // 1000 children each time (999,000 entries shifted), for one step per root. checkGLTF refuses the repeated roots
+  // (gltfLimits.test.js); the parser charges each placement at its cost all the same
+  const repeated = n =>
+    glb({
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [...Array(n).keys(), ...Array(n).keys()] }],
+      nodes: Array(n).fill({}),
+    })
+  const { charges } = await parse(repeated(100))
+  const placed = charges.filter(c => c.what === 'placing an object').map(c => c.n)
+  assert.deepEqual(placed.slice(0, 100), Array(100).fill(1), 'the first time: nothing to take it from')
+  assert.deepEqual(placed.slice(100), Array(100).fill(101), 'the second: the scene and its 100 children')
+  const limits = { ...GLTF_LIMITS, work: 100000 }
+  await refusedAt(repeated(1000), 'placing an object', /more than \d+ steps \(at placing an object\)/, { limits })
+})
+
+test('instancing: each instanced mesh is charged the attributes it reads, and emptying the group its splices', async () => {
+  // a node of 4 primitives, instanced 10 times: each instanced mesh reads the 10 translations (30 floats), and the
+  // group of the primitives is emptied (each child taken out with a search and a splice of the rest: 4 + 3 + 2 + 1)
+  const bin = new Uint8Array(36 + 120)
+  const file = glb(
+    {
+      asset: { version: '2.0' },
+      extensionsUsed: ['EXT_mesh_gpu_instancing'],
+      ...scene,
+      nodes: [{ mesh: 0, extensions: { EXT_mesh_gpu_instancing: { attributes: { TRANSLATION: 1 } } } }],
+      meshes: [{ primitives: Array(4).fill({ attributes: { POSITION: 0 } }) }],
+      accessors: [vec3(3, { bufferView: 0, min: [0, 0, 0], max: [0, 0, 0] }), vec3(10, { bufferView: 1 })],
+      bufferViews: [
+        { buffer: 0, byteLength: 36 },
+        { buffer: 0, byteOffset: 36, byteLength: 120 },
+      ],
+      buffers: [{ byteLength: bin.length }],
+    },
+    bin
+  )
+  const { gltf, charges } = await parse(file)
+  assert.equal(gltf.scene.getObjectByProperty('isInstancedMesh', true).count, 10)
+  assert.deepEqual(
+    charges.filter(c => c.what === 'instancing attributes').map(c => c.n),
+    [30, 30, 30, 30]
+  )
+  assert.deepEqual(
+    charges.filter(c => c.what === 'emptying a group').map(c => c.n),
+    [4 + 3 + 2 + 1]
+  )
+})
+
+test('a skin has an inverse bind matrix for each joint in a plain array, asserted on the array itself', async () => {
+  // two joints and one matrix: the parser would read the second joint's past the array (not checked before here)
+  const file = skinned({ primitives: 1, vertices: 3 })
+  const json = JSON.parse(new TextDecoder().decode(new Uint8Array(file, 20, new DataView(file).getUint32(12, true))))
+  json.skins[0].joints = [1, 1]
+  const binStart = 28 + new DataView(file).getUint32(12, true)
+  await refusedAt(glb(json, new Uint8Array(file, binStart)), 'skin', /skin 0 has no inverse bind matrix for each joint/)
+})
+
+test('a parse past its time limit is refused at the next charge (a monotonic clock, checked as it goes)', async () => {
+  // a clock that moves 1 s per look: the bundled avatar's parse (a few milliseconds here) would pass 10 s
+  let time = 0
+  const bytes = fs.readFileSync(new URL('../src/world/assets/avatar.vrm', import.meta.url))
+  const file = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+  const charges = []
+  const budget = createGLTFBudget({
+    fileBytes: file.byteLength,
+    now: () => (time += 1000),
+    onCharge: (kind, n, what, total) => charges.push({ kind, what, total }),
+  })
+  const loader = new GLTFLoader()
+  loader.register(parser => new VRMLoaderPlugin(parser))
+  await assert.rejects(loader.parseAsync(file, '', budget), /the parse took more than 10 s \(at /)
+  assert.equal(charges.filter(c => c.kind === 'refused' && /took more than/.test(c.total)).length, 1, 'refused once')
+  // and on a real clock the avatar is far inside it
+  const started = performance.now()
+  const real = createGLTFBudget({ fileBytes: file.byteLength })
+  const timed = new GLTFLoader()
+  timed.register(parser => new VRMLoaderPlugin(parser))
+  await timed.parseAsync(file, '', real)
+  assert.ok(performance.now() - started < GLTF_LIMITS.parseMilliseconds / 10)
 })
 
 test('three-vrm makes what checkGLTF counts: joints over the parsed objects, morph binds walking subtrees', async t => {
@@ -607,6 +827,41 @@ test('three-vrm makes what checkGLTF counts: joints over the parsed objects, mor
   await parse(expressions, { vrm: true })
   assert.equal(walked, (binds + 1) * 51)
   assert.equal(firstPersonWork, 51 + 51)
+
+  // Codex's probe: outlined MToon primitives on one material whose extras hold many small objects; three-vrm clones
+  // the material for each, and each clone copies its userData. checkGLTF counts those copies (as JSON text, with 8 KiB
+  // for the uniforms) before the plugin runs: at least what the clones hold
+  const outlined = glb(
+    {
+      asset: { version: '2.0' },
+      extensionsUsed: ['VRMC_materials_mtoon'],
+      ...scene,
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: Array(20).fill({ attributes: { POSITION: 0 }, material: 0 }) }],
+      materials: [
+        {
+          extras: { list: Array.from({ length: 200 }, (_, i) => ({ i })) },
+          extensions: {
+            VRMC_materials_mtoon: {
+              specVersion: '1.0',
+              outlineWidthMode: 'worldCoordinates',
+              outlineWidthFactor: 0.01,
+            },
+          },
+        },
+      ],
+      ...buffers,
+    },
+    positions
+  )
+  const { outlineCopyBytes } = checkGLTF(outlined).vrm
+  const parsed = await parse(outlined, { vrm: true })
+  const copies = new Set()
+  parsed.gltf.scene.traverse(object => [object.material ?? []].flat().forEach(m => m.isOutline && copies.add(m)))
+  let copied = 0
+  for (const material of copies) copied += 2 * JSON.stringify(material.userData).length
+  assert.equal(copies.size, 20)
+  assert.ok(outlineCopyBytes >= copied, `${outlineCopyBytes} counted, ${copied} copied`)
 })
 
 test('the bundled files parse within the budget, and what they are charged is the same every time', async t => {
@@ -619,7 +874,7 @@ test('the bundled files parse within the budget, and what they are charged is th
       {
         bytes: 17762942,
         pixels: 4194304,
-        work: 673,
+        work: 981151,
         counts: {
           scenes: 1,
           meshes: 1,
@@ -640,7 +895,7 @@ test('the bundled files parse within the budget, and what they are charged is th
       {
         bytes: 165608,
         pixels: 0,
-        work: 603,
+        work: 25993,
         counts: { scenes: 1, animations: 1, channels: 198, nodes: 67, tracks: 198 },
       },
     ],
@@ -649,7 +904,7 @@ test('the bundled files parse within the budget, and what they are charged is th
       {
         bytes: 9356,
         pixels: 65536,
-        work: 15,
+        work: 244,
         counts: {
           scenes: 1,
           meshes: 1,

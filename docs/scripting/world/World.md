@@ -164,8 +164,14 @@ server script. On a client both do nothing (`get` returns `undefined`).
   again to save a change.
 - Limits: a key is a string of 1 to 128 characters; a value is at most 64 KiB as JSON; at most 1,024 keys; and
   4 MiB in total (the operator can change these with the `STORAGE_*` settings). A `set` that would go past a limit
-  throws, and what was stored stays as it was. A value that cannot be turned into JSON throws too.
-- The store is written to disk about once a second, and once more when the server stops.
+  throws, and what was stored stays as it was. A value that cannot be turned into JSON throws too. A store that
+  was already larger keeps what it has and may only shrink; a key stored before these rules can still be
+  overwritten (without growing) and deleted.
+- The store is written to disk about once a second, and once more when the server stops. From the moment that
+  last write starts, `set` throws ("the server is stopping"), so a value is never accepted that would not be saved;
+  catch it if your script writes from a timer or after a `fetch`.
+- If the server could not read the stored file when it started, the store is off for that run: `set` throws and
+  `get` returns `undefined`, and the file is left untouched for the operator.
 - Every server script in the world can read and overwrite every key, so prefix your keys (`myapp:scores`) and do
   not store secrets.
 - An asset is kept by the world's clean-up while a stored value mentions its `asset://…` URL.

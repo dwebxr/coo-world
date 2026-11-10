@@ -8,9 +8,12 @@ export const SHUTDOWN_DEADLINE_MS = 3500
 // how long after the deadline the process exits even if the save never returned (a write that ignores it)
 const EXIT_MARGIN_MS = 500
 
-// SIGINT/SIGTERM: the first signal stops the world (no tick runs a script after this), stops accepting connections
-// and runs the network's final save (ServerNetwork.flushBeforeExit: blueprints, apps, settings, spawn and the script
-// storage file) under one deadline, then exits 0, or 1 when something was not saved (flushBeforeExit logs what).
+// SIGINT/SIGTERM. Installed at the very start of the server, before the database, the cleaner and the world exist.
+// - Before attach() (start-up, nothing loaded that could have changed): the process exits 0 with a log line.
+// - After attach({ network, stopWorld, closeServer }) (the world exists, scripts may run): the first signal stops
+//   the world (no tick runs, app timers are cleared), stops accepting connections and runs the network's final save
+//   (ServerNetwork.flushBeforeExit: blueprints, apps, settings, spawn and the script storage file) under one
+//   deadline, then exits 0, or 1 when something was not saved (flushBeforeExit logs what).
 // A second signal exits at once with 1. Open connections are not waited for: the exit closes them.
 export function installShutdown({
   proc = process,
@@ -19,7 +22,8 @@ export function installShutdown({
   closeServer = () => {},
   deadlineMs = SHUTDOWN_DEADLINE_MS,
   log = console,
-}) {
+} = {}) {
+  let target = network ? { network, stopWorld, closeServer } : null
   let stopping = false
   const exit = code => proc.exit(code)
   const onSignal = async signal => {
@@ -28,6 +32,10 @@ export function installShutdown({
       return exit(1)
     }
     stopping = true
+    if (!target) {
+      log.log(`[server] ${signal} during start-up, before the world was loaded: nothing to save; exiting`)
+      return exit(0)
+    }
     log.log(`[server] ${signal}: saving the world before exit (deadline ${deadlineMs} ms)`)
     const guard = setTimeout(() => {
       log.error('[server] the final save did not return in time; exiting')
@@ -36,15 +44,19 @@ export function installShutdown({
     guard.unref?.()
     let saving
     try {
-      stopWorld()
+      target.stopWorld?.()
+    } catch (err) {
+      log.error(`[server] stopping the world failed: ${briefError(err)}`)
+    }
+    try {
       // marks the network as stopping before anything awaits, so no connection or packet is taken from here on
-      saving = network.flushBeforeExit(deadlineMs)
+      saving = target.network.flushBeforeExit(deadlineMs)
     } catch (err) {
       saving = Promise.reject(err)
     }
     try {
       // stop listening; the close itself (open requests, websocket close frames) is not waited for
-      Promise.resolve(closeServer()).catch(err => log.error(`[server] close failed: ${briefError(err)}`))
+      Promise.resolve(target.closeServer?.()).catch(err => log.error(`[server] close failed: ${briefError(err)}`))
     } catch (err) {
       log.error(`[server] close failed: ${briefError(err)}`)
     }
@@ -60,5 +72,21 @@ export function installShutdown({
   }
   proc.on('SIGINT', onSignal)
   proc.on('SIGTERM', onSignal)
-  return onSignal
+  return {
+    attach(next) {
+      target = next
+    },
+    onSignal,
+  }
+}
+
+// The stop a crashed app gets (App.crash), for every app at once: its timers are cleared and its pending
+// continuations (world.load, world event listeners, timer callbacks already queued) see a dead run and return.
+// Script code that still runs (a fetch resolving) finds world.set refused once the final save has started.
+export function stopApps(entities) {
+  for (const entity of entities?.items?.values() ?? []) {
+    if (!entity?.isApp) continue
+    entity.timers?.clear()
+    if (entity.deadHook) entity.deadHook.dead = true
+  }
 }

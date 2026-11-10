@@ -76,6 +76,8 @@ export class Blueprints extends System {
     for (const [_, entity] of this.world.entities.items) {
       if (entity.data.blueprint === blueprint.id) {
         entity.data.state = {}
+        // the state a client set no longer counts in the join snapshot (joinBudget.js)
+        if (this.world.network.isServer) this.world.entities.stateEmptied(entity.data.id)
         entity.build()
       }
     }
@@ -88,15 +90,18 @@ export class Blueprints extends System {
   }
 
   // null when the change fits, else the budget it would exceed: 'blueprints' (WORLD_BLUEPRINT_BYTES) or 'world'
-  // (the join snapshot's world state, joinBudget.js)
+  // (the join snapshot's world state, joinBudget.js). A modify that changes the blueprint rebuilds its apps and
+  // empties their state (modify above), which frees what their client-set state took.
   budgetRefusal(data, add = false) {
-    const blueprint = add ? data : { ...this.items.get(data.id), ...data }
+    const stored = add ? undefined : this.items.get(data.id)
+    const blueprint = add ? data : { ...stored, ...data }
     const bytes = writePacket('blueprintAdded', blueprint).length
     const delta = bytes - (this.sizes.get(data.id) || 0)
     // Existing worlds may exceed the budget, but may not grow further.
     if (this.bytes + delta > Math.max(WORLD_BLUEPRINT_BYTES, this.bytes)) return 'blueprints'
-    if (!fitsJoinState(this.world, delta)) return 'world'
-    return null
+    if (fitsJoinState(this.world, delta)) return null
+    const freed = stored && !isEqual(stored, blueprint) ? this.world.entities.emptiedStateBytes(data.id) : 0
+    return fitsJoinState(this.world, delta - freed) ? null : 'world'
   }
 
   trackSize(data) {

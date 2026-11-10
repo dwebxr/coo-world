@@ -18,7 +18,7 @@ import { buildPublicEnv } from '../core/extras/publicEnv'
 import { readJWT } from '../core/utils-server'
 import { getDB } from './db'
 import { Storage, readStorageLimitsEnv } from './Storage'
-import { installShutdown } from './shutdown'
+import { installShutdown, stopApps } from './shutdown'
 import { assets } from './assets'
 import { collections } from './collections'
 import { cleaner } from './cleaner'
@@ -82,6 +82,10 @@ if (process.env.ASSETS === 's3' && !process.env.ASSETS_S3_URI) {
   throw new Error(`[envs] ASSETS_S3_URI must be set when using ASSETS=s3`)
 }
 
+// SIGINT/SIGTERM from here on (shutdown.js): during start-up the process just exits; once the world exists (below,
+// before its scripts start) the final save runs under a deadline
+const shutdown = installShutdown()
+
 const fastify = Fastify({ logger: { level: 'error' } })
 
 // create world folder if needed
@@ -105,6 +109,15 @@ const storage = new Storage(storageFile, { limits: storageLimits })
 
 // create world
 const world = createServerWorld()
+// from now on a stop saves: world.init hydrates the apps and starts their scripts before the server listens
+shutdown.attach({
+  network: world.network,
+  stopWorld: () => {
+    world.server.destroy()
+    stopApps(world.entities)
+  },
+  closeServer: () => fastify.close(),
+})
 await world.init({
   assetsDir: assets.dir,
   assetsUrl: assets.url,
@@ -268,10 +281,3 @@ async function worldNetwork(fastify) {
 }
 
 console.log(`server listening on port ${port}`)
-
-// SIGINT/SIGTERM: final save under a deadline, then exit (shutdown.js)
-installShutdown({
-  network: world.network,
-  stopWorld: () => world.server.destroy(),
-  closeServer: () => fastify.close(),
-})

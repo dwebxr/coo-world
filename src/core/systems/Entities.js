@@ -88,16 +88,31 @@ export class Entities extends System {
     this.emit('removed', entity)
   }
 
-  // An app's join-snapshot size, after `change` (an add's data, or the fields a modify sets): the record depends
-  // on the id and the blueprint id only, the state on the last client-set state (joinBudget.js)
+  // An app's join-snapshot size, after `change` (an add's data, or the fields a modify sets): the record changes
+  // with the blueprint id only (appRecordBytes measures the rest at its largest), the state with a client-set
+  // state or a rebuild's reset (joinBudget.js); a server script's app.state is never read
   measureApp(id, change = {}) {
     const current = this.appSizes.get(id)
     const has = key => Object.prototype.hasOwnProperty.call(change, key)
-    const blueprint = has('blueprint') ? change.blueprint : this.items.get(id)?.data.blueprint
-    return {
-      record: current && !has('blueprint') ? current.record : appRecordBytes(id, blueprint),
-      state: has('state') ? stateBytes(change.state) : current?.state || 0,
+    let record = current?.record
+    if (!current || has('blueprint')) record = appRecordBytes({ ...(this.items.get(id)?.data || {}), ...change, id })
+    return { record, state: has('state') ? stateBytes(change.state) : current?.state || 0 }
+  }
+
+  // A blueprint change rebuilds its apps and resets their state to {} (Blueprints.modify): the bytes that frees
+  emptiedStateBytes(blueprintId) {
+    const empty = stateBytes({})
+    let bytes = 0
+    for (const [id, size] of this.appSizes) {
+      if (size.state > empty && this.items.get(id)?.data.blueprint === blueprintId) bytes += size.state - empty
     }
+    return bytes
+  }
+
+  // called where a rebuild resets an app's state to {}
+  stateEmptied(id) {
+    const size = this.appSizes.get(id)
+    if (size) this.trackApp(id, { record: size.record, state: stateBytes({}) })
   }
 
   // whether an app add or modify fits the join-state budget (growth only)

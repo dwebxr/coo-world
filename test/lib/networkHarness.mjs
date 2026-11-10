@@ -25,6 +25,11 @@ import {
   sanitizeSpawn,
 } from '../../src/core/extras/entityModifyPolicy.js'
 import { readInboundPacket } from '../../src/server/inboundDecode.js'
+import {
+  isAdminOnlySettingKey,
+  isKnownSettingKey,
+  normalizeSettingValue,
+} from '../../src/core/extras/settingsPolicy.js'
 import * as solanaGating from '../../src/server/solana-gating.js'
 import * as evmGating from '../../src/server/evm-gating.js'
 import { parseTipAmount, tipAmountReason } from '../../src/core/extras/evmTokens.js'
@@ -38,7 +43,14 @@ import { createTokenBalanceService } from '../../src/server/tokenBalance.js'
 import { Ranks } from '../../src/core/extras/ranks.js'
 import { clientIpKeys } from '../../src/server/uploadLimits.js'
 import { previewValue } from '../../src/core/extras/assetURL.js'
-import { joinStateReport, settingsBytes } from '../../src/core/extras/joinBudget.js'
+import {
+  SNAPSHOT_STEP_NAMES,
+  encodeSnapshot,
+  fitsJoinState,
+  joinStateReport,
+  settingsBytes,
+} from '../../src/core/extras/joinBudget.js'
+import { isBoundedJsonObject } from '../../src/core/extras/entityModifyPolicy.js'
 
 export const serverSource = fs.readFileSync(new URL('../../src/server/index.js', import.meta.url), 'utf8')
 const source = fs.readFileSync(new URL('../../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
@@ -76,6 +88,7 @@ const names = [
   'markBlueprintDirty',
   'markAppDirty',
   'markAppDeleted',
+  'rekeyApp',
   'saveConfig',
   'preFixedUpdate',
   'asScript',
@@ -95,6 +108,8 @@ const names = [
   'revertBlueprint',
   'onEntityAdded',
   'onEntityModified',
+  'onEntityRemoved',
+  'onSettingsModified',
   'onSpawnModified',
 ]
 const methods = names
@@ -126,6 +141,12 @@ function networkClass(context) {
     SNAPSHOT_CAP,
     joinStateReport,
     settingsBytes,
+    fitsJoinState,
+    isBoundedJsonObject,
+    isAdminOnlySettingKey,
+    isKnownSettingKey,
+    normalizeSettingValue,
+    setImmediate,
     defaultSpawn: '{"position":[0,0,0],"quaternion":[0,0,0,1]}',
     SAVE_INTERVAL: 0,
     // the server's values; tests that wait on them set network.takeoverPingMs / takeoverCloseMs instead
@@ -175,6 +196,7 @@ export function makeNetwork(log = () => {}, { context, tokenBalanceService, evmH
   network.id = 0
   network.sockets = new Map()
   network.connecting = new Set()
+  network.userIds = new Set()
   network.dirtyBlueprints = new Map()
   network.dirtyApps = new Map()
   network.loadedConfig = new Map()
@@ -251,6 +273,8 @@ export function connectionMethod(context) {
     TAKEOVER_CLOSE_MS: 2000,
     writePacket,
     SNAPSHOT_CAP,
+    SNAPSHOT_STEP_NAMES,
+    encodeSnapshot,
     Socket,
     briefError,
     previewValue,

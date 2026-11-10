@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { database, fixture, load, Network, Settings, deferred } from './lib/persistenceHarness.mjs'
+import { Storage } from '../src/server/Storage.js'
 
 const ServerAI = load('core/systems/ServerAI.js', 'ServerAI', {
   fs: { readFileSync: () => '' },
@@ -361,11 +364,13 @@ test(
       const { db, tables } = database()
       const { network, world, socket } = fixture(t, db)
       let calls = 0
+      let saved = false
       world.storage = {
-        flush: () => {
+        flush: async () => {
           calls++
-          return flush()
+          return (saved = await flush())
         },
+        saved: () => saved,
       }
       await network.onEntityModified(socket, { id: 'app', pinned: true })
       const done = network.flushBeforeExit(200)
@@ -380,6 +385,45 @@ test(
           name
         )
       else assert.deepEqual(reported, [], name)
+    }
+  }
+)
+
+// Codex's interleaving: the database save is still pending when the storage flush has finished, and a script
+// continuation (a timer, a fetch) calls world.set in between
+test(
+  'B8: a world.set after the storage flush, while the database save is pending, is refused',
+  { timeout: 5000 },
+  async t => {
+    t.mock.method(console, 'error', () => {})
+    t.mock.method(console, 'log', () => {})
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'final-save-'))
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+    const file = path.join(dir, 'storage.json')
+    for (const late of ['set', 'accepted']) {
+      const storage = new Storage(file, { intervalMs: 0 })
+      const { db, tables } = database()
+      const { network, world, socket } = fixture(t, db)
+      world.storage = storage
+      storage.set('k', 1)
+      await network.onEntityModified(socket, { id: 'app', pinned: true })
+      const held = db.pause('entities')
+      const done = network.flushBeforeExit(2000)
+      await held.started.promise
+      while (!storage.saved()) await new Promise(resolve => setTimeout(resolve, 1))
+      if (late === 'set') {
+        assert.throws(() => storage.set('k', 2), /the server is stopping; the value was not stored/)
+        held.release.resolve()
+        await done
+        assert.equal(storage.get('k'), 1, 'memory holds what the file holds')
+      } else {
+        // a change that got in anyway (no path does today) is caught by the check at the end
+        storage.revision++
+        held.release.resolve()
+        await assert.rejects(done, /final save incomplete/)
+      }
+      assert.ok(tables.entities.has('app'))
+      assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { k: 1 })
     }
   }
 )

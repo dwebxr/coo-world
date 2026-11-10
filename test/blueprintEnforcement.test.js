@@ -25,10 +25,12 @@ function fixture() {
       this.items.set(data.id, entity)
       return entity
     },
-    // apps are not counted here; joinBudget.test.js runs the real Entities
+    // the join-state budget for apps is not under test here: test/joinBudget.test.js runs the real Entities
     canFitApp: () => true,
     measureApp() {},
     trackApp() {},
+    stateEmptied() {},
+    emptiedStateBytes: () => 0,
   }
   world.blueprints = new Blueprints(world)
   const connect = id => {

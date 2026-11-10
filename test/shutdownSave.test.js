@@ -23,7 +23,8 @@ function run(args, { cwd = root, env = {} } = {}) {
   const proc = { child, out: '', code: undefined }
   child.stdout.on('data', data => (proc.out += data))
   child.stderr.on('data', data => (proc.out += data))
-  proc.exited = once(child, 'exit').then(([code, signal]) => (proc.code = code ?? signal))
+  // 'close': the process has exited and its output streams are drained
+  proc.exited = once(child, 'close').then(([code, signal]) => (proc.code = code ?? signal))
   proc.waitFor = async (text, ms = 60000) => {
     const deadline = Date.now() + ms
     while (!proc.out.includes(text)) {
@@ -35,47 +36,97 @@ function run(args, { cwd = root, env = {} } = {}) {
   return proc
 }
 
-// the signal handling itself, in a process of its own (src/server/shutdown.js with a scripted final save)
-const child = mode => run([path.join(root, 'test/lib/shutdownChild.mjs'), mode, '300'])
+// the signal handling itself, in a process of its own (src/server/shutdown.js with a scripted final save). No
+// assertion depends on how fast a loaded machine runs: each test only bounds the whole run (its timeout)
+const child = (mode, deadline = 300) => run([path.join(root, 'test/lib/shutdownChild.mjs'), mode, String(deadline)])
+const lines = proc => proc.out.split('\n')
 
-test('shutdown: a second signal during a stalled final save exits at once with 1', async () => {
-  const proc = child('stall')
-  await proc.waitFor('ready', 10000)
-  proc.child.kill('SIGTERM')
-  await proc.waitFor('flush started deadline=300')
-  const sent = Date.now()
-  proc.child.kill('SIGINT')
-  await proc.exited
-  assert.equal(proc.code, 1)
-  assert.ok(Date.now() - sent < 300, 'did not wait for the deadline')
-  assert.match(proc.out, /SIGINT again: exiting without waiting for the final save/)
-  assert.ok(proc.out.indexOf('world stopped') < proc.out.indexOf('server closing'))
-})
+test(
+  'shutdown: a second signal during a stalled final save exits with 1 without waiting',
+  { timeout: 60000 },
+  async () => {
+    // a deadline far beyond the test's timeout: only the second signal can end the process in time
+    const proc = child('stall', 600000)
+    await proc.waitFor('ready')
+    proc.child.kill('SIGTERM')
+    await proc.waitFor('flush started deadline=600000')
+    proc.child.kill('SIGINT')
+    await proc.exited
+    assert.equal(proc.code, 1)
+    const out = lines(proc)
+    const order = ['world stopped', 'flush started deadline=600000', 'server closing']
+    assert.deepEqual(
+      out.filter(line => order.includes(line)),
+      order,
+      'world stopped, then the save, then the listener'
+    )
+    assert.ok(out.includes('[server] SIGINT again: exiting without waiting for the final save'))
+    assert.ok(!proc.out.includes('did not return in time'))
+  }
+)
 
-test('shutdown: a final save that never returns still ends the process after its deadline, with 1', async () => {
-  const proc = child('stall')
-  await proc.waitFor('ready', 10000)
-  const sent = Date.now()
-  proc.child.kill('SIGTERM')
-  await proc.exited
-  assert.equal(proc.code, 1)
-  assert.ok(Date.now() - sent >= 300)
-  assert.match(proc.out, /the final save did not return in time; exiting/)
-})
+test(
+  'shutdown: a final save that never returns still ends the process after its deadline, with 1',
+  { timeout: 60000 },
+  async () => {
+    const proc = child('stall')
+    await proc.waitFor('ready')
+    proc.child.kill('SIGTERM')
+    await proc.exited
+    assert.equal(proc.code, 1)
+    assert.ok(lines(proc).includes('[server] the final save did not return in time; exiting'))
+  }
+)
 
-test('shutdown: a failed final save exits 1, a completed one 0', async () => {
+test('shutdown: a failed final save exits 1, a completed one 0', { timeout: 60000 }, async () => {
   for (const [mode, code] of [
     ['reject', 1],
     ['ok', 0],
   ]) {
     const proc = child(mode)
-    await proc.waitFor('ready', 10000)
+    await proc.waitFor('ready')
     proc.child.kill('SIGTERM')
     await proc.exited
     assert.equal(proc.code, code, mode)
-    if (mode === 'reject') assert.match(proc.out, /final save failed: final save incomplete/)
+    if (mode === 'reject') assert.ok(lines(proc).includes('[server] final save failed: final save incomplete'))
   }
 })
+
+test(
+  'shutdown: a signal during start-up, before the world exists, exits 0 and says there is nothing to save',
+  { timeout: 60000 },
+  async () => {
+    const proc = child('early')
+    await proc.waitFor('ready')
+    proc.child.kill('SIGTERM')
+    await proc.exited
+    assert.equal(proc.code, 0)
+    assert.ok(
+      lines(proc).includes('[server] SIGTERM during start-up, before the world was loaded: nothing to save; exiting')
+    )
+  }
+)
+
+test(
+  'shutdown: a database that blocks on every write is stopped at the deadline, reported, and the exit is 1',
+  { timeout: 60000 },
+  async () => {
+    // 40 rows of 50 ms each: written back to back they would take 2 s and the 200 ms deadline could never fire
+    const proc = child('slowdb', 200)
+    await proc.waitFor('ready')
+    proc.child.kill('SIGTERM')
+    await proc.exited
+    assert.equal(proc.code, 1)
+    const saved = lines(proc).filter(line => line.startsWith('saved bp'))
+    assert.ok(saved.length > 0 && saved.length < 40, `${saved.length} of 40 rows written before the deadline`)
+    const report = lines(proc).find(line => line.startsWith('[network] not persisted:'))
+    assert.ok(report, proc.out)
+    const unsaved = JSON.parse(/blueprints=(\[[^\]]*\])/.exec(report)[1])
+    assert.equal(unsaved.length + saved.length, 40, 'every row is either written or reported')
+    // the deadline timer or the clock check before the next row, whichever comes first
+    assert.match(proc.out, /\[server\] final save failed: (save deadline exceeded|final save incomplete)/)
+  }
+)
 
 // the built server on a throwaway world with real SQLite: what was edited just before the stop is on disk after it
 let dir
@@ -115,61 +166,88 @@ async function freePort() {
   return port
 }
 
-test('shutdown: SIGTERM saves the edited blueprint and app and the pending world.set, then exits 0', async t => {
-  const port = await freePort()
-  const world = path.join(dir, 'world')
-  fs.mkdirSync(path.join(world, 'assets'), { recursive: true })
-  // sets a key once at start, and again 100 ms later: that second write is throttled to a second after the first
-  fs.writeFileSync(
-    path.join(world, 'assets', 'shutdown-probe.js'),
-    `if (world.isServer) {
+const serverEnv = (port, world) => ({
+  WORLD: world,
+  PORT: String(port),
+  JWT_SECRET: 'shutdown-test-secret-0123456789abcdef',
+  ADMIN_CODE: 'shutdown',
+  SAVE_INTERVAL: '60',
+  CLEAN: 'false',
+  ASSETS: 'local',
+  ASSETS_BASE_URL: `http://localhost:${port}/assets`,
+  PUBLIC_WS_URL: `ws://localhost:${port}/ws`,
+  PUBLIC_API_URL: `http://localhost:${port}/api`,
+  PUBLIC_MAX_UPLOAD_SIZE: '12',
+})
+
+test(
+  'shutdown: a signal while the server starts exits 0; once the world is loading it runs the final save',
+  { timeout: 120000 },
+  async t => {
+    for (const [world, at] of [
+      ['early-world', '[assets] initializing'],
+      ['loading-world', '[network] hydration:'],
+    ]) {
+      const port = await freePort()
+      const server = run([path.join(dir, 'build/index.js')], { cwd: dir, env: serverEnv(port, world) })
+      t.after(() => server.code === undefined && server.child.kill('SIGKILL'))
+      await server.waitFor(at)
+      server.child.kill('SIGTERM')
+      await server.exited
+      assert.equal(server.code, 0, server.out.slice(-2000))
+      const early = server.out.includes('during start-up, before the world was loaded: nothing to save')
+      const saved = server.out.includes('[network] final save complete')
+      // a signal sent at the assets step may still arrive after the world was created
+      if (world === 'early-world') assert.ok(early || saved, server.out.slice(-2000))
+      else assert.ok(saved && !early, server.out.slice(-2000))
+    }
+  }
+)
+
+test(
+  'shutdown: SIGTERM saves the edited blueprint and app and the pending world.set, then exits 0',
+  { timeout: 120000 },
+  async t => {
+    const port = await freePort()
+    const world = path.join(dir, 'world')
+    fs.mkdirSync(path.join(world, 'assets'), { recursive: true })
+    // sets a key once at start, and again 100 ms later: that second write is throttled to a second after the first
+    fs.writeFileSync(
+      path.join(world, 'assets', 'shutdown-probe.js'),
+      `if (world.isServer) {
       world.set('shutdown-key', { saved: 1 })
       setTimeout(() => {
         world.set('shutdown-key', { saved: 2 })
         console.log('[shutdown-probe] stored')
       }, 100)
     }`
-  )
-  const server = run([path.join(dir, 'build/index.js')], {
-    cwd: dir,
-    env: {
-      WORLD: 'world',
-      PORT: String(port),
-      JWT_SECRET: 'shutdown-test-secret-0123456789abcdef',
-      ADMIN_CODE: 'shutdown',
-      SAVE_INTERVAL: '60',
-      CLEAN: 'false',
-      ASSETS: 'local',
-      ASSETS_BASE_URL: `http://localhost:${port}/assets`,
-      PUBLIC_WS_URL: `ws://localhost:${port}/ws`,
-      PUBLIC_API_URL: `http://localhost:${port}/api`,
-      PUBLIC_MAX_UPLOAD_SIZE: '12',
-    },
-  })
-  t.after(() => server.code === undefined && server.child.kill('SIGKILL'))
-  await server.waitFor(`server listening on port ${port}`)
-  const client = await new WireClient(port, 'builder').connect()
-  t.after(() => client.close())
-  await client.becomeAdmin('shutdown')
-  client.installApp({ id: 'shutdown-app', script: 'asset://shutdown-probe.js', props: { edited: true } })
-  await server.waitFor('[shutdown-probe] stored', 20000)
-  // a connection is still open: the stop does not wait for it
-  server.child.kill('SIGTERM')
-  await server.exited
-  assert.equal(server.code, 0, server.out.slice(-2000))
-  assert.match(server.out, /\[server\] SIGTERM: saving the world before exit/)
-  assert.match(server.out, /\[network\] final save complete/)
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(world, 'storage.json'), 'utf8')), {
-    'shutdown-key': { saved: 2 },
-  })
-  const db = new Database(path.join(world, 'db.sqlite'), { readonly: true })
-  try {
-    const blueprint = db.prepare('select data from blueprints where id = ?').get('shutdown-app-bp')
-    assert.ok(blueprint, 'the blueprint added before the stop is stored')
-    assert.deepEqual(JSON.parse(blueprint.data).props, { edited: true })
-    const app = db.prepare('select data from entities where id = ?').get('shutdown-app')
-    assert.equal(JSON.parse(app.data).blueprint, 'shutdown-app-bp')
-  } finally {
-    db.close()
+    )
+    const server = run([path.join(dir, 'build/index.js')], { cwd: dir, env: serverEnv(port, 'world') })
+    t.after(() => server.code === undefined && server.child.kill('SIGKILL'))
+    await server.waitFor(`server listening on port ${port}`)
+    const client = await new WireClient(port, 'builder').connect()
+    t.after(() => client.close())
+    await client.becomeAdmin('shutdown')
+    client.installApp({ id: 'shutdown-app', script: 'asset://shutdown-probe.js', props: { edited: true } })
+    await server.waitFor('[shutdown-probe] stored', 20000)
+    // a connection is still open: the stop does not wait for it
+    server.child.kill('SIGTERM')
+    await server.exited
+    assert.equal(server.code, 0, server.out.slice(-2000))
+    assert.match(server.out, /\[server\] SIGTERM: saving the world before exit/)
+    assert.match(server.out, /\[network\] final save complete/)
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(world, 'storage.json'), 'utf8')), {
+      'shutdown-key': { saved: 2 },
+    })
+    const db = new Database(path.join(world, 'db.sqlite'), { readonly: true })
+    try {
+      const blueprint = db.prepare('select data from blueprints where id = ?').get('shutdown-app-bp')
+      assert.ok(blueprint, 'the blueprint added before the stop is stored')
+      assert.deepEqual(JSON.parse(blueprint.data).props, { edited: true })
+      const app = db.prepare('select data from entities where id = ?').get('shutdown-app')
+      assert.equal(JSON.parse(app.data).blueprint, 'shutdown-app-bp')
+    } finally {
+      db.close()
+    }
   }
-})
+)

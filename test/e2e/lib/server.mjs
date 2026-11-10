@@ -9,6 +9,8 @@ import { pathToFileURL } from 'node:url'
 
 import { BUILD_ROOT, E2E_DIR, REPO_ROOT, sleep } from './common.mjs'
 
+const MEMORY_PROBE = path.join(E2E_DIR, 'lib', 'memory-probe.js')
+
 export function serverEnv(port, world, extra = {}) {
   return {
     PATH: process.env.PATH,
@@ -56,13 +58,26 @@ export function serverEnv(port, world, extra = {}) {
 // `worldSource`: an existing world directory to copy (local runs with the 5-app world); without it the
 // server bootstraps the default world from src/world on first boot
 // `preload`: a script the server process imports before its own entry (node --import), eg a test hook
-export async function startServer({ port, worldSource, env = {}, logPath, timeout = 120000, preload }) {
+// `memoryProbe`: also preload memory-probe.js and start node with --expose-gc, for server.retainedMB()
+export async function startServer({
+  port,
+  worldSource,
+  env = {},
+  logPath,
+  timeout = 120000,
+  preload,
+  memoryProbe = false,
+}) {
   const world = `world-e2e-${Math.random().toString(36).slice(2, 8)}`
   const worldDir = path.join(BUILD_ROOT, world)
   if (worldSource) fs.cpSync(worldSource, worldDir, { recursive: true })
   else fs.mkdirSync(worldDir, { recursive: true })
   const log = logPath ? fs.openSync(logPath, 'w') : null
-  const nodeArgs = preload ? ['--import', pathToFileURL(preload).href] : []
+  const preloads = [preload, memoryProbe && MEMORY_PROBE].filter(Boolean)
+  const nodeArgs = [
+    ...(memoryProbe ? ['--expose-gc'] : []),
+    ...preloads.flatMap(file => ['--import', pathToFileURL(file).href]),
+  ]
   const child = spawn(process.execPath, [...nodeArgs, path.join(BUILD_ROOT, 'build/index.js')], {
     cwd: E2E_DIR,
     env: serverEnv(port, world, env),
@@ -84,6 +99,27 @@ export async function startServer({ port, worldSource, env = {}, logPath, timeou
   }
   server.count = text => server.out.split(text).length - 1
   server.lines = pattern => server.out.split('\n').filter(line => pattern.test(line))
+  // What the server holds after a full collection, in MB: heap plus the memory behind buffers. Unlike resident
+  // memory it does not depend on when the collector last ran (memory-probe.js).
+  server.retainedMB = async ({ timeout = 15000 } = {}) => {
+    if (!memoryProbe) throw new Error('retainedMB() needs startServer({ memoryProbe: true })')
+    // complete lines only: the last piece of the output may be a line still being written
+    const reports = () =>
+      server.out
+        .split('\n')
+        .slice(0, -1)
+        .filter(line => line.startsWith('E2E_MEMORY '))
+    const seen = reports().length
+    child.kill('SIGUSR2')
+    const deadline = Date.now() + timeout
+    while (reports().length === seen) {
+      if (server.exited !== null) throw new Error(`server exited (${server.exited}) before reporting its memory`)
+      if (Date.now() > deadline) throw new Error('the server did not report its memory')
+      await sleep(50)
+    }
+    const { heapUsed, external } = JSON.parse(reports().at(-1).slice('E2E_MEMORY '.length))
+    return Math.round((heapUsed + external) / 1024 / 1024)
+  }
   server.stop = async () => {
     if (server.exited === null) {
       child.kill('SIGTERM')

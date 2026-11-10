@@ -59,6 +59,8 @@ try {
     worldSource: WORLD_SOURCE,
     // host-side test methods for the probe apps that used to patch THREE prototypes from a script (A7)
     preload: fileURLToPath(new URL('./lib/script-class-hook.js', import.meta.url)),
+    // A12 asks the server what it retains after a flood
+    memoryProbe: true,
     logPath: path.join(OUT, `fullstack-${ENGINE}-server.log`),
   })
   base = `http://localhost:${PORT}`
@@ -571,7 +573,7 @@ async function probes(admin, watcher) {
     async () => {
       admin.installApp({ id: 's-event', script: 'asset://event-probe.js', model: 'asset://ai.glb' })
       await sleep(500)
-      const baseline = (await admin.serverStats()).rss
+      const baseline = await server.retainedMB()
       // (a) 20 connections each send one message above the 64 KiB ceiling: each is closed with 1009, the server stays up
       const giant = 'x'.repeat(70 * 1024)
       const giants = await Promise.all(
@@ -617,21 +619,27 @@ async function probes(admin, watcher) {
       const ping = await watcher.waitForReport('P5_PING', { from: fromPing, timeout: 10000 })
       eq(ping.data.n, 1, 'a current-version event is delivered after the flood')
       eq(ping.from, flood.id, 'from the flooding socket')
-      // (d) what the floods left behind. the frames above are garbage awaiting collection, and how much of it
-      // is still resident a few seconds later varies by Node version (about 40 MB on 23, about 80 MB on 22);
-      // the unfixed server keeps the events themselves, 160 MB and more, for ever
-      const after = await waitUntil(
+      // (d) what the floods left behind. The frames above are garbage: the server must not keep them once it has
+      // worked through them (the unfixed server kept the events themselves, 160 MB and more, for ever). Measured
+      // after a full collection, since how much garbage is still resident depends on the Node version and on how
+      // busy the machine is. The wait covers a server that is still working through the flood.
+      let retained
+      await waitUntil(
         async () => {
-          const rss = (await admin.serverStats()).rss
-          return rss - baseline < 128 ? rss : null
+          retained = await server.retainedMB()
+          return retained - baseline < 48
         },
-        { timeout: 20000, interval: 1000, message: `rss to settle within 128 MB of the ${baseline} MB baseline` }
+        {
+          timeout: 60000,
+          interval: 1000,
+          message: `retained memory to return within 48 MB of the ${baseline} MB baseline`,
+        }
       )
       const status = await fetch(`${base}/status`)
       eq(status.status, 200, 'server still responsive')
       dropper.close()
       flood.close()
-      return `rss ${baseline} -> ${after} MB`
+      return `retained ${baseline} -> ${retained} MB, rss ${(await admin.serverStats()).rss} MB`
     }
   )
 

@@ -45,6 +45,13 @@ renderer, harden state).
 the logs and screenshots away from `test/e2e/out/`, and `E2E_<ENGINE>_EXECUTABLE=<path>` pairs the
 harness with a specific browser build.
 
+`fullstack.mjs` checks that the server keeps nothing from an event flood by asking the server process itself:
+`startServer({ memoryProbe: true })` starts it with `--expose-gc` and preloads `lib/memory-probe.js`, and
+`server.retainedMB()` sends `SIGUSR2`, on which the process collects and prints its heap and buffer memory.
+Resident memory was the earlier measure; it also counts garbage the collector has not reached yet, so the step
+failed on a busy machine. `test/e2eMemoryProbe.test.js` checks the probe against a process that holds memory,
+drops it and makes garbage.
+
 ## Token gate (local only)
 
 Run `node test/e2e/token-gate.mjs --engine=chromium` (or `webkit` / `firefox`) after the four builds.

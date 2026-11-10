@@ -2,8 +2,10 @@ import { callForScript } from '../extras/scriptValues'
 import { isBoolean } from 'lodash-es'
 import * as THREE from '../extras/three'
 import { getNodeRef, isRefAllowed, registerNodeRefGetter } from './refs'
+import { NODE_CLIMB_LIMIT, NODE_DEPTH_LIMIT, NODE_LIMIT, NodeLimitError } from '../extras/nodeLimits.js'
 
 export { getRef, getNodeRef, resolveValueRef, secureRef } from './refs'
+export { NODE_CLIMB_LIMIT, NODE_DEPTH_LIMIT, NODE_LIMIT, NodeLimitError } from '../extras/nodeLimits.js'
 
 const _v1 = new THREE.Vector3()
 const _v2 = new THREE.Vector3()
@@ -26,6 +28,37 @@ const defaults = {
 let nodeIds = -1
 
 const EPSILON = 0.000000001
+
+// a mounting node of an app takes one unit of its budget; past the budget the app is crashed (once) and the
+// node is not mounted
+function chargeNode(node, entity) {
+  const parent = node.parent
+  const depth = parent?.mounted && parent._nodeOwner === entity ? parent._nodeDepth + 1 : 0
+  const count = (entity.liveNodes || 0) + 1
+  if (count <= NODE_LIMIT && depth < NODE_DEPTH_LIMIT) {
+    entity.liveNodes = count
+    node._nodeOwner = entity
+    node._nodeDepth = depth
+    return
+  }
+  const message =
+    count > NODE_LIMIT
+      ? `[app] node limit reached: more than ${NODE_LIMIT} live nodes`
+      : `[app] node limit reached: more than ${NODE_DEPTH_LIMIT} levels of nodes`
+  if (!entity.crashed && !entity.destroyed) {
+    entity.scriptError = { name: 'Error', message }
+    console.error(`${message} (entity ${String(entity.data?.id).slice(0, 64)})`)
+    entity.crash?.()
+  }
+  throw new NodeLimitError(message)
+}
+
+function releaseNode(node) {
+  const owner = node._nodeOwner
+  if (!owner) return
+  node._nodeOwner = null
+  owner.liveNodes--
+}
 
 export class Node {
   constructor(data = {}) {
@@ -96,6 +129,9 @@ export class Node {
     this.isDirty = false
     this.isTransformed = true
     this.mounted = false
+    // the app whose node budget this node holds while mounted, and its level below the mounted root
+    this._nodeOwner = null
+    this._nodeDepth = 0
   }
 
   activate(ctx) {
@@ -104,6 +140,8 @@ export class Node {
     // top down mount
     if (this.mounted) return
     this.updateTransform()
+    const entity = this.ctx?.entity
+    if (entity?.isApp) chargeNode(this, entity)
     this.mounted = true
     this.mount()
     const children = this.children
@@ -123,10 +161,17 @@ export class Node {
     this.isDirty = false
     this.isTransformed = true
     this.mounted = false
+    releaseNode(this)
   }
 
   add(node) {
     if (!node) return console.error('no node to add')
+    // a node under itself or under its own descendant would make the parent chain a loop
+    let steps = 0
+    for (let ancestor = this; ancestor; ancestor = ancestor.parent) {
+      if (ancestor === node) throw new Error('[node] cannot add a node to itself or to one of its descendants')
+      if (++steps > NODE_CLIMB_LIMIT) throw new Error('[node] node tree too deep or cyclic')
+    }
     if (node.parent) {
       node.parent.remove(node)
     }
@@ -210,7 +255,9 @@ export class Node {
   clean() {
     if (!this.isDirty) return
     let top = this
+    let steps = 0
     while (top.parent && top.parent.isDirty) {
+      if (++steps > NODE_CLIMB_LIMIT) throw new Error('[node] node tree too deep or cyclic')
       top = top.parent
     }
     let didTransform

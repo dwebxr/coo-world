@@ -48,6 +48,12 @@ The child nodes.
 
 Adds `otherNode` as a child of this node.
 
+Adding a node to itself or to one of its own descendants throws (`[node] cannot add a node to itself or to one of
+its descendants`), so the parent chain can never loop. One app may have at most 20,000 nodes mounted at once
+(in its own tree and in world space together) and 256 levels of nesting below a mounted root; nodes that are created
+but not added (for example clones kept for later) do not count. Mounting past either limit throws
+`[app] node limit reached: …` and crashes the app, as any other script error does.
+
 ### `.remove(otherNode)`: Self
 
 Removes `otherNode` if it is a child of this node.

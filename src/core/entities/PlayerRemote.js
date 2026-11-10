@@ -7,6 +7,7 @@ import { BufferedLerpVector3 } from '../extras/BufferedLerpVector3'
 import { BufferedLerpQuaternion } from '../extras/BufferedLerpQuaternion'
 import { isEmoteUrl } from '../extras/entityModifyPolicy'
 import { readAnchorPose } from '../extras/anchorPose'
+import { avatarChosen, avatarSettled, playerAvatarUrl, switchToBuiltinAvatar } from '../extras/playerAvatarFallback'
 
 const anchorPosition = new THREE.Vector3()
 const anchorQuaternion = new THREE.Quaternion()
@@ -78,19 +79,31 @@ export class PlayerRemote extends Entity {
   }
 
   applyAvatar() {
-    const avatarUrl = this.data.sessionAvatar || this.data.avatar || 'asset://avatar.vrm'
+    const avatarUrl = playerAvatarUrl(this)
     if (this.avatarUrl === avatarUrl) return
-    this.world.loader.load('avatar', avatarUrl).then(src => {
-      if (this.avatar) this.avatar.deactivate()
-      this.avatar = src.toNodes().get('avatar')
-      this.base.add(this.avatar)
-      this.nametag.position.y = this.avatar.getHeadToHeight() + 0.2
-      this.bubble.position.y = this.avatar.getHeadToHeight() + 0.2
-      if (!this.bubble.active) {
-        this.nametag.active = true
+    this.world.loader.load('avatar', avatarUrl).then(
+      src => {
+        if (this.avatar) this.avatar.deactivate()
+        this.avatar = src.toNodes().get('avatar')
+        this.base.add(this.avatar)
+        this.nametag.position.y = this.avatar.getHeadToHeight() + 0.2
+        this.bubble.position.y = this.avatar.getHeadToHeight() + 0.2
+        if (!this.bubble.active) {
+          this.nametag.active = true
+        }
+        this.avatarUrl = avatarUrl
+        avatarSettled(this, avatarUrl)
+      },
+      err => {
+        avatarSettled(this, avatarUrl)
+        throw err
       }
-      this.avatarUrl = avatarUrl
-    })
+    )
+  }
+
+  // World.hotFailed: this player (or its avatar) threw in the frame loop
+  fallBackToDefaultAvatar() {
+    return switchToBuiltinAvatar(this)
   }
 
   getAnchorMatrix() {
@@ -220,6 +233,7 @@ export class PlayerRemote extends Entity {
       this.world.emit('evmTips', { playerId: this.data.id, evmTips: this.data.evmTips })
     }
     if (avatarChanged) {
+      avatarChosen(this)
       this.applyAvatar()
     }
   }

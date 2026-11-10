@@ -6,6 +6,7 @@ import { readVec3, isFiniteF32, warnOnce } from '../extras/physxConvert.js'
 
 import { System } from './System'
 import { getNodeRef, resolveValueRef } from '../nodes/Node'
+import { NODE_CLIMB_LIMIT } from '../extras/nodeLimits.js'
 import { Layers } from '../extras/Layers'
 import { ControlPriorities } from '../extras/ControlPriorities'
 import { warn } from '../extras/warn'
@@ -107,14 +108,17 @@ export class Apps extends System {
         const finalMatrix = new THREE.Matrix4()
         finalMatrix.copy(node.matrix)
         let currentParent = node.parent
+        let steps = 0
         while (currentParent) {
+          if (++steps > NODE_CLIMB_LIMIT) throw new Error('[world.attach] node tree too deep or cyclic')
           finalMatrix.premultiply(currentParent.matrix)
           currentParent = currentParent.parent
         }
         parent.remove(node)
         finalMatrix.decompose(node.position, node.quaternion, node.scale)
-        node.activate({ world, entity })
+        // tracked before it mounts, so an activation that stops part-way (node limit) is still torn down
         entity.worldNodes.add(node)
+        node.activate({ world, entity })
       },
       on(entity, name, callback) {
         entity.onWorldEvent(name, callback)

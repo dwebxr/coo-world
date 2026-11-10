@@ -1,3 +1,4 @@
+import { briefError } from '../extras/logOnce.js'
 import { System } from './System'
 
 import * as THREE from '../extras/three'
@@ -15,8 +16,24 @@ let worker
 export class Client extends System {
   constructor(world) {
     super(world)
+    this.tickErrors = new Set()
     window.world = world
     window.THREE = THREE
+  }
+
+  // the frame callback: like the server's tick, one exception is logged (each distinct message once, up to 32)
+  // and the next frame runs; a throw out of the animation loop would end it for good
+  tick = time => {
+    try {
+      this.world.tick(time)
+    } catch (err) {
+      this.world.accumulator = 0
+      const message = briefError(err)
+      if (this.tickErrors.size < 32 && !this.tickErrors.has(message)) {
+        this.tickErrors.add(message)
+        console.error(`[client] tick failed: ${message}`, err)
+      }
+    }
   }
 
   async init({ loadYoga }) {
@@ -26,7 +43,7 @@ export class Client extends System {
 
   start() {
     if (this.world.fatalError) return
-    this.world.graphics.renderer.setAnimationLoop(this.world.tick)
+    this.world.graphics.renderer.setAnimationLoop(this.tick)
     document.addEventListener('visibilitychange', this.onVisibilityChange)
 
     this.world.settings.on('change', this.onSettingsChange)
@@ -71,7 +88,7 @@ export class Client extends System {
       worker.onmessage = () => {
         if (this.world.fatalError) return
         const time = performance.now()
-        this.world.tick(time)
+        this.tick(time)
       }
     }
     if (document.hidden) {
@@ -83,7 +100,7 @@ export class Client extends System {
       // tell the worker to stop
       worker.postMessage('stop')
       // resume rAF
-      this.world.graphics.renderer.setAnimationLoop(this.world.tick)
+      this.world.graphics.renderer.setAnimationLoop(this.tick)
     }
   }
 

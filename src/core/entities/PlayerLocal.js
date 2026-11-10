@@ -14,6 +14,7 @@ import { outranks, isAdmin, isBuilder, isMuted } from '../extras/playerRanks'
 import { createPlayerAura, chatBubble } from '../extras/playerAura'
 import { isEmoteUrl, sanitizeName, sanitizePlayerSelfModify } from '../extras/entityModifyPolicy'
 import { readAnchorPose } from '../extras/anchorPose'
+import { avatarChosen, avatarSettled, playerAvatarUrl, switchToBuiltinAvatar } from '../extras/playerAvatarFallback'
 import {
   readVec3,
   writeVec3,
@@ -170,7 +171,12 @@ export class PlayerLocal extends Entity {
   }
 
   getAvatarUrl() {
-    return this.data.sessionAvatar || this.data.avatar || 'asset://avatar.vrm'
+    return playerAvatarUrl(this)
+  }
+
+  // World.hotFailed: this player (or its avatar) threw in the frame loop
+  fallBackToDefaultAvatar() {
+    return switchToBuiltinAvatar(this)
   }
 
   applyAvatar() {
@@ -190,8 +196,10 @@ export class PlayerLocal extends Entity {
         }
         this.avatarUrl = avatarUrl
         this.camHeight = this.avatar.height * 0.9
+        avatarSettled(this, avatarUrl)
       })
       .catch(err => {
+        avatarSettled(this, avatarUrl)
         console.error(err)
       })
   }
@@ -1227,6 +1235,7 @@ export class PlayerLocal extends Entity {
 
   setSessionAvatar(avatar) {
     this.data.sessionAvatar = avatar
+    avatarChosen(this)
     this.applyAvatar()
     this.world.network.send('entityModified', {
       id: this.data.id,
@@ -1281,6 +1290,7 @@ export class PlayerLocal extends Entity {
       changed = true
     }
     if (avatarChanged) {
+      avatarChosen(this)
       this.applyAvatar()
     }
     if (changed) {

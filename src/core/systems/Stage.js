@@ -5,6 +5,7 @@ import { isNumber } from 'lodash-es'
 import { System } from './System'
 import { LooseOctree } from '../extras/LooseOctree'
 import { serializeError } from '../extras/serializeError'
+import { NODE_CLIMB_LIMIT } from '../extras/nodeLimits.js'
 
 const vec2 = new THREE.Vector2()
 const CLEAN_RETRY_CAP = 10
@@ -116,9 +117,15 @@ export class Stage extends System {
         if (!trapped) owner.crash()
         continue
       }
-      // the traversal that failed started at the top of the dirty chain, like Node.clean()
+      // the traversal that failed started at the top of the dirty chain, like Node.clean(); the climb is bounded
+      // (a parent chain that long can only be a corrupted, cyclic graph, and then the node itself is the top)
       let top = node
+      let steps = 0
       while (top.parent && top.parent.isDirty) {
+        if (++steps > NODE_CLIMB_LIMIT) {
+          top = node
+          break
+        }
         top = top.parent
       }
       node._cleanFailures = (node._cleanFailures || 0) + 1
@@ -130,23 +137,31 @@ export class Stage extends System {
           )
         }
         node._cleanFailures = 0
-        top.traverse(child => {
-          try {
-            child.updateTransform()
-          } catch {
-            // stays stale until its next write
-          }
-          child.isDirty = false
-          child.isTransformed = false
-          this.dirtyNodes.delete(child)
-        })
+        try {
+          top.traverse(child => {
+            try {
+              child.updateTransform()
+            } catch {
+              // stays stale until its next write
+            }
+            child.isDirty = false
+            child.isTransformed = false
+            this.dirtyNodes.delete(child)
+          })
+        } catch {
+          // a cyclic subtree overflows the walk; what was reached is released
+        }
         continue
       }
-      top.traverse(child => {
-        child.isTransformed = true
-        child.isDirty = true
-        this.dirtyNodes.delete(child)
-      })
+      try {
+        top.traverse(child => {
+          child.isTransformed = true
+          child.isDirty = true
+          this.dirtyNodes.delete(child)
+        })
+      } catch {
+        // a cyclic subtree overflows the walk; the retry below fails again and counts towards giving up
+      }
       this.dirtyNodes.add(top)
     }
   }

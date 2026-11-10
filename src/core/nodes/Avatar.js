@@ -37,6 +37,8 @@ export class Avatar extends Node {
     }
     if (this.factory) {
       this.instance = this.factory.create(this.matrixWorld, this.hooks, this)
+      // the instance is a hot item: World.hotFailed finds the app or player it belongs to through this node
+      this.instance.hotOwner = this
       this.instance.setEmote(this._emote)
       this.instance.setVisible(this._visible)
       if (this._disableRateCheck) {

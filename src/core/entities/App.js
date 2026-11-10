@@ -10,6 +10,7 @@ import { registerAppProxy } from '../nodes/refs'
 import { createScriptTimers } from '../extras/scriptTimers'
 import { createScriptResponse, toHostFetchOptions } from '../extras/scriptFetch'
 import { copyProps } from '../extras/appFields'
+import { NodeLimitError } from '../extras/nodeLimits.js'
 import { createEventQueue } from '../extras/appEventQueue'
 import { briefError, createLogOnce } from '../extras/logOnce'
 
@@ -52,6 +53,8 @@ export class App extends Entity {
     this.fields = []
     // this instance's own copy of the blueprint props (rebuilt with every build)
     this.props = {}
+    // live mounted nodes counted against the node budget (Node.js)
+    this.liveNodes = 0
     this.target = null
     this.projectLimit = Infinity
     this.resetOnMove = false
@@ -144,7 +147,18 @@ export class App extends Entity {
       this.root.scale.fromArray(this.data.scale)
     }
     // activate
-    this.root.activate({ world: this.world, entity: this, moving: !!this.data.mover })
+    try {
+      this.root.activate({ world: this.world, entity: this, moving: !!this.data.mover })
+    } catch (err) {
+      if (!(err instanceof NodeLimitError)) throw err
+      // the model alone is over the node budget: this run shows the crash block instead (crash() below queues it,
+      // also when the app was already crashed before this build)
+      if (!crashed) {
+        crashed = true
+        this.crashed = false
+        this.crash()
+      }
+    }
     // execute script
     this.script = script
     this.onScript?.(script)

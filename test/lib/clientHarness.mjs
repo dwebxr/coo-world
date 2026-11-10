@@ -24,6 +24,7 @@ import { applyInitials, copyFields, copyProps } from '../../src/core/extras/appF
 import { scriptChatMessage } from '../../src/core/extras/chatPolicy.js'
 import { createLogOnce } from '../../src/core/extras/logOnce.js'
 import { toScriptError } from '../../src/core/extras/scriptValues.js'
+import { NODE_CLIMB_LIMIT, NodeLimitError } from '../../src/core/extras/nodeLimits.js'
 
 class System extends EventEmitter {
   constructor(world) {
@@ -80,6 +81,8 @@ export function loadClient(file, name, context = {}) {
     scriptChatMessage,
     createLogOnce,
     toScriptError,
+    NODE_CLIMB_LIMIT,
+    NodeLimitError,
     ...context,
   }
   const code = source.replace(/^import[\s\S]*?from ['"][^'"]+['"]\n/gm, '').replace(/^export /gm, '')

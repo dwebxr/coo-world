@@ -7,6 +7,8 @@ import { VRMLoaderPlugin } from '@pixiv/three-vrm'
 import { loadClient } from './lib/clientHarness.mjs'
 import { imageElementsPlugin } from '../src/core/extras/gltfImageElements.js'
 import { checkGLTF } from '../src/core/extras/gltfLimits.js'
+import { png } from './lib/imageBytes.mjs'
+import { MAX_IMAGE_PIXELS, imageType, readImageHeader } from '../src/core/extras/imageHeader.js'
 
 // The browser's loader with three's real GLTF parser and three-vrm's real plugin: a model, avatar or emote may only
 // use what is inside its file, embedded images still load (both the ImageBitmap path and the iPhone <img> path),
@@ -37,6 +39,9 @@ const ClientLoader = loadClient('core/systems/ClientLoader.js', 'ClientLoader', 
   isAppleMobile: () => apple,
   emoteUrls: [],
   Hls: class {},
+  MAX_IMAGE_PIXELS,
+  imageType,
+  readImageHeader,
 })
 
 const ASSETS = 'https://world.example/assets'
@@ -142,14 +147,14 @@ function glb(json, bin) {
 
 // one textured triangle. `buffer`: the buffer's uri (none: the GLB's own chunk); `image`: an image uri (none: the
 // image is in the buffer)
-function triangle({ buffer, image } = {}) {
+function triangle({ buffer, image, size = [64, 64] } = {}) {
   const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0])
   const uvs = new Float32Array([0, 0, 1, 0, 0, 1])
-  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) // decoded by the stand-in
-  const bin = new Uint8Array(68)
+  const header = png(...size) // decoded by the stand-in; only its header is read for real
+  const bin = new Uint8Array(96)
   bin.set(new Uint8Array(positions.buffer), 0)
   bin.set(new Uint8Array(uvs.buffer), 36)
-  bin.set(png, 60)
+  bin.set(header, 60)
   const json = {
     asset: { version: '2.0' },
     scene: 0,
@@ -166,9 +171,9 @@ function triangle({ buffer, image } = {}) {
     bufferViews: [
       { buffer: 0, byteOffset: 0, byteLength: 36 },
       { buffer: 0, byteOffset: 36, byteLength: 24 },
-      { buffer: 0, byteOffset: 60, byteLength: 8 },
+      { buffer: 0, byteOffset: 60, byteLength: header.length },
     ],
-    buffers: [buffer ? { byteLength: 68, uri: buffer } : { byteLength: 68 }],
+    buffers: [buffer ? { byteLength: 96, uri: buffer } : { byteLength: 96 }],
   }
   if (buffer === 'data:') {
     json.buffers[0].uri = `data:application/octet-stream;base64,${Buffer.from(bin).toString('base64')}`
@@ -258,6 +263,31 @@ test('an image inside the file loads (ImageBitmap and <img> paths); an external 
     assert.ok(errors.some(line => line.includes("Couldn't load texture https://elsewhere.example/t.png")))
   }
   apple = false
+})
+
+test('an embedded image whose header declares more than the budget is refused before it is decoded (both paths)', async t => {
+  t.mock.method(console, 'error', () => {})
+  const decodes = t.mock.method(globalThis, 'createImageBitmap')
+  const elements = t.mock.method(globalThis.document, 'createElementNS')
+  for (const iphone of [false, true]) {
+    apple = iphone
+    const loader = makeLoader()
+    for (const type of ['model', 'emote', 'avatar']) {
+      const url = serve(`declares-${type}-${iphone}.glb`, triangle({ size: [100000, 100000] }))
+      await assert.rejects(loader.load(type, url), /image 0 is larger than 36000000 pixels/, `${type} ${iphone}`)
+    }
+    await assert.rejects(
+      loader.insert(
+        'model',
+        `asset://declares-picked-${iphone}.glb`,
+        new File([triangle({ size: [100000, 100000] })], 'p.glb')
+      ),
+      /larger than 36000000 pixels/
+    )
+  }
+  apple = false
+  assert.equal(decodes.mock.callCount(), 0, 'no ImageBitmap was decoded')
+  assert.equal(elements.mock.callCount(), 0, 'no <img> was made')
 })
 
 test('an embedded image above the pixel budget fails the load and its bitmap is closed', async t => {

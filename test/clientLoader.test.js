@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import * as THREE from 'three'
 import { loadClient } from './lib/clientHarness.mjs'
+import { png, jpeg, webp, gif } from './lib/imageBytes.mjs'
+import { MAX_IMAGE_PIXELS, imageType, readImageHeader } from '../src/core/extras/imageHeader.js'
 
 // The browser's loader with its real code and a fake network: what it accepts, refuses, keeps and forgets.
 // The parsers are stand-ins the tests steer (test/clientLoaderGLTF.test.js runs the real GLTF parser).
@@ -46,6 +48,9 @@ const ClientLoader = loadClient('core/systems/ClientLoader.js', 'ClientLoader', 
   isAppleMobile: () => false,
   emoteUrls: [],
   Hls: class {},
+  MAX_IMAGE_PIXELS,
+  imageType,
+  readImageHeader,
 })
 
 const ASSETS = 'https://world.example/assets'
@@ -357,6 +362,55 @@ test('an image that cannot be decoded, or is larger than the pixel budget, is a 
   // broken images are not kept either
   await tick()
   assert.equal(loader.has('image', 'asset://broken.png'), false)
+})
+
+test('a PNG, JPEG or WebP is refused from its header before it is decoded; other formats go to the browser', async t => {
+  const images = fakeImages(t)
+  // a JPEG whose start of frame comes after 325 KB of segments: past the first bytes read, so the file is read whole
+  const late = jpeg(20000, 20000, {
+    before: [
+      [0xe1, 65000],
+      [0xe2, 65000],
+      [0xe2, 65000],
+      [0xe2, 65000],
+      [0xe2, 65000],
+    ],
+  })
+  const files = {
+    'huge.png': png(100000, 100000),
+    'huge.jpg': jpeg(9000, 5000, { sof: 0xc2 }),
+    'huge.webp': webp(100000, 1000, 'VP8X'),
+    'late.jpg': late,
+    'empty.png': png(0, 100),
+    'small.png': png(64, 64),
+    'other.gif': gif(30000, 30000),
+  }
+  fakeNetwork(t, url => (files[url.split('/').pop()] ? { body: files[url.split('/').pop()] } : null))
+  const loader = makeLoader()
+  for (const [name, reason] of [
+    ['huge.png', /larger than 36000000 pixels/],
+    ['huge.jpg', /larger than 36000000 pixels/],
+    ['huge.webp', /larger than 36000000 pixels/],
+    ['late.jpg', /larger than 36000000 pixels/],
+    ['empty.png', /no width or height/],
+  ]) {
+    await assert.rejects(loader.load('image', `asset://${name}`), reason, `image ${name}`)
+    await assert.rejects(loader.load('texture', `https://elsewhere.example/${name}`), reason, `texture ${name}`)
+  }
+  await assert.rejects(
+    loader.insert('image', 'asset://picked.png', new File([png(100000, 100000)], 'p.png')),
+    /larger than/
+  )
+  await assert.rejects(
+    loader.insert('texture', 'asset://picked.jpg', new File([jpeg(10000, 9000)], 'p.jpg')),
+    /larger than/
+  )
+  assert.equal(images.created.length, 0, 'none of them reached the decoder')
+  // a PNG within the budget is decoded; a GIF (no header reader) goes to the browser, which checks what it decoded
+  assert.equal((await loader.load('image', 'asset://small.png')).naturalWidth, 64)
+  images.outcome = 'huge'
+  await assert.rejects(loader.load('image', 'asset://other.gif'), /larger than 36000000 pixels/)
+  assert.equal(images.created.length, 2)
 })
 
 test('insert(): a picked file is validated and decoded as a download is, and a failure is not kept', async t => {

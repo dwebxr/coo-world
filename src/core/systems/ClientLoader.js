@@ -11,6 +11,7 @@ import { createEmoteFactory } from '../extras/createEmoteFactory'
 import { formatBytes } from '../extras/formatBytes'
 import { imageElementsPlugin, isAppleMobile } from '../extras/gltfImageElements'
 import { checkGLTF } from '../extras/gltfLimits'
+import { MAX_IMAGE_PIXELS, imageType, readImageHeader } from '../extras/imageHeader'
 import { emoteUrls } from '../extras/playerEmotes'
 import Hls from 'hls.js/dist/hls.js'
 
@@ -33,9 +34,11 @@ const MAX_BYTES = {
 }
 // any other kind, and the world's own store while its upload limit is not known (the viewer, before the snapshot)
 const MAX_BYTES_DEFAULT = 64 * MiB
-// decoded size: an image this large is about 150 MB of pixels before mipmaps (an 8192 x 4096 sky fits). Applies to
-// images, textures, HDRs and every texture inside a model, avatar or emote
-const MAX_IMAGE_PIXELS = 36_000_000
+// The pixel budget, MAX_IMAGE_PIXELS, is in imageHeader.js (shared with the model checks). It applies to images,
+// textures, HDRs and every texture inside a model, avatar or emote.
+// The bytes read for an image's size before it is decoded: enough for any PNG or WebP header, and for a JPEG whose
+// start of frame comes after its usual EXIF and colour-profile segments (a longer one is read whole).
+const IMAGE_HEADER_BYTES = 256 * 1024
 // downloads kept for re-use (exports, the file fields). Files of the world's own store are always kept; of the
 // others only the most recently used few, and none above this size
 const REMOTE_FILE_LIMIT = 16
@@ -115,6 +118,21 @@ async function readBody(resp, maxBytes, race, onData) {
     throw err
   }
   return new Blob(chunks, { type })
+}
+
+// The size of a PNG, JPEG or WebP read from its header, checked before anything decodes it: a file of a few hundred
+// bytes can declare 100000 x 100000. Any other format (GIF, AVIF, SVG, BMP, ...) goes to the browser's decoder as
+// before, and decodeImage checks what it decoded.
+async function checkImageHeader(file) {
+  const head = new Uint8Array(await file.slice(0, IMAGE_HEADER_BYTES).arrayBuffer())
+  let header = readImageHeader(head)
+  if (!header && imageType(head) === 'jpeg' && file.size > head.length) {
+    header = readImageHeader(new Uint8Array(await file.arrayBuffer()))
+  }
+  if (!header) return
+  if (!(header.width > 0 && header.height > 0)) throw new Error('image has no width or height')
+  if (header.width * header.height > MAX_IMAGE_PIXELS)
+    throw new Error(`image is larger than ${MAX_IMAGE_PIXELS} pixels`)
 }
 
 // an <img> for a file; rejects when the browser cannot decode it, it has no size, or it is larger than the pixel
@@ -784,10 +802,12 @@ export class ClientLoader extends System {
       return texture
     }
     if (type === 'image') {
+      await checkImageHeader(file)
       return decodeImage(file)
     }
     if (type === 'texture') {
       // the decoded element is the texture's image: no second load of the same object URL
+      await checkImageHeader(file)
       const img = await decodeImage(file)
       const texture = new THREE.Texture(img)
       texture.colorSpace = THREE.SRGBColorSpace

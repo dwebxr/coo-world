@@ -7,6 +7,8 @@
 // Pure (no three.js, no DOM), so the server loader can use it too. Throws an Error with the reason; returns the
 // counts it measured.
 
+import { MAX_IMAGE_PIXELS, readImageHeader } from './imageHeader.js'
+
 const MiB = 1024 * 1024
 
 export const GLTF_LIMITS = Object.freeze({
@@ -26,6 +28,12 @@ export const GLTF_LIMITS = Object.freeze({
   skinBindings: 262144, // skinned mesh instances x the joints of their skin (a bone inverse matrix each)
   animationChannels: 65536,
   images: 1024,
+  // embedded images, read from their headers: each must be a PNG, JPEG or WebP within the per-image budget the
+  // loader applies to stand-alone images, and all of a file's images together within 256 Mi pixels: sixteen
+  // 4096 x 4096 textures, about 1 GiB decoded (RGBA), a third more once mipmapped on the GPU. The bundled avatar
+  // has 4.5 Mi. Each image entry counts, also several on one bufferView (each is decoded on its own)
+  imagePixels: MAX_IMAGE_PIXELS,
+  imagePixelsPerFile: 256 * MiB,
   textures: 4096,
   materials: 16384,
   // three-vrm: VRM 0 spring bone groups make a joint for every node below each listed bone; expression binds
@@ -67,7 +75,7 @@ const optionalCount = (value, name) => {
 }
 
 // the JSON of a .glb (its header and chunks, read as GLTFLoader reads them: the last JSON and BIN chunks win) or of
-// a .gltf, and the length of the GLB's binary chunk (null without one)
+// a .gltf, and the length and bytes of the GLB's binary chunk (null without one)
 export function readGLTF(data) {
   const bytes =
     data instanceof Uint8Array
@@ -78,6 +86,7 @@ export function readGLTF(data) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   let text
   let bin = null
+  let binBytes = null
   if (bytes.byteLength >= 4 && view.getUint32(0, true) === GLB_MAGIC) {
     if (bytes.byteLength < 12) refuse('the GLB header is cut short')
     if (view.getUint32(4, true) < 2) refuse('a GLB older than version 2')
@@ -94,6 +103,7 @@ export function readGLTF(data) {
         text = new TextDecoder().decode(bytes.subarray(start, start + chunkLength))
       } else if (type === CHUNK_BIN) {
         bin = Math.max(0, Math.min(chunkLength, bytes.byteLength - start))
+        binBytes = bytes.subarray(start, start + bin)
       }
       position = start + chunkLength
     }
@@ -108,10 +118,36 @@ export function readGLTF(data) {
     refuse('the JSON does not parse')
   }
   if (!isObject(json)) refuse('the JSON is not an object')
-  return { json, bin }
+  return { json, bin, binBytes }
 }
 
 // the bytes a data: URI holds once decoded (at most: percent escapes are counted as one byte each)
+// the bytes of a data: URI (base64 or percent-encoded)
+function dataURIDecode(uri) {
+  const comma = uri.indexOf(',')
+  const payload = comma < 0 ? '' : uri.slice(comma + 1)
+  if (/;base64$/i.test(uri.slice(5, Math.max(comma, 5)))) {
+    let text
+    try {
+      text = atob(payload.replace(/[\t\n\f\r ]/g, ''))
+    } catch {
+      refuse('a data: URI is not valid base64')
+    }
+    return Uint8Array.from(text, char => char.charCodeAt(0))
+  }
+  const out = []
+  for (let i = 0; i < payload.length; i++) {
+    const hex = payload[i] === '%' ? payload.slice(i + 1, i + 3) : ''
+    if (/^[0-9a-f]{2}$/i.test(hex)) {
+      out.push(parseInt(hex, 16))
+      i += 2
+    } else {
+      out.push(payload.charCodeAt(i) & 0xff)
+    }
+  }
+  return Uint8Array.from(out)
+}
+
 function dataURIBytes(uri) {
   const comma = uri.indexOf(',')
   if (comma < 0) return 0
@@ -122,7 +158,7 @@ function dataURIBytes(uri) {
 }
 
 export function checkGLTF(data, limits = GLTF_LIMITS) {
-  const { json, bin } = readGLTF(data)
+  const { json, bin, binBytes } = readGLTF(data)
   const used = list(json.extensionsUsed, 'extensionsUsed')
   const required = list(json.extensionsRequired, 'extensionsRequired')
   for (const name of DECODER_EXTENSIONS) {
@@ -319,7 +355,7 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
     }
   }
   over(channels, limits.animationChannels, 'animation channels')
-  over(list(json.images, 'images').length, limits.images, 'images')
+  const imagePixels = checkImages(json, views, binBytes, limits, over)
   over(list(json.textures, 'textures').length, limits.textures, 'textures')
   over(list(json.materials, 'materials').length, limits.materials, 'materials')
 
@@ -332,8 +368,64 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
     meshInstances,
     skinBindings,
     channels,
+    imagePixels,
     ...vrm,
   }
+}
+
+// Embedded images (a bufferView, or a data: URI): the client decodes each image entry, so each must be a PNG, JPEG
+// or WebP (by its signature, whatever mimeType it declares) with a size from its header within the budgets. Not
+// checked: an image the file names by URL (the client does not fetch it; its material goes without), one with
+// neither (the parser skips it), and one only KHR_texture_basisu uses (this client has no KTX2 decoder, so the
+// parser takes the fallback). A blob: URL is refused: it is no file's own data and would be decoded unchecked.
+function checkImages(json, views, binBytes, limits, over) {
+  const images = list(json.images, 'images')
+  over(images.length, limits.images, 'images')
+  const decoded = new Set()
+  const basisOnly = new Set()
+  for (const texture of list(json.textures, 'textures')) {
+    if (!isObject(texture)) continue
+    if (texture.source !== undefined) decoded.add(texture.source)
+    const extensions = isObject(texture.extensions) ? texture.extensions : {}
+    for (const name of ['EXT_texture_webp', 'EXT_texture_avif']) {
+      if (isObject(extensions[name])) decoded.add(extensions[name].source)
+    }
+    if (isObject(extensions.KHR_texture_basisu)) basisOnly.add(extensions.KHR_texture_basisu.source)
+  }
+  const buffers = list(json.buffers, 'buffers')
+  const bufferBytes = new Map()
+  const bytesOfBuffer = index => {
+    if (!bufferBytes.has(index)) {
+      const uri = buffers[index].uri
+      bufferBytes.set(index, uri === undefined ? binBytes : dataURIDecode(uri))
+    }
+    return bufferBytes.get(index)
+  }
+  let pixels = 0
+  images.forEach((image, i) => {
+    if (!isObject(image)) refuse(`image ${i} is not an object`)
+    if (basisOnly.has(i) && !decoded.has(i)) return
+    let bytes
+    if (image.bufferView !== undefined) {
+      const view = entry(views, image.bufferView, `image ${i} bufferView`)
+      const offset = view.byteOffset ?? 0
+      bytes = bytesOfBuffer(view.buffer).subarray(offset, offset + view.byteLength)
+    } else if (typeof image.uri === 'string' && image.uri.startsWith('data:')) {
+      bytes = dataURIDecode(image.uri)
+    } else if (typeof image.uri === 'string' && image.uri.trim().toLowerCase().startsWith('blob:')) {
+      refuse(`image ${i} names a blob: URL`)
+    } else {
+      return
+    }
+    const header = readImageHeader(bytes)
+    if (!header) refuse(`image ${i} is not a PNG, JPEG or WebP image with a readable size`)
+    if (!(header.width > 0 && header.height > 0)) refuse(`image ${i} has no width or height`)
+    const size = header.width * header.height
+    if (size > limits.imagePixels) refuse(`image ${i} is larger than ${limits.imagePixels} pixels`)
+    pixels += size
+  })
+  over(pixels, limits.imagePixelsPerFile, 'image pixels in the file')
+  return pixels
 }
 
 // three-vrm's spring bones and expressions (VRM 0 and VRM 1)

@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { checkGLTF, readGLTF, GLTF_LIMITS } from '../src/core/extras/gltfLimits.js'
+import { png, jpeg, webp, gif } from './lib/imageBytes.mjs'
 
 // What a glTF file declares, checked before the parser allocates it: tiny hand-written documents.
 const MiB = 1024 * 1024
@@ -17,7 +18,7 @@ const doc = (extra = {}, bytes = 36) => ({
 })
 const vec3 = (count, more = {}) => ({ componentType: 5126, type: 'VEC3', count, ...more })
 
-// a .glb: header, JSON chunk and, when given, a binary chunk of `bin` bytes
+// a .glb: header, JSON chunk and, when given, a binary chunk (`bin`: its bytes, or a length of zeros)
 function glb(json, bin, { version = 2, length, extraChunks = [] } = {}) {
   const jsonBytes = text(json)
   const parts = [[0x4e4f534a, jsonBytes], ...extraChunks]
@@ -320,15 +321,120 @@ test('a file that needs a decoder this client does not have fails here, before a
   assert.ok(checkGLTF(text(doc({ extensionsUsed: ['KHR_texture_basisu'] }))))
 })
 
-test('the bundled avatar, emotes and models are within the limits', () => {
-  for (const name of [
-    'world/assets/avatar.vrm',
-    'world/assets/mp-idle.glb',
-    'world/assets/emote-float.glb',
-    'world/assets/crash-block.glb',
-    'client/public/base-environment.glb',
+// a .glb whose binary chunk holds the given images one after another, each with its own bufferView and image entry
+function withImages(headers, extra = {}) {
+  const bin = new Uint8Array(headers.reduce((sum, bytes) => sum + bytes.length, 0))
+  let offset = 0
+  const bufferViews = headers.map(bytes => {
+    bin.set(bytes, offset)
+    offset += bytes.length
+    return { buffer: 0, byteOffset: offset - bytes.length, byteLength: bytes.length }
+  })
+  const images = headers.map((_, i) => ({ bufferView: i, mimeType: 'image/png' }))
+  return glb({ asset: { version: '2.0' }, buffers: [{ byteLength: bin.length }], bufferViews, images, ...extra }, bin)
+}
+
+test('embedded images: PNG, JPEG or WebP by signature, a size from the header within the budget for one image', () => {
+  assert.equal(GLTF_LIMITS.imagePixels, 36000000)
+  // a header of 33 bytes declaring 100000 x 100000: refused before anything decodes it
+  assert.throws(() => checkGLTF(withImages([png(100000, 100000)])), /image 0 is larger than 36000000 pixels/)
+  assert.throws(() => checkGLTF(withImages([png(0, 10)])), /image 0 has no width or height/)
+  assert.throws(() => checkGLTF(withImages([jpeg(9000, 5000)])), /larger than 36000000 pixels/)
+  assert.throws(() => checkGLTF(withImages([webp(70000, 600, 'VP8X')])), /larger than 36000000 pixels/)
+  // the declared mimeType does not matter: a GIF (or anything else) is refused, also when it says image/png
+  assert.throws(
+    () => checkGLTF(withImages([gif(10, 10)])),
+    /image 0 is not a PNG, JPEG or WebP image with a readable size/
+  )
+  assert.throws(() => checkGLTF(withImages([png(10, 10).subarray(0, 20)])), /not a PNG, JPEG or WebP/)
+  const fine = checkGLTF(
+    withImages([png(2048, 2048), jpeg(1024, 1024, { before: [[0xe1, 2000]] }), webp(512, 512, 'VP8L')])
+  )
+  assert.ok(fine)
+  // an image in a data: URI, and one in a data: buffer
+  const dataImage = mime =>
+    doc({ images: [{ uri: `data:${mime};base64,${Buffer.from(png(10000, 4000)).toString('base64')}` }] })
+  assert.throws(() => checkGLTF(text(dataImage('image/png'))), /image 0 is larger than 36000000 pixels/)
+  const header = png(100, 100)
+  const inBuffer = {
+    asset: { version: '2.0' },
+    buffers: [
+      {
+        byteLength: header.length,
+        uri: `data:application/octet-stream;base64,${Buffer.from(header).toString('base64')}`,
+      },
+    ],
+    bufferViews: [{ buffer: 0, byteLength: header.length }],
+    images: [{ bufferView: 0, mimeType: 'image/png' }],
+  }
+  assert.ok(checkGLTF(text(inBuffer)))
+  const percent = {
+    ...doc(),
+    images: [
+      { uri: `data:image/png,${[...png(20000, 20000)].map(b => `%${b.toString(16).padStart(2, '0')}`).join('')}` },
+    ],
+  }
+  assert.throws(() => checkGLTF(text(percent)), /larger than 36000000 pixels/)
+})
+
+test('embedded images: their pixels together are within the budget for a file, each image entry counted', () => {
+  assert.equal(GLTF_LIMITS.imagePixelsPerFile, 268435456)
+  // sixteen 4096 x 4096 textures fit (256 Mi pixels), a seventeenth does not
+  const sixteen = Array.from({ length: 16 }, () => png(4096, 4096))
+  assert.ok(checkGLTF(withImages(sixteen)))
+  assert.throws(
+    () => checkGLTF(withImages([...sixteen, png(64, 64)])),
+    /image pixels in the file: 268439552, more than 268435456/
+  )
+  // ten image entries on one bufferView are ten decodes
+  const one = png(6000, 5000)
+  const views = {
+    asset: { version: '2.0' },
+    buffers: [{ byteLength: one.length }],
+    bufferViews: [{ buffer: 0, byteLength: one.length }],
+  }
+  const entries = n => glb({ ...views, images: Array.from({ length: n }, () => ({ bufferView: 0 })) }, one)
+  assert.ok(checkGLTF(entries(1)))
+  assert.ok(checkGLTF(entries(8)))
+  assert.throws(() => checkGLTF(entries(10)), /image pixels in the file: 300000000/)
+})
+
+test('embedded images not checked: named by URL (not fetched), only used through KTX2 (no decoder); a blob: URL is refused', () => {
+  const ktx2 = Uint8Array.from([0xab, 0x4b, 0x54, 0x58, 0x20, 0x32, 0x30, 0xbb, 0x0d, 0x0a, 0x1a, 0x0a])
+  const basis = { KHR_texture_basisu: { source: 0 } }
+  assert.ok(
+    checkGLTF(withImages([ktx2], { textures: [{ extensions: basis }] })),
+    'a KTX2 image the client never decodes'
+  )
+  assert.throws(
+    () => checkGLTF(withImages([ktx2], { textures: [{ source: 0, extensions: basis }] })),
+    /not a PNG, JPEG or WebP/,
+    'the same image as a texture source is decoded'
+  )
+  assert.throws(
+    () => checkGLTF(withImages([png(9000, 9000)], { textures: [{ extensions: { EXT_texture_webp: { source: 0 } } }] })),
+    /larger than 36000000 pixels/
+  )
+  assert.ok(checkGLTF(text(doc({ images: [{ uri: 'https://elsewhere.example/big.png' }, { uri: 'big.png' }, {}] }))))
+  assert.throws(
+    () => checkGLTF(text(doc({ images: [{ uri: 'blob:https://world.example/1234' }] }))),
+    /image 0 names a blob: URL/
+  )
+  assert.throws(() => checkGLTF(text(doc({ images: [{ uri: ' BLOB:x' }] }))), /blob: URL/)
+})
+
+test('the bundled avatar, emotes and models (the e2e fixtures too) are within the limits', () => {
+  // image pixels measured: the avatar's 512 x 512 and 2048 x 2048 PNGs, ai.glb's 256 x 256 WebP, ...
+  for (const [name, imagePixels] of [
+    ['world/assets/avatar.vrm', 512 * 512 + 2048 * 2048],
+    ['world/assets/mp-idle.glb', 0],
+    ['world/assets/emote-float.glb', 0],
+    ['world/assets/crash-block.glb', 256 * 256],
+    ['world/assets/ai.glb', 256 * 256],
+    ['client/public/base-environment.glb', 1024 * 1024],
   ]) {
     const stats = checkGLTF(fs.readFileSync(new URL(`../src/${name}`, import.meta.url)))
     assert.ok(stats.expandedBytes < 8 * MiB, `${name}: ${JSON.stringify(stats)}`)
+    assert.equal(stats.imagePixels, imagePixels, name)
   }
 })

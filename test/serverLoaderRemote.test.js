@@ -296,6 +296,48 @@ test('a load that is no longer the one registered for its key writes nothing, wi
   assert.ok(cached(loader), 'every result belongs to an entry')
 })
 
+test('at most four models or emotes are read and parsed at once; the others wait without having started', async () => {
+  const { reads, readFile } = deferredReads()
+  const loader = makeLocalLoader(readFile)
+  // the real parser, counted
+  const parse = loader.gltfLoader.parse.bind(loader.gltfLoader)
+  let parsing = 0
+  let most = 0
+  loader.gltfLoader.parse = (data, base, onLoad, onError) => {
+    most = Math.max(most, ++parsing)
+    const done = callback => value => {
+      parsing--
+      callback(value)
+    }
+    parse(data, base, done(onLoad), done(onError))
+  }
+  const loads = Array.from({ length: 10 }, (_, i) => loader.load(i % 2 ? 'emote' : 'model', `asset://m${i}.gltf`))
+  await tick()
+  assert.equal(reads.length, 4, 'four files are being read; the six other loads have read nothing')
+  // each one that finishes lets the next one start, in the order asked
+  for (let i = 0; i < 10; i++) {
+    for (let wait = 0; reads.length <= i && wait < 100; wait++) await tick()
+    assert.equal(reads[i].name, `m${i}.gltf`)
+    assert.ok(reads.length <= i + 4, `${reads.length} reads started while ${i} have finished`)
+    reads[i].resolve(Buffer.from(emptyGltf))
+  }
+  assert.equal((await Promise.all(loads)).length, 10)
+  assert.ok(most <= 4, `${most} parsed at once`)
+  assert.equal(loader.turns.active, 0)
+
+  // destroy(): loads still waiting never start; those reading finish and write nothing
+  const next = Array.from({ length: 6 }, (_, i) => loader.load('model', `asset://n${i}.gltf`))
+  await tick()
+  assert.equal(reads.length, 14)
+  loader.destroy()
+  for (const waiting of next.slice(4)) await assert.rejects(waiting, /destroyed/)
+  for (const read of reads.slice(10)) read.resolve(Buffer.from(emptyGltf))
+  await Promise.all(next.slice(0, 4))
+  assert.equal(reads.length, 14, 'nothing else was read')
+  assert.equal(loader.results.size, 0)
+  assert.equal(loader.turns.active, 0)
+})
+
 test('one resource has one cache entry whatever its spelling; a query names another one', async () => {
   const loader = makeLoader()
   const first = loader.load('script', 'asset://script.js')

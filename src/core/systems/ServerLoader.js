@@ -21,11 +21,16 @@ const isRemote = url => typeof url === 'string' && (url.startsWith('http://') ||
 const REMOTE_LOAD = { maxBytes: 32 * 1024 * 1024, timeoutMs: 30_000 }
 // Finished loads kept for reuse, of every kind and from every location (the world's store and remote URLs alike):
 // at most this many, the least recently used leaving first. A load in progress is never dropped, so the same
-// location is never loaded twice at once; while more than this many are in progress the cache holds them all, and
-// those are bounded elsewhere (remote loads by the outbound policy's admission, at most 16 at once, and local reads
-// by how fast the disk answers). Apps hold what they use: this bounds what a world that keeps loading new
-// locations (world.load in a script) can pin in memory, not what a loaded model takes
+// location is never loaded twice at once; while more than this many are in progress the cache holds them all.
+// What a load in progress holds is bounded per kind: a model or emote reads and parses its file only in one of
+// MODEL_TURNS (below); a remote script takes one of the outbound policy's 16 slots while it downloads (more are
+// refused); a local script read has no bound of its own. Apps hold what they use: this bounds what a world that
+// keeps loading new locations (world.load in a script) can pin in memory, not what a loaded model takes
 const CACHE_LIMIT = 512
+// Models and emotes read and parsed at once, local and remote alike. A turn covers reading the file and parsing
+// it, so the rest wait holding nothing yet: at most this many files (up to 32 MiB each from a remote URL) are held
+// for a parse, however many loads are asked for at once
+const MODEL_TURNS = 4
 // every avatar is the same stub on the server (nothing is fetched), so they share one entry whatever URL a player
 // names
 const AVATAR_KEY = 'avatar/*'
@@ -59,6 +64,7 @@ export class ServerLoader extends System {
     this.promises = new Map()
     this.results = new Map()
     this.settled = new WeakSet() // promises of loads that have finished
+    this.turns = { active: 0, waiting: [] } // model and emote loads reading or parsing, and those waiting
     this.rgbeLoader = new RGBELoader()
     this.gltfLoader = new GLTFLoader(createEmbeddedOnlyManager())
     this.outbound = null
@@ -234,28 +240,51 @@ export class ServerLoader extends System {
     })
   }
 
+  // runs `work` in one of MODEL_TURNS, in the order asked; until a turn is free it waits without having started
+  inTurn(work) {
+    return new Promise((resolve, reject) => {
+      const run = () => {
+        this.turns.active++
+        let result
+        try {
+          result = Promise.resolve(work())
+        } catch (err) {
+          result = Promise.reject(err)
+        }
+        result.then(resolve, reject).finally(() => {
+          this.turns.active--
+          this.turns.waiting.shift()?.run()
+        })
+      }
+      if (this.turns.active < MODEL_TURNS) run()
+      else this.turns.waiting.push({ run, reject })
+    })
+  }
+
   // what a load of `type` does: a function producing its result (or a promise of it), or null for a type the
   // server does not load. The url stays as given: fetchArrayBuffer/fetchText locate() it when they read
   task(type, url) {
     if (type === 'model') {
-      return async () => {
-        const node = glbToNodes(await this.parseGLB(await this.fetchArrayBuffer(url)), this.world)
-        return {
-          toNodes() {
-            return node.clone(true)
-          },
-        }
-      }
+      return () =>
+        this.inTurn(async () => {
+          const node = glbToNodes(await this.parseGLB(await this.fetchArrayBuffer(url)), this.world)
+          return {
+            toNodes() {
+              return node.clone(true)
+            },
+          }
+        })
     }
     if (type === 'emote') {
-      return async () => {
-        const factory = createEmoteFactory(await this.parseGLB(await this.fetchArrayBuffer(url)), url)
-        return {
-          toClip(options) {
-            return factory.toClip(options)
-          },
-        }
-      }
+      return () =>
+        this.inTurn(async () => {
+          const factory = createEmoteFactory(await this.parseGLB(await this.fetchArrayBuffer(url)), url)
+          return {
+            toClip(options) {
+              return factory.toClip(options)
+            },
+          }
+        })
     }
     if (type === 'avatar') {
       // NOTE: we can't load vrms on the server yet but we don't need 'em anyway
@@ -326,6 +355,8 @@ export class ServerLoader extends System {
   }
 
   destroy() {
+    // loads still waiting for a turn never start; those reading or parsing finish and write nothing
+    for (const turn of this.turns.waiting.splice(0)) turn.reject(new Error('the server loader was destroyed'))
     this.promises.clear()
     this.results.clear()
     this.preloadItems = []

@@ -369,6 +369,43 @@ test("controls: an app's control is inert once its run has ended, even if it was
   }
 })
 
+test('controls: what the host keeps per touch, control and pose goes when the world is destroyed', () => {
+  const world = controls()
+  world.controls.bind({ priority: 2, object: { isApp: true, data: { id: 'a' } }, onTouch: () => {} })
+  const host = world.controls.bind({ priority: 1 })
+  world.controls.checkPointerChanges = () => {}
+  world.controls.onPointerDown({ pointerType: 'touch', pointerId: 1, clientX: 1, clientY: 1, preventDefault() {} })
+  world.controls.raySmoothing.set(host.xrLeftRayPose, { position: null, quaternion: null })
+  world.controls.pointerOwner = {}
+  assert.equal(world.controls.touchFacades.size, 1)
+  world.controls.destroy()
+  assert.equal(world.controls.touchFacades.size, 0)
+  assert.equal(world.controls.touches.size, 0)
+  assert.equal(world.controls.raySmoothing.size, 0)
+  assert.equal(world.controls.pointerOwner, null)
+})
+
+test('pointer callbacks of an app run that has ended are not delivered (a leave on the next frame included)', () => {
+  const original = globalThis.document
+  globalThis.document = { body: { style: {} } }
+  try {
+    const seen = []
+    const entity = { isApp: true, deadHook: { dead: false } }
+    const node = m.createNode('group')
+    node.ctx = { entity, run: entity.deadHook }
+    node.onPointerEnter = () => seen.push('enter')
+    node.onPointerLeave = () => seen.push('leave')
+    const state = new m.PointerState()
+    state.update({ node }, false, false)
+    entity.deadHook = { dead: false }
+    state.update(null, false, false)
+    assert.deepEqual(seen, ['enter'])
+    assert.equal(node.getProxy().onPointerLeave, null)
+  } finally {
+    globalThis.document = original
+  }
+})
+
 test('control.camera: a script-held camera that throws or lies is contained per control', () => {
   const world = controls()
   const app = {

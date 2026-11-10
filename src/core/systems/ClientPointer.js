@@ -75,6 +75,9 @@ export class ClientPointer extends System {
   destroy() {
     this.control?.release()
     this.control = null
+    // the nodes under the pointer (apps' nodes) are not kept past the world
+    this.pointerState.reset()
+    this.screenHit = null
   }
 }
 

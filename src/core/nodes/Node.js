@@ -422,8 +422,14 @@ export class Node {
     // nodes should override this and add their stats
   }
 
+  // a pointer callback of a crashed app, or of an app run that has ended (the node was its), is not delivered
+  callbacksStopped() {
+    const ctx = this.ctx
+    return !!(ctx?.entity?.crashed || ctx?.world?.fatalError || (ctx?.run && ctx.run !== ctx.entity?.deadHook))
+  }
+
   get onPointerEnter() {
-    if (this.ctx?.entity?.crashed || this.ctx?.world?.fatalError) return null
+    if (this.callbacksStopped()) return null
     return this._onPointerEnter
   }
 
@@ -432,7 +438,7 @@ export class Node {
   }
 
   get onPointerLeave() {
-    if (this.ctx?.entity?.crashed || this.ctx?.world?.fatalError) return null
+    if (this.callbacksStopped()) return null
     return this._onPointerLeave
   }
 
@@ -441,7 +447,7 @@ export class Node {
   }
 
   get onPointerDown() {
-    if (this.ctx?.entity?.crashed || this.ctx?.world?.fatalError) return null
+    if (this.callbacksStopped()) return null
     return this._onPointerDown
   }
 
@@ -450,7 +456,7 @@ export class Node {
   }
 
   get onPointerUp() {
-    if (this.ctx?.entity?.crashed || this.ctx?.world?.fatalError) return null
+    if (this.callbacksStopped()) return null
     return this._onPointerUp
   }
 

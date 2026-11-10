@@ -126,6 +126,20 @@ test('ClientActions: a node that throws is dropped and its app crashes; the othe
   assert.equal(actions.current.node, null)
 })
 
+test("ClientPointer: the world's destroy lets go of the nodes under the pointer", () => {
+  const pointer = new m.ClientPointer({})
+  const node = m.createNode('group')
+  pointer.pointerState.activePath.add(node)
+  pointer.pointerState.pressedNodes.add(node)
+  pointer.pointerState.hit = { node }
+  pointer.screenHit = { node }
+  pointer.destroy()
+  assert.equal(pointer.pointerState.activePath.size, 0)
+  assert.equal(pointer.pointerState.pressedNodes.size, 0)
+  assert.equal(pointer.pointerState.hit, null)
+  assert.equal(pointer.screenHit, null)
+})
+
 test('ClientPointer: a path whose handling throws resets, crashes the app and the next frames run', () => {
   const original = globalThis.document
   const style = {}

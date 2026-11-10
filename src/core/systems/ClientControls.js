@@ -814,6 +814,11 @@ export class ClientControls extends System {
   }
 
   destroy() {
+    // what the host keeps per touch, control and pose goes with the world
+    for (const info of [...this.touchFacades.keys()]) this.dropTouchFacades(info)
+    this.touches.clear()
+    this.raySmoothing.clear()
+    this.pointerOwner = null
     if (!isBrowser) return
     window.removeEventListener('keydown', this.onKeyDown)
     window.removeEventListener('keyup', this.onKeyUp)

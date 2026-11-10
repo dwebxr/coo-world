@@ -58,8 +58,11 @@ function fixture(t) {
   t.after(() => fs.rmSync(worldDir, { recursive: true, force: true }))
   const storageFile = path.join(worldDir, 'storage.json')
   const cleaner = new Cleaner()
-  const run = () => cleaner.init({ db, storageFile })
+  // the store as clients read it: the assets URL, and the page's /assets/ (ASSETS=local)
+  const store = { assetsUrl: 'https://world.example/assets', servesStore: true }
+  const run = (options = store) => cleaner.init({ db, storageFile, ...options })
   return {
+    store,
     tables,
     db,
     deleted,
@@ -88,7 +91,7 @@ for (const [name, corrupt, id] of [
   test(`cleaner: malformed ${name} skips every deletion for this boot`, async t => {
     const f = fixture(t)
     corrupt(f)
-    await assert.doesNotReject(f.cleaner.init({ db: f.db }))
+    await assert.doesNotReject(f.cleaner.init({ db: f.db, ...f.store }))
     assert.deepEqual(f.deleted, [])
     assert.equal(f.warnings.length, 1)
     assert.match(f.warnings[0], /skipped all deletion/)
@@ -123,7 +126,7 @@ test('cleaner: persisted nested and unknown references stay reachable, then ordi
   ]) {
     f.files.add(name)
   }
-  await f.cleaner.init({ db: f.db })
+  await f.cleaner.init({ db: f.db, ...f.store })
   assert.deepEqual(f.deleted, [
     ['blueprints', 'orphan'],
     ['assets', ['unused.glb']],
@@ -131,7 +134,7 @@ test('cleaner: persisted nested and unknown references stay reachable, then ordi
   assert.deepEqual(f.warnings, [])
   f.deleted.length = 0
   process.env.CLEAN = 'dryrun'
-  await f.cleaner.init({ db: f.db })
+  await f.cleaner.init({ db: f.db, ...f.store })
   assert.deepEqual(f.deleted, [])
 })
 
@@ -240,21 +243,26 @@ test('cleaner: a kept blueprint whose script is loaded from elsewhere stops all 
     'http://code.example/app.js',
     '//code.example/app.js',
     'code.example/app.js',
-    // a client fetches a path from the page's own server, which the clean-up cannot read by name
+    // another path of the page's own server, outside the store
     '/etc/app.js',
-    ' /assets/x.js ',
-    // World.resolveURL takes only a lower-case asset:// as an asset (this one becomes https://ASSET://x.js)
+    'blob/../../etc/app.js',
+    // World.resolveURL takes only a lower-case asset:// as an asset (this one becomes https://ASSET://x.js), and only
+    // a lower-case blob as left alone (Blob: becomes https://Blob:..., which does not parse)
     'ASSET://x.js',
+    'Blob:https://world.example/1234',
     // a name that leaves the store: a client's fetch of <assets>/../x.js reads another path
     'asset://../x.js',
     'asset://%2e%2e%2fx.js',
+    // what cannot be told for certain: the URL parser refuses it
+    'https://exa mple.com/app.js',
+    'http://[::1/app.js',
   ]) {
     const f = fixture(t)
     f.tables.blueprints[0] = row({ id: 'bp', version: 0, model: 'asset://used.glb', script })
     await f.run()
     assert.deepEqual(f.deleted, [], script)
     assert.deepEqual(f.warnings, [
-      '[clean] skipped all deletion: kept blueprints load their script from elsewhere ["bp"]; upload those scripts as assets (asset://) so the clean-up can read them',
+      '[clean] skipped all deletion: kept blueprints load their script from elsewhere, or from where cannot be told ["bp"]; upload those scripts as assets (asset://) so the clean-up can read them',
     ])
   }
   // a collection blueprint counts the same; an orphan's (deleted with it), a blob (a browser tab's own object) and
@@ -263,11 +271,12 @@ test('cleaner: a kept blueprint whose script is loaded from elsewhere stops all 
   f.collections.blueprints.add({ id: 'collection', version: 0, script: 'https://code.example/c.js' })
   await f.run()
   assert.deepEqual(f.deleted, [])
-  assert.match(f.warnings[0], /from elsewhere \["collection"\]/)
+  assert.match(f.warnings[0], /cannot be told \["collection"\]/)
   for (const [where, script] of [
     ['orphan', 'https://code.example/orphan.js'],
+    // blob: URLs (the scheme as the URL parser reads it)
     ['bp', 'blob:nodedata:x'],
-    ['bp', ' blob:nodedata:x'],
+    ['bp', ' blob:https://world.example/1234'],
     ['bp', '  \n'],
   ]) {
     const g = fixture(t)
@@ -311,6 +320,75 @@ test('cleaner: references are read as the loaders read them (white space, ?query
   ])
 })
 
+// Codex's probe: a kept script `blob/../assets/<hash>.js` (World.resolveURL leaves it to the browser, which reads the
+// world's own /assets/<hash>.js) was neither read nor a stop, and the script and the model only it named were deleted
+test('cleaner: a script given as blob/../assets/<name> is the store file it resolves to: kept, read, its model kept', async t => {
+  const f = fixture(t)
+  for (const name of ['b.js', 'bmodel.glb']) f.files.add(name)
+  f.tables.blueprints[0] = row({ id: 'bp', version: 0, model: 'asset://used.glb', script: 'blob/../assets/b.js' })
+  f.scripts.set('b.js', "world.load('model', 'asset://bmodel.glb')")
+  await f.run()
+  assert.deepEqual(f.warnings, [])
+  assert.deepEqual(f.scriptReads, ['b.js'])
+  assert.deepEqual(f.deleted, [
+    ['blueprints', 'orphan'],
+    ['assets', ['unused.glb']],
+  ])
+})
+
+test('cleaner: a script that resolves into the store by any route is kept and read, and what it names stays', async t => {
+  const f = fixture(t)
+  for (const name of ['b.js', 'bmodel.glb', 'p.js', 'pmodel.glb', 'u.js', 'umodel.glb', 'd.js', 'dmodel.glb'])
+    f.files.add(name)
+  for (const name of ['m.glb', 'av.vrm']) f.files.add(name)
+  // through blob/.. (not a blob: URL: a path the page resolves)
+  f.tables.blueprints[0] = row({ id: 'bp', version: 0, model: 'asset://used.glb', script: 'blob/../assets/b.js' })
+  f.scripts.set('b.js', "world.load('model', 'asset://bmodel.glb')")
+  // a page path into the store, without blob; the assets URL written out with an odd-spelled scheme and host; a ..
+  // that stays inside the store
+  f.collections.blueprints.add({ id: 'cp', version: 0, script: '/assets/p.js' })
+  f.collections.blueprints.add({ id: 'cu', version: 0, script: 'HTTPS://WORLD.EXAMPLE/assets/u.js' })
+  f.collections.blueprints.add({ id: 'cd', version: 0, script: 'asset://sub/../d.js' })
+  // their sources name the store in the same ways
+  f.scripts.set('p.js', 'const m = "/assets/pmodel.glb"')
+  f.scripts.set('u.js', 'const m = "https://world.example/assets/umodel.glb"')
+  f.scripts.set('d.js', 'const m = "asset://dmodel.glb"')
+  // a model and an avatar given as the store's URLs are kept too
+  f.tables.entities[0] = row({ ...appData(), props: { model: 'https://world.example/assets/m.glb' } })
+  f.tables.users.push({ id: 'user', avatar: '/assets/av.vrm' })
+  await f.run()
+  assert.deepEqual(f.warnings, [])
+  assert.deepEqual([...f.scriptReads].sort(), ['b.js', 'd.js', 'p.js', 'u.js'])
+  assert.deepEqual(f.deleted, [
+    ['blueprints', 'orphan'],
+    ['assets', ['unused.glb']],
+  ])
+  // with ASSETS=s3 the page's /assets/ is not the store: those scripts are loaded from elsewhere, and nothing is
+  // deleted
+  const s3 = fixture(t)
+  s3.tables.blueprints[0] = row({ id: 'bp', version: 0, model: 'asset://used.glb', script: 'blob/../assets/b.js' })
+  s3.collections.blueprints.add({ id: 'cp', version: 0, script: '/assets/p.js' })
+  s3.collections.blueprints.add({ id: 'cu', version: 0, script: 'https://world.example/assets/u.js' })
+  await s3.run({ assetsUrl: 'https://world.example/assets', servesStore: false })
+  assert.deepEqual(s3.deleted, [])
+  assert.match(s3.warnings[0], /from elsewhere, or from where cannot be told \["bp","cp"\]/)
+  // the assets URL in a script's source is found in any case of its scheme and host (on S3 too)
+  const upper = fixture(t)
+  for (const name of ['u.js', 'umodel.glb']) upper.files.add(name)
+  upper.collections.blueprints.add({ id: 'cu', version: 0, script: 'https://world.example/assets/u.js' })
+  upper.scripts.set('u.js', 'const m = "HTTPS://World.Example/assets/umodel.glb"')
+  await upper.run({ assetsUrl: 'https://world.example/assets', servesStore: false })
+  assert.deepEqual(upper.warnings, [])
+  assert.deepEqual(upper.deleted.at(-1), ['assets', ['unused.glb']])
+})
+
+test('cleaner: without the assets URL nothing is deleted (no reference could resolve into the store)', async t => {
+  const f = fixture(t)
+  await f.run({})
+  assert.deepEqual(f.deleted, [])
+  assert.deepEqual(f.warnings, ['[clean] skipped all deletion: no assets URL to resolve stored references against'])
+})
+
 test('cleaner: assets the store could not delete are reported, not counted as deleted', async t => {
   const f = fixture(t)
   const logs = []
@@ -323,7 +401,7 @@ test('cleaner: assets the store could not delete are reported, not counted as de
     readText: async () => null,
   }
   const Cleaner = load('server/cleaner.js', 'Cleaner', { assets, collections: f.collections, fs: fs.promises, path })
-  await new Cleaner().init({ db: f.db, storageFile: f.storageFile })
+  await new Cleaner().init({ db: f.db, storageFile: f.storageFile, ...f.store })
   assert.ok(logs.includes('[clean] 1 assets deleted'), logs.join('\n'))
   assert.ok(logs.includes('[clean] 2 assets can be deleted'), logs.join('\n'))
   assert.deepEqual(f.warnings, ['[clean] 1 assets could not be deleted: ["denied.glb (AccessDenied)"]'])

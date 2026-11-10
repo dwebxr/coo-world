@@ -4,48 +4,42 @@ import { assets } from './assets'
 import { collections } from './collections'
 import { isPlainObject } from '../core/extras/entityModifyPolicy.js'
 import { sanitizeBlueprintAdd } from '../core/extras/blueprintPolicy.js'
-import { ASSET_PROTOCOL, assetName, loaderReference, referencedAssetNames } from '../core/extras/assetURL.js'
+import { classifyReference, storeLiteralNames } from '../core/extras/assetURL.js'
 
-// Inspect the persisted tree, including nested props and fields hydration may strip. Each string is read the way
-// the loaders read a reference (assetURL.js referencedAssetNames: white space around it, a ?query or #hash, a
-// percent-encoded name), so a file a loader would load is kept. A value that cannot name an asset (a number where a
-// url usually is, an `asset://` with no name) is skipped: it keeps nothing, and props accept any JSON, so it must
-// not turn cleaning off for the whole world.
-function discoverAssets(data, found) {
+// What references are and where they lead is decided only in assetURL.js, the way the runtime resolves them
+// (classifyReference, storeLiteralNames); nothing here tests a reference's spelling.
+
+// Inspect the persisted tree, including nested props and fields hydration may strip. Each string that resolves
+// into the asset store keeps that file. Anything else keeps nothing: a value that cannot name an asset (a number
+// where a url usually is, text in a prop) is skipped, and props accept any JSON, so it must not turn cleaning off
+// for the whole world. (A model or image elsewhere loads nothing from the store; only scripts can name more.)
+function discoverAssets(data, found, store) {
   const pending = [data]
   while (pending.length) {
     const value = pending.pop()
     if (typeof value === 'string') {
-      for (const name of referencedAssetNames(value)) found.add(name)
+      const reference = classifyReference(value, store)
+      if (reference.source === 'store') found.add(reference.name)
     } else if (value && typeof value === 'object') {
       for (const item of Object.values(value)) pending.push(item)
     }
   }
 }
 
-// every asset://<name> inside a text (a stored value, a script's source): keep-more, so a name followed by
-// sentence punctuation is kept both with and without its trailing dots, and a percent-encoded one as written and
-// decoded
-const ASSET_LITERAL = /asset:\/\/([A-Za-z0-9._%-]{1,384})/g
-function findAssetNames(text, found) {
-  for (const [, literal] of text.matchAll(ASSET_LITERAL)) {
-    for (const name of referencedAssetNames(ASSET_PROTOCOL + literal)) {
-      found.add(name)
-      const trimmed = name.replace(/\.+$/, '')
-      if (trimmed) found.add(trimmed)
-    }
-  }
+// every store file a text names (a stored value, a script's source; assetURL.js storeLiteralNames)
+function findAssetNames(text, found, store) {
+  for (const name of storeLiteralNames(text, store)) found.add(name)
 }
 
 // every string (keys too) of a parsed value
-function findAssetNamesIn(value, found) {
+function findAssetNamesIn(value, found, store) {
   const pending = [value]
   while (pending.length) {
     const item = pending.pop()
-    if (typeof item === 'string') findAssetNames(item, found)
+    if (typeof item === 'string') findAssetNames(item, found, store)
     else if (item && typeof item === 'object') {
       for (const [key, child] of Object.entries(item)) {
-        findAssetNames(key, found)
+        findAssetNames(key, found, store)
         pending.push(child)
       }
     }
@@ -53,12 +47,19 @@ function findAssetNamesIn(value, found) {
 }
 
 class Cleaner {
-  // storageFile: the script storage file (storage.json), read here without changing it; Storage opens it later
-  async init({ db, storageFile }) {
+  // storageFile: the script storage file (storage.json), read here without changing it; Storage opens it later.
+  // assetsUrl: where clients read the asset store (ASSETS_BASE_URL); servesStore: this server also serves it at the
+  // page's /assets/ (ASSETS=local)
+  async init({ db, storageFile, assetsUrl, servesStore = false }) {
     const clean = process.env.CLEAN === 'true' || process.env.CLEAN === 'dryrun'
     if (!clean) return console.log('[clean] skipped')
     const dryrun = process.env.CLEAN === 'dryrun'
     console.log(dryrun ? '[clean] dry run' : '[clean] running')
+    // without the assets URL no reference resolves into the store, so every file would look unused
+    if (typeof assetsUrl !== 'string' || !assetsUrl) {
+      return console.warn('[clean] skipped all deletion: no assets URL to resolve stored references against')
+    }
+    const store = { assetsUrl, servesStore }
     const allAssets = await assets.list() // hash-only assets
     const malformed = []
     const unreadable = []
@@ -85,26 +86,20 @@ class Cleaner {
         )
           throw new Error('invalid entity')
         blueprintIds.add(data.blueprint)
-        discoverAssets(data, assetsToKeep)
+        discoverAssets(data, assetsToKeep, store)
       })
     }
     const blueprintsToDelete = []
     // the scripts of the blueprints that stay: their source can name assets no record mentions
     const scripts = new Set()
-    // kept blueprints whose script a loader would fetch from outside the asset store
+    // kept blueprints whose script is loaded from outside the asset store, or from where cannot be told
     const remote = []
-    // A script as the loaders read it (loaderReference): none when empty or a blob: (a browser tab's own object,
-    // which no one else can load); a store file to read when it names one (a client loads asset://<name>?v=2 and a
-    // percent-encoded name too, so the decoded name is the file); anything else is fetched from elsewhere: an
-    // http(s) URL, `//host/x`, a bare `x.js` (https://x.js), a path (a client fetches it from the page's server), an
-    // asset:// name that leaves the store or ASSET:// (World.resolveURL turns it into https://ASSET://...).
+    // A kept script, as the runtime resolves it (classifyReference): nothing persistent is no script; a store file
+    // is read for the assets its source names; any other source stops all deletion (below).
     const keepScript = (id, value) => {
-      const script = loaderReference(value)
-      if (typeof script !== 'string' || !script || script.startsWith('blob')) return
-      const names = referencedAssetNames(script)
-      const file = names[names.length - 1]
-      if (file !== undefined && assetName(ASSET_PROTOCOL + file) !== null) scripts.add(file)
-      else remote.push(String(id).slice(0, 24))
+      const reference = classifyReference(value, store)
+      if (reference.source === 'store') scripts.add(reference.name)
+      else if (reference.source === 'external') remote.push(String(id).slice(0, 24))
     }
     const blueprintRows = await db('blueprints')
     for (const row of blueprintRows) {
@@ -115,7 +110,7 @@ class Cleaner {
         if (!result.ok || result.value.id !== row.id) throw new Error('invalid blueprint')
         const found = new Set()
         // Even an orphan must be fully inspected before any deletion is allowed.
-        discoverAssets(data, found)
+        discoverAssets(data, found, store)
         if (blueprintIds.has(row.id)) {
           for (const asset of found) assetsToKeep.add(asset)
           keepScript(row.id, data.script)
@@ -127,7 +122,7 @@ class Cleaner {
     for (const blueprint of collections.blueprints) {
       inspect('collections', blueprint?.id, () => {
         if (!sanitizeBlueprintAdd(blueprint, { persisted: true }).ok) throw new Error('invalid blueprint')
-        discoverAssets(blueprint, assetsToKeep)
+        discoverAssets(blueprint, assetsToKeep, store)
         keepScript(blueprint.id, blueprint.script)
       })
     }
@@ -141,22 +136,22 @@ class Cleaner {
           throw new Error('invalid settings asset')
         }
       }
-      discoverAssets(settings, assetsToKeep)
+      discoverAssets(settings, assetsToKeep, store)
     })
     const userRows = await db('users').select('id', 'avatar')
     for (const user of userRows) {
       inspect('users', user.id, () => {
         if (user.avatar != null && typeof user.avatar !== 'string') throw new Error('invalid user avatar')
-        discoverAssets(user.avatar, assetsToKeep)
+        discoverAssets(user.avatar, assetsToKeep, store)
       })
     }
-    // script storage (world.set): any stored string that mentions asset://<name>. A copy set aside as unreadable
-    // (storage.json.corrupt-*) is scanned as text, so an operator who restores it finds its assets still there.
+    // script storage (world.set): any stored string that names a store file (storeLiteralNames). A copy set aside as
+    // unreadable (storage.json.corrupt-*) is scanned as text, so an operator who restores it finds its assets there.
     if (storageFile) {
       try {
         const text = await fs.readFile(storageFile, 'utf8')
         try {
-          findAssetNamesIn(JSON.parse(text), assetsToKeep)
+          findAssetNamesIn(JSON.parse(text), assetsToKeep, store)
         } catch {
           unreadable.push('storage.json does not parse')
         }
@@ -169,7 +164,7 @@ class Cleaner {
         for (const name of await fs.readdir(dir)) {
           if (!name.startsWith(`${base}.corrupt-`)) continue
           try {
-            findAssetNames(await fs.readFile(path.join(dir, name), 'utf8'), assetsToKeep)
+            findAssetNames(await fs.readFile(path.join(dir, name), 'utf8'), assetsToKeep, store)
           } catch (err) {
             unreadable.push(`${name} (${err?.code || 'read failed'})`)
           }
@@ -178,7 +173,7 @@ class Cleaner {
         unreadable.push(`world directory (${err?.code || 'read failed'})`)
       }
     }
-    // the source of each script that stays: `asset://<name>` literals there (configure() initial values,
+    // the source of each script that stays: the store files its literals name (configure() initial values,
     // world.load() calls) count as references. A name built at run time cannot be found this way.
     for (const name of scripts) {
       try {
@@ -188,7 +183,7 @@ class Cleaner {
         // would let any builder switch cleaning off for the whole world with one blueprint naming a made-up script
         // hash. Every other read failure still stops all deletion (below).
         if (text === null) continue
-        findAssetNames(text, assetsToKeep)
+        findAssetNames(text, assetsToKeep, store)
       } catch (err) {
         unreadable.push(`script ${name} (${err?.code || err?.message || 'read failed'})`)
       }
@@ -207,7 +202,7 @@ class Cleaner {
     // data.
     if (remote.length) {
       console.warn(
-        `[clean] skipped all deletion: kept blueprints load their script from elsewhere ${JSON.stringify(remote)}; upload those scripts as assets (asset://) so the clean-up can read them`
+        `[clean] skipped all deletion: kept blueprints load their script from elsewhere, or from where cannot be told ${JSON.stringify(remote)}; upload those scripts as assets (asset://) so the clean-up can read them`
       )
       return
     }

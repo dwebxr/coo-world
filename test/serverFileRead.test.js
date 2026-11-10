@@ -9,7 +9,7 @@ import { load } from './lib/persistenceHarness.mjs'
 import { writePacket } from '../src/core/packets.js'
 import { GLTFLoader } from '../src/core/libs/gltfloader/GLTFLoader.js'
 import { anthropicEffort, anthropicRequest, readAnthropicText } from '../src/core/extras/anthropicRequest.js'
-import { loaderReference } from '../src/core/extras/assetURL.js'
+import { ASSET_PROTOCOL, resolveReference } from '../src/core/extras/assetURL.js'
 
 // A builder sets a blueprint's script or model; the server (and the node agent) load it. Before this fix a path
 // such as /etc/hosts or asset://../x was read from disk, and the AI edit/fix actions sent its text to the
@@ -19,9 +19,10 @@ import { loaderReference } from '../src/core/extras/assetURL.js'
 // World.resolveURL as the engine defines it (the loader's own mapping of asset:// and remote URLs)
 const worldSource = fs.readFileSync(new URL('../src/core/World.js', import.meta.url), 'utf8')
 const resolveURL = new Function(
-  'loaderReference',
+  'ASSET_PROTOCOL',
+  'resolveReference',
   `return function ${worldSource.match(/^ {2}resolveURL\([^)]*\) \{[^]*?^ {2}}/m)[0].trim()}`
-)(loaderReference)
+)(ASSET_PROTOCOL, resolveReference)
 
 let root
 let assetsDir

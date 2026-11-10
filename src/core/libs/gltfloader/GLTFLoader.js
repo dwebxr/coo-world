@@ -7,11 +7,18 @@
  * HYP_WEBP_NODE: allows WebP extension to work in nodejs
  * COO_BUDGET: charges a per-file budget (parse's fifth argument) at each allocation, copy, clone and created object
  * COO_ITERATE: loops whose length comes from the document iterate real arrays only
+ * COO_WORK: charges the budget's work meter for a loop or walk the document sizes (a step per iteration or visit)
+ * COO_EXEMPT: an allocation or loop that needs no charge of its own, and why (constant, once per parse, or covered by
+ *   the charge it names)
  * COO_OPTIONAL_DRACO: an optional Draco extension without a decoder is skipped (the primitives' fallback attributes load)
+ * COO_SPARSE: sparse indices must be strictly increasing and inside the accessor
+ * COO_REVOKE: an embedded image's blob URL is revoked however its load ends
  *
  * The budget is the object src/core/extras/gltfLimits.js createGLTFBudget() returns: bytes(n, what),
- * count(kind, n), image(bytes, what), imageURI(uri, what). It throws a GLTFLimitError (error.isGLTFLimit) when a limit
- * is passed; such an error is never swallowed as a missing texture. Without a budget (the server) nothing changes.
+ * count(kind, n), work(n, what), image(bytes, what), imageURI(uri, what), refuse(reason, what). It throws a
+ * GLTFLimitError (error.isGLTFLimit) when a limit is passed; such an error is never swallowed as a missing texture.
+ * Without a budget (the server) nothing is charged; the document rules (COO_SPARSE) and the fixes (COO_REVOKE, the
+ * Draco cache key) apply all the same.
  * 
  */
 
@@ -405,6 +412,8 @@ class GLTFLoader extends Loader {
 
 		if ( json.extensionsUsed ) {
 
+			// COO_WORK: a step per used extension, and per required one it is looked up in
+			if ( budget ) budget.work( json.extensionsUsed.length * ( 1 + ( json.extensionsRequired || [] ).length ), 'extensions used' );
 			for ( let i = 0; i < json.extensionsUsed.length; ++ i ) {
 
 				const extensionName = json.extensionsUsed[ i ];
@@ -556,6 +565,8 @@ class GLTFLightsExtension {
 		const parser = this.parser;
 		const nodeDefs = this.parser.json.nodes || [];
 
+		// COO_WORK: a step per node
+		if ( parser.budget ) parser.budget.work( nodeDefs.length, 'light marks' );
 		for ( let nodeIndex = 0, nodeLength = nodeDefs.length; nodeIndex < nodeLength; nodeIndex ++ ) {
 
 			const nodeDef = nodeDefs[ nodeIndex ];
@@ -2407,8 +2418,10 @@ function chargeClone( budget, object ) {
 
 	if ( ! budget ) return;
 
+	// COO_WORK: a step per object copied (each is counted too, below)
 	object.traverse( function ( o ) {
 
+		budget.work( 1, 'clone' );
 		if ( o.isMesh || o.isLine || o.isPoints ) budget.count( 'meshInstances' );
 		else if ( o.isCamera ) budget.count( 'cameras' );
 		else if ( o.isLight ) budget.count( 'lights' );
@@ -2469,6 +2482,8 @@ function addMorphTargets( geometry, targets, parser ) {
 
 	targets = arrayOf( targets ); // COO_ITERATE
 
+	// COO_WORK: a step per target, for each loop over them here (once per geometry: geometries are cached)
+	if ( parser.budget ) parser.budget.work( targets.length, 'morph targets' );
 	for ( let i = 0, il = targets.length; i < il; i ++ ) {
 
 		const target = targets[ i ];
@@ -2596,11 +2611,14 @@ function updateMorphTargets( mesh, meshDef, budget = null ) {
 
 }
 
-function createPrimitiveKey( primitiveDef ) {
+// COO_OPTIONAL_DRACO: `dracoInUse`: whether the parser decodes Draco. When it does not, an optional Draco extension
+// is skipped and the primitive's own attributes load, so they are its key (two primitives with the same Draco
+// extension and different fallbacks were given one geometry)
+function createPrimitiveKey( primitiveDef, dracoInUse ) {
 
 	let geometryKey;
 
-	const dracoExtension = primitiveDef.extensions && primitiveDef.extensions[ EXTENSIONS.KHR_DRACO_MESH_COMPRESSION ];
+	const dracoExtension = dracoInUse && primitiveDef.extensions && primitiveDef.extensions[ EXTENSIONS.KHR_DRACO_MESH_COMPRESSION ];
 
 	if ( dracoExtension ) {
 
@@ -2856,10 +2874,12 @@ class GLTFParser {
 
 		// Nothing in the node definition indicates whether it is a Bone or an
 		// Object3D. Use the skins' joint references to mark bones.
-		for ( let skinIndex = 0, skinLength = skinDefs.length; skinIndex < skinLength; skinIndex ++ ) {
+		for ( let skinIndex = 0, skinLength = skinDefs.length; skinIndex < skinLength; skinIndex ++ ) { // COO_WORK: below
 
 			const joints = arrayOf( skinDefs[ skinIndex ].joints ); // COO_ITERATE
 
+			// COO_WORK: a step per skin and joint
+			if ( this.budget ) this.budget.work( 1 + joints.length, 'skin joints' );
 			for ( let i = 0, il = joints.length; i < il; i ++ ) {
 
 				nodeDefs[ joints[ i ] ].isBone = true;
@@ -2870,6 +2890,8 @@ class GLTFParser {
 
 		// Iterate over all nodes, marking references to shared resources,
 		// as well as skeleton joints.
+		// COO_WORK: a step per node
+		if ( this.budget ) this.budget.work( nodeDefs.length, 'node marks' );
 		for ( let nodeIndex = 0, nodeLength = nodeDefs.length; nodeIndex < nodeLength; nodeIndex ++ ) {
 
 			const nodeDef = nodeDefs[ nodeIndex ];
@@ -2938,7 +2960,7 @@ class GLTFParser {
 		if ( cache.refs[ index ] <= 1 ) return object;
 
 		chargeClone( this.budget, object ); // COO_BUDGET: each further use of a mesh, camera or light is a clone
-		const ref = object.clone();
+		const ref = object.clone(); // COO_BUDGET: charged just above
 
 		// Propagates mappings to the cloned object, prevents mappings on the
 		// original object from being lost.
@@ -2951,7 +2973,7 @@ class GLTFParser {
 
 			}
 
-			for ( const [ i, child ] of original.children.entries() ) {
+			for ( const [ i, child ] of original.children.entries() ) { // COO_EXEMPT: the clone's objects, charged by chargeClone
 
 				updateMappings( child, clone.children[ i ] );
 
@@ -3125,6 +3147,8 @@ class GLTFParser {
 			const parser = this;
 			const defs = arrayOf( this.json[ type + ( type === 'mesh' ? 'es' : 's' ) ] ); // COO_ITERATE
 
+			// COO_WORK: a step per entry (once per type: the result is cached)
+			if ( parser.budget ) parser.budget.work( defs.length, 'all ' + type + ' entries' );
 			dependencies = Promise.all( defs.map( function ( def, index ) {
 
 				return parser.getDependency( type, index );
@@ -3313,8 +3337,12 @@ class GLTFParser {
 				const byteOffsetIndices = accessorDef.sparse.indices.byteOffset || 0;
 				const byteOffsetValues = accessorDef.sparse.values.byteOffset || 0;
 
+				// COO_EXEMPT: views of the bufferViews (charged when read), no copy
 				const sparseIndices = new TypedArrayIndices( bufferViews[ 1 ], byteOffsetIndices, accessorDef.sparse.count * itemSizeIndices );
 				const sparseValues = new TypedArray( bufferViews[ 2 ], byteOffsetValues, accessorDef.sparse.count * itemSize );
+
+				// COO_WORK: a step per sparse entry (the views are shared, so the bytes charged say nothing of the count)
+				if ( parser.budget ) parser.budget.work( sparseIndices.length, 'sparse entries' );
 
 				if ( bufferView !== null ) {
 
@@ -3328,9 +3356,19 @@ class GLTFParser {
 				// Ignore normalized since we copy from sparse
 				bufferAttribute.normalized = false;
 
-				for ( let i = 0, il = sparseIndices.length; i < il; i ++ ) {
+				for ( let i = 0, il = sparseIndices.length; i < il; i ++ ) { // COO_WORK: charged above
 
 					const index = sparseIndices[ i ];
+
+					// COO_SPARSE: strictly increasing and inside the accessor (the specification's rule), so no entry is
+					// written twice and the count is at most the accessor's
+					if ( ! ( index < accessorDef.count ) || ( i > 0 && ! ( index > sparseIndices[ i - 1 ] ) ) ) {
+
+						const reason = 'accessor ' + accessorIndex + ' has sparse indices that are not strictly increasing inside it';
+						if ( parser.budget ) parser.budget.refuse( reason, 'sparse entries' );
+						throw new Error( 'THREE.GLTFLoader: ' + reason );
+
+					}
 
 					bufferAttribute.setX( index, sparseValues[ i * itemSize ] );
 					if ( itemSize >= 2 ) bufferAttribute.setY( index, sparseValues[ i * itemSize + 1 ] );
@@ -3524,11 +3562,7 @@ class GLTFParser {
 
 			// Clean up resources and configure Texture.
 
-			if ( isObjectURL === true ) {
-
-				URL.revokeObjectURL( sourceURI );
-
-			}
+			revokeObjectURL(); // COO_REVOKE
 
 			assignExtrasToUserData( texture, sourceDef, budget ); // COO_BUDGET
 
@@ -3538,10 +3572,25 @@ class GLTFParser {
 
 		} ).catch( function ( error ) {
 
+			// COO_REVOKE: a failed decode (or a refusal) releases the blob too; only a load left in flight when the parse
+			// fails elsewhere keeps it, until that load ends
+			revokeObjectURL();
+
 			console.error( 'THREE.GLTFLoader: Couldn\'t load texture', sourceURI );
 			throw error;
 
 		} );
+
+		function revokeObjectURL() {
+
+			if ( isObjectURL === true ) {
+
+				isObjectURL = false;
+				URL.revokeObjectURL( sourceURI );
+
+			}
+
+		}
 
 		this.sourceCache[ sourceIndex ] = promise;
 		return promise;
@@ -3954,10 +4003,12 @@ class GLTFParser {
 
 		const pending = [];
 
-		for ( let i = 0, il = primitives.length; i < il; i ++ ) {
+		for ( let i = 0, il = primitives.length; i < il; i ++ ) { // COO_WORK: below
 
 			const primitive = primitives[ i ];
-			const cacheKey = createPrimitiveKey( primitive );
+			// COO_WORK: the primitive and each of its targets, which its cache key lists
+			if ( parser.budget ) parser.budget.work( 1 + arrayOf( primitive.targets ).length, 'primitive key' );
+			const cacheKey = createPrimitiveKey( primitive, extensions[ EXTENSIONS.KHR_DRACO_MESH_COMPRESSION ] !== undefined ); // COO_OPTIONAL_DRACO
 
 			// See if we've already created this geometry
 			const cached = cache[ cacheKey ];
@@ -4015,9 +4066,13 @@ class GLTFParser {
 
 		if ( parser.budget ) parser.budget.count( 'meshes' ); // COO_BUDGET
 
+		// COO_WORK: a step per primitive, for each of the loops over them here (a mesh is loaded once; each further
+		// use of it is a clone, charged in _getNodeRef)
+		if ( parser.budget ) parser.budget.work( primitives.length, 'mesh primitives' );
+
 		const pending = [];
 
-		for ( let i = 0, il = primitives.length; i < il; i ++ ) {
+		for ( let i = 0, il = primitives.length; i < il; i ++ ) { // COO_WORK: charged above
 
 			const material = primitives[ i ].material === undefined
 				? createDefaultMaterial( this.cache )
@@ -4212,12 +4267,13 @@ class GLTFParser {
 
 			budget.count( 'skins' );
 			budget.count( 'joints', joints.length );
+			budget.work( joints.length, 'skin' ); // COO_WORK: a step per joint, for each loop over them here
 
 		}
 
 		const pending = [];
 
-		for ( let i = 0, il = joints.length; i < il; i ++ ) {
+		for ( let i = 0, il = joints.length; i < il; i ++ ) { // COO_WORK: charged above
 
 			pending.push( this._loadNodeShallow( joints[ i ] ) );
 
@@ -4294,6 +4350,7 @@ class GLTFParser {
 
 			parser.budget.count( 'animations' );
 			parser.budget.count( 'channels', channels.length );
+			parser.budget.work( channels.length, 'animation channels' ); // COO_WORK: a step per channel, for each loop here
 
 		}
 
@@ -4391,7 +4448,10 @@ class GLTFParser {
 			// if weights are provided on the node, override weights on the mesh.
 			if ( nodeDef.weights !== undefined ) {
 
+				// COO_WORK: the node's own mesh objects (its children are added later), a step each
 				node.traverse( function ( o ) {
+
+					if ( parser.budget ) parser.budget.work( 1, 'node weights walk' );
 
 					if ( ! o.isMesh ) return;
 
@@ -4431,6 +4491,8 @@ class GLTFParser {
 		const childPending = [];
 		const childrenDef = arrayOf( nodeDef.children ); // COO_ITERATE
 
+		// COO_WORK: a step per child, for each loop over them here (a node is loaded once: getDependency caches it)
+		if ( parser.budget ) parser.budget.work( childrenDef.length, 'node children' );
 		for ( let i = 0, il = childrenDef.length; i < il; i ++ ) {
 
 			childPending.push( parser.getDependency( 'node', childrenDef[ i ] ) );
@@ -4455,7 +4517,10 @@ class GLTFParser {
 
 				// This full traverse should be fine because
 				// child glTF nodes have not been added to this node yet.
+				// COO_WORK: a step per object visited
 				node.traverse( function ( mesh ) {
+
+					if ( parser.budget ) parser.budget.work( 1, 'skin bind walk' );
 
 					if ( ! mesh.isSkinnedMesh ) return;
 
@@ -4649,6 +4714,8 @@ class GLTFParser {
 
 		const pending = [];
 
+		// COO_WORK: a step per root node, for each loop over them here
+		if ( parser.budget ) parser.budget.work( nodeIds.length, 'scene nodes' );
 		for ( let i = 0, il = nodeIds.length; i < il; i ++ ) {
 
 			pending.push( parser.getDependency( 'node', nodeIds[ i ] ) );
@@ -4667,8 +4734,10 @@ class GLTFParser {
 			// didn't make it into the scene.
 			const reduceAssociations = ( node ) => {
 
-				const reducedAssociations = new Map();
+				const reducedAssociations = new Map(); // COO_EXEMPT: no larger than the associations, of counted objects
 
+				// COO_WORK: once per scene: a step per association, and per object of the scene below
+				if ( parser.budget ) parser.budget.work( parser.associations.size, 'scene associations' );
 				for ( const [ key, value ] of parser.associations ) {
 
 					if ( key instanceof Material || key instanceof Texture ) {
@@ -4679,7 +4748,9 @@ class GLTFParser {
 
 				}
 
-				node.traverse( ( node ) => {
+				node.traverse( ( node ) => { // COO_WORK
+
+					if ( parser.budget ) parser.budget.work( 1, 'scene walk' );
 
 					const mappings = parser.associations.get( node );
 
@@ -4709,10 +4780,14 @@ class GLTFParser {
 
 		const targetName = node.name ? node.name : node.uuid;
 		const targetNames = [];
+		const budget = this.budget;
 
 		if ( PATH_PROPERTIES[ target.path ] === PATH_PROPERTIES.weights ) {
 
+			// COO_WORK: each weights channel walks the whole subtree of its node (a step per object visited)
 			node.traverse( function ( object ) {
+
+				if ( budget ) budget.work( 1, 'weights channel walk' );
 
 				if ( object.morphTargetInfluences ) {
 
@@ -4771,9 +4846,8 @@ class GLTFParser {
 
 
 		const outputArray = this._getArrayFromAccessor( outputAccessor );
-		const budget = this.budget;
 
-		for ( let j = 0, jl = targetNames.length; j < jl; j ++ ) {
+		for ( let j = 0, jl = targetNames.length; j < jl; j ++ ) { // COO_BUDGET: each one a counted track
 
 			// COO_BUDGET: a track; it shares float arrays, and converts any other kind into a copy of its own
 			if ( budget ) {
@@ -4905,9 +4979,11 @@ function computeBounds( geometry, primitiveDef, parser ) {
 
 	if ( targets !== undefined ) {
 
-		const maxDisplacement = new Vector3();
+		const maxDisplacement = new Vector3(); // COO_EXEMPT: two per geometry (geometries are counted: primitives)
 		const vector = new Vector3();
 
+		// COO_WORK: a step per target (once per geometry)
+		if ( parser.budget ) parser.budget.work( targets.length, 'morph target bounds' );
 		for ( let i = 0, il = targets.length; i < il; i ++ ) {
 
 			const target = targets[ i ];
@@ -4990,6 +5066,8 @@ function addPrimitiveAttributes( geometry, primitiveDef, parser ) {
 
 	}
 
+	// COO_WORK: a step per attribute (once per geometry)
+	if ( parser.budget ) parser.budget.work( Object.keys( attributes ).length, 'primitive attributes' );
 	for ( const gltfAttributeName in attributes ) {
 
 		const threeAttributeName = ATTRIBUTES[ gltfAttributeName ] || gltfAttributeName.toLowerCase();

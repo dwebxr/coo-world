@@ -139,4 +139,110 @@ export class AssetsLocal {
       fs.removeSync(fullPath)
     }
   }
+
+  // The clean-up's trash, beside the assets directory: <world>/assets-trash/<UTC date>/<name>. It is on the same file
+  // system, so a move is a rename and the free-space guard (freeSpace, statfs of the assets directory) still measures
+  // the disk it fills; nothing serves it (assetRoutes serves the assets directory) or lists it (list reads only the
+  // assets directory), and uploads never write to it.
+  get trashDir() {
+    return path.join(path.dirname(this.dir), 'assets-trash')
+  }
+
+  // what the trash holds: name -> the date folders holding a copy, newest first
+  async trashed() {
+    const found = new Map()
+    let days
+    try {
+      days = await fs.readdir(this.trashDir)
+    } catch (err) {
+      if (err.code === 'ENOENT') return found
+      throw err
+    }
+    for (const day of days.filter(isTrashDay).sort().reverse()) {
+      const dir = path.join(this.trashDir, day)
+      if (!(await fs.stat(dir)).isDirectory()) continue
+      for (const name of await fs.readdir(dir)) {
+        if (!found.has(name)) found.set(name, [])
+        found.get(name).push(day)
+      }
+    }
+    return found
+  }
+
+  // the text of the newest trashed copy of `name` (`days`: from trashed()), or null when there is none
+  async readTrashedText(name, days = []) {
+    if (assetName(`asset://${name}`) === null) throw new Error('invalid asset name')
+    for (const day of days) {
+      try {
+        return await fs.readFile(path.join(this.trashDir, day, name), 'utf8')
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err
+      }
+    }
+    return null
+  }
+
+  // Moves `names` into the trash folder of `now`'s UTC date, replacing a copy moved there earlier the same day. A
+  // name that is gone already is skipped. Resolves { moved, failed: [{ name, code }], dir }.
+  async moveToTrash(names, now) {
+    const dir = path.join(this.trashDir, trashDay(now))
+    await fs.ensureDir(dir)
+    const moved = []
+    const failed = []
+    for (const name of names) {
+      try {
+        await fs.rename(path.join(this.dir, name), path.join(dir, name))
+        moved.push(name)
+      } catch (err) {
+        if (err.code !== 'ENOENT') failed.push({ name, code: err.code })
+      }
+    }
+    return { moved, failed, dir }
+  }
+
+  // Puts the newest trashed copy of each of `names` back (`trashed`: from trashed()). A name the store holds again
+  // stays as it is: its trashed copy goes with its folder; a copy gone from the trash meanwhile has nothing to bring
+  // back. Resolves { restored, failed: [{ name, code }] }.
+  async restoreFromTrash(names, trashed) {
+    const restored = []
+    const failed = []
+    for (const name of names) {
+      const target = path.join(this.dir, name)
+      if (await fs.pathExists(target)) continue
+      const day = trashed.get(name)?.[0]
+      if (!day) continue
+      try {
+        await fs.rename(path.join(this.trashDir, day, name), target)
+        restored.push(name)
+      } catch (err) {
+        if (err.code !== 'ENOENT') failed.push({ name, code: err.code })
+      }
+    }
+    return { restored, failed }
+  }
+
+  // The trash folders whose UTC date is at least `days` days before `now`, removed unless `dryrun` (0: all of them).
+  // Resolves { days: [<date>], files }.
+  async purgeTrash(days, now, { dryrun = false } = {}) {
+    const result = { days: [], files: 0 }
+    let folders
+    try {
+      folders = await fs.readdir(this.trashDir)
+    } catch (err) {
+      if (err.code === 'ENOENT') return result
+      throw err
+    }
+    for (const day of folders.filter(isTrashDay).sort()) {
+      if (now - Date.parse(`${day}T00:00:00Z`) < days * DAY_MS) continue
+      const dir = path.join(this.trashDir, day)
+      result.days.push(day)
+      result.files += (await fs.readdir(dir)).length
+      if (!dryrun) await fs.remove(dir)
+    }
+    return result
+  }
 }
+
+const DAY_MS = 24 * 60 * 60 * 1000
+const trashDay = now => new Date(now).toISOString().slice(0, 10)
+const isTrashDay = name => /^\d{4}-\d{2}-\d{2}$/.test(name) && !Number.isNaN(Date.parse(`${name}T00:00:00Z`))

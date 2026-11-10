@@ -58,6 +58,13 @@ if (!(maxUploadSize > 0)) {
 const uploadLimitsConfig = readUploadLimitsEnv(process.env) // UPLOAD_*; throws on a bad value
 const connectionLimitsConfig = readConnectionLimitsEnv(process.env) // WS_CONNECT_*; throws on a bad value
 const storageLimits = readStorageLimitsEnv(process.env) // STORAGE_*; throws on a bad value
+// days the clean-up keeps what it removes in <world>/assets-trash (ASSETS=local); 0 deletes at once
+const cleanTrashDays = ['', undefined].includes(process.env.CLEAN_TRASH_DAYS)
+  ? 30
+  : Number(process.env.CLEAN_TRASH_DAYS)
+if (!Number.isSafeInteger(cleanTrashDays) || cleanTrashDays < 0) {
+  throw new Error('[envs] CLEAN_TRASH_DAYS must be a whole number of days, 0 or more')
+}
 if (!process.env.PUBLIC_WS_URL) {
   throw new Error('[envs] PUBLIC_WS_URL not set')
 }
@@ -113,9 +120,15 @@ const db = await getDB({ worldDir })
 
 // init cleaner (before storage is opened: it reads storage.json itself, read-only)
 const storageFile = path.join(worldDir, '/storage.json')
-// the assets URL tells it which scripts are store files for certain; with ASSETS=local (an assets directory) a
-// missing store script names nothing, with S3 a CDN may still serve it
-await cleaner.init({ db, storageFile, assetsUrl: assets.url, localStore: Boolean(assets.dir) })
+// the assets URL tells it which scripts are store files for certain; with ASSETS=local (an assets directory) what
+// it removes goes to the trash for CLEAN_TRASH_DAYS
+await cleaner.init({
+  db,
+  storageFile,
+  assetsUrl: assets.url,
+  localStore: Boolean(assets.dir),
+  trashDays: cleanTrashDays,
+})
 
 // init storage
 const storage = new Storage(storageFile, { limits: storageLimits })

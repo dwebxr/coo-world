@@ -136,10 +136,14 @@ await world.init({
   assets,
   storage,
   collections: collections.list,
+  maxUploadSize,
 })
 // World.start() does not wait for the systems: no connection is taken before the network has loaded the world, the
 // user ids and the join-state accounting (it refuses any that arrives earlier, too)
 await world.network.ready
+// the join snapshot's fixed part for this configuration (its tokens, URLs and largest joiner), measured before
+// anyone can join: world growth and visitors' joins count it (joinBudget.js)
+await world.network.measureFixedBytes()
 
 fastify.register(cors)
 fastify.register(compress, compressOptions())

@@ -1,8 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import moment from 'moment'
-import { readPacket, writeClientPacket, writePacket } from '../src/core/packets.js'
+import { readPacket, writePacket } from '../src/core/packets.js'
 import { SNAPSHOT_CAP } from '../src/core/extras/writeLedger.js'
 import {
   SNAPSHOT_FIXED_BYTES,
@@ -12,179 +11,15 @@ import {
   encodeSnapshot,
   joinStateBytes,
   snapshotBound,
-  snapshotFits,
   stateBytes,
 } from '../src/core/extras/joinBudget.js'
-import { isAvatarUrl, sanitizeName } from '../src/core/extras/entityModifyPolicy.js'
 import { WORLD_BLUEPRINT_BYTES } from '../src/core/extras/blueprintPolicy.js'
-import { Blueprints, loadClient } from './lib/clientHarness.mjs'
-import { load, Settings } from './lib/persistenceHarness.mjs'
-import { connectionMethod, fakeWs, makeNetwork, Socket } from './lib/networkHarness.mjs'
+import { loadClient } from './lib/clientHarness.mjs'
+import { fakeWs } from './lib/networkHarness.mjs'
+import { app, apps, fillTo, fixture, long, nextId, sentTo, settle } from './lib/joinFixture.mjs'
 
-// Real accounting throughout: the real Entities, Blueprints, Settings and network handlers; only the app and player
-// entities themselves are stand-ins (no scripts, no physics)
-class FakeApp {
-  constructor(world, data) {
-    this.world = world
-    this.data = data
-    this.isApp = true
-    this.builds = 0
-  }
-  modify(change) {
-    Object.assign(this.data, change)
-  }
-  build() {
-    this.builds++
-  }
-  destroy() {
-    if (this.destroyed) return
-    this.destroyed = true
-    this.world.entities.remove(this.data.id)
-  }
-  serialize() {
-    return this.data
-  }
-}
-class FakePlayer extends FakeApp {
-  constructor(world, data) {
-    super(world, data)
-    this.isApp = false
-    this.isPlayer = true
-  }
-  isBuilder() {
-    return this.data.rank >= 1
-  }
-  isAdmin() {
-    return this.data.rank >= 2
-  }
-}
-const Entities = load('core/systems/Entities.js', 'Entities', {
-  App: FakeApp,
-  PlayerLocal: FakePlayer,
-  PlayerRemote: FakePlayer,
-})
-
-const F3 = () => [Math.random() * 10, 1.25, -3.5]
-const app = (id, blueprint = 'bp', extra = {}) => ({
-  id,
-  type: 'app',
-  blueprint,
-  position: F3(),
-  quaternion: [0.1, 0.2, 0.3, Math.sqrt(1 - 0.14)],
-  scale: [1.5, 1.5, 1.5],
-  mover: null,
-  uploader: null,
-  pinned: false,
-  state: {},
-  ...extra,
-})
-// ids of the shape uuid() makes (10 of [0-9a-zA-Z]), unique per test
-let counter = 0
-const nextId = () => `id${String(++counter).padStart(8, '0')}`
-
-function fixture() {
-  const logs = []
-  const network = makeNetwork(line => logs.push(line))
-  const world = network.world
-  world.network = network
-  world.entities = new Entities(world)
-  world.blueprints = new Blueprints(world)
-  world.settings = new Settings(world)
-  world.collections = { serialize: () => [] }
-  world.chat = { msgs: [], serialize: () => world.chat.msgs }
-  world.ai = { serialize: () => ({ enabled: false }) }
-  world.livekit = { state: null, serialize: async () => world.livekit.state, clearModifiers() {} }
-  world.events = { emit() {} }
-  network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
-  network.settingsBytes = writePacket('settingsModified', world.settings.serialize()).length
-  network.collectionsBytes = writePacket('settingsModified', []).length
-  const users = new Map()
-  // the stored app rows, as the database holds them; `store.hangAfter` makes every write after that many hang for
-  // ever (the process stopping there), `store.transactions()` gives the database transactions
-  const store = { rows: new Map(), writes: 0, hangAfter: Infinity }
-  const write = apply => {
-    if (store.writes++ >= store.hangAfter) return new Promise(() => {})
-    apply()
-    return Promise.resolve()
-  }
-  const appTable = rows => ({
-    insert: row => ({
-      onConflict: () => ({
-        merge: () =>
-          store.failInserts
-            ? Promise.reject(new Error('disk full'))
-            : write(() => rows.set(row.id, JSON.parse(row.data))),
-      }),
-    }),
-    where: (key, id) => ({ delete: () => write(() => rows.delete(id)) }),
-  })
-  network.db = table => {
-    if (table === 'entities') return appTable(store.rows)
-    assert.equal(table, 'users')
-    return {
-      where: (key, id) => ({ first: async () => users.get(id) }),
-      insert: async row => users.set(row.id, row),
-    }
-  }
-  store.transactions = () => {
-    network.db.transaction = async fn => {
-      const staged = new Map(store.rows)
-      await fn(table => (assert.equal(table, 'entities'), appTable(staged)))
-      store.rows = staged
-    }
-  }
-  network.onConnection = connectionMethod({
-    isNumber: value => typeof value === 'number',
-    sanitizeName,
-    isAvatarUrl,
-    moment,
-    performance,
-    HEALTH_MAX: 100,
-    readJWT: async token => (token ? { userId: token } : null),
-    createJWT: async ({ userId }) => userId,
-    uuid: nextId,
-    process: { env: {} },
-  })
-  // a builder connection that sends packets (its player is not in the world)
-  const builder = new Socket({
-    id: 'builder',
-    ws: fakeWs(),
-    network,
-    player: { isBuilder: () => true, isAdmin: () => true, data: { rank: 2 } },
-  })
-  const send = (name, data, socket = builder) => {
-    socket.ws.emit('message', writeClientPacket(name, data))
-    network.flush()
-  }
-  const join = async (params = {}) => {
-    const ws = fakeWs()
-    ws.closeCodes = []
-    ws.close = code => {
-      ws.closeCodes.push(code)
-      ws.readyState = 3
-    }
-    await network.onConnection(ws, params)
-    ws.drain()
-    const [method, snapshot] = ws.packets.length ? readPacket(ws.packets[0]) : []
-    return { ws, method, snapshot, bytes: ws.packets[0]?.length }
-  }
-  world.blueprints.add({ id: 'bp', version: 0, name: 'Box' })
-  return { logs, network, world, builder, send, join, users, store }
-}
-
-// lets a save that is stuck on a hanging write show where it stopped
-const settle = async (turns = 40) => {
-  for (let i = 0; i < turns; i++) await new Promise(resolve => setImmediate(resolve))
-}
-
-const sentTo = socket => socket.ws.packets.map(readPacket)
-const apps = world => [...world.entities.items.values()].filter(entity => entity.isApp)
-// brings the world to `room` bytes under its budget through the accounting alone (as if the operator's collections
-// were that large), where a test needs a full world but not thousands of apps
-const fillTo = (f, room) => {
-  f.network.collectionsBytes += WORLD_JOIN_BYTES - room - joinStateBytes(f.world)
-  assert.equal(joinStateBytes(f.world), WORLD_JOIN_BYTES - room)
-}
+// The world, its accounting and the join helper are test/lib/joinFixture.mjs; the admission rules (who may join
+// when) are joinAdmission.test.js.
 
 test('join budget: 36 apps with 30,000-character ids are refused, and a new client still joins', async () => {
   const f = fixture()
@@ -650,7 +485,6 @@ test('join budget: a world stored over the budget boots whole, reports, refuses 
 
 // the parts of the snapshot no budget tracks, at their largest, once every step was taken, with `count` players:
 // the derivation of SNAPSHOT_FIXED_BYTES and SNAPSHOT_PLAYER_BYTES in joinBudget.js
-const long = n => '€'.repeat(n) // a 3-byte character: the most a UTF-16 unit costs in UTF-8
 function worstRest(count = 64) {
   const id = n => `${String(n).padStart(4, '0')}${'i'.repeat(60)}`
   const player = (n, self) => ({
@@ -678,10 +512,10 @@ function worstRest(count = 64) {
   return {
     id: id(0),
     serverTime: 123456.789,
-    // the lengths index.js allows (1,024 for the URLs, 128 for the AI names)
+    // the lengths index.js allows (1,024 for the URLs, 128 for the AI names); the upload size as a parsed number
     assetsUrl: `https://${long(1016)}`,
     apiUrl: `https://${long(1016)}`,
-    maxUploadSize: '1024',
+    maxUploadSize: 1024.5,
     collections: [],
     settings: {},
     chat: [],
@@ -761,54 +595,6 @@ test("join budget: Codex's worst case (blueprints and apps at the budget, 64 pla
   const self = joined.snapshot.entities.find(entity => entity.id === joined.snapshot.id)
   assert.ok(self.avatar, 'the joiner keeps its own avatar')
   assert.equal(joined.snapshot.livekit.muted.has('player0001'), true, 'a present player stays muted')
-})
-
-// The general formula is the per-player and fixed bounds test above; these cases only cross the bound, with small
-// player records (the joins build real snapshots, so their size is kept small) and a world brought to its budget
-// through the accounting: eight 60 KB blueprints and the rest as operator collections.
-test('join budget: a crowd is turned away at the join before the snapshot could overflow, and growth is held to it', async () => {
-  const f = fixture()
-  for (let i = 0; i < 8; i++) f.world.blueprints.add({ id: `big${i}`, version: 0, props: { notes: 'n'.repeat(60000) } })
-  // 50 KB under the budget, so growth has room in the budget and only the crowd can refuse it
-  f.network.collectionsBytes = WORLD_JOIN_BYTES - joinStateBytes(f.world) + f.network.collectionsBytes - 50000
-  const crowd = i => {
-    const id = `crowd${String(i).padStart(5, '0')}`
-    return {
-      id,
-      type: 'player',
-      position: [0, 1, 0],
-      quaternion: [0, 0, 0, 1],
-      owner: id,
-      userId: id,
-      name: 'p',
-      rank: 0,
-    }
-  }
-  const fit = Math.floor((SNAPSHOT_CAP - joinStateBytes(f.world) - SNAPSHOT_FIXED_BYTES) / SNAPSHOT_PLAYER_BYTES)
-  // as many as leave room for exactly one more (WS_MAX_SOCKETS raised or 0, playerLimit unset)
-  let count = 0
-  while (snapshotFits(f.world, 2)) f.world.entities.add(crowd(count++))
-  assert.equal(count, fit - 1)
-  const last = await f.join()
-  assert.equal(last.method, 'onSnapshot')
-  assert.ok(last.bytes <= SNAPSHOT_CAP)
-  // the next one is turned away with the player-limit kick, and the reason is logged once
-  const refused = await f.join()
-  assert.equal(refused.method, 'onKick')
-  assert.equal(readPacket(refused.ws.packets[0])[1], 'player_limit')
-  assert.equal(f.logs.filter(line => line.includes("the world's size, not playerLimit or WS_MAX_SOCKETS")).length, 1)
-  // growth is refused while they are here, though the budget has room for it
-  const grows = app('grows', 'bp', { state: { notes: 'n'.repeat(2000) } })
-  f.network.onEntityAdded(f.builder, grows)
-  assert.equal(f.world.entities.get('grows'), undefined)
-  // 2,048 players: every join is refused before a snapshot is built, so none can overflow
-  while (count < 2048) f.world.entities.add(crowd(count++))
-  for (let i = 0; i < 3; i++) assert.equal((await f.join()).method, 'onKick')
-  // as players leave, growth and joins come back
-  for (let i = 0; i < 2048; i++) f.world.entities.remove(`crowd${String(i).padStart(5, '0')}`)
-  f.network.onEntityAdded(f.builder, grows)
-  assert.ok(f.world.entities.get('grows'))
-  assert.equal((await f.join()).method, 'onSnapshot')
 })
 
 test('join budget: a world grown while few are here still leaves room for 64 players', async () => {

@@ -13,43 +13,86 @@ import { SNAPSHOT_CAP } from './writeLedger.js'
 // an upper bound of what the snapshot spends on them (a world of eight 60 KB blueprints and 1,639 apps measures
 // 814,740 and takes 671,973 of the snapshot; 704,753 with every app's mover and uploader set).
 //
-// The rest, which no budget tracks, is bounded by construction: whatever of it can be dropped is dropped, step by
-// step, when a snapshot does not fit (encodeSnapshot), and what cannot be dropped is bounded per player and in
-// total (snapshotBound below). Worst cases after every step, with the real encoder (joinBudget.test.js):
-// - each player other than the joiner, at most 695 bytes in the snapshot (its record alone measures 704) counted as
-//   SNAPSHOT_PLAYER_BYTES = 1,024: its record (ids and owner/userId of 64 characters, which the 10 of uuid() ids, the
-//   only place user ids are made, are far under; a 64-unit name of 3-byte characters, NAME_MAX_LENGTH; float
-//   transforms, mode, axis and gaze, health, rank, enteredAt, the two flags; avatar, sessionAvatar, emote and effect
-//   null after the steps) and its voice level and mute entries (present players only after the 'voice' step);
-// - the parts there is one of, at most 22,166 bytes counted as SNAPSHOT_FIXED_BYTES = 24 KiB: the joiner's own
-//   record (at most 8,316: its avatar is the world's default avatar URL of up to 2,048 units, OWN_AVATAR_MAX_LENGTH,
-//   and its session avatar a 512-unit URL), and the envelope with ASSETS_BASE_URL, PUBLIC_API_URL and
-//   LIVEKIT_WS_URL of up to 1,024 characters and AI_PROVIDER, AI_MODEL and AI_EFFORT of up to 128 (index.js refuses
-//   to start with longer ones), a session token and a voice token of up to 1 and 2 KiB, the time and flags;
-// - chat: none after the 'chat' step (up to 50 messages of 500 characters otherwise).
-// So a snapshot with world state W and P players fits when W + 24 KiB + P x 1 KiB <= SNAPSHOT_CAP. World growth is
-// admitted against max(64, players present) and a join only while one more player still fits (snapshotFits), so
-// neither a crowd nor growth can make a later join fail: at the full 768 KiB world 231 players fit, in an empty
-// world about 990, and 64 always do. WS_MAX_SOCKETS (64 by default) and playerLimit can only lower that. A world that
-// needs more would need a snapshot sent in parts (not done here).
+// The rest, which no budget tracks, is dropped where it can be, step by step, when a snapshot does not fit
+// (encodeSnapshot), and what cannot be dropped is counted per player and once (snapshotBound below):
+// - each player other than the joiner, at most 695 bytes in the snapshot after every step (its record alone measures
+//   704; joinBudget.test.js, with the real encoder) counted as SNAPSHOT_PLAYER_BYTES = 1,024: its record (ids and
+//   owner/userId of 64 characters, which the 10 of uuid() ids, the only place user ids are made, are far under; a
+//   64-unit name of 3-byte characters, NAME_MAX_LENGTH; float transforms, mode, axis and gaze, health, rank,
+//   enteredAt, the two flags; avatar, sessionAvatar, emote and effect null after the steps) and its voice level and
+//   mute entries (present players only after the 'voice' step);
+// - the fixed part, measured, not assumed (envelopeBytes): the joiner's own record and the snapshot's own fields
+//   (ServerNetwork.snapshotState: the URLs, the upload size as the number the server parsed, the AI names, the
+//   session and voice tokens, the time and flags; chat is none after the 'chat' step). The network measures it at
+//   start-up for the largest joiner this configuration can have (ServerNetwork.measureFixedBytes: a 64-character
+//   id, the longest name and avatars the rules allow, its real tokens, whose size follows LIVEKIT_API_KEY), and
+//   each join measures its own. SNAPSHOT_FIXED_BYTES = 24 KiB is only what that is expected to stay under (8,811
+//   bytes for .env.example, 9,378 with LiveKit, 18,903 with a 4,096-character LIVEKIT_API_KEY): start-up logs when
+//   it does not, and the measured value counts all the same. Until it is measured, 24 KiB counts.
+// Three rules use the bound W + fixed + P x 1 KiB <= SNAPSHOT_CAP (W the world state as counted, P the players):
+// - World growth is held to max(64, players present) with the start-up fixed part (fitsJoinState), so 64 players
+//   always fit a world at its budget.
+// - A visitor (no rank of builder or above stored on the user) joins only while the bound holds for the players
+//   here, the visitor, RANKED_RESERVE_PLAYERS = 8 more and GROWTH_RESERVE_BYTES = 64 KiB more world state
+//   (visitorShortfall), so a crowd of visitors cannot keep a ranked user out or stop building.
+// - Everyone, ranked users included, joins when the real snapshot after its steps fits the cap (ServerNetwork
+//   onConnection). That is the only hard condition: the counted W is an upper bound (a world stored over its budget
+//   can still send a far smaller snapshot), so a ranked user can come into a world that is over its budget or
+//   crowded, to shrink or moderate it.
+// With the fixed part of .env.example, a full 768 KiB world takes 174 visitors and an empty one (1,879 bytes: the
+// default collection and settings) 940; with 24 KiB, 159 and 925. After them the bound still holds 73 ranked users
+// at the full world (the 8 kept and the growth room it cannot use), and 64 KiB of growth plus 8 ranked users in the
+// empty one; a ranked user is admitted beyond that whenever the real snapshot fits. WS_MAX_SOCKETS (64 by default) and playerLimit can only lower that. A world that needs more
+// would need a snapshot sent in parts (not done here).
 export const WORLD_JOIN_BYTES = 768 * 1024
 export const SNAPSHOT_PLAYER_BYTES = 1024
 export const SNAPSHOT_FIXED_BYTES = 24 * 1024
 // players a world at its budget always has room for (growth is held to it even when fewer are present)
 export const GUARANTEED_PLAYERS = 64
+// the room a visitor's join must leave: this many more players, and this much more world state
+export const RANKED_RESERVE_PLAYERS = 8
+export const GROWTH_RESERVE_BYTES = 64 * 1024
 // the joiner's own avatar (the world's default avatar URL, settingsPolicy FILE_URL_MAX_LENGTH, or its stored one)
 export const OWN_AVATAR_MAX_LENGTH = 2048
 
-// the most the join snapshot can take with world state `worldBytes` and `players` players, after every step
-export function snapshotBound(worldBytes, players) {
-  return worldBytes + SNAPSHOT_FIXED_BYTES + players * SNAPSHOT_PLAYER_BYTES
+// the most the join snapshot can take with world state `worldBytes`, `players` players and the fixed part
+// `fixedBytes`, after every step
+export function snapshotBound(worldBytes, players, fixedBytes = SNAPSHOT_FIXED_BYTES) {
+  return worldBytes + fixedBytes + players * SNAPSHOT_PLAYER_BYTES
 }
 
 const playersOf = world => world.entities?.players?.size ?? 0
+// the fixed part the network measured at start-up (the expected one until then)
+const fixedOf = world => world.network?.fixedBytes ?? SNAPSHOT_FIXED_BYTES
 
-// whether a join snapshot is sure to fit with `extra` more players than are here now
-export function snapshotFits(world, extra = 0) {
-  return snapshotBound(joinStateBytes(world), playersOf(world) + extra) <= SNAPSHOT_CAP
+// The fixed part of a join snapshot, measured with the real encoder: `state` (ServerNetwork.snapshotState) with
+// its world state, its chat, the other players and their voice entries left out, keeping the key names and the
+// joiner's own record (`selfId`), the parts no step drops.
+export function envelopeBytes(state, selfId) {
+  const livekit =
+    state.livekit && typeof state.livekit === 'object'
+      ? { ...state.livekit, levels: {}, muted: new Set() }
+      : state.livekit
+  return writePacket('snapshot', {
+    ...state,
+    collections: [],
+    settings: {},
+    chat: [],
+    blueprints: [],
+    entities: state.entities.filter(data => data?.type === 'player' && data.id === selfId),
+    livekit,
+  }).length
+}
+
+// Why a visitor may not join now (null when they may): 'world' when the world's state alone leaves no room for
+// them, 'players' when the players here took it. `envelope` is this join's measured fixed part; the start-up one
+// counts when it is larger, as it does for growth, so a visitor cannot take room growth was promised.
+export function visitorShortfall(world, envelope) {
+  const fixed = Math.max(envelope, fixedOf(world))
+  const worldBytes = joinStateBytes(world) + GROWTH_RESERVE_BYTES
+  if (snapshotBound(worldBytes, 1 + RANKED_RESERVE_PLAYERS, fixed) > SNAPSHOT_CAP) return 'world'
+  if (snapshotBound(worldBytes, playersOf(world) + 1 + RANKED_RESERVE_PLAYERS, fixed) > SNAPSHOT_CAP) return 'players'
+  return null
 }
 
 // An app entity is measured as the snapshot carries it, with the fields that change in normal use at their largest
@@ -100,7 +143,10 @@ export function joinStateBytes(world) {
 export function fitsJoinState(world, delta) {
   if (delta <= 0) return true
   const next = joinStateBytes(world) + delta
-  return next <= WORLD_JOIN_BYTES && snapshotBound(next, Math.max(GUARANTEED_PLAYERS, playersOf(world))) <= SNAPSHOT_CAP
+  return (
+    next <= WORLD_JOIN_BYTES &&
+    snapshotBound(next, Math.max(GUARANTEED_PLAYERS, playersOf(world)), fixedOf(world)) <= SNAPSHOT_CAP
+  )
 }
 
 // The start-up line for a world that loaded over the budget (null when it fits): the totals and the five largest

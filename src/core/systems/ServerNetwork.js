@@ -9,6 +9,8 @@ import { appPersistenceData, persistenceRecord } from '../extras/persistenceReco
 import * as THREE from '../extras/three'
 import { Ranks } from '../extras/ranks'
 import {
+  PLAYER_NAME_MAX_LENGTH,
+  SESSION_AVATAR_MAX_LENGTH,
   isAvatarUrl,
   isBoundedJsonObject,
   sanitizeAppModify,
@@ -28,13 +30,18 @@ import { internalEvents } from '../extras/internalEvents'
 import { createInboundGate, createInboundScheduler, packetNodeLimit } from '../extras/inboundPolicy'
 import { SNAPSHOT_CAP, createWriteLedger } from '../extras/writeLedger'
 import {
+  GROWTH_RESERVE_BYTES,
   OWN_AVATAR_MAX_LENGTH,
+  RANKED_RESERVE_PLAYERS,
+  SNAPSHOT_FIXED_BYTES,
   SNAPSHOT_STEP_NAMES,
   encodeSnapshot,
+  envelopeBytes,
   fitsJoinState,
+  joinStateBytes,
   joinStateReport,
   settingsBytes,
-  snapshotFits,
+  visitorShortfall,
 } from '../extras/joinBudget'
 import { briefError, createLogOnce } from '../extras/logOnce'
 import { readInboundPacket } from '../../server/inboundDecode'
@@ -98,8 +105,10 @@ export class ServerNetwork extends System {
     this.writer = createWriteLedger({ log: line => console.error(line) })
   }
 
-  init({ db, tokenBalanceService, evmHoldings, tipWatcher, evmSignatureVerifier }) {
+  // maxUploadSize: PUBLIC_MAX_UPLOAD_SIZE as index.js parsed it (MB); the join snapshot carries the number
+  init({ db, maxUploadSize, tokenBalanceService, evmHoldings, tipWatcher, evmSignatureVerifier }) {
     this.db = db
+    this.maxUploadSize = maxUploadSize
     this.tokenBalanceService = solanaGating.TOKEN_GATING_ENABLED
       ? (tokenBalanceService ?? createTokenBalanceService({ readRaw: createSolanaRpc().readRaw }))
       : null
@@ -529,6 +538,9 @@ export class ServerNetwork extends System {
   // queries are asynchronous anyway; a statement already sent finishes or is cut off by the exit.
   // The one exception is a row that replaces another (rekeyApp): its insert and the old row's removal are one
   // transaction where the database has them, and otherwise the insert comes first, so the app is never lost.
+  // The server's database is always knex (db.js, SQLite or Postgres), which has transactions: the path without one
+  // is for stand-in databases only (tests). An interrupted re-key there can leave the app under both ids, and
+  // nothing at start-up merges the two.
   async saveDirty() {
     const counts = { blueprints: 0, apps: 0, deleted: 0 }
     const now = moment().toISOString()
@@ -676,6 +688,76 @@ export class ServerNetwork extends System {
     return this.saveConfig('settings', this.world.settings.serialize())
   }
 
+  // A joining player's record, as the join snapshot carries it and the player is added with (onConnection). Its
+  // own avatar is the one part of it no step drops: a stored value longer than the policy allows (only legacy data
+  // can be) falls back to the default.
+  joinRecord(id, { name, avatar, sessionAvatar, rank }) {
+    return {
+      id,
+      type: 'player',
+      position: this.spawn.position.slice(),
+      quaternion: this.spawn.quaternion.slice(),
+      owner: id, // deprecated, same as userId
+      userId: id, // deprecated, same as userId
+      name,
+      health: HEALTH_MAX,
+      avatar: typeof avatar === 'string' && avatar.length <= OWN_AVATAR_MAX_LENGTH ? avatar : 'asset://avatar.vrm',
+      sessionAvatar: sessionAvatar || null,
+      rank,
+      enteredAt: Date.now(),
+    }
+  }
+
+  // The join snapshot. Every value from the environment is the one the server uses: the upload size as the number
+  // index.js parsed, the URLs and AI names as given (index.js limits their length).
+  snapshotState(id, { livekit, authToken, entities }) {
+    return {
+      id,
+      serverTime: performance.now(),
+      assetsUrl: process.env.ASSETS_BASE_URL,
+      apiUrl: process.env.PUBLIC_API_URL,
+      maxUploadSize: this.maxUploadSize,
+      collections: this.world.collections.serialize(),
+      settings: this.world.settings.serialize(),
+      chat: this.world.chat.serialize(),
+      ai: this.world.ai.serialize(),
+      blueprints: this.world.blueprints.serialize(),
+      entities,
+      livekit,
+      authToken,
+      hasAdminCode: !!process.env.ADMIN_CODE,
+    }
+  }
+
+  // The fixed part of a join snapshot at its largest for this configuration (joinBudget.js), measured once before
+  // anyone can join (index.js): the envelope of a joiner with a 64-character id, the longest name and avatars the
+  // rules allow and float transforms, with its real session and voice tokens (a voice token grows with
+  // LIVEKIT_API_KEY). World growth counts it, and so does each visitor's join when it is larger than their own.
+  async measureFixedBytes() {
+    const id = 'i'.repeat(64)
+    const wide = n => '€'.repeat(n) // a 3-byte character: the most a UTF-16 unit costs in UTF-8
+    const record = {
+      ...this.joinRecord(id, {
+        name: wide(PLAYER_NAME_MAX_LENGTH),
+        avatar: wide(OWN_AVATAR_MAX_LENGTH),
+        sessionAvatar: wide(SESSION_AVATAR_MAX_LENGTH),
+        rank: Ranks.ADMIN,
+      }),
+      position: [0.5, 0.5, 0.5],
+      quaternion: [0.5, 0.5, 0.5, 0.5],
+      emote: null,
+    }
+    const livekit = await this.world.livekit.serialize(id)
+    const authToken = await createJWT({ userId: id })
+    this.fixedBytes = envelopeBytes(this.snapshotState(id, { livekit, authToken, entities: [record] }), id)
+    if (this.fixedBytes > SNAPSHOT_FIXED_BYTES) {
+      console.warn(
+        `[network] the join snapshot's fixed part measures ${this.fixedBytes} bytes, more than the ${SNAPSHOT_FIXED_BYTES} expected (a long LIVEKIT_API_KEY, LIVEKIT_WS_URL or other URL?); world growth and visitors are held to the measured size`
+      )
+    }
+    return this.fixedBytes
+  }
+
   async onConnection(ws, params) {
     // still loading (start): the user ids and the join-state accounting are not complete yet
     if (this.stopping || this.starting) return ws.close()
@@ -805,21 +887,54 @@ export class ServerNetwork extends System {
       const holder = this.world.entities.get(user.id)
       if (holder?.isApp) this.rekeyApp(holder)
 
-      // the join snapshot must fit with one more player, at its worst (joinBudget.js snapshotFits); world growth is
-      // held to the same bound, so whoever is admitted here can always join again
-      if (!snapshotFits(this.world, 1)) {
-        this.logOnce(
-          this,
-          'snapshot-players',
-          `[network] a player was turned away: the world's state and ${this.world.entities.players?.size ?? 0} players fill what one join snapshot can hold; the world's size, not playerLimit or WS_MAX_SOCKETS, is the limit here`
-        )
+      // The joiner's record and the snapshot are made before the player is added (nothing awaits from here on), so
+      // a refused join leaves nothing behind. The snapshot carries the record as the player will hold it once added
+      // (PlayerRemote sets a missing emote to null).
+      const record = this.joinRecord(user.id, {
+        name: name || sanitizeName(user.name) || 'Anonymous',
+        avatar: user.avatar || this.world.settings.avatar?.url || 'asset://avatar.vrm',
+        sessionAvatar: avatar,
+        rank: user.rank,
+      })
+      const state = this.snapshotState(user.id, {
+        livekit,
+        authToken,
+        entities: [...this.world.entities.serialize(), { ...record, emote: null }],
+      })
+      const refuseJoin = (reason, detail) => {
+        this.logOnce(this, `join-refused:${reason}`, `[network] ${detail}`)
         this.write(ws, writePacket('kick', 'player_limit'), { name: 'kick' })
         ws.close()
-        return
       }
-      // the joiner's own avatar is the one part of its record no step drops: a stored value longer than the policy
-      // allows (only legacy data can be) falls back to the default
-      const ownAvatar = user.avatar || this.world.settings.avatar?.url || 'asset://avatar.vrm'
+      // A visitor (no rank of builder or above stored on the user) joins only while the bound leaves room for
+      // ranked users and growth after them (joinBudget.js visitorShortfall), so a crowd of visitors cannot keep an
+      // admin out or stop building. A user with a stored rank skips this: an admin can always come into a world that
+      // is over its budget or crowded, to shrink or moderate it, and only the snapshot's real size counts for them.
+      if (!(user.rank >= Ranks.BUILDER)) {
+        const envelope = envelopeBytes(state, user.id)
+        const shortfall = visitorShortfall(this.world, envelope)
+        if (shortfall === 'world') {
+          return refuseJoin(
+            shortfall,
+            `a visitor was turned away: the world's state (${joinStateBytes(this.world)} bytes counted) and the snapshot's fixed part (${Math.max(envelope, this.fixedBytes ?? SNAPSHOT_FIXED_BYTES)} bytes) leave the join snapshot no room for visitors; users with a stored rank of builder or above can still join, and visitors can again once the world is smaller`
+          )
+        }
+        if (shortfall) {
+          return refuseJoin(
+            shortfall,
+            `a visitor was turned away: with ${this.world.entities.players?.size ?? 0} players here, the join snapshot keeps its last room for ${RANKED_RESERVE_PLAYERS} users with a stored rank of builder or above and ${GROWTH_RESERVE_BYTES / 1024} KiB of world growth; the world's size, not playerLimit or WS_MAX_SOCKETS, is the limit here`
+          )
+        }
+      }
+      // the one hard condition, for everyone: the real snapshot, after the steps it needs (what no budget tracks is
+      // dropped step by step until it fits, joinBudget.js encodeSnapshot), fits its cap
+      const { packet: snapshot, steps } = encodeSnapshot(state, { selfId: user.id })
+      if (!snapshot || snapshot.length > SNAPSHOT_CAP) {
+        return refuseJoin(
+          'snapshot',
+          `a player was turned away: the join snapshot is ${snapshot ? `${snapshot.length} bytes` : 'not encodable'} after every step, over its cap (${SNAPSHOT_CAP}); nobody can join until the world's state is smaller`
+        )
+      }
 
       // create socket
       socket = new Socket({ id: user.id, ws, network: this })
@@ -827,26 +942,7 @@ export class ServerNetwork extends System {
       socket.evmWallet = evmGating.createEvmWalletSession()
 
       // spawn player
-      socket.player = this.world.entities.add(
-        {
-          id: user.id,
-          type: 'player',
-          position: this.spawn.position.slice(),
-          quaternion: this.spawn.quaternion.slice(),
-          owner: socket.id, // deprecated, same as userId
-          userId: user.id, // deprecated, same as userId
-          name: name || sanitizeName(user.name) || 'Anonymous',
-          health: HEALTH_MAX,
-          avatar:
-            typeof ownAvatar === 'string' && ownAvatar.length <= OWN_AVATAR_MAX_LENGTH
-              ? ownAvatar
-              : 'asset://avatar.vrm',
-          sessionAvatar: avatar || null,
-          rank: user.rank,
-          enteredAt: Date.now(),
-        },
-        true
-      )
+      socket.player = this.world.entities.add(record, true)
 
       socket.player.rankRevision = 0
       socket.player.rankWritesPending = 0
@@ -862,26 +958,7 @@ export class ServerNetwork extends System {
         write.then(done, done)
       }
 
-      // send snapshot
-      const state = {
-        id: socket.id,
-        serverTime: performance.now(),
-        assetsUrl: process.env.ASSETS_BASE_URL,
-        apiUrl: process.env.PUBLIC_API_URL,
-        maxUploadSize: process.env.PUBLIC_MAX_UPLOAD_SIZE,
-        collections: this.world.collections.serialize(),
-        settings: this.world.settings.serialize(),
-        chat: this.world.chat.serialize(),
-        ai: this.world.ai.serialize(),
-        blueprints: this.world.blueprints.serialize(),
-        entities: this.world.entities.serialize(),
-        livekit,
-        authToken,
-        hasAdminCode: !!process.env.ADMIN_CODE,
-      }
-      // what no budget tracks is dropped step by step until it fits (joinBudget.js encodeSnapshot)
-      const { packet: snapshot, steps } = encodeSnapshot(state, { selfId: socket.id })
-      if (!snapshot || snapshot.length > SNAPSHOT_CAP) throw new Error('snapshot too large')
+      // send the snapshot made above
       if (steps.length) {
         this.logOnce(
           this,

@@ -12,6 +12,9 @@ const AVATAR_URL_MAX_LENGTH = 512
 // a .vrm in the world's asset store: a built-in name (avatar.vrm) or a content hash
 const AVATAR_ASSET_URL = /^asset:\/\/[A-Za-z0-9._-]+\.vrm$/
 const EMOTE_URL_MAX_LENGTH = 512
+// the longest name and session avatar a joining player can have (ServerNetwork.measureFixedBytes)
+export const PLAYER_NAME_MAX_LENGTH = NAME_MAX_LENGTH
+export const SESSION_AVATAR_MAX_LENGTH = AVATAR_URL_MAX_LENGTH
 // a .glb in the asset store, with an optional playback query (the static route ignores the query)
 const EMOTE_ASSET_URL = /^asset:\/\/[A-Za-z0-9._-]+\.glb(\?[A-Za-z0-9=&._-]*)?$/
 

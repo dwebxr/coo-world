@@ -44,15 +44,24 @@ import { Ranks } from '../../src/core/extras/ranks.js'
 import { clientIpKeys } from '../../src/server/uploadLimits.js'
 import { previewValue } from '../../src/core/extras/assetURL.js'
 import {
+  GROWTH_RESERVE_BYTES,
   OWN_AVATAR_MAX_LENGTH,
+  RANKED_RESERVE_PLAYERS,
+  SNAPSHOT_FIXED_BYTES,
   SNAPSHOT_STEP_NAMES,
   encodeSnapshot,
+  envelopeBytes,
   fitsJoinState,
+  joinStateBytes,
   joinStateReport,
   settingsBytes,
-  snapshotFits,
+  visitorShortfall,
 } from '../../src/core/extras/joinBudget.js'
-import { isBoundedJsonObject } from '../../src/core/extras/entityModifyPolicy.js'
+import {
+  PLAYER_NAME_MAX_LENGTH,
+  SESSION_AVATAR_MAX_LENGTH,
+  isBoundedJsonObject,
+} from '../../src/core/extras/entityModifyPolicy.js'
 
 export const serverSource = fs.readFileSync(new URL('../../src/server/index.js', import.meta.url), 'utf8')
 const source = fs.readFileSync(new URL('../../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
@@ -96,6 +105,9 @@ const names = [
   'rekeyApp',
   'replacementOf',
   'saveConfig',
+  'joinRecord',
+  'snapshotState',
+  'measureFixedBytes',
   'preFixedUpdate',
   'asScript',
   'write',
@@ -148,6 +160,15 @@ function networkClass(context) {
     joinStateReport,
     settingsBytes,
     fitsJoinState,
+    envelopeBytes,
+    SNAPSHOT_FIXED_BYTES,
+    OWN_AVATAR_MAX_LENGTH,
+    PLAYER_NAME_MAX_LENGTH,
+    SESSION_AVATAR_MAX_LENGTH,
+    HEALTH_MAX: 100,
+    performance,
+    // the session token a join makes (the real one is a signed JWT; tests that need its size give their own)
+    createJWT: async ({ userId }) => `jwt.${userId}`,
     isBoundedJsonObject,
     isAdminOnlySettingKey,
     isKnownSettingKey,
@@ -281,8 +302,13 @@ export function connectionMethod(context) {
     SNAPSHOT_CAP,
     SNAPSHOT_STEP_NAMES,
     encodeSnapshot,
-    snapshotFits,
-    OWN_AVATAR_MAX_LENGTH,
+    envelopeBytes,
+    visitorShortfall,
+    joinStateBytes,
+    RANKED_RESERVE_PLAYERS,
+    GROWTH_RESERVE_BYTES,
+    SNAPSHOT_FIXED_BYTES,
+    Ranks,
     Socket,
     briefError,
     previewValue,

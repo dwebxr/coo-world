@@ -30,6 +30,9 @@ concurrency:
 
 jobs:
   e2e:
+    # Chromium and WebKit decide the result. The Firefox leg is advisory: its suites run to the end, a failing
+    # one does not fail the job, and the last step lists what failed as a warning on the run.
+    name: e2e (${{ matrix.engine }}${{ matrix.engine == 'firefox' && ', advisory' || '' }})
     runs-on: ubuntu-latest
     # software-rendered Chromium runs the simulated-time suites far below real time (physics-boundary alone can take 20+ min)
     timeout-minutes: 60
@@ -77,51 +80,92 @@ jobs:
         run: npm run build
 
       - name: WebSocket frames (${{ matrix.engine }})
+        id: ws_frames
         run: node test/e2e/ws-frames.mjs --engine=${{ matrix.engine }}
 
       # Firefox has no WebGL on this runner. The raw frame probe above is still required for every engine.
       - name: Full-stack
+        id: fullstack
         continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/fullstack.mjs --engine=${{ matrix.engine }}
 
       - name: Hostile player transforms (local throwaway world)
+        id: hostile_transforms
         continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/hostile-transforms.mjs --engine=${{ matrix.engine }}
 
       - name: Physics boundary and native sentinel (local throwaway world)
+        id: physics_boundary
         continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/physics-boundary.mjs --engine=${{ matrix.engine }}
 
       - name: Phone model images (iPhone / iPad user agents)
+        id: phone_images
         continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/phone-images.mjs --engine=${{ matrix.engine }}
 
       - name: Extras (movement, avatar, uploads, AI mock, agent)
+        id: gate_extras
         continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/gate-extras.mjs --engine=${{ matrix.engine }}
 
       - name: Token gate
+        id: token_gate
         continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/token-gate.mjs --engine=${{ matrix.engine }}
 
       - name: EVM wallet (SIWE)
+        id: evm_wallet
         continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/evm-wallet.mjs --engine=${{ matrix.engine }}
 
       - name: EVM tips and NFT gate (mock RPC)
+        id: evm_tips_gate
         continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/evm-tips-gate.mjs --engine=${{ matrix.engine }}
 
       # a smoke only on shared runners (failures and errors, not throughput): 200 frames fit a slow
       # software-rendered run; the performance budgets (600 frames) are enforced on a designated machine
       - name: Stress (smoke)
+        id: stress
         continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/stress.mjs --engine=${{ matrix.engine }} --frames=200
 
+      - name: Advisory failures (Firefox)
+        id: advisory
+        if: ${{ always() && matrix.engine == 'firefox' }}
+        env:
+          OUTCOMES: ${{ toJSON(steps) }}
+        run: |
+          failed=$(node -e 'const steps = JSON.parse(process.env.OUTCOMES); console.log(Object.keys(steps).filter(id => steps[id].outcome === "failure").join(", "))')
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
+          if [ -n "$failed" ]; then
+            echo "::warning title=Firefox (advisory)::failed suites: $failed"
+          else
+            echo "no advisory failures"
+          fi
+
+      # failure() is false when only tolerated Firefox suites failed, so that case is named as well
       - name: Upload logs and screenshots
-        if: failure()
+        if: ${{ failure() || steps.advisory.outputs.failed != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e-${{ matrix.engine }}
           path: test/e2e/out/
           if-no-files-found: ignore
+
+  # One check that says whether the suites passed: green only when every leg's job succeeded (for Firefox that
+  # means it installed, built and ran; see the advisory note above). It also fails when a leg was cancelled or
+  # timed out, which a list of per-engine checks does not show at a glance.
+  result:
+    name: e2e
+    if: ${{ always() }}
+    needs: e2e
+    runs-on: ubuntu-latest
+    steps:
+      - name: Result of the suites
+        env:
+          RESULT: ${{ needs.e2e.result }}
+        run: |
+          echo "suites: $RESULT"
+          test "$RESULT" = "success"

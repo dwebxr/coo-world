@@ -51,7 +51,8 @@ export class Client extends System {
 
   onSettingsChange = changes => {
     if (changes.title) {
-      document.title = changes.title.value || 'World'
+      const title = changes.title.value
+      document.title = typeof title === 'string' && title ? title : 'World'
     }
   }
 

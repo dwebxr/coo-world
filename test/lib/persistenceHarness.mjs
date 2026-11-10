@@ -13,6 +13,9 @@ import { briefError, createLogOnce } from '../../src/core/extras/logOnce.js'
 import { cloneDeep } from 'lodash-es'
 import { createRelayDrop } from '../../src/core/extras/playerRelayPolicy.js'
 import { uuid } from '../../src/core/utils.js'
+import { Ranks } from '../../src/core/extras/ranks.js'
+import { eventPayload } from '../../src/core/extras/eventPayload.js'
+import { appChatLine } from '../../src/core/extras/chatPolicy.js'
 
 class System extends EventEmitter {
   constructor(world) {
@@ -47,6 +50,9 @@ export function load(file, name, extra = {}) {
     uuid,
     createLogOnce,
     briefError,
+    Ranks,
+    eventPayload,
+    appChatLine,
     ...entityPolicy,
     ...blueprintPolicy,
     ...settingsPolicy,

@@ -535,7 +535,7 @@ function Disconnected({ message }) {
   )
 }
 
-function LoadingOverlay({ world }) {
+export function LoadingOverlay({ world }) {
   const [progress, setProgress] = useState(0)
   const { title, desc, image } = world.settings
   useEffect(() => {
@@ -569,7 +569,9 @@ function LoadingOverlay({ world }) {
           background-position: center;
           background-size: cover;
           background-repeat: no-repeat;
-          background-image: ${image ? `url(${world.resolveURL(image.url)})` : 'none'};
+          background-image: ${typeof image?.url === 'string' && image.url
+            ? `url(${world.resolveURL(image.url)})`
+            : 'none'};
           animation: pulse 5s ease-in-out infinite;
         }
         .loading-shade {

@@ -1,6 +1,6 @@
 import { isTouch } from '../../client/utils'
 import { bindRotations } from '../extras/bindRotations'
-import { sealAll, sealMath } from '../extras/sealMath'
+import { scriptView, sealAll } from '../extras/sealMath'
 import { buttons, codeToProp } from '../extras/buttons'
 import * as THREE from '../extras/three'
 import { System } from './System'
@@ -978,11 +978,12 @@ function createButton(controls, control, prop) {
   }
 }
 
-// (the vectors, quaternions and eulers of a control's entries are the engine's, written every frame: sealMath.js)
+// (the vectors, quaternions and eulers of a control's entries are the engine's, written every frame: scripts get their
+// views, sealMath.js)
 function createVector(controls, control, prop) {
   return {
     $vector: true,
-    value: sealMath(new THREE.Vector3()),
+    value: scriptView(new THREE.Vector3()),
     capture: false,
   }
 }
@@ -990,8 +991,8 @@ function createVector(controls, control, prop) {
 function createPose(controls, control, prop) {
   return {
     $pose: true,
-    position: sealMath(new THREE.Vector3()),
-    quaternion: sealMath(new THREE.Quaternion()),
+    position: scriptView(new THREE.Vector3()),
+    quaternion: scriptView(new THREE.Quaternion()),
     // matrix: new THREE.Matrix4(),
     // capture: false,
   }
@@ -1060,9 +1061,9 @@ function createCamera(controls, control) {
   const zoom = world.camera.position.z
   return {
     $camera: true,
-    position,
-    quaternion,
-    rotation,
+    position: scriptView(position),
+    quaternion: scriptView(quaternion),
+    rotation: scriptView(rotation),
     zoom,
     write: false,
   }

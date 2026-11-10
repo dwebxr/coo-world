@@ -55,7 +55,10 @@ values as usual (`node.position.x = 1`, `.set(…)`, `.copy(…)`), but adding, 
 one (`Object.defineProperty(node.position, 'x', …)`, `node.position.foo = 1`, replacing a method) throws a
 `TypeError`, and so does assigning a matrix's `elements` or redefining one of its entries: `elements` is a
 `Float64Array` the matrix keeps. A component given an object instead of a number (`node.position.x = { … }`) is stored
-as `NaN`, without calling the object's `valueOf`. Getters that compute a value (a player's `position`,
+as `NaN`, without calling the object's `valueOf`. A vector, quaternion or euler you get this way is a view of the
+engine's object: it reads, writes and calls methods like the object itself (and it is the same view on every read),
+but its internal fields (`_x`, `_y`, `_z`, `_w`, `_order`) also keep only primitives, and its change callback
+(`_onChangeCallback`) cannot be replaced (a `TypeError`). Getters that compute a value (a player's `position`,
 `getBoneTransform()`, `getWorldMatrix()`, a pointer's coordinates, a material's `color`) return a new object on each
 read, which is yours.
 

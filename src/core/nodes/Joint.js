@@ -5,7 +5,7 @@ import { isBoolean, isNumber, isPrimitive } from '../extras/scriptPrimitives.js'
 import { Node, getNodeRef } from './Node'
 import { Layers } from '../extras/Layers'
 import { bindRotations } from '../extras/bindRotations'
-import { sealAll } from '../extras/sealMath.js'
+import { scriptView, sealAll } from '../extras/sealMath.js'
 import { DEG2RAD, RAD2DEG } from '../extras/general'
 import { finiteNumber, normalizeQuat, positionOk, warnPhysicsOnce } from '../extras/physicsValidate.js'
 
@@ -312,13 +312,13 @@ export class Joint extends Node {
           self.setDirty()
         },
         get offset0() {
-          return self.offset0
+          return scriptView(self.offset0)
         },
         get quaternion0() {
-          return self.quaternion0
+          return scriptView(self.quaternion0)
         },
         get rotation0() {
-          return self.rotation0
+          return scriptView(self.rotation0)
         },
         get body1() {
           return self.body1?.getProxy() ?? null
@@ -334,13 +334,13 @@ export class Joint extends Node {
           self.setDirty()
         },
         get offset1() {
-          return self.offset1
+          return scriptView(self.offset1)
         },
         get quaternion1() {
-          return self.quaternion1
+          return scriptView(self.quaternion1)
         },
         get rotation1() {
-          return self.rotation1
+          return scriptView(self.rotation1)
         },
         get breakForce() {
           return self.breakForce
@@ -373,7 +373,7 @@ export class Joint extends Node {
           self.setDirty()
         },
         get axis() {
-          return self.axis
+          return scriptView(self.axis)
         },
         get limitZ() {
           return self.limitZ

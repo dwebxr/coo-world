@@ -1,5 +1,7 @@
 // e2e probe: a non-number in this app's own transform. The host notices it while cleaning node matrices
-// (Stage.clean), outside of any script callback; only this app may crash.
+// (Stage.clean), outside of any script callback; only this app may crash. The value is a Symbol, a primitive
+// whose numeric conversion throws: an object (a throwing valueOf, say) is stored as NaN without being converted,
+// so no script code can run there any more (sealMath.js, storable.js).
 // With props.destroyThrows the script also leaves a pending timer and a destroy listener that throws:
 // the teardown must still complete (timers cleared, crash block shown, no unhandled rejection).
 const node = app.create('group')
@@ -16,9 +18,5 @@ let armed = false
 app.on('update', () => {
   if (armed) return
   armed = true
-  node.position.x = {
-    valueOf() {
-      throw new Error('P1_STAGE_BOOM')
-    },
-  }
+  node.position.x = Symbol('P1_STAGE_BOOM')
 })

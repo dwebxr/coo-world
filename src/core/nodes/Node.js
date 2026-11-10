@@ -1,7 +1,7 @@
 import { callForScript } from '../extras/scriptValues'
 import { stoppedError } from '../extras/physicsFailure.js'
 import { Teardown, tornDown } from '../extras/runTeardown.js'
-import { sealAll } from '../extras/sealMath.js'
+import { scriptView, sealAll } from '../extras/sealMath.js'
 import { isBoolean, isPrimitive } from '../extras/scriptPrimitives.js'
 import * as THREE from '../extras/three'
 import { getNodeRef, isRefAllowed, registerNodeRefGetter } from './refs'
@@ -665,25 +665,25 @@ export class Node {
           return self.name
         },
         get position() {
-          return self.position
+          return scriptView(self.position)
         },
         set position(value) {
           throw new Error('Cannot replace node position')
         },
         get quaternion() {
-          return self.quaternion
+          return scriptView(self.quaternion)
         },
         set quaternion(value) {
           throw new Error('Cannot replace node quaternion')
         },
         get rotation() {
-          return self.rotation
+          return scriptView(self.rotation)
         },
         set rotation(value) {
           throw new Error('Cannot replace node position')
         },
         get scale() {
-          return self.scale
+          return scriptView(self.scale)
         },
         set scale(value) {
           throw new Error('Cannot replace node scale')

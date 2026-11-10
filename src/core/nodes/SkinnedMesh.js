@@ -2,7 +2,7 @@ import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js'
 
 import { Node } from './Node'
 import * as THREE from '../extras/three'
-import { sealAll } from '../extras/sealMath.js'
+import { scriptView, sealAll } from '../extras/sealMath.js'
 import { isBoolean } from '../extras/scriptPrimitives.js'
 
 const defaults = {
@@ -200,16 +200,16 @@ export class SkinnedMesh extends Node {
       const self = this
       handle = {
         get position() {
-          return self.readBone(name)?.position
+          return scriptView(self.readBone(name)?.position)
         },
         get quaternion() {
-          return self.readBone(name)?.quaternion
+          return scriptView(self.readBone(name)?.quaternion)
         },
         get rotation() {
-          return self.readBone(name)?.rotation
+          return scriptView(self.readBone(name)?.rotation)
         },
         get scale() {
-          return self.readBone(name)?.scale
+          return scriptView(self.readBone(name)?.scale)
         },
         get matrixWorld() {
           const bone = self.readBone(name)

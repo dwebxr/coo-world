@@ -763,6 +763,41 @@ test('every engine math object a handle hands out by reference is sealed (and a 
     assert.ok(ArrayBuffer.isView(value.elements), `${name}.elements is typed`)
     assert.equal(Object.getOwnPropertyDescriptor(value, 'elements').writable, false, `${name}.elements is fixed`)
   }
+  // sealing leaves data properties writable: a component behind the accessors and the change callback. What a handle
+  // hands out is a view that keeps only primitives in components and refuses a callback or a redefinition
+  const open = []
+  for (const [name, value] of found) {
+    if (value.isMatrix4 || value.isMatrix3) continue
+    const key = Object.hasOwn(value, '_x') ? '_x' : 'x'
+    const before = value[key]
+    let ran = false
+    try {
+      value[key] = {
+        valueOf() {
+          ran = true
+          return 1
+        },
+      }
+    } catch {
+      // (refusing is fine too)
+    }
+    if (!Number.isNaN(value[key]) && typeof value[key] !== 'number') open.push(`${name}.${key} keeps an object`)
+    value[key] = before
+    if (ran) open.push(`${name}.${key} converted an object`)
+    try {
+      value._onChangeCallback = () => {}
+      open.push(`${name}._onChangeCallback replaced`)
+    } catch {
+      // refused
+    }
+    try {
+      Object.defineProperty(value, key, { value: {} })
+      open.push(`${name}.${key} redefined`)
+    } catch {
+      // refused
+    }
+  }
+  assert.deepEqual(open, [], 'components keep primitives, callbacks and properties stay')
   // what a script can no longer do to them (inside a compartment, strict mode)
   const result = scripts
     .evaluate(
@@ -776,6 +811,8 @@ test('every engine math object a handle hands out by reference is sealed (and a 
         () => Object.defineProperty(node.position, 'x', { get() { return 0 } }),
         () => { node.position.extra = 1 },
         () => Object.defineProperty(node.quaternion, '_x', { get() { return 0 } }),
+        () => { node.position._onChangeCallback = () => out.push('callback ran') },
+        () => { node.quaternion._onChangeCallback = () => out.push('callback ran') },
       ]) {
         try { attack(); out.push('allowed') } catch (err) { out.push(err.name) }
       }
@@ -783,6 +820,10 @@ test('every engine math object a handle hands out by reference is sealed (and a 
       out.push(Number.isNaN(node.position.x) ? 'stored NaN' : 'stored ' + typeof node.position.x)
       node.position.x = '2'
       out.push(typeof node.position.x)
+      node.quaternion._x = { valueOf() { out.push('valueOf ran') ; return 0 } }
+      out.push(Number.isNaN(node.quaternion._x) ? 'stored NaN' : 'stored ' + typeof node.quaternion._x)
+      node.quaternion.set(0, 0, 0, 1)
+      node.position.set(0, 0, 0)
       return out`
     )
     .exec(world.apps ? app.getWorldProxy() : null, app.getAppProxy())
@@ -793,8 +834,11 @@ test('every engine math object a handle hands out by reference is sealed (and a 
     'TypeError',
     'TypeError',
     'TypeError',
+    'TypeError',
+    'TypeError',
     'stored NaN',
     'string',
+    'stored NaN',
   ])
   app.destroy()
 })

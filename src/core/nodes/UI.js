@@ -1,5 +1,5 @@
 import * as THREE from '../extras/three'
-import { sealMath } from '../extras/sealMath.js'
+import { scriptView, sealMath } from '../extras/sealMath.js'
 import { every, isArray } from 'lodash-es'
 import { isBoolean, isNumber, isPrimitive, isString } from '../extras/scriptPrimitives.js'
 import Yoga from 'yoga-layout'
@@ -873,7 +873,7 @@ export class UI extends Node {
           self.pivot = value
         },
         get offset() {
-          return self.offset
+          return scriptView(self.offset)
         },
         set offset(value) {
           self.offset = value

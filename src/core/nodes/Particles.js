@@ -3,7 +3,7 @@ import { every, isArray, isFunction } from 'lodash-es'
 import { isBoolean, isNumber, isPrimitive, isString } from '../extras/scriptPrimitives.js'
 
 import { Node } from './Node'
-import { sealMath } from '../extras/sealMath.js'
+import { scriptView, sealMath } from '../extras/sealMath.js'
 
 // a vector the node owns: a script's values read once, as numbers, into a sealed engine vector (null stays null)
 function ownVector(value) {
@@ -808,19 +808,19 @@ export class Particles extends Node {
           self.space = value
         },
         get force() {
-          return self.force
+          return scriptView(self.force)
         },
         set force(value) {
           self.force = value
         },
         get velocityLinear() {
-          return self.velocityLinear
+          return scriptView(self.velocityLinear)
         },
         set velocityLinear(value) {
           self.velocityLinear = value
         },
         get velocityOrbital() {
-          return self.velocityOrbital
+          return scriptView(self.velocityOrbital)
         },
         set velocityOrbital(value) {
           self.velocityOrbital = value

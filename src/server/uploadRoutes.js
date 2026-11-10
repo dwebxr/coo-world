@@ -3,6 +3,7 @@ import statics from '@fastify/static'
 
 import { Ranks } from '../core/extras/ranks.js'
 import { clientIpKey } from './uploadLimits.js'
+import { isTempName } from './atomicWrite.js'
 import {
   assetHeaders,
   authorizeUpload,
@@ -87,6 +88,13 @@ function parseUpload({ headers, body, maxUploadSize, accept }) {
     }
     feed()
   })
+}
+
+// a request path naming a temp file in the assets dir: no real asset name holds `~`, so any spelling of it
+// (decoded or still percent-encoded) is refused
+function isTempAssetPath(pathName) {
+  const name = String(pathName).split('/').pop()
+  return isTempName(name) || /~|%7e/i.test(name)
 }
 
 // operator log for server-wide refusals, at most once a minute per reason
@@ -243,20 +251,26 @@ export async function uploadRoutes(
   }
 
   // the floor keeps the volume writable for the database that shares it. it never rises above a fifth of the
-  // volume, so a host that grows volumes at 75% full still gets to do so. an unreadable statfs fails open
-  let freeSpaceWarned = false
+  // volume, so a host that grows volumes at 75% full still gets to do so. a statfs that fails (or answers
+  // nonsense) refuses the upload: free space that cannot be known is not assumed. logged once per kind of failure
+  const freeSpaceWarned = new Set()
+  // null when the bytes fit, 'floor' when they would cross the floor, 'unknown' when free space cannot be read
   const outOfSpace = async bytes => {
-    if (!(minFreeBytes > 0) || typeof assets.freeSpace !== 'function') return false
+    if (!(minFreeBytes > 0) || typeof assets.freeSpace !== 'function') return null
     let space
     try {
       space = await assets.freeSpace()
+      if (!Number.isFinite(space?.free) || !Number.isFinite(space?.total)) throw new Error('no free space figures')
     } catch (err) {
-      if (!freeSpaceWarned) console.warn('[upload] free space check unavailable:', err?.message || err)
-      freeSpaceWarned = true
-      return false
+      const kind = typeof err?.code === 'string' ? err.code : String(err?.message || err).slice(0, 64)
+      if (!freeSpaceWarned.has(kind)) {
+        freeSpaceWarned.add(kind)
+        console.warn(`[upload] free space check unavailable (${kind}): refusing uploads until it works`)
+      }
+      return 'unknown'
     }
     const floor = Math.min(minFreeBytes, Math.floor(space.total * 0.2))
-    return space.free - bytes < floor
+    return space.free - bytes < floor ? 'floor' : null
   }
 
   fastify.post(
@@ -307,8 +321,11 @@ export async function uploadRoutes(
             .header('Retry-After', String(fit.retryAfter))
             .send({ error: fit.error, retryAfter: fit.retryAfter })
         }
-        if (await outOfSpace(upload.buffer.length)) {
-          warnThrottled('507', '[upload] refusing uploads: the assets volume is at the free-space floor')
+        const space = await outOfSpace(upload.buffer.length)
+        if (space) {
+          if (space === 'floor') {
+            warnThrottled('507', '[upload] refusing uploads: the assets volume is at the free-space floor')
+          }
           return reply.code(507).send({ error: 'the server is out of storage' })
         }
         // upload: the bytes go to storage as they are, without a File copy in between.
@@ -357,6 +374,8 @@ export async function assetRoutes(fastify, { root }) {
     root,
     prefix: '/assets/',
     decorateReply: false,
+    // an upload still being written (its temp name, atomicWrite.js) is not served
+    allowedPath: pathName => !isTempAssetPath(pathName),
     // Cache-Control stays @fastify/static's default (public, max-age=0: revalidate by ETag), which is what
     // production has always served: before v10, send overwrote the one-year immutable value set here. Default
     // world assets have unhashed names, so long caching is a separate decision. Expires is inert next to max-age.

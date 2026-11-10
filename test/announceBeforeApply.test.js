@@ -28,6 +28,7 @@ for (const action of ['create', 'edit', 'fix', 'classify']) {
     const world = {
       blueprints: {
         get: () => blueprint,
+        canFit: () => true,
         modify(change) {
           assert.deepEqual(calls, [['blueprintModified', change]])
           calls.push(['apply', change])

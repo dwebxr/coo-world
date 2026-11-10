@@ -78,6 +78,7 @@ function fixture() {
     moment,
     Ranks,
     uuid: () => 'message',
+    setImmediate,
     process: { env: { ADMIN_CODE: 'code' } },
     solanaGating: { TOKEN_GATING_ENABLED: true },
     persistRank: async () => {

@@ -1,24 +1,24 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { checkGLTF, readGLTF, GLTF_LIMITS } from '../src/core/extras/gltfLimits.js'
-import { png, jpeg, webp, gif } from './lib/imageBytes.mjs'
+import { checkGLTF, readGLTF, createGLTFBudget, GLTF_LIMITS, GLTFLimitError } from '../src/core/extras/gltfLimits.js'
+import { png, jpeg, gif } from './lib/imageBytes.mjs'
 
-// What a glTF file declares, checked before the parser allocates it: tiny hand-written documents.
+// Before parsing: the container and the document's structure, and three-vrm's work as its plugins expand it. (What
+// the parser itself allocates is charged inside it: test/gltfBudget.test.js.) Tiny hand-written documents.
 const MiB = 1024 * 1024
 const text = json => new TextEncoder().encode(JSON.stringify(json))
 const dataURI = bytes => `data:application/octet-stream;base64,${Buffer.alloc(bytes).toString('base64')}`
-
-// a document with one buffer of `bytes` (a data: URI) and whatever else is given
-const doc = (extra = {}, bytes = 36) => ({
+const doc = (extra = {}) => ({
   asset: { version: '2.0' },
-  buffers: [{ byteLength: bytes, uri: dataURI(bytes) }],
-  bufferViews: [{ buffer: 0, byteLength: bytes }],
+  buffers: [{ byteLength: 36, uri: dataURI(36) }],
+  bufferViews: [{ buffer: 0, byteLength: 36 }],
+  accessors: [{ bufferView: 0, componentType: 5126, type: 'VEC3', count: 3 }],
   ...extra,
 })
-const vec3 = (count, more = {}) => ({ componentType: 5126, type: 'VEC3', count, ...more })
+const refused = (json, reason, limits) => assert.throws(() => checkGLTF(text(json), limits), reason)
 
-// a .glb: header, JSON chunk and, when given, a binary chunk (`bin`: its bytes, or a length of zeros)
+// a .glb: header, JSON chunk and, when given, a binary chunk of `bin` zeros
 function glb(json, bin, { version = 2, length, extraChunks = [] } = {}) {
   const jsonBytes = text(json)
   const parts = [[0x4e4f534a, jsonBytes], ...extraChunks]
@@ -39,125 +39,7 @@ function glb(json, bin, { version = 2, length, extraChunks = [] } = {}) {
   return out
 }
 
-test('the 239-byte file: an accessor of a billion VEC3 floats with no data is refused', () => {
-  const file = text({
-    asset: { version: '2.0' },
-    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
-    nodes: [{ mesh: 0 }],
-    accessors: [vec3(1000000000)],
-  })
-  assert.ok(file.length < 240, `${file.length} bytes`)
-  assert.throws(
-    () => checkGLTF(file),
-    /bytes the parser would allocate beyond the file: 12000000000, more than 67108864/
-  )
-})
-
-test('accessors: valid type, component type and count; data that fits its view; whole arrays counted', () => {
-  const refused = [
-    [doc({ accessors: [{ componentType: 5126, type: 'VEC5', count: 1 }] }), /invalid type, componentType or count/],
-    [doc({ accessors: [{ componentType: 5124, type: 'VEC3', count: 1 }] }), /invalid type, componentType or count/],
-    [doc({ accessors: [vec3(-1)] }), /invalid type, componentType or count/],
-    [doc({ accessors: [vec3(1.5)] }), /invalid type, componentType or count/],
-    [doc({ accessors: [vec3('3')] }), /invalid type, componentType or count/],
-    [doc({ accessors: [{ componentType: 5126, type: 'MAT4', count: 2 ** 50 }] }), /accessor 0 is too large/],
-    [doc({ accessors: [vec3(4, { bufferView: 0 })] }), /accessor 0 does not fit in its bufferView/],
-    [doc({ accessors: [vec3(3, { bufferView: 0, byteOffset: 4 })] }), /does not fit in its bufferView/],
-    [doc({ accessors: [vec3(1, { bufferView: 7 })] }), /bufferView 7 does not exist/],
-    [doc({ accessors: [vec3(1, { bufferView: 0, byteOffset: -4 })] }), /byteOffset is not a whole number/],
-    // interleaved: whole strides from the stride the offset falls in
-    [
-      doc({ bufferViews: [{ buffer: 0, byteLength: 36, byteStride: 16 }], accessors: [vec3(3, { bufferView: 0 })] }),
-      /does not fit/,
-    ],
-    [doc({ accessors: 'none' }), /accessors is not a list/],
-  ]
-  for (const [file, reason] of refused) assert.throws(() => checkGLTF(text(file)), reason)
-  // fits: exactly, and interleaved
-  assert.equal(checkGLTF(text(doc({ accessors: [vec3(3, { bufferView: 0 })] }))).expandedBytes, 0)
-  const interleaved = doc(
-    {
-      bufferViews: [{ buffer: 0, byteLength: 48, byteStride: 16 }],
-      accessors: [vec3(3, { bufferView: 0, byteOffset: 4 })],
-    },
-    48
-  )
-  assert.equal(checkGLTF(text(interleaved)).expandedBytes, 0)
-  // no data: the parser allocates a zero-filled array, within the budget it is accepted and counted
-  assert.equal(checkGLTF(text(doc({ accessors: [vec3(1000)] }))).expandedBytes, 12000)
-  assert.equal(checkGLTF(text(doc({ accessors: [vec3(0)] }))).expandedBytes, 0)
-  // the budget is for the whole file
-  const halves = doc({ accessors: [vec3(2 * MiB), vec3(2 * MiB), vec3(2 * MiB)] })
-  assert.throws(() => checkGLTF(text(halves)), /beyond the file: 75497472/)
-})
-
-test('sparse accessors: views that fit, a count within the accessor, and the expanded array counted', () => {
-  const sparse = (more = {}, count = 4) => ({
-    count,
-    indices: { bufferView: 0, componentType: 5121 },
-    values: { bufferView: 0, byteOffset: 4 },
-    ...more,
-  })
-  const file = (accessor, bytes = 64) => text(doc({ accessors: [accessor] }, bytes))
-  assert.equal(checkGLTF(file(vec3(100, { sparse: sparse() }))).expandedBytes, 1200)
-  for (const [accessor, reason] of [
-    [vec3(3, { sparse: sparse() }), /invalid sparse count/],
-    [vec3(100, { sparse: sparse({}, 0) }), /invalid sparse count/],
-    [vec3(100, { sparse: sparse({ indices: { bufferView: 0, componentType: 5126 } }) }), /invalid sparse indices/],
-    [
-      vec3(100, { sparse: sparse({ indices: { bufferView: 0, componentType: 5125, byteOffset: 60 } }) }),
-      /indices do not fit/,
-    ],
-    [vec3(100, { sparse: sparse({ values: { bufferView: 0, byteOffset: 40 } }) }), /values do not fit/],
-    [vec3(100, { sparse: sparse({ values: { bufferView: 3 } }) }), /bufferView 3 does not exist/],
-    [vec3(100, { sparse: 'yes' }), /invalid sparse part/],
-    // expanded to the full count even though only four values are given
-    [vec3(10000000, { sparse: sparse() }), /beyond the file: 120000000/],
-  ]) {
-    assert.throws(() => checkGLTF(file(accessor)), reason)
-  }
-})
-
-test('buffers hold what they declare; bufferViews fit their buffer; overlapping views are counted', () => {
-  for (const [file, reason] of [
-    [doc({ buffers: [{ byteLength: 100, uri: dataURI(36) }] }), /buffer 0 declares 100 bytes and holds 36/],
-    [
-      doc({ buffers: [{ byteLength: 36, uri: 'https://elsewhere.example/big.bin' }] }),
-      /may not reference external files \(buffer 0\)/,
-    ],
-    [doc({ buffers: [{ byteLength: 36, uri: 'big.bin' }] }), /may not reference external files/],
-    [doc({ buffers: [{ byteLength: 36 }] }), /buffer 0 has no data in the file/],
-    [doc({ buffers: [{ uri: dataURI(36) }] }), /buffer 0 has no valid byteLength/],
-    [doc({ bufferViews: [{ buffer: 0, byteLength: 40 }] }), /bufferView 0 does not fit in its buffer/],
-    [doc({ bufferViews: [{ buffer: 0, byteOffset: 30, byteLength: 8 }] }), /does not fit in its buffer/],
-    [doc({ bufferViews: [{ buffer: 1, byteLength: 4 }] }), /bufferView 0 names no buffer/],
-    [doc({ bufferViews: [{ buffer: 0, byteLength: 4, byteStride: 300 }] }), /invalid byteStride/],
-  ]) {
-    assert.throws(() => checkGLTF(text(file)), reason)
-  }
-  // a percent-encoded data: URI holds one byte per escape
-  const plain = {
-    ...doc(),
-    buffers: [{ byteLength: 3, uri: 'data:application/octet-stream,%00%01%02' }],
-    bufferViews: [],
-  }
-  assert.ok(checkGLTF(text(plain)))
-  // each view is copied out of its buffer: a hundred views over the same 1 MiB is 99 MiB beyond the file
-  const views = Array.from({ length: 100 }, () => ({ buffer: 0, byteLength: MiB }))
-  const overlapping = glb({ asset: { version: '2.0' }, buffers: [{ byteLength: MiB }], bufferViews: views }, MiB)
-  assert.throws(() => checkGLTF(overlapping), /beyond the file: 103809024/)
-  const once = glb(
-    {
-      asset: { version: '2.0' },
-      buffers: [{ byteLength: MiB }],
-      bufferViews: views.slice(0, 2).map((v, i) => ({ ...v, byteLength: MiB / 2, byteOffset: (i * MiB) / 2 })),
-    },
-    MiB
-  )
-  assert.equal(checkGLTF(once).expandedBytes, 0)
-})
-
-test('a .glb is read as the parser reads it: header, chunks, the binary chunk bounds the first buffer', () => {
+test('the container: GLB header and chunks as the parser reads them, the JSON within its size and nesting', () => {
   const json = {
     asset: { version: '2.0' },
     buffers: [{ byteLength: 16 }],
@@ -165,276 +47,360 @@ test('a .glb is read as the parser reads it: header, chunks, the binary chunk bo
   }
   assert.equal(readGLTF(glb(json, 16)).bin, 16)
   assert.ok(checkGLTF(glb(json, 16)))
-  assert.throws(() => checkGLTF(glb(json, 8)), /buffer 0 declares 16 bytes and holds 8/)
   assert.throws(() => checkGLTF(glb(json)), /buffer 0 has no data in the file/)
   assert.throws(() => checkGLTF(glb(json, 16, { version: 1 })), /older than version 2/)
   assert.throws(() => checkGLTF(glb(json, 16, { length: 10000 })), /shorter than its header says/)
   assert.throws(() => checkGLTF(glb(json, 16).subarray(0, 10)), /header is cut short/)
   const cut = glb(json, 16)
-  new DataView(cut.buffer).setUint32(12, 100000, true) // a JSON chunk longer than the file
+  new DataView(cut.buffer).setUint32(12, 100000, true)
   assert.throws(() => checkGLTF(cut), /JSON chunk is cut short/)
   assert.throws(() => checkGLTF(glb(json, 16, { length: 12 })), /no JSON chunk/)
-  // the last JSON chunk wins, as in the parser
-  const second = text({ asset: { version: '2.0' }, accessors: [vec3(1e9)] })
-  assert.throws(() => checkGLTF(glb(json, 16, { extraChunks: [[0x4e4f534a, second]] })), /beyond the file/)
+  assert.throws(
+    () => checkGLTF(glb(json, 16), { ...GLTF_LIMITS, jsonBytes: 64 }),
+    /JSON chunk is \d+ bytes, more than 64/
+  )
+  // nesting: 64 levels is the limit (deep extras would overflow recursive copies)
+  let deep = 'x'
+  for (let i = 0; i < 70; i++) deep = { deeper: deep }
+  refused(doc({ extras: deep }), /the JSON nests 7\d deep, more than 64/)
+  assert.ok(
+    checkGLTF(new TextEncoder().encode(JSON.stringify(doc({ extras: { a: '{{{{{{{{{{[[[[[[[[' } })))),
+    'brackets in strings do not count'
+  )
   assert.throws(() => checkGLTF(new TextEncoder().encode('{"asset":')), /JSON does not parse/)
   assert.throws(() => checkGLTF(new TextEncoder().encode('[1]')), /JSON is not an object/)
+  refused({ asset: { version: '1.0' } }, /not a glTF 2.0 document/)
+  refused({ asset: { version: 2 } }, /not a glTF 2.0 document/)
   assert.ok(checkGLTF(new TextEncoder().encode('{"asset":{"version":"2.0"}}').buffer), 'an ArrayBuffer is accepted')
 })
 
-// a mesh of `primitives` primitives, each using accessor 0 (positions of `vertices` vertices, no data)
-const meshDoc = ({ primitives = 1, vertices = 3, nodes = [{ mesh: 0 }], targets, extra = {} } = {}) =>
-  doc({
-    accessors: [vec3(vertices)],
-    meshes: [{ primitives: Array.from({ length: primitives }, () => ({ attributes: { POSITION: 0 }, targets })) }],
-    nodes,
-    ...extra,
-  })
-
-test('counts that multiply: mesh instances, skin bindings, morph targets, GPU instances, animation tracks', () => {
-  const limits = { ...GLTF_LIMITS, meshInstances: 10, skinBindings: 100, primitives: 8, nodes: 6 }
-  // a mesh of 3 primitives used by 4 nodes is 12 meshes
-  const fourNodes = Array.from({ length: 4 }, () => ({ mesh: 0 }))
-  assert.throws(
-    () => checkGLTF(text(meshDoc({ primitives: 3, nodes: fourNodes })), limits),
-    /mesh instances: 12, more than 10/
-  )
-  assert.equal(checkGLTF(text(meshDoc({ primitives: 3, nodes: fourNodes.slice(0, 3) })), limits).meshInstances, 9)
-  assert.throws(() => checkGLTF(text(meshDoc({ primitives: 9 })), limits), /primitives: 9, more than 8/)
-  assert.throws(() => checkGLTF(text(meshDoc({ nodes: Array(7).fill({}) })), limits), /nodes: 7, more than 6/)
-  // each skinned primitive binds every joint of its skin
-  const skinned = meshDoc({
-    primitives: 3,
-    nodes: [{ mesh: 0, skin: 0 }, ...Array(5).fill({})],
-    extra: {
-      skins: [
-        {
-          joints: [
-            1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 2, 3, 4,
-          ],
-        },
-      ],
-    },
-  })
-  assert.throws(() => checkGLTF(text(skinned), limits), /skin bindings: 102, more than 100/)
-  // morph targets that share one accessor: a texture of 16 bytes per vertex, target and attribute
-  const targets = Array.from({ length: 1000 }, () => ({ POSITION: 0, NORMAL: 0 }))
-  assert.throws(() => checkGLTF(text(meshDoc({ vertices: 2100, targets }))), /beyond the file: 67225200/)
-  assert.equal(checkGLTF(text(meshDoc({ vertices: 10, targets }))).expandedBytes, 10 * 12 + 10 * 1000 * 2 * 16)
-  // GPU instancing: a matrix of 64 bytes per instance and primitive
-  const instanced = meshDoc({
-    primitives: 10,
-    nodes: [{ mesh: 0, extensions: { EXT_mesh_gpu_instancing: { attributes: { TRANSLATION: 1 } } } }],
-    extra: { accessors: [vec3(3), vec3(110000)] },
-  })
-  assert.throws(() => checkGLTF(text(instanced)), /beyond the file: 71720036/)
-  // animation tracks: the first use of a float accessor is a view, further uses and non-float data are copies
-  const animation = channels => ({
-    samplers: [{ input: 0, output: 1 }],
-    channels: Array(channels).fill({ sampler: 0 }),
-  })
-  const animated = n =>
-    doc({
-      accessors: [{ componentType: 5126, type: 'SCALAR', count: 9, bufferView: 0 }, vec3(3, { bufferView: 0 })],
-      animations: [animation(n)],
-    })
-  assert.equal(checkGLTF(text(animated(1))).expandedBytes, 0)
-  assert.equal(checkGLTF(text(animated(3))).expandedBytes, 2 * (9 * 4 + 9 * 4))
-  assert.throws(() => checkGLTF(text(animated(70000))), /animation channels: 70000, more than 65536/)
-  const bytesOut = doc({
-    accessors: [
-      { componentType: 5126, type: 'SCALAR', count: 9, bufferView: 0 },
-      { componentType: 5121, type: 'VEC4', count: 9, bufferView: 0, normalized: true },
+test('the structure: an index is a whole number in range (a string index is refused), a list is a real list', () => {
+  for (const [extra, reason] of [
+    // the string index the parser would coerce (texture.source "0" next to a KTX2 source)
+    [
+      {
+        images: [{ uri: 'data:image/png;base64,AA==' }],
+        textures: [{ source: '0', extensions: { KHR_texture_basisu: { source: 0 } } }],
+      },
+      /texture 0 source is not an index of images \("0"\)/,
     ],
-    animations: [animation(1)],
-  })
-  assert.equal(checkGLTF(text(bytesOut)).expandedBytes, 9 * 4 * 4)
-  // a reference to something that does not exist
-  assert.throws(() => checkGLTF(text(meshDoc({ nodes: [{ mesh: 3 }] }))), /node 0 mesh 3 does not exist/)
-  assert.throws(
-    () => checkGLTF(text(doc({ animations: [{ samplers: [], channels: [{ sampler: 0 }] }] }))),
-    /sampler 0 does not exist/
+    [{ textures: [{ source: 1.5 }], images: [{}, {}] }, /texture 0 source is not an index of images/],
+    [{ textures: [{ source: -1 }] }, /not an index of images/],
+    [{ scene: 3 }, /scene is not an index of scenes/],
+    [{ nodes: [{ mesh: 0 }] }, /node 0 mesh is not an index of meshes/],
+    [
+      { meshes: [{ primitives: [{ attributes: { POSITION: '0' } }] }] },
+      /attribute POSITION is not an index of accessors/,
+    ],
+    [
+      { materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 2 } } }] },
+      /material 0 baseColorTexture index is not an index of textures/,
+    ],
+    [
+      { materials: [{ extensions: { KHR_materials_clearcoat: { clearcoatTexture: { index: '0' } } } }] },
+      /clearcoatTexture index/,
+    ],
+    [{ skins: [{ joints: [0, 5] }], nodes: [{}] }, /skin 0 joint is not an index of nodes/],
+    [
+      { animations: [{ samplers: [{ input: 0, output: 9 }], channels: [] }] },
+      /sampler 0 output is not an index of accessors/,
+    ],
+    [
+      { animations: [{ samplers: [], channels: [{ sampler: 0, target: {} }] }] },
+      /channel 0 sampler is not an index of its samplers/,
+    ],
+    // a `length` instead of a list: the parser used to loop over it (a billion writes from 279 bytes)
+    [{ meshes: [{ weights: { length: 1e9 }, primitives: [] }] }, /mesh 0 weights is not a list/],
+    [{ nodes: [{ weights: { length: 1e9 } }] }, /node 0 weights is not a list/],
+    [{ meshes: [{ primitives: [{ attributes: {}, targets: { length: 1e9 } }] }] }, /targets is not a list/],
+    [{ scenes: [{ nodes: { length: 5 } }] }, /scene 0 nodes is not a list/],
+    [{ accessors: 'none' }, /accessors is not a list/],
+    [{ nodes: [{ matrix: [1, 0, 0] }] }, /node 0 matrix does not have 16 numbers/],
+    [{ nodes: [{ translation: [0, 'a', 0] }] }, /translation is not all numbers/],
+    [{ meshes: [{ primitives: [{ attributes: {}, mode: 9 }] }] }, /unknown mode/],
+    [{ accessors: [{ componentType: 5124, type: 'VEC3', count: 1 }] }, /invalid componentType or type/],
+    [{ accessors: [{ componentType: 5126, type: 'VEC3' }] }, /accessor 0 has no count/],
+    [{ accessors: [{ componentType: 5126, type: 'VEC3', count: -1 }] }, /accessor 0 count is not a whole number/],
+    [
+      {
+        accessors: [
+          {
+            componentType: 5126,
+            type: 'VEC3',
+            count: 3,
+            sparse: { count: 1, indices: { bufferView: 0, componentType: 5126 }, values: { bufferView: 0 } },
+          },
+        ],
+      },
+      /invalid sparse indices/,
+    ],
+    [{ bufferViews: [{ byteLength: 4 }] }, /bufferView 0 names no buffer/],
+    [{ images: [{ uri: 'blob:https://world.example/1' }] }, /image 0 names a blob: URL/],
+    [
+      { buffers: [{ byteLength: 4, uri: 'https://elsewhere.example/big.bin' }] },
+      /may not reference external files \(buffer 0\)/,
+    ],
+    [{ buffers: [{ byteLength: 4, uri: 'big.bin' }] }, /may not reference external files/],
+  ]) {
+    refused(doc(extra), reason)
+  }
+  // a list longer than the cap, and more morph targets on one primitive than the cap
+  refused(doc({ nodes: Array(20).fill({}) }), /nodes has 20 entries, more than 16/, { ...GLTF_LIMITS, listLength: 16 })
+  refused(
+    doc({ meshes: [{ primitives: [{ attributes: {}, targets: Array(1025).fill({}) }] }] }),
+    /targets has 1025 entries, more than 1024/
   )
+  // a well-formed document with every kind of reference passes
+  const full = doc({
+    scene: 0,
+    scenes: [{ nodes: [0] }],
+    nodes: [
+      { mesh: 0, children: [1], matrix: Array(16).fill(0) },
+      { skin: 0, camera: 0, weights: [0.5] },
+    ],
+    meshes: [
+      {
+        weights: [0],
+        primitives: [{ attributes: { POSITION: 0 }, indices: 0, material: 0, mode: 4, targets: [{ POSITION: 0 }] }],
+      },
+    ],
+    materials: [
+      {
+        pbrMetallicRoughness: { baseColorTexture: { index: 0, texCoord: 1 } },
+        extensions: { KHR_materials_sheen: { sheenColorTexture: { index: 0 } } },
+      },
+    ],
+    textures: [{ source: 0, sampler: 0 }],
+    samplers: [{}],
+    images: [{ bufferView: 0, mimeType: 'image/png' }],
+    skins: [{ joints: [1], skeleton: 1, inverseBindMatrices: 0 }],
+    cameras: [{ type: 'perspective', perspective: { yfov: 1, znear: 0.1 } }],
+    animations: [
+      { samplers: [{ input: 0, output: 0 }], channels: [{ sampler: 0, target: { node: 1, path: 'translation' } }] },
+    ],
+  })
+  assert.ok(checkGLTF(text(full)))
 })
 
-test('the node hierarchy is a tree: one parent each, no cycles', () => {
+test('glTF 1.0 leftovers the vendored parser still honours are refused: animation parameters, buffer types', () => {
+  // the parser resolves sampler input/output through `parameters` when it is there: other accessors than the ones
+  // the sampler names
+  refused(
+    doc({ animations: [{ parameters: { TIME: 0 }, samplers: [], channels: [] }] }),
+    /animation 0 has glTF 1.0 parameters/
+  )
+  refused(doc({ buffers: [{ byteLength: 36, uri: dataURI(36), type: 'arraybuffer' }] }), /buffer 0 has a glTF 1.0 type/)
+})
+
+test('required extensions must be ones this client loads; optional compression with fallback data is allowed', () => {
+  for (const name of [
+    'KHR_draco_mesh_compression',
+    'EXT_meshopt_compression',
+    'KHR_texture_basisu',
+    'EXT_texture_avif',
+    'MADE_UP_extension',
+  ]) {
+    refused(
+      doc({ extensionsUsed: [name], extensionsRequired: [name] }),
+      /requires an extension this client cannot load/
+    )
+  }
+  for (const name of ['EXT_meshopt_compression', 'KHR_draco_mesh_compression', 'KHR_texture_basisu']) {
+    assert.ok(checkGLTF(text(doc({ extensionsUsed: [name] }))), `optional ${name}`)
+  }
+  assert.ok(
+    checkGLTF(text(doc({ extensionsUsed: ['KHR_texture_transform'], extensionsRequired: ['KHR_texture_transform'] })))
+  )
+  refused(doc({ extensionsRequired: [5] }), /extension name is not a string/)
+})
+
+test('the node hierarchy is a tree of bounded depth', () => {
   for (const nodes of [
     [{ children: [0] }],
     [{ children: [1] }, { children: [0] }],
     [{ children: [2] }, { children: [2] }, {}],
     [{}, { children: [2] }, { children: [3] }, { children: [1] }],
   ]) {
-    assert.throws(() => checkGLTF(text(doc({ nodes }))), /not a tree/, JSON.stringify(nodes))
+    refused(doc({ nodes }), /not a tree/)
   }
-  assert.throws(() => checkGLTF(text(doc({ nodes: [{ children: [5] }] }))), /child 5 does not exist/)
-  // a long chain is fine (and checked in linear time)
-  const chain = Array.from({ length: 60000 }, (_, i) => (i < 59999 ? { children: [i + 1] } : {}))
-  assert.equal(checkGLTF(text(doc({ nodes: chain }))).nodes, 60000)
+  const chain = n => Array.from({ length: n }, (_, i) => (i < n - 1 ? { children: [i + 1] } : {}))
+  assert.equal(checkGLTF(text(doc({ nodes: chain(256) }))).nodes, 256)
+  // a chain of thousands overflowed the parser's recursive node loading; it is refused cleanly instead
+  refused(doc({ nodes: chain(3000) }), /the node hierarchy is more than 256 deep/)
+  // a wide tree is fine (and checked in linear time)
+  const wide = [{ children: Array.from({ length: 60000 }, (_, i) => i + 1) }, ...Array(60000).fill({})]
+  assert.equal(checkGLTF(text(doc({ nodes: wide }))).nodes, 60001)
 })
 
-test('three-vrm: spring bone joints (a VRM 0 group spans each bone’s subtree), colliders and expression binds', () => {
-  const limits = { ...GLTF_LIMITS, springJoints: 100, springColliders: 10, expressionBinds: 20 }
-  // a chain of 30 nodes; a VRM 0 bone group naming its root four times makes 120 joints
-  const nodes = Array.from({ length: 30 }, (_, i) => (i < 29 ? { children: [i + 1] } : {}))
-  const v0 = group => doc({ nodes, extensions: { VRM: { secondaryAnimation: { boneGroups: [group] } } } })
-  assert.throws(() => checkGLTF(text(v0({ bones: [0, 0, 0, 0] })), limits), /spring bone joints: 120, more than 100/)
-  assert.equal(checkGLTF(text(v0({ bones: [0, 10, 20] })), limits).springJoints, 30 + 20 + 10)
-  const colliders = doc({
-    extensions: { VRM: { secondaryAnimation: { colliderGroups: [{ colliders: Array(11).fill({}) }] } } },
-  })
-  assert.throws(() => checkGLTF(text(colliders), limits), /spring bone colliders: 11, more than 10/)
-  const v1 = doc({
-    extensions: { VRMC_springBone: { springs: [{ joints: Array(101).fill({ node: 0 }) }], colliders: [] } },
-  })
-  assert.throws(() => checkGLTF(text(v1), limits), /spring bone joints: 101/)
-  const binds = doc({
+test('three-vrm: expression binds, material binds and spring colliders are counted as the plugins expand them', () => {
+  // VRM 0: a bind makes one object per node using its mesh (and walks every node to find them)
+  const vrm0 = (binds, meshNodes, more = {}) => ({
+    ...doc(),
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }, { attributes: { POSITION: 0 } }] }],
+    nodes: Array.from({ length: meshNodes }, () => ({ mesh: 0 })),
     extensions: {
       VRM: {
-        blendShapeMaster: { blendShapeGroups: [{ binds: Array(15).fill({}), materialValues: Array(6).fill({}) }] },
+        blendShapeMaster: {
+          blendShapeGroups: [{ binds: Array.from({ length: binds }, () => ({ mesh: 0, index: 0 })) }],
+        },
+        ...more,
       },
     },
   })
-  assert.throws(() => checkGLTF(text(binds), limits), /expression binds: 21, more than 20/)
-  const v1binds = doc({
+  const counted = checkGLTF(text(vrm0(100, 100))).vrm
+  assert.equal(counted.expressionBinds, 10000, '100 binds x 100 nodes')
+  assert.equal(counted.expressionPrimitives, 20000)
+  assert.equal(counted.expressionWork, 10000)
+  refused(vrm0(200, 100), /three-vrm expressionBinds: 20000, more than 16384/)
+  refused(vrm0(10, 100), /expressionBinds: 1000, more than 500/, {
+    ...GLTF_LIMITS,
+    vrm: { ...GLTF_LIMITS.vrm, expressionBinds: 500 },
+  })
+  // a material value walks the scene, and may bind every material in it
+  const materialValues = {
+    blendShapeMaster: { blendShapeGroups: [{ materialValues: Array(10).fill({ materialName: 'm' }) }] },
+  }
+  const withMaterials = checkGLTF(text({ ...vrm0(0, 100), extensions: { VRM: materialValues } })).vrm
+  assert.equal(withMaterials.expressionWork, 10 * (100 + 200))
+  // VRM 0 springs: each joint (every node below a listed bone) visits the colliders of its groups
+  const springs0 = {
+    secondaryAnimation: {
+      colliderGroups: [{ node: 0, colliders: Array(10).fill({}) }],
+      boneGroups: [{ bones: [0], colliderGroups: Array(200).fill(0) }],
+    },
+  }
+  const sprung = checkGLTF(text({ ...vrm0(0, 1), extensions: { VRM: springs0 } })).vrm
+  assert.equal(sprung.springColliderWork, 1 * 200 * 10)
+  // VRM 1: repeated collider group and collider references multiply what each joint visits
+  const vrm1 = (joints, groupRefs, colliderRefs) => ({
+    ...doc(),
+    nodes: Array.from({ length: joints }, () => ({})),
+    extensions: {
+      VRMC_springBone: {
+        colliders: [{ node: 0, shape: { sphere: {} } }],
+        colliderGroups: [{ colliders: Array(colliderRefs).fill(0) }],
+        springs: [
+          { joints: Array.from({ length: joints }, (_, i) => ({ node: i })), colliderGroups: Array(groupRefs).fill(0) },
+        ],
+      },
+    },
+  })
+  assert.equal(checkGLTF(text(vrm1(2, 100, 100))).vrm.springColliderWork, 10000, 'two joints are one spring bone')
+  refused(vrm1(101, 200, 100), /springColliderWork: 2000000, more than 1048576/)
+  // VRM 1 expressions, first person, constraints
+  const expressions = {
+    ...doc(),
+    nodes: [{ mesh: 0 }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+    materials: [{}],
     extensions: {
       VRMC_vrm: {
         expressions: {
-          preset: { aa: { morphTargetBinds: Array(12).fill({}) } },
-          custom: { x: { materialColorBinds: Array(9).fill({}) } },
+          custom: { a: { morphTargetBinds: [{ node: 0, index: 0 }], materialColorBinds: [{ material: 0 }] } },
         },
+        firstPerson: { meshAnnotations: [{ node: 0 }, { node: 0 }] },
       },
     },
-  })
-  assert.throws(() => checkGLTF(text(v1binds), limits), /expression binds: 21/)
-})
-
-test('a file that needs a decoder this client does not have fails here, before anything is allocated', () => {
-  for (const extensions of [
-    { extensionsUsed: ['KHR_draco_mesh_compression'] },
-    { extensionsUsed: ['EXT_meshopt_compression'] },
-    { extensionsRequired: ['EXT_meshopt_compression'], extensionsUsed: ['EXT_meshopt_compression'] },
-    { extensionsRequired: ['KHR_texture_basisu'], extensionsUsed: ['KHR_texture_basisu'] },
-  ]) {
-    assert.throws(() => checkGLTF(text(doc(extensions))), /needs a decoder this client does not have/)
   }
-  // KTX2 textures with a fallback image load without the KTX2 one, as before
-  assert.ok(checkGLTF(text(doc({ extensionsUsed: ['KHR_texture_basisu'] }))))
-})
-
-// a .glb whose binary chunk holds the given images one after another, each with its own bufferView and image entry
-function withImages(headers, extra = {}) {
-  const bin = new Uint8Array(headers.reduce((sum, bytes) => sum + bytes.length, 0))
-  let offset = 0
-  const bufferViews = headers.map(bytes => {
-    bin.set(bytes, offset)
-    offset += bytes.length
-    return { buffer: 0, byteOffset: offset - bytes.length, byteLength: bytes.length }
-  })
-  const images = headers.map((_, i) => ({ bufferView: i, mimeType: 'image/png' }))
-  return glb({ asset: { version: '2.0' }, buffers: [{ byteLength: bin.length }], bufferViews, images, ...extra }, bin)
-}
-
-test('embedded images: PNG, JPEG or WebP by signature, a size from the header within the budget for one image', () => {
-  assert.equal(GLTF_LIMITS.imagePixels, 36000000)
-  // a header of 33 bytes declaring 100000 x 100000: refused before anything decodes it
-  assert.throws(() => checkGLTF(withImages([png(100000, 100000)])), /image 0 is larger than 36000000 pixels/)
-  assert.throws(() => checkGLTF(withImages([png(0, 10)])), /image 0 has no width or height/)
-  assert.throws(() => checkGLTF(withImages([jpeg(9000, 5000)])), /larger than 36000000 pixels/)
-  assert.throws(() => checkGLTF(withImages([webp(70000, 600, 'VP8X')])), /larger than 36000000 pixels/)
-  // the declared mimeType does not matter: a GIF (or anything else) is refused, also when it says image/png
-  assert.throws(
-    () => checkGLTF(withImages([gif(10, 10)])),
-    /image 0 is not a PNG, JPEG or WebP image with a readable size/
+  const v1 = checkGLTF(text(expressions)).vrm
+  assert.deepEqual([v1.expressions, v1.expressionBinds, v1.expressionPrimitives, v1.firstPersonWork], [1, 2, 1, 2])
+  refused(
+    {
+      ...expressions,
+      extensions: { VRMC_vrm: { expressions: { custom: { a: { morphTargetBinds: [{ node: 4 }] } } } } },
+    },
+    /morphTargetBind 0 node is not an index of nodes/
   )
-  assert.throws(() => checkGLTF(withImages([png(10, 10).subarray(0, 20)])), /not a PNG, JPEG or WebP/)
-  const fine = checkGLTF(
-    withImages([png(2048, 2048), jpeg(1024, 1024, { before: [[0xe1, 2000]] }), webp(512, 512, 'VP8L')])
-  )
-  assert.ok(fine)
-  // an image in a data: URI, and one in a data: buffer
-  const dataImage = mime =>
-    doc({ images: [{ uri: `data:${mime};base64,${Buffer.from(png(10000, 4000)).toString('base64')}` }] })
-  assert.throws(() => checkGLTF(text(dataImage('image/png'))), /image 0 is larger than 36000000 pixels/)
-  const header = png(100, 100)
-  const inBuffer = {
-    asset: { version: '2.0' },
-    buffers: [
-      {
-        byteLength: header.length,
-        uri: `data:application/octet-stream;base64,${Buffer.from(header).toString('base64')}`,
-      },
-    ],
-    bufferViews: [{ buffer: 0, byteLength: header.length }],
-    images: [{ bufferView: 0, mimeType: 'image/png' }],
-  }
-  assert.ok(checkGLTF(text(inBuffer)))
-  const percent = {
+  const constraints = {
     ...doc(),
-    images: [
-      { uri: `data:image/png,${[...png(20000, 20000)].map(b => `%${b.toString(16).padStart(2, '0')}`).join('')}` },
-    ],
+    nodes: Array.from({ length: 5 }, () => ({
+      extensions: { VRMC_node_constraint: { constraint: { roll: { source: 0 } } } },
+    })),
   }
-  assert.throws(() => checkGLTF(text(percent)), /larger than 36000000 pixels/)
+  assert.equal(checkGLTF(text(constraints)).vrm.constraints, 5)
+  refused(constraints, /constraints: 5, more than 4/, { ...GLTF_LIMITS, vrm: { ...GLTF_LIMITS.vrm, constraints: 4 } })
 })
 
-test('embedded images: their pixels together are within the budget for a file, each image entry counted', () => {
-  assert.equal(GLTF_LIMITS.imagePixelsPerFile, 268435456)
-  // sixteen 4096 x 4096 textures fit (256 Mi pixels), a seventeenth does not
-  const sixteen = Array.from({ length: 16 }, () => png(4096, 4096))
-  assert.ok(checkGLTF(withImages(sixteen)))
-  assert.throws(
-    () => checkGLTF(withImages([...sixteen, png(64, 64)])),
-    /image pixels in the file: 268439552, more than 268435456/
-  )
-  // ten image entries on one bufferView are ten decodes
-  const one = png(6000, 5000)
-  const views = {
-    asset: { version: '2.0' },
-    buffers: [{ byteLength: one.length }],
-    bufferViews: [{ buffer: 0, byteLength: one.length }],
-  }
-  const entries = n => glb({ ...views, images: Array.from({ length: n }, () => ({ bufferView: 0 })) }, one)
-  assert.ok(checkGLTF(entries(1)))
-  assert.ok(checkGLTF(entries(8)))
-  assert.throws(() => checkGLTF(entries(10)), /image pixels in the file: 300000000/)
-})
-
-test('embedded images not checked: named by URL (not fetched), only used through KTX2 (no decoder); a blob: URL is refused', () => {
-  const ktx2 = Uint8Array.from([0xab, 0x4b, 0x54, 0x58, 0x20, 0x32, 0x30, 0xbb, 0x0d, 0x0a, 0x1a, 0x0a])
-  const basis = { KHR_texture_basisu: { source: 0 } }
-  assert.ok(
-    checkGLTF(withImages([ktx2], { textures: [{ extensions: basis }] })),
-    'a KTX2 image the client never decodes'
-  )
-  assert.throws(
-    () => checkGLTF(withImages([ktx2], { textures: [{ source: 0, extensions: basis }] })),
-    /not a PNG, JPEG or WebP/,
-    'the same image as a texture source is decoded'
-  )
-  assert.throws(
-    () => checkGLTF(withImages([png(9000, 9000)], { textures: [{ extensions: { EXT_texture_webp: { source: 0 } } }] })),
-    /larger than 36000000 pixels/
-  )
-  assert.ok(checkGLTF(text(doc({ images: [{ uri: 'https://elsewhere.example/big.png' }, { uri: 'big.png' }, {}] }))))
-  assert.throws(
-    () => checkGLTF(text(doc({ images: [{ uri: 'blob:https://world.example/1234' }] }))),
-    /image 0 names a blob: URL/
-  )
-  assert.throws(() => checkGLTF(text(doc({ images: [{ uri: ' BLOB:x' }] }))), /blob: URL/)
-})
-
-test('the bundled avatar, emotes and models (the e2e fixtures too) are within the limits', () => {
-  // image pixels measured: the avatar's 512 x 512 and 2048 x 2048 PNGs, ai.glb's 256 x 256 WebP, ...
-  for (const [name, imagePixels] of [
-    ['world/assets/avatar.vrm', 512 * 512 + 2048 * 2048],
-    ['world/assets/mp-idle.glb', 0],
-    ['world/assets/emote-float.glb', 0],
-    ['world/assets/crash-block.glb', 256 * 256],
-    ['world/assets/ai.glb', 256 * 256],
-    ['client/public/base-environment.glb', 1024 * 1024],
+test('the bundled avatar, emotes and models pass, with their three-vrm counts', () => {
+  const avatar = checkGLTF(fs.readFileSync(new URL('../src/world/assets/avatar.vrm', import.meta.url)))
+  assert.deepEqual(avatar.vrm, {
+    expressions: 14,
+    expressionBinds: 14,
+    expressionPrimitives: 14,
+    expressionWork: 854,
+    springJoints: 0,
+    springColliders: 0,
+    springColliderWork: 0,
+    firstPersonWork: 0,
+    constraints: 0,
+  })
+  for (const name of [
+    'world/assets/mp-idle.glb',
+    'world/assets/emote-float.glb',
+    'world/assets/crash-block.glb',
+    'world/assets/ai.glb',
+    'client/public/base-environment.glb',
   ]) {
-    const stats = checkGLTF(fs.readFileSync(new URL(`../src/${name}`, import.meta.url)))
-    assert.ok(stats.expandedBytes < 8 * MiB, `${name}: ${JSON.stringify(stats)}`)
-    assert.equal(stats.imagePixels, imagePixels, name)
+    assert.ok(checkGLTF(fs.readFileSync(new URL(`../src/${name}`, import.meta.url))), name)
   }
+})
+
+test('the budget: bytes beyond twice the file, counts per kind, image decodes sized from their headers', () => {
+  const charges = []
+  const budget = createGLTFBudget({ fileBytes: MiB, onCharge: (...args) => charges.push(args) })
+  assert.equal(budget.maxBytes, 66 * MiB)
+  budget.bytes(66 * MiB, 'all of it')
+  assert.throws(
+    () => budget.bytes(1, 'one more'),
+    error =>
+      error instanceof GLTFLimitError &&
+      error.isGLTFLimit &&
+      /more than 69206016 bytes \(at one more\)/.test(error.message)
+  )
+  assert.throws(() => budget.bytes(0, 'after'), /more than/, 'every later charge is refused too')
+  assert.throws(() => createGLTFBudget().bytes(NaN, 'x'), /impossible size/)
+  assert.throws(() => createGLTFBudget().bytes(-1, 'x'), /impossible size/)
+  const counts = createGLTFBudget()
+  counts.count('scenes', 64)
+  assert.throws(() => counts.count('scenes'), /scenes: 65, more than 64/)
+  assert.throws(() => counts.count('unicorns'), /unknown count unicorns/)
+  // images
+  const images = createGLTFBudget()
+  images.image(png(4096, 4096), 'image 0')
+  assert.equal(images.used.pixels, 4096 * 4096)
+  assert.equal(images.used.counts.images, 1)
+  for (const [bytes, reason] of [
+    [png(100000, 100000), /image 1 is larger than 36000000 pixels/],
+    [png(0, 10), /has no width or height/],
+    [gif(10, 10), /is not a PNG, JPEG or WebP image/],
+    [png(10, 10).subarray(0, 20), /is a png cut short/],
+    [
+      jpeg(10, 10, {
+        frames: [
+          [1, 1],
+          [10, 10],
+        ],
+      }),
+      /is a malformed jpeg \(more than one frame header\)/,
+    ],
+  ]) {
+    assert.throws(() => images.image(bytes, 'image 1'), reason)
+  }
+  // sixteen 4096 x 4096 decodes fit in a file, a seventeenth does not
+  const file = createGLTFBudget()
+  for (let i = 0; i < 16; i++) file.image(png(4096, 4096), `image ${i}`)
+  assert.throws(() => file.image(png(64, 64), 'image 16'), /the images decoded would have more than 268435456 pixels/)
+  // by URI: data: measured, blob: refused, other URLs left to the URL filter (nothing decodes them)
+  const uris = createGLTFBudget()
+  uris.imageURI(`data:image/png;base64,${Buffer.from(png(10, 10)).toString('base64')}`, 'image 0')
+  assert.throws(
+    () => uris.imageURI(`data:image/png;base64,${Buffer.from(png(9000, 9000)).toString('base64')}`, 'image 1'),
+    /larger than/
+  )
+  assert.throws(() => uris.imageURI(' BLOB:https://x/1', 'image 2'), /names a blob: URL/)
+  uris.imageURI('https://elsewhere.example/t.png', 'image 3')
+  assert.equal(uris.used.counts.images, 1)
+  // every charge and refusal is reported (the parser-level tests use this)
+  assert.deepEqual(charges[0], ['bytes', 66 * MiB, 'all of it', 66 * MiB])
+  assert.equal(charges.filter(c => c[0] === 'refused').length, 2)
 })

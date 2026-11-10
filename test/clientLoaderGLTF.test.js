@@ -2,15 +2,15 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { GLTFLoader } from '../src/core/libs/gltfloader/GLTFLoader.js'
 import { VRMLoaderPlugin } from '@pixiv/three-vrm'
 import { loadClient } from './lib/clientHarness.mjs'
 import { imageElementsPlugin } from '../src/core/extras/gltfImageElements.js'
-import { checkGLTF } from '../src/core/extras/gltfLimits.js'
+import { checkGLTF, createGLTFBudget } from '../src/core/extras/gltfLimits.js'
 import { png } from './lib/imageBytes.mjs'
-import { MAX_IMAGE_PIXELS, imageType, readImageHeader } from '../src/core/extras/imageHeader.js'
+import { MAX_IMAGE_PIXELS, readImageHeader } from '../src/core/extras/imageHeader.js'
 
-// The browser's loader with three's real GLTF parser and three-vrm's real plugin: a model, avatar or emote may only
+// The browser's loader with the real (vendored) GLTF parser, its per-file budget and three-vrm's real plugin: a model, avatar or emote may only
 // use what is inside its file, embedded images still load (both the ImageBitmap path and the iPhone <img> path),
 // and the pixel budget applies to them. Image decoding is the only stand-in: Node has no decoder, so a decoded
 // image reports the size the test gives it.
@@ -36,11 +36,11 @@ const ClientLoader = loadClient('core/systems/ClientLoader.js', 'ClientLoader', 
   formatBytes: n => String(n),
   imageElementsPlugin,
   checkGLTF,
+  createGLTFBudget,
   isAppleMobile: () => apple,
   emoteUrls: [],
   Hls: class {},
   MAX_IMAGE_PIXELS,
-  imageType,
   readImageHeader,
 })
 
@@ -151,7 +151,7 @@ function triangle({ buffer, image, size = [64, 64] } = {}) {
   const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0])
   const uvs = new Float32Array([0, 0, 1, 0, 0, 1])
   const header = png(...size) // decoded by the stand-in; only its header is read for real
-  const bin = new Uint8Array(96)
+  const bin = new Uint8Array(128)
   bin.set(new Uint8Array(positions.buffer), 0)
   bin.set(new Uint8Array(uvs.buffer), 36)
   bin.set(header, 60)
@@ -173,7 +173,7 @@ function triangle({ buffer, image, size = [64, 64] } = {}) {
       { buffer: 0, byteOffset: 36, byteLength: 24 },
       { buffer: 0, byteOffset: 60, byteLength: header.length },
     ],
-    buffers: [buffer ? { byteLength: 96, uri: buffer } : { byteLength: 96 }],
+    buffers: [buffer ? { byteLength: 128, uri: buffer } : { byteLength: 128 }],
   }
   if (buffer === 'data:') {
     json.buffers[0].uri = `data:application/octet-stream;base64,${Buffer.from(bin).toString('base64')}`
@@ -214,27 +214,31 @@ test('a model or emote that names an external buffer is refused before anything 
   assert.equal(parsed.scene.getObjectByName('tri').geometry.attributes.position.count, 3)
 })
 
-test('a file that declares more than it carries is refused before the parser runs, for load and insert', async t => {
-  const parse = t.mock.method(GLTFLoader.prototype, 'parse')
+test('the parser refuses at the allocation: a file of a few hundred bytes declaring a billion vertices', async () => {
   const loader = makeLoader()
-  // 239 bytes: one accessor of a billion VEC3 floats with no data, which the parser would zero-fill (12 GB)
+  // one accessor of a billion VEC3 floats with no data, in a scene: the parser would zero-fill 12 GB; its budget
+  // refuses at the charge made just before that allocation. (Without the scene the parser never loads the accessor.)
   const file = new TextEncoder().encode(
     JSON.stringify({
       asset: { version: '2.0' },
+      scenes: [{ nodes: [0] }],
       meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
       nodes: [{ mesh: 0 }],
       accessors: [{ componentType: 5126, type: 'VEC3', count: 1000000000 }],
     })
   )
-  assert.ok(file.length < 240)
+  assert.ok(file.length < 300)
   for (const type of ['model', 'emote', 'avatar']) {
-    await assert.rejects(loader.load(type, serve(`declared-${type}.gltf`, file)), /beyond the file: 12000000000/, type)
+    await assert.rejects(
+      loader.load(type, serve(`declared-${type}.gltf`, file)),
+      /would allocate more than \d+ bytes \(at accessor without data\)/,
+      type
+    )
   }
   await assert.rejects(
     loader.insert('model', 'asset://picked.gltf', new File([file], 'picked.gltf')),
-    /beyond the file/
+    /would allocate more than/
   )
-  assert.equal(parse.mock.callCount(), 0, 'the parser never ran')
   // and the files are not kept
   assert.equal(loader.hasFile('asset://declared-model.gltf'), false)
   assert.equal(loader.hasFile('asset://picked.gltf'), false)

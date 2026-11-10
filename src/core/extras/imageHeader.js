@@ -1,5 +1,14 @@
 // The size of an image from its first bytes, before anything decodes it. Pure (no DOM, no three.js), so the model
 // checks (gltfLimits.js), the client loader and the server can share it.
+//
+// readImageHeader(bytes) has four outcomes:
+// - { type, width, height }: a PNG, JPEG or WebP and its size;
+// - { type, malformed }: one of those, but inconsistent (a second IHDR, a second JPEG frame header, a WebP frame
+//   that does not match its canvas, ...). It is refused everywhere: decoders disagree about such files, so the size
+//   read here would not bound what one of them decodes;
+// - { type, incomplete: true }: one of those, but its size is not settled within the bytes given (a caller with only
+//   the first bytes of a file reads the rest; with the whole file it is malformed);
+// - null: not a format this reader knows.
 
 // the pixels one image may have: an image this large is about 150 MB decoded (RGBA) before mipmaps; an 8192 x 4096
 // sky fits. The client loader and the model checks both use this
@@ -11,6 +20,10 @@ const ascii = (bytes, at, text) => {
   for (let i = 0; i < text.length; i++) if (bytes[at + i] !== text.charCodeAt(i)) return false
   return true
 }
+const fourcc = (bytes, at) => String.fromCharCode(bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3])
+const u32be = (bytes, at) => ((bytes[at] << 24) >>> 0) + (bytes[at + 1] << 16) + (bytes[at + 2] << 8) + bytes[at + 3]
+const u32le = (bytes, at) => bytes[at] + (bytes[at + 1] << 8) + (bytes[at + 2] << 16) + ((bytes[at + 3] << 24) >>> 0)
+const u24le = (bytes, at) => bytes[at] + (bytes[at + 1] << 8) + (bytes[at + 2] << 16)
 
 // 'png', 'jpeg' or 'webp' from the signature (not from a declared type), or null for anything else
 export function imageType(bytes) {
@@ -20,8 +33,6 @@ export function imageType(bytes) {
   return null
 }
 
-// { type, width, height } of a PNG, JPEG or WebP; null for any other format, or when the size is not within the
-// bytes given. A Uint8Array (or an ArrayBuffer)
 export function readImageHeader(data) {
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data)
   const type = imageType(bytes)
@@ -31,73 +42,151 @@ export function readImageHeader(data) {
   return null
 }
 
-// the first chunk is IHDR: width and height, big-endian, at 16 and 20
+const malformed = (type, reason) => ({ type, malformed: reason })
+const incomplete = type => ({ type, incomplete: true })
+
+// The chunks up to the first IDAT: IHDR first (13 bytes) and only once; an APNG frame (fcTL) before the image data
+// must lie inside the IHDR size
 function readPNG(bytes) {
-  if (bytes.length < 24 || !ascii(bytes, 12, 'IHDR')) return null
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  return { type: 'png', width: view.getUint32(16), height: view.getUint32(20) }
+  let at = 8
+  let size = null
+  for (;;) {
+    if (at + 8 > bytes.length) return incomplete('png')
+    const length = u32be(bytes, at)
+    const name = fourcc(bytes, at + 4)
+    if (length > 0x7fffffff) return malformed('png', 'a chunk length over 2^31')
+    const data = at + 8
+    if (size === null && name !== 'IHDR') return malformed('png', 'the first chunk is not IHDR')
+    if (name === 'IHDR') {
+      if (size !== null) return malformed('png', 'a second IHDR')
+      if (length !== 13) return malformed('png', 'an IHDR that is not 13 bytes')
+      if (data + 8 > bytes.length) return incomplete('png')
+      size = { type: 'png', width: u32be(bytes, data), height: u32be(bytes, data + 4) }
+    } else if (name === 'fcTL') {
+      if (data + 20 > bytes.length) return incomplete('png')
+      const [w, h, x, y] = [
+        u32be(bytes, data + 4),
+        u32be(bytes, data + 8),
+        u32be(bytes, data + 12),
+        u32be(bytes, data + 16),
+      ]
+      if (w === 0 || h === 0 || x + w > size.width || y + h > size.height) {
+        return malformed('png', 'an APNG frame outside the image')
+      }
+    } else if (name === 'IDAT') {
+      return size
+    } else if (name === 'IEND') {
+      return malformed('png', 'no image data')
+    }
+    at = data + length + 4
+  }
 }
 
-// The segments after SOI, skipped by their length (APPn, EXIF first or not, DQT, DHT, ...) until a start-of-frame
-// marker: SOF0-SOF15 except DHT (C4), JPG (C8) and DAC (CC), so baseline, progressive and the rest. Start of scan
-// or the end before any SOF is no size.
+// The segments up to the first start of scan, skipped by their length: exactly one frame header (SOF0-SOF15 but
+// DHT, JPG and DAC; and DHP) must come before it. A second one, or none, is malformed.
 function readJPEG(bytes) {
   let at = 2
-  while (at + 4 <= bytes.length) {
-    if (bytes[at] !== 0xff) return null
+  let frame = null
+  for (;;) {
+    if (at + 2 > bytes.length) return incomplete('jpeg')
+    if (bytes[at] !== 0xff) return malformed('jpeg', 'a segment without a marker')
     // fill bytes before a marker
     let marker = bytes[at + 1]
-    while (marker === 0xff && at + 2 < bytes.length) {
+    while (marker === 0xff) {
       at++
+      if (at + 2 > bytes.length) return incomplete('jpeg')
       marker = bytes[at + 1]
     }
     at += 2
     // markers without a length
-    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) continue
-    if (marker === 0xd9 || marker === 0xda) return null
-    if (at + 2 > bytes.length) return null
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue
+    if (marker === 0xd8) return malformed('jpeg', 'a second start of image')
+    if (marker === 0xd9) return malformed('jpeg', 'the end before any scan')
+    if (marker === 0xda) return frame || malformed('jpeg', 'a scan before any frame header')
+    if (at + 2 > bytes.length) return incomplete('jpeg')
     const length = (bytes[at] << 8) | bytes[at + 1]
-    if (length < 2) return null
-    const sof = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc
-    if (sof) {
-      if (at + 7 > bytes.length) return null
-      return { type: 'jpeg', width: (bytes[at + 5] << 8) | bytes[at + 6], height: (bytes[at + 3] << 8) | bytes[at + 4] }
+    if (length < 2) return malformed('jpeg', 'a segment length under 2')
+    const isFrame =
+      (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) || marker === 0xde
+    if (isFrame) {
+      if (frame) return malformed('jpeg', 'more than one frame header')
+      if (at + 7 > bytes.length) return incomplete('jpeg')
+      frame = {
+        type: 'jpeg',
+        width: (bytes[at + 5] << 8) | bytes[at + 6],
+        height: (bytes[at + 3] << 8) | bytes[at + 4],
+      }
     }
     at += length
   }
-  return null
 }
 
-// RIFF....WEBP and the first chunk: VP8 (lossy: 14-bit sizes after the start code), VP8L (lossless: 14-bit sizes
-// minus one, packed) or VP8X (extended: 24-bit canvas sizes minus one)
+// RIFF....WEBP and its chunks. A simple file is one VP8 (lossy) or VP8L (lossless) chunk. An extended one (VP8X)
+// gives the canvas; its still image (VP8/VP8L) must be the canvas's size, and every animation frame (ANMF) must lie
+// inside it.
 function readWebP(bytes) {
-  if (bytes.length < 30) {
-    // VP8L fits in 25 bytes
-    if (!(bytes.length >= 25 && ascii(bytes, 12, 'VP8L'))) return null
-  }
-  if (ascii(bytes, 12, 'VP8 ')) {
-    if (bytes[23] !== 0x9d || bytes[24] !== 0x01 || bytes[25] !== 0x2a) return null
-    return {
-      type: 'webp',
-      width: (bytes[26] | (bytes[27] << 8)) & 0x3fff,
-      height: (bytes[28] | (bytes[29] << 8)) & 0x3fff,
+  const riffEnd = 8 + u32le(bytes, 4)
+  const end = Math.min(bytes.length, riffEnd)
+  let at = 12
+  let canvas = null
+  for (;;) {
+    if (at + 8 > end) {
+      // the bytes stop before the file does: later chunks (frames) are not seen yet
+      if (end < riffEnd) return incomplete('webp')
+      return canvas && canvas.frames > 0 ? canvas.size : malformed('webp', 'no image in the file')
     }
-  }
-  if (ascii(bytes, 12, 'VP8L')) {
-    if (bytes[20] !== 0x2f) return null
-    const b = bytes.subarray(21, 25)
-    return {
-      type: 'webp',
-      width: 1 + (b[0] | ((b[1] & 0x3f) << 8)),
-      height: 1 + ((b[1] >> 6) | (b[2] << 2) | ((b[3] & 0x0f) << 10)),
+    const name = fourcc(bytes, at)
+    const length = u32le(bytes, at + 4)
+    const data = at + 8
+    const image = name === 'VP8 ' ? vp8(bytes, data) : name === 'VP8L' ? vp8l(bytes, data) : undefined
+    if (image === null) {
+      return data + 10 > bytes.length ? incomplete('webp') : malformed('webp', 'an image chunk without its size')
     }
-  }
-  if (ascii(bytes, 12, 'VP8X')) {
-    return {
-      type: 'webp',
-      width: 1 + (bytes[24] | (bytes[25] << 8) | (bytes[26] << 16)),
-      height: 1 + (bytes[27] | (bytes[28] << 8) | (bytes[29] << 16)),
+    if (image) {
+      if (!canvas) return { type: 'webp', ...image }
+      if (image.width !== canvas.size.width || image.height !== canvas.size.height) {
+        return malformed('webp', 'an image that is not the canvas size')
+      }
+      return canvas.size
     }
+    if (name === 'VP8X') {
+      if (canvas) return malformed('webp', 'a second VP8X')
+      if (at !== 12) return malformed('webp', 'VP8X that is not the first chunk')
+      if (data + 10 > bytes.length) return incomplete('webp')
+      canvas = {
+        size: { type: 'webp', width: 1 + u24le(bytes, data + 4), height: 1 + u24le(bytes, data + 7) },
+        frames: 0,
+      }
+    } else if (!canvas) {
+      return malformed('webp', `the first chunk is ${JSON.stringify(name)}`)
+    } else if (name === 'ANMF') {
+      if (data + 16 > bytes.length) return incomplete('webp')
+      const x = 2 * u24le(bytes, data)
+      const y = 2 * u24le(bytes, data + 3)
+      const w = 1 + u24le(bytes, data + 6)
+      const h = 1 + u24le(bytes, data + 9)
+      if (x + w > canvas.size.width || y + h > canvas.size.height) {
+        return malformed('webp', 'an animation frame outside the canvas')
+      }
+      canvas.frames++
+    }
+    at = data + length + (length % 2)
   }
-  return null
+}
+
+// the size in a VP8 (lossy) key frame: after the 3-byte frame tag and the start code, 14 bits each; null if cut
+// short or without the start code
+function vp8(bytes, at) {
+  if (at + 10 > bytes.length || bytes[at + 3] !== 0x9d || bytes[at + 4] !== 0x01 || bytes[at + 5] !== 0x2a) return null
+  return {
+    width: (bytes[at + 6] | (bytes[at + 7] << 8)) & 0x3fff,
+    height: (bytes[at + 8] | (bytes[at + 9] << 8)) & 0x3fff,
+  }
+}
+
+// the size in a VP8L (lossless) header: the signature 0x2f, then 14 bits each, minus one
+function vp8l(bytes, at) {
+  if (at + 5 > bytes.length || bytes[at] !== 0x2f) return null
+  const b = bytes.subarray(at + 1, at + 5)
+  return { width: 1 + (b[0] | ((b[1] & 0x3f) << 8)), height: 1 + ((b[1] >> 6) | (b[2] << 2) | ((b[3] & 0x0f) << 10)) }
 }

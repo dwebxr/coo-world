@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import * as THREE from 'three'
 import { loadClient } from './lib/clientHarness.mjs'
-import { png, jpeg, webp, gif } from './lib/imageBytes.mjs'
+import { png, pngChunk, jpeg, webp, gif } from './lib/imageBytes.mjs'
 import { MAX_IMAGE_PIXELS, imageType, readImageHeader } from '../src/core/extras/imageHeader.js'
 
 // The browser's loader with its real code and a fake network: what it accepts, refuses, keeps and forgets.
@@ -45,6 +45,7 @@ const ClientLoader = loadClient('core/systems/ClientLoader.js', 'ClientLoader', 
   imageElementsPlugin: () => {},
   // the declared-size check runs for real in gltfLimits.test.js and clientLoaderGLTF.test.js; these bodies are not glTF
   checkGLTF: () => {},
+  createGLTFBudget: () => null,
   isAppleMobile: () => false,
   emoteUrls: [],
   Hls: class {},
@@ -379,11 +380,22 @@ test('a PNG, JPEG or WebP is refused from its header before it is decoded; other
   const files = {
     'huge.png': png(100000, 100000),
     'huge.jpg': jpeg(9000, 5000, { sof: 0xc2 }),
-    'huge.webp': webp(100000, 1000, 'VP8X'),
+    'huge.webp': webp(100000, 1000, 'animated', { frames: [[16000, 1000, 0, 0]] }),
     'late.jpg': late,
     'empty.png': png(0, 100),
     'small.png': png(64, 64),
     'other.gif': gif(30000, 30000),
+    // a 1 x 1 frame header in front of the real one: decoders disagree, so it is refused, not passed to one
+    'double.jpg': jpeg(9000, 9000, {
+      frames: [
+        [1, 1],
+        [9000, 9000],
+      ],
+    }),
+    'second-ihdr.png': png(10, 10, { before: [pngChunk('IHDR', [0, 0, 0x40, 0, 0, 0, 0x40, 0, 8, 6, 0, 0, 0])] }),
+    // a colour profile longer than the first bytes read: the whole file is read, then the size checked
+    'profiled.png': png(9000, 9000, { before: [pngChunk('iCCP', new Array(300000).fill(0))] }),
+    'cut.png': png(64, 64).subarray(0, 30),
   }
   fakeNetwork(t, url => (files[url.split('/').pop()] ? { body: files[url.split('/').pop()] } : null))
   const loader = makeLoader()
@@ -393,6 +405,10 @@ test('a PNG, JPEG or WebP is refused from its header before it is decoded; other
     ['huge.webp', /larger than 36000000 pixels/],
     ['late.jpg', /larger than 36000000 pixels/],
     ['empty.png', /no width or height/],
+    ['double.jpg', /malformed jpeg \(more than one frame header\)/],
+    ['second-ihdr.png', /malformed png \(a second IHDR\)/],
+    ['profiled.png', /larger than 36000000 pixels/],
+    ['cut.png', /png cut short/],
   ]) {
     await assert.rejects(loader.load('image', `asset://${name}`), reason, `image ${name}`)
     await assert.rejects(loader.load('texture', `https://elsewhere.example/${name}`), reason, `texture ${name}`)

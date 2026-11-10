@@ -1,6 +1,7 @@
 import * as THREE from '../extras/three'
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+// the vendored parser: it charges a per-file budget where it allocates (see its COO_BUDGET sites)
+import { GLTFLoader } from '../libs/gltfloader/GLTFLoader.js'
 import { VRMLoaderPlugin } from '@pixiv/three-vrm'
 
 import { System } from './System'
@@ -10,8 +11,8 @@ import { glbToNodes } from '../extras/glbToNodes'
 import { createEmoteFactory } from '../extras/createEmoteFactory'
 import { formatBytes } from '../extras/formatBytes'
 import { imageElementsPlugin, isAppleMobile } from '../extras/gltfImageElements'
-import { checkGLTF } from '../extras/gltfLimits'
-import { MAX_IMAGE_PIXELS, imageType, readImageHeader } from '../extras/imageHeader'
+import { checkGLTF, createGLTFBudget } from '../extras/gltfLimits'
+import { MAX_IMAGE_PIXELS, readImageHeader } from '../extras/imageHeader'
 import { emoteUrls } from '../extras/playerEmotes'
 import Hls from 'hls.js/dist/hls.js'
 
@@ -121,15 +122,17 @@ async function readBody(resp, maxBytes, race, onData) {
 }
 
 // The size of a PNG, JPEG or WebP read from its header, checked before anything decodes it: a file of a few hundred
-// bytes can declare 100000 x 100000. Any other format (GIF, AVIF, SVG, BMP, ...) goes to the browser's decoder as
-// before, and decodeImage checks what it decoded.
+// bytes can declare 100000 x 100000. One that is malformed (a second JPEG frame header, a second IHDR, a WebP frame
+// that does not match its canvas) is refused: decoders disagree about such files. Any other format (GIF, AVIF, SVG,
+// BMP, ...) goes to the browser's decoder as before, and decodeImage checks what it decoded.
 async function checkImageHeader(file) {
   const head = new Uint8Array(await file.slice(0, IMAGE_HEADER_BYTES).arrayBuffer())
   let header = readImageHeader(head)
-  if (!header && imageType(head) === 'jpeg' && file.size > head.length) {
-    header = readImageHeader(new Uint8Array(await file.arrayBuffer()))
-  }
+  // not settled in the first bytes (a long colour profile, an animated WebP): the whole file
+  if (header?.incomplete && file.size > head.length) header = readImageHeader(new Uint8Array(await file.arrayBuffer()))
   if (!header) return
+  if (header.malformed) throw new Error(`image is a malformed ${header.type} (${header.malformed})`)
+  if (header.incomplete) throw new Error(`image is a ${header.type} cut short`)
   if (!(header.width > 0 && header.height > 0)) throw new Error('image has no width or height')
   if (header.width * header.height > MAX_IMAGE_PIXELS)
     throw new Error(`image is larger than ${MAX_IMAGE_PIXELS} pixels`)
@@ -816,9 +819,10 @@ export class ClientLoader extends System {
     }
     if (type === 'model' || type === 'emote' || type === 'avatar') {
       const buffer = await file.arrayBuffer()
-      // what the file declares (accessor counts, instances, joints) is checked before the parser allocates it
+      // the structure before parsing; then what the parser allocates, charged where it does (one budget per file)
       checkGLTF(buffer)
-      const glb = await this.gltfLoader.parseAsync(buffer, '')
+      const budget = createGLTFBudget({ fileBytes: buffer.byteLength })
+      const glb = await this.gltfLoader.parseAsync(buffer, '', budget)
       try {
         assertTextureBudget(glb)
         if (type === 'model') return buildModelResult(glb, this.world, file)

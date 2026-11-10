@@ -15,7 +15,7 @@ before(async () => {
     export { createEmoteFactory } from './src/core/extras/createEmoteFactory'
     export { glbToNodes } from './src/core/extras/glbToNodes'
     export { getTrianglesFromGeometry } from './src/core/extras/getTrianglesFromGeometry'
-    export { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+    export { GLTFLoader } from './src/core/libs/gltfloader/GLTFLoader.js'
     export { VRMLoaderPlugin } from '@pixiv/three-vrm'
   `)
   m = await import(bundle.url)

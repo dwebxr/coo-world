@@ -219,3 +219,121 @@ test('node.getWorldMatrix() without a target returns a new matrix, not one share
   assert.notEqual(first, second)
   assert.equal(leaked, null)
 })
+
+// an app with its root mounted, and the world methods the script calls
+function appWorld() {
+  const world = { stage: { dirtyNodes: new Set() }, network: {}, events: {} }
+  const apps = new m.Apps(world)
+  const entity = appEntity()
+  entity.worldNodes = new Set()
+  const root = new m.Node({ id: 'root' })
+  root.activate({ world, entity })
+  return { world, apps, entity, root }
+}
+
+test('node budget: a world-space node moved under another node is charged at its new depth', () => {
+  const { apps, entity, root } = appWorld()
+  let parent = root
+  let refused = null
+  quietly(() => {
+    for (let i = 0; i < 600 && !refused; i++) {
+      const node = new m.Node()
+      apps.worldMethods.add(entity, node.getProxy())
+      try {
+        parent.getProxy().add(node.getProxy())
+      } catch (err) {
+        refused = { i, message: err.message }
+      }
+      parent = node
+    }
+  })
+  assert.ok(refused, 'the chain is refused')
+  assert.equal(refused.i, m.NODE_DEPTH_LIMIT - 1, 'at the 256th level below the root')
+  assert.match(refused.message, /more than 256 levels of nodes/)
+  assert.equal(entity.crashes, 1)
+  // nothing mounted deeper than the limit
+  let deepest = 0
+  root.traverse(node => {
+    if (node.mounted) deepest = Math.max(deepest, node._nodeDepth)
+  })
+  assert.equal(deepest, m.NODE_DEPTH_LIMIT - 1)
+})
+
+test('node budget: a node switched active outside any world is not mounted until world.add charges it', () => {
+  const { apps, entity } = appWorld()
+  const before = entity.liveNodes
+  const node = new m.Node({ active: false })
+  node.add(new m.Node())
+  node.getProxy().active = true
+  assert.equal(node.mounted, false, 'no world, no owner: not mounted')
+  assert.equal(entity.liveNodes, before)
+  apps.worldMethods.add(entity, node.getProxy())
+  assert.equal(node.mounted, true)
+  assert.equal(entity.liveNodes, before + 2)
+  // and switched off and on again in place, it is charged once
+  node.getProxy().active = false
+  assert.equal(entity.liveNodes, before)
+  node.getProxy().active = true
+  assert.equal(entity.liveNodes, before + 2)
+})
+
+test('node depth: a mounted subtree moved under a deep chain is re-charged level by level', () => {
+  const { entity, root } = appWorld()
+  const deep = chain(m.NODE_DEPTH_LIMIT - 2) // levels 1..254 under the root
+  root.add(deep[0])
+  const subtree = chain(4)
+  root.add(subtree[0]) // mounted at levels 1..4
+  assert.ok(subtree.every(node => node.mounted))
+  const count = entity.liveNodes
+  quietly(() => {
+    assert.throws(() => deep.at(-1).add(subtree[0]), /more than 256 levels of nodes/)
+  })
+  assert.deepEqual(
+    subtree.map(node => node.mounted),
+    [true, false, false, false],
+    'levels 255 fits, 256 and below do not'
+  )
+  assert.equal(entity.liveNodes, count - 3)
+  assert.equal(entity.crashes, 1)
+  // teardown returns everything, including the part-mounted subtree
+  root.deactivate()
+  assert.equal(entity.liveNodes, 0)
+})
+
+test('node budget: a node mounted for another owner is moved, not shared, by world.add', () => {
+  const a = appWorld()
+  const b = { entity: appEntity() }
+  b.entity.worldNodes = new Set()
+  const node = new m.Node()
+  a.apps.worldMethods.add(a.entity, node.getProxy())
+  assert.equal(a.entity.liveNodes, 2)
+  a.apps.worldMethods.add(b.entity, node.getProxy())
+  assert.equal(a.entity.liveNodes, 1)
+  assert.equal(b.entity.liveNodes, 1)
+  assert.equal(node.ctx.entity, b.entity)
+})
+
+test('teardown: an unmount that throws still unmounts and releases the whole subtree', () => {
+  const { entity, root } = appWorld()
+  class Bad extends m.Node {
+    unmount() {
+      throw new Error('unmount boom')
+    }
+  }
+  const bad = new Bad()
+  bad.add(new m.Node())
+  root.add(bad)
+  root.add(new m.Node())
+  assert.equal(entity.liveNodes, 4)
+  assert.throws(() => root.deactivate(), /unmount boom/)
+  assert.equal(entity.liveNodes, 0)
+  root.traverse(node => assert.equal(node.mounted, false))
+  // remove() detaches even when the unmount throws
+  const parent = new m.Node()
+  const child = new Bad()
+  parent.add(child)
+  parent.activate({ world: {}, entity })
+  assert.throws(() => parent.remove(child), /unmount boom/)
+  assert.equal(child.parent, null)
+  assert.deepEqual(parent.children, [])
+})

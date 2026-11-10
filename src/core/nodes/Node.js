@@ -134,34 +134,50 @@ export class Node {
     this._nodeDepth = 0
   }
 
+  // Mounts this node and its active descendants into `ctx` (the world and the entity that owns them). A mounted
+  // node keeps the context it was mounted with: moving it to another parent or owner unmounts it first (see add
+  // and world.add), so its budget is charged again where it lands. A node that was never placed in a world has
+  // no context and is not mounted.
   activate(ctx) {
-    if (ctx) this.ctx = ctx
-    if (!this._active) return
-    // top down mount
     if (this.mounted) return
+    if (ctx) this.ctx = ctx
+    if (!this._active || !this.ctx) return
+    // top down mount
     this.updateTransform()
-    const entity = this.ctx?.entity
+    const entity = this.ctx.entity
     if (entity?.isApp) chargeNode(this, entity)
     this.mounted = true
     this.mount()
     const children = this.children
     for (let i = 0, l = children.length; i < l; i++) {
-      children[i].activate(ctx)
+      children[i].activate(this.ctx)
     }
   }
 
+  // Unmounts bottom up. Every mounted node in the subtree is unmounted and returns its budget even when an unmount
+  // throws; the first error is rethrown afterwards.
   deactivate() {
     if (!this.mounted) return
-    // bottom up unmount
+    let failed = false
+    let failure
     const children = this.children
     for (let i = 0, l = children.length; i < l; i++) {
-      children[i].deactivate()
+      try {
+        children[i].deactivate()
+      } catch (err) {
+        if (!failed) [failed, failure] = [true, err]
+      }
     }
-    this.unmount()
+    try {
+      this.unmount()
+    } catch (err) {
+      if (!failed) [failed, failure] = [true, err]
+    }
     this.isDirty = false
     this.isTransformed = true
     this.mounted = false
     releaseNode(this)
+    if (failed) throw failure
   }
 
   add(node) {
@@ -174,6 +190,9 @@ export class Node {
     }
     if (node.parent) {
       node.parent.remove(node)
+    } else if (node.mounted) {
+      // a mounted root (a world-space node, or another tree's root) leaves its place before it moves here
+      node.deactivate()
     }
     node.parent = this
     this.children.push(node)
@@ -186,9 +205,12 @@ export class Node {
   remove(node) {
     const idx = this.children.indexOf(node)
     if (idx === -1) return
-    node.deactivate()
-    node.parent = null
-    this.children.splice(idx, 1)
+    try {
+      node.deactivate()
+    } finally {
+      node.parent = null
+      this.children.splice(idx, 1)
+    }
     return this
   }
 
@@ -248,6 +270,7 @@ export class Node {
     } else if (this._active && this.parent?.mounted) {
       this.activate(this.parent.ctx)
     } else if (this._active && !this.parent) {
+      // only a node that was placed in a world before (it kept that context) mounts again; see activate
       this.activate(this.ctx)
     }
   }

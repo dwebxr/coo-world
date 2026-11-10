@@ -82,6 +82,9 @@ export class Apps extends System {
         }
         if (node.parent) {
           node.parent.remove(node)
+        } else if (node.mounted && node.ctx?.entity !== entity) {
+          // mounted for another owner: it leaves there first, so this app is charged for it (Node.activate)
+          node.deactivate()
         }
         entity.worldNodes.add(node)
         node.activate({ world, entity })

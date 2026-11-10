@@ -121,7 +121,8 @@ Unsubscribes from world events.
 ### `.raycast(origin: Vector3, direction: Vector3, maxDistance: ?Number, layerMask: ?Number)`
 
 Raycasts the physics scene.
-Returns the nearest hit (`point`, `normal`, `distance`, `tag`, `playerId`), or `null`.
+Returns the nearest hit (`point`, `normal`, `distance`, `tag`, `playerId`), or `null`. Each call returns a new
+object with new vectors, so keeping or changing a result affects nothing else.
 If `maxDistance` is omitted or `null`, max distance is infinite. Zero is allowed; negative values,
 NaN and non-numbers throw. `origin` and `direction` accept endowed and stock THREE `Vector3`
 instances; lookalike objects throw. A component that is non-finite or overflows float32 returns
@@ -145,6 +146,18 @@ Changing query radii reuses one native sphere geometry rather than growing a rad
 
 Creates a bitmask to be used in `world.raycast()`.
 Currently the only groups available are `environment` and `player`.
+
+### `.chat(msg: { body, from? }, broadcast: ?Boolean)`
+
+Posts a line in the chat. `body` is the text (a number is converted; other values are refused; trimmed and cut to
+500 characters). `from` is an optional display name shown next to the app's name. With `broadcast` on the server the
+line goes to every client; with `broadcast` on a client it is sent to the server as the local player's own chat.
+
+The line is always shown as this app's message, with the app's name: a script cannot post as a player or as the
+world. Any `fromId`, `id`, `kind` or other field in `msg` is ignored, a script's line never pops a player's chat
+bubble, and the `chat` event it fires has `kind: 'app'` and no `fromId`. Tip confirmations and world notices carry a
+marker in the chat that app lines cannot show, so a script line that reads like a tip announcement is never one;
+only the `tip` event is proof of a tip.
 
 ### `.getPlayer(playerId)`: Player
 

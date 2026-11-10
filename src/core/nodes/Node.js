@@ -444,7 +444,8 @@ export class Node {
           return node?.getProxy() || null
         },
         getWorldMatrix(mat) {
-          return self.getWorldMatrix(mat)
+          // without a target the result is a new matrix, never the module's shared one
+          return self.getWorldMatrix(mat ?? new THREE.Matrix4())
         },
         add(pNode) {
           const node = getNodeRef(pNode)

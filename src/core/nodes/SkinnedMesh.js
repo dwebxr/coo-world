@@ -259,7 +259,9 @@ export class SkinnedMesh extends Node {
           return self.getBone(name)
         },
         getBoneTransform(name) {
-          return self.getBoneTransform(name)
+          // a copy: the class method returns a module matrix shared by every skinned mesh of every app
+          const matrix = self.getBoneTransform(name)
+          return matrix ? new THREE.Matrix4().copy(matrix) : matrix
         },
       }
       proxy = Object.defineProperties(proxy, Object.getOwnPropertyDescriptors(super.getProxy())) // inherit Node properties

@@ -1042,6 +1042,7 @@ export class ClientBuilder extends System {
     if (file.size > maxSize) {
       this.world.chat.add({
         id: uuid(),
+        kind: 'system',
         from: null,
         fromId: null,
         body: `File size too large (>${this.world.network.maxUploadSize}mb)`,
@@ -1055,6 +1056,7 @@ export class ClientBuilder extends System {
       if (!this.canBuild()) {
         this.world.chat.add({
           id: uuid(),
+          kind: 'system',
           from: null,
           fromId: null,
           body: `You don't have permission to do that.`,

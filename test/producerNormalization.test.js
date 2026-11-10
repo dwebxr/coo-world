@@ -42,7 +42,15 @@ test('Chat.add: listeners, storage, bubble, events and broadcast all receive the
   world.entities.getPlayer = () => ({ chat: text => bubbles.push(text) })
   const chat = new Chat(world)
   chat.listeners.add(msgs => listened.push(msgs))
-  const msg = { id: 'id', createdAt: 'now', body: ' x '.repeat(1000), from: 'n'.repeat(100), fromId: 'p', secret: true }
+  const msg = {
+    id: 'id',
+    kind: 'player',
+    createdAt: 'now',
+    body: ' x '.repeat(1000),
+    from: 'n'.repeat(100),
+    fromId: 'p',
+    secret: true,
+  }
   const expected = chatEnvelope(msg)
   chat.add(msg, true)
   assert.deepEqual(chat.msgs, [expected])

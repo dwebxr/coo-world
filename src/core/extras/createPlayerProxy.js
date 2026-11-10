@@ -30,9 +30,6 @@ function readHoldingSpec(spec) {
 
 export function createPlayerProxy(entity, player) {
   const world = player.world
-  const position = new THREE.Vector3()
-  const rotation = new THREE.Euler()
-  const quaternion = new THREE.Quaternion()
   let activeEffectConfig = null
   let voiceMod
   // a client script changes another player only through a server script: on a remote player these calls
@@ -71,14 +68,16 @@ export function createPlayerProxy(entity, player) {
     get health() {
       return player.data.health
     },
+    // fresh copies on every read: a reused result would let a script that replaced its methods (eg `copy`) be
+    // handed the player's live transform the next time the host refreshes it
     get position() {
-      return position.copy(player.base.position)
+      return new THREE.Vector3().copy(player.base.position)
     },
     get rotation() {
-      return rotation.copy(player.base.rotation)
+      return new THREE.Euler().copy(player.base.rotation)
     },
     get quaternion() {
-      return quaternion.copy(player.base.quaternion)
+      return new THREE.Quaternion().copy(player.base.quaternion)
     },
     get height() {
       return player.avatar?.getHeight()
@@ -171,8 +170,10 @@ export function createPlayerProxy(entity, player) {
         world.network.sendTo(player.data.owner, 'playerTeleport', payload)
       }
     },
+    // a copy: the avatar's own matrix is shared with the engine (nametag placement, aiming) and every app
     getBoneTransform(boneName) {
-      return player.avatar?.getBoneTransform?.(boneName)
+      const matrix = player.avatar?.getBoneTransform?.(boneName)
+      return matrix ? new THREE.Matrix4().copy(matrix) : matrix
     },
     setSessionAvatar(url) {
       const avatar = url

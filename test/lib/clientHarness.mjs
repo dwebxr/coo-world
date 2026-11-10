@@ -3,7 +3,7 @@ import { createTokenBalanceClient } from '../../src/core/extras/tokenBalanceClie
 import { internalEvents } from '../../src/core/extras/internalEvents.js'
 import { EventEmitter } from 'node:events'
 import * as THREE from 'three'
-import { isEqual, cloneDeep, isBoolean, isNumber } from 'lodash-es'
+import { isEqual, cloneDeep, isArray, isBoolean, isFunction, isNumber } from 'lodash-es'
 import moment from 'moment'
 import { uuid, createDispatchQueue } from '../../src/core/utils.js'
 import { createUploadQueue } from '../../src/core/extras/uploadQueue.js'
@@ -20,6 +20,10 @@ import { CHAT_BODY_MAX_LENGTH, chatEnvelope, cutText, sanitizeChatMessage } from
 import { sanitizeName, sanitizePlayerSelfModify, isEmoteUrl } from '../../src/core/extras/entityModifyPolicy.js'
 import { normalizeSettingValue } from '../../src/core/extras/settingsPolicy.js'
 import { createEventLedger } from '../../src/core/extras/appEventQueue.js'
+import { applyInitials, copyFields, copyProps } from '../../src/core/extras/appFields.js'
+import { scriptChatMessage } from '../../src/core/extras/chatPolicy.js'
+import { createLogOnce } from '../../src/core/extras/logOnce.js'
+import { toScriptError } from '../../src/core/extras/scriptValues.js'
 
 class System extends EventEmitter {
   constructor(world) {
@@ -40,6 +44,8 @@ export function loadClient(file, name, context = {}) {
     RAD2DEG: 180 / Math.PI,
     isEqual,
     cloneDeep,
+    isArray,
+    isFunction,
     isBoolean,
     isNumber,
     moment,
@@ -68,6 +74,12 @@ export function loadClient(file, name, context = {}) {
     normalizeSettingValue,
     createEventLedger,
     internalEvents,
+    applyInitials,
+    copyFields,
+    copyProps,
+    scriptChatMessage,
+    createLogOnce,
+    toScriptError,
     ...context,
   }
   const code = source.replace(/^import[\s\S]*?from ['"][^'"]+['"]\n/gm, '').replace(/^export /gm, '')

@@ -725,6 +725,7 @@ export class ServerNetwork extends System {
     }
     const message = {
       id: uuid(),
+      kind: 'player',
       from: socket.player.data.name,
       fromId: socket.player.data.id,
       body: safe.body,
@@ -759,6 +760,7 @@ export class ServerNetwork extends System {
         this.send('entityModified', { id, rank })
         socket.send('chatAdded', {
           id: uuid(),
+          kind: 'system',
           from: null,
           fromId: null,
           body: granted ? 'Admin granted!' : 'Admin revoked!',
@@ -798,6 +800,7 @@ export class ServerNetwork extends System {
         this.send('entityModified', { id, name })
         socket.send('chatAdded', {
           id: uuid(),
+          kind: 'system',
           from: null,
           fromId: null,
           body: `Name set to ${name}!`,
@@ -827,6 +830,7 @@ export class ServerNetwork extends System {
         const send = body => {
           socket.send('chatAdded', {
             id: uuid(),
+            kind: 'system',
             from: null,
             fromId: null,
             body,
@@ -976,6 +980,7 @@ export class ServerNetwork extends System {
       socket.send('walletStatus', { verified: false, attempt })
       socket.send('chatAdded', {
         id: uuid(),
+        kind: 'system',
         body: 'Wallet verification failed.',
         createdAt: moment().toISOString(),
       })
@@ -1016,7 +1021,7 @@ export class ServerNetwork extends System {
     } else {
       body = 'Could not check your balance. Press refresh in a moment.'
     }
-    socket.send('chatAdded', { id: uuid(), body, createdAt: moment().toISOString() })
+    socket.send('chatAdded', { id: uuid(), kind: 'system', body, createdAt: moment().toISOString() })
   }
 
   onRequestBuilderRecheck = async (socket, data) => {
@@ -1091,6 +1096,7 @@ export class ServerNetwork extends System {
       this.send('entityModified', { id: player.data.id, rank })
       socket.send('chatAdded', {
         id: uuid(),
+        kind: 'system',
         body: 'Wallet disconnected: builder access removed.',
         createdAt: moment().toISOString(),
       })
@@ -1458,6 +1464,7 @@ export class ServerNetwork extends System {
     if (socket && !socket.disconnected) {
       socket.send('chatAdded', {
         id: uuid(),
+        kind: 'tip',
         from: null,
         fromId: null,
         body: privateBody,
@@ -1478,7 +1485,10 @@ export class ServerNetwork extends System {
     while (announce.queue.length && announce.tokens >= 1) {
       announce.tokens--
       const body = announce.queue.shift()
-      this.world.chat.add({ id: uuid(), from: null, fromId: null, body, createdAt: moment().toISOString() }, true)
+      this.world.chat.add(
+        { id: uuid(), kind: 'tip', from: null, fromId: null, body, createdAt: moment().toISOString() },
+        true
+      )
     }
     if (announce.queue.length) {
       announce.timer = setTimeout(() => {
@@ -1764,6 +1774,7 @@ export class ServerNetwork extends System {
       if (!spawn) {
         socket.send('chatAdded', {
           id: uuid(),
+          kind: 'system',
           from: null,
           fromId: null,
           body: 'Spawn not updated: invalid player transform',
@@ -1780,6 +1791,7 @@ export class ServerNetwork extends System {
     await this.saveConfig('spawn', this.spawn)
     socket.send('chatAdded', {
       id: uuid(),
+      kind: 'system',
       from: null,
       fromId: null,
       body: op === 'set' ? 'Spawn updated' : 'Spawn cleared',

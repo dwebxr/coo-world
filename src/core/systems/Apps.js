@@ -14,12 +14,18 @@ import { internalEvents } from '../extras/internalEvents'
 import { resolveOpenURL } from '../extras/worldOpenPolicy'
 import { toScriptError } from '../extras/scriptValues'
 import { createEventLedger } from '../extras/appEventQueue'
+import { applyInitials, copyFields } from '../extras/appFields'
+import { scriptChatMessage } from '../extras/chatPolicy'
+import { createLogOnce } from '../extras/logOnce'
 
 const _rayOrigin = new THREE.Vector3()
 const _rayDir = new THREE.Vector3()
 const _overlapOrigin = new THREE.Vector3()
 
 const isBrowser = typeof window !== 'undefined'
+
+// app.configure reports a dropped field or a cut list once per app
+const warnConfigure = createLogOnce(message => console.warn(message))
 
 // create options from scripts: geometry may be null, a geometry ref from another node, or a
 // real geometry (resolved here, once, like the proxy setter)
@@ -50,7 +56,6 @@ export class Apps extends System {
   }
 
   initWorldHooks() {
-    const self = this
     const world = this.world
     const allowLoaders = ['avatar', 'model']
     this.worldGetters = {
@@ -134,10 +139,13 @@ export class Apps extends System {
       },
       chat(entity, msg, broadcast) {
         if (!msg) return
+        // the script picks the text and a display name; the host stamps kind 'app', the app's name and no player
+        const message = scriptChatMessage(msg, entity.blueprint?.name)
+        if (!message) return
         if (world.network.isServer) {
-          return world.network.asScript(() => world.chat.add(msg, broadcast), entity, 'chat')
+          return world.network.asScript(() => world.chat.add(message, broadcast), entity, 'chat')
         }
-        world.chat.add(msg, broadcast)
+        world.chat.add(message, broadcast)
       },
       getPlayer(entity, playerId) {
         return entity.getPlayerProxy(playerId)
@@ -175,21 +183,15 @@ export class Apps extends System {
         }
         const hit = world.physics.raycast(_rayOrigin, _rayDir, maxDistance, layerMask >>> 0)
         if (!hit) return null
-        if (!self.raycastHit) {
-          self.raycastHit = {
-            point: new THREE.Vector3(),
-            normal: new THREE.Vector3(),
-            distance: 0,
-            tag: null,
-            playerId: null,
-          }
+        // a new result per call: a script that changes (or puts accessors on) its result cannot see or change
+        // another app's raycast
+        return {
+          point: new THREE.Vector3().copy(hit.point),
+          normal: new THREE.Vector3().copy(hit.normal),
+          distance: hit.distance,
+          tag: hit.handle?.tag,
+          playerId: hit.handle?.playerId,
         }
-        self.raycastHit.point.copy(hit.point)
-        self.raycastHit.normal.copy(hit.normal)
-        self.raycastHit.distance = hit.distance
-        self.raycastHit.tag = hit.handle?.tag
-        self.raycastHit.playerId = hit.handle?.playerId
-        return self.raycastHit
       },
       overlapSphere(entity, radius, origin, layerMask) {
         const validOrigin = readVec3(origin, _overlapOrigin, '[overlapSphere] origin must be Vector3')
@@ -310,12 +312,13 @@ export class Apps extends System {
       state(entity) {
         return entity.data.state
       },
+      // the app's own copy of the blueprint props (see App.build); changing it changes nothing shared
       props(entity) {
-        return entity.blueprint.props
+        return entity.props
       },
       config(entity) {
         // deprecated. will be removed
-        return entity.blueprint.props
+        return entity.props
       },
       resetOnMove(entity) {
         return entity.resetOnMove
@@ -399,23 +402,16 @@ export class Apps extends System {
         return entity.control
       },
       configure(entity, fnOrArray) {
-        if (isArray(fnOrArray)) {
-          entity.fields = fnOrArray
-        } else if (isFunction(fnOrArray)) {
-          entity.fields = fnOrArray() // deprecated
+        let fields = fnOrArray
+        if (isFunction(fnOrArray)) {
+          fields = fnOrArray() // deprecated
         }
-        if (!isArray(entity.fields)) {
-          entity.fields = []
-        }
-        const props = entity.blueprint.props
-        for (const field of entity.fields) {
-          // apply file shortcuts
-          fileRemaps[field.type]?.(field)
-          // apply any initial values
-          if (field.initial !== undefined && props[field.key] === undefined) {
-            props[field.key] = field.initial
-          }
-        }
+        // the sidebar only ever sees host copies made through the field schema (appFields.js)
+        entity.fields = copyFields(isArray(fields) ? fields : [], (reason, message) =>
+          warnConfigure(entity, reason, message)
+        )
+        // initial values go into this app's own props copy, never into the shared blueprint
+        if (entity.props) applyInitials(entity.fields, entity.props)
         entity.onFields?.(entity.fields)
       },
     }
@@ -455,39 +451,4 @@ export class Apps extends System {
       }
     }
   }
-}
-
-export const fileRemaps = {
-  avatar: field => {
-    field.type = 'file'
-    field.kind = 'avatar'
-  },
-  emote: field => {
-    field.type = 'file'
-    field.kind = 'emote'
-  },
-  model: field => {
-    field.type = 'file'
-    field.kind = 'model'
-  },
-  texture: field => {
-    field.type = 'file'
-    field.kind = 'texture'
-  },
-  image: field => {
-    field.type = 'file'
-    field.kind = 'image'
-  },
-  video: field => {
-    field.type = 'file'
-    field.kind = 'video'
-  },
-  hdr: field => {
-    field.type = 'file'
-    field.kind = 'hdr'
-  },
-  audio: field => {
-    field.type = 'file'
-    field.kind = 'audio'
-  },
 }

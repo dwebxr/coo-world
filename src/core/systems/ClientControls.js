@@ -5,6 +5,7 @@ import * as THREE from '../extras/three'
 import { System } from './System'
 import { createControlProxy } from './controlProxy'
 import { callEntry, callScript } from '../extras/callScript'
+import { readOnce, toText } from '../extras/scriptText'
 
 const LMB = 1 // bitmask
 const RMB = 2 // bitmask
@@ -25,6 +26,31 @@ const q2 = new THREE.Quaternion()
 const captured = new Set()
 
 let actionIds = 0
+
+// the action hints a control shows in the HUD (CoreUI Actions): host objects built from the given list, reading
+// each property once and keeping only strings (a script's objects, getters or forged React elements never reach
+// the renderer, and nothing is written back onto them)
+export const ACTIONS_LIMIT = 64
+const ACTION_TYPE_MAX = 64
+const ACTION_LABEL_MAX = 128
+const ACTION_BTN_MAX = 16
+
+export function copyActions(list) {
+  const length = readOnce(list, 'length')
+  const count = typeof length === 'number' && length > 0 ? Math.min(length, ACTIONS_LIMIT) : 0
+  const actions = []
+  for (let i = 0; i < count; i++) {
+    const action = readOnce(list, i)
+    if (action === null || typeof action !== 'object') continue
+    actions.push({
+      id: ++actionIds,
+      type: toText(readOnce(action, 'type'), ACTION_TYPE_MAX),
+      label: toText(readOnce(action, 'label'), ACTION_LABEL_MAX),
+      btn: toText(readOnce(action, 'btn'), ACTION_BTN_MAX),
+    })
+  }
+  return actions
+}
 
 /**
  * Control System
@@ -224,12 +250,7 @@ export class ClientControls extends System {
           if (value !== null && !Array.isArray(value)) {
             throw new Error('[control] actions must be null or array')
           }
-          control.actions = value
-          if (value) {
-            for (const action of value) {
-              action.id = ++actionIds
-            }
-          }
+          control.actions = value ? copyActions(value) : null
           self.buildActions()
         },
         release: () => {

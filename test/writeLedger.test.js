@@ -1,5 +1,7 @@
 import { callForScript } from '../src/core/extras/scriptValues.js'
-import { chatEnvelope } from '../src/core/extras/chatPolicy.js'
+import { chatEnvelope, scriptChatMessage } from '../src/core/extras/chatPolicy.js'
+import { applyInitials, copyFields } from '../src/core/extras/appFields.js'
+import { createLogOnce } from '../src/core/extras/logOnce.js'
 import { sanitizePlayerSelfModify } from '../src/core/extras/entityModifyPolicy.js'
 import { readVec3, warnOnce } from '../src/core/extras/physxConvert.js'
 import { createEventLedger } from '../src/core/extras/appEventQueue.js'
@@ -252,6 +254,10 @@ const loadClass = (file, name, context = {}) => {
     moment: () => ({ toISOString: () => 'now' }),
     chatEnvelope: msg => chatEnvelope({ ...msg }),
     createEventLedger,
+    scriptChatMessage,
+    applyInitials,
+    copyFields,
+    createLogOnce,
     ...context,
   })
 }

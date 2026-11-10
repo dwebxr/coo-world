@@ -9,6 +9,7 @@ import { serializeError } from '../extras/serializeError'
 import { registerAppProxy } from '../nodes/refs'
 import { createScriptTimers } from '../extras/scriptTimers'
 import { createScriptResponse, toHostFetchOptions } from '../extras/scriptFetch'
+import { copyProps } from '../extras/appFields'
 import { createEventQueue } from '../extras/appEventQueue'
 import { briefError, createLogOnce } from '../extras/logOnce'
 
@@ -49,6 +50,8 @@ export class App extends Entity {
     this.snaps = []
     this.root = createNode('group')
     this.fields = []
+    // this instance's own copy of the blueprint props (rebuilt with every build)
+    this.props = {}
     this.target = null
     this.projectLimit = Infinity
     this.resetOnMove = false
@@ -77,6 +80,7 @@ export class App extends Entity {
     if (blueprint.disabled) {
       this.unbuild()
       this.blueprint = blueprint
+      this.props = copyProps(blueprint.props)
       this.eventQueue.clear() // a disabled app runs no script; nothing queued can be delivered
       this.building = false
       return
@@ -131,6 +135,8 @@ export class App extends Entity {
     if (this.data.uploader && this.data.uploader !== this.world.network.id) this.mode = Modes.LOADING
     // setup
     this.blueprint = blueprint
+    // scripts change this copy, never the shared blueprint (other instances, the snapshot and the sidebar read that)
+    this.props = copyProps(blueprint.props)
     this.root = root
     if (!blueprint.scene) {
       this.root.position.fromArray(this.data.position)
@@ -159,7 +165,7 @@ export class App extends Entity {
       this.nativeFailure = false
       this.abortController = new AbortController()
       try {
-        this.script.exec(this.getWorldProxy(), this.getAppProxy(), this.fetch, blueprint.props, this.setTimeout)
+        this.script.exec(this.getWorldProxy(), this.getAppProxy(), this.fetch, this.props, this.setTimeout)
         if (this.n !== n || this.crashed || this.world.fatalError) return
         this.scriptError = null
       } catch (err) {

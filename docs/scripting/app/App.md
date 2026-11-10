@@ -83,7 +83,7 @@ Per connection, sustained input is about 32k decoded nodes/s, shared by all apps
 
 On the server, packets are capped at 512 KiB. Script output (`app.send`, `app.sendTo`, script chat, player relays and voice updates) shares a 512 KiB budget of unique bytes per tick, counted once before broadcasting. A call that exceeds the packet or tick budget sends nothing and returns `false`. A recipient is skipped if the write would take its accounted backlog above 512 KiB; `app.send` returns `false` if any recipient is skipped, even when others receive the event. Script traffic does not disconnect a recipient for being behind; system traffic that would exceed 1 MiB of backlog disconnects that client.
 
-Script chat bodies must be text. Numbers are converted to text; other values are refused.
+Script chat bodies must be text. Numbers are converted to text; other values are refused. See [`world.chat`](/docs/scripting/world/World.md) for how script messages are shown.
 
 ### `.emit(name, data)`
 

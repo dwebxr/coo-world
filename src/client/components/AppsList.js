@@ -18,6 +18,7 @@ import {
 import { cls } from './cls'
 import { orderBy } from 'lodash-es'
 import { formatBytes } from '../../core/extras/formatBytes'
+import { toText } from '../../core/extras/scriptText'
 
 const defaultStats = {
   geometries: 0,
@@ -44,7 +45,7 @@ export function AppsList({ world, query, perf, refresh, setRefresh }) {
         const type = blueprint.model.endsWith('.vrm') ? 'avatar' : 'model'
         const model = world.loader.get(type, blueprint.model)
         const stats = model?.getStats() || defaultStats
-        const name = blueprint.name || '-'
+        const name = toText(blueprint.name) || '-'
         item = {
           blueprint,
           keywords: name.toLowerCase(),

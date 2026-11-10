@@ -1,4 +1,4 @@
-import { isNumber, isString } from 'lodash-es'
+import { isNumber } from 'lodash-es'
 import { Node } from './Node'
 
 const defaults = {
@@ -44,10 +44,12 @@ export class Nametag extends Node {
   }
 
   set label(value = defaults.label) {
-    if (isNumber(value)) {
+    // drawn into the shared nametag atlas, also when another nametag is removed: a primitive string only (a boxed
+    // String with its own toString would run script code there)
+    if (typeof value === 'number') {
       value = value + ''
     }
-    if (!isString(value)) {
+    if (typeof value !== 'string') {
       throw new Error('[nametag] label invalid')
     }
     if (this._label === value) return

@@ -1,5 +1,5 @@
 import * as THREE from '../extras/three'
-import { isFunction, isNumber, isString } from 'lodash-es'
+import { isFunction, isNumber } from 'lodash-es'
 
 import { Node } from './Node'
 
@@ -59,7 +59,9 @@ export class Action extends Node {
   }
 
   set label(value) {
-    this._label = isString(value) ? value : isNumber(value) ? value + '' : defaults.label
+    // drawn on the action prompt every frame: kept as a primitive string (a boxed String or an object with its own
+    // toString would run script code inside the client's frame loop)
+    this._label = typeof value === 'string' ? value : typeof value === 'number' ? value + '' : defaults.label
   }
 
   get distance() {

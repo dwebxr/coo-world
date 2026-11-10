@@ -202,7 +202,9 @@ export class Avatar extends Node {
           return self.getHeadToHeight()
         },
         getBoneTransform(boneName) {
-          return self.getBoneTransform(boneName)
+          // a copy: the instance's matrix is the one the engine aims this avatar with
+          const matrix = self.getBoneTransform(boneName)
+          return matrix ? new THREE.Matrix4().copy(matrix) : matrix
         },
         setLocomotion(mode, axis, gazeDir) {
           self.setLocomotion(mode, axis, gazeDir)

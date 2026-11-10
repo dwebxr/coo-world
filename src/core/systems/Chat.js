@@ -36,7 +36,8 @@ export class Chat extends System {
       callback(this.msgs)
     }
     const body = msg.body
-    if (msg.fromId) {
+    // only a player's own message pops that player's bubble (an app or system line has no fromId)
+    if (msg.kind === 'player' && msg.fromId) {
       const player = this.world.entities.getPlayer(msg.fromId)
       player?.chat(body)
     }
@@ -89,6 +90,7 @@ export class Chat extends System {
     const player = this.world.entities.player
     const data = {
       id: uuid(),
+      kind: 'player',
       from: player.data.name,
       fromId: player.data.id,
       body: safe.body,

@@ -37,6 +37,22 @@ Here is a list of available button properties:
 
 `keyA` to `keyZ`, `digit0` to `digit9`, `minus`, `equal`, `bracketLeft`, `bracketRight`, `backslash`, `semicolon`, `quote`, `backquote`, `comma`, `period`, `slash`, `arrowUp`, `arrowDown`, `arrowLeft`, `arrowRight`, `home`, `end`, `pageUp`, `pageDown`, `tab`, `capsLock`, `shiftLeft`, `shiftRight`, `controlLeft`, `controlRight`, `altLeft`, `altRight`, `enter`, `space`, `backspace`, `delete`, `escape`, `mouseLeft`, `mouseRight`, `metaLeft`.
 
+### Action hints
+
+`control.setActions(actions)` shows a list of hints (an icon and a label) in the top left of the screen while the
+control is bound; `null` clears it. Each action is `{ type, label, btn }`: `type` is a button name (eg `keyE`,
+`mouseLeft`) or `'custom'`, in which case `btn` is the text shown in the key pill. The list is copied when you call
+`setActions`: only string values are shown (numbers become text, anything else shows nothing), labels are cut to 128
+characters and at most 64 actions are kept. Later changes to your array or objects are not shown until you call
+`setActions` again, and your objects are not modified.
+
+```javascript
+control.setActions([
+  { type: 'keyE', label: 'Open' },
+  { type: 'custom', btn: '1-4', label: 'Choose' },
+])
+```
+
 ### Pointer
 
 Access pointer (mouse) information.

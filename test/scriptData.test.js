@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { readScriptData } from '../src/core/extras/scriptData.js'
+import { MAX_VALUES, readScriptData, TOO_MANY_VALUES } from '../src/core/extras/scriptData.js'
 import { readPacket, writeClientPacket, writePacket } from '../src/core/packets.js'
 
 const WRITERS = [
@@ -161,6 +161,19 @@ const CORPUS = {
   regexp: () => [/a+b/gi, /(?:)/, new RegExp('\\d+', 'u')],
   'boxed primitives': () => [new String('ab'), new Number(5), new Boolean(false)],
   'shared references': shared,
+  'a Node Buffer': () => ({ b: Buffer.from([1, 2]), part: Buffer.from([9, 8, 7, 6]).subarray(1, 3) }),
+  'an object without a prototype, with a toJSON (used: its constructor is not Object)': () =>
+    Object.assign(Object.create(null), { a: 1, toJSON: () => 'json' }),
+  'an inherited toJSON on an object whose constructor is Object (not used)': () =>
+    Object.assign(Object.create({ toJSON: () => 'json' }), { a: 1 }),
+  'a toJSON whose result holds its owner': () => {
+    class Owner {
+      toJSON() {
+        return { self: this, n: 1 }
+      }
+    }
+    return [new Owner()]
+  },
   'deep nesting': () => {
     let value = { leaf: true }
     for (let i = 0; i < 200; i++) value = i % 2 ? [value] : { value }
@@ -188,6 +201,8 @@ test('the copy packs to the bytes the value itself packs to, on the server and o
   // (what the packer cannot pack, it cannot pack after the copy either, with the same error; nothing else fails)
   assert.deepEqual(refused, [
     '64-bit typed arrays (client): TypeError: Cannot mix BigInt and other types, use explicit conversions',
+    // (a circle cannot be packed by a client's packer, which keeps no references)
+    'a toJSON whose result holds its owner (client): RangeError: Maximum call stack size exceeded',
   ])
 })
 
@@ -264,6 +279,119 @@ test("the copy is the engine's: new objects of its own classes, no accessors, no
   assert.equal(Object.getPrototypeOf(odd), Object.prototype)
   assert.equal({}.polluted, undefined)
   assert.deepEqual(Object.keys(odd), ['__proto__'])
+})
+
+// where the copy's bytes differ from the value's (scriptData.js lists the three cases): the receiver reads the same,
+// but for a Set on a client and a subclass of a built-in
+test("where the bytes of the copy differ from the value's: what the receiver reads", () => {
+  const sent = (data, write) =>
+    readPacket(Uint8Array.prototype.slice.call(write('entityEvent', ['app', 0, 'p', data])))[1][3]
+  const plain = value =>
+    value instanceof Map
+      ? [...value].map(([key, entry]) => [plain(key), plain(entry)])
+      : value instanceof Set
+        ? [...value]
+        : value
+  class Seven {
+    toJSON() {
+      return 7
+    }
+  }
+  const cases = {
+    'an instance whose toJSON is a primitive, twice': () => {
+      const seven = new Seven()
+      return [seven, seven, { again: seven }]
+    },
+    'a function, twice': () => {
+      const fn = () => {}
+      return [fn, fn, 1]
+    },
+    'a Set of two functions': () => new Set([() => {}, () => {}, 3]),
+    'a Map with two functions as keys': () => new Map([[() => {}, 1], [() => {}, 2], ['k', 3]]), // prettier-ignore
+    'a Set of two instances with the same toJSON result': () => new Set([new Seven(), new Seven()]),
+  }
+  for (const [name, make] of Object.entries(cases)) {
+    for (const [side, write] of [
+      ['server', writePacket],
+      ['client', writeClientPacket],
+    ]) {
+      // (a client's packer writes a Set as an array: see below)
+      if (side === 'client' && name.startsWith('a Set')) continue
+      assert.deepEqual(plain(sent(readScriptData(make()), write)), plain(sent(make(), write)), `${name} (${side})`)
+    }
+  }
+  // a client's packer has no Set: it writes one as an array, so there the entries that became equal are one
+  // element where they were several
+  assert.deepEqual(sent(cases['a Set of two functions'](), writeClientPacket), [undefined, undefined, 3])
+  assert.deepEqual(sent(readScriptData(cases['a Set of two functions']()), writeClientPacket), [undefined, 3])
+  // a subclass of a built-in is copied as the built-in, with its contents
+  class Rows extends Map {}
+  class Bytes extends Uint8Array {}
+  const copy = readScriptData({ rows: new Rows([['a', 1]]), bytes: new Bytes([1, 2]) })
+  assert.equal(copy.rows.constructor, Map)
+  assert.deepEqual([...copy.rows], [['a', 1]])
+  assert.equal(copy.bytes.constructor, Uint8Array)
+  assert.deepEqual([...copy.bytes], [1, 2])
+})
+
+test('a value met twice is read once, also a function with a toJSON and an owner inside its own toJSON result', () => {
+  let calls = 0
+  const fn = () => {}
+  fn.toJSON = () => ({ n: ++calls })
+  const copy = readScriptData([fn, fn, { fn }])
+  assert.equal(calls, 1)
+  assert.deepEqual(copy[0], { n: 1 })
+  assert.equal(copy[1], copy[0])
+  assert.equal(copy[2].fn, copy[0])
+  class Owner {
+    constructor() {
+      this.reads = 0
+    }
+    toJSON() {
+      this.reads++
+      return { self: this, list: [this] }
+    }
+  }
+  const owner = new Owner()
+  const circle = readScriptData({ owner, again: owner })
+  assert.equal(owner.reads, 1)
+  assert.equal(circle.owner.self, circle.owner)
+  assert.equal(circle.owner.list[0], circle.owner)
+  assert.equal(circle.again, circle.owner)
+  // two values whose toJSON results are each other: the packer went round until the stack ended, and so does this
+  const a = { constructor: null, toJSON: () => b }
+  const b = { constructor: null, toJSON: () => a }
+  assert.throws(() => readScriptData(a), RangeError)
+})
+
+test('the values of a message are counted: an array that says any length is refused before it is read', () => {
+  // a Proxy's answer
+  let reads = 0
+  const endless = new Proxy([], {
+    get(target, key, receiver) {
+      if (key === 'length') return Number.MAX_SAFE_INTEGER
+      reads++
+      return Reflect.get(target, key, receiver)
+    },
+  })
+  assert.throws(() => readScriptData({ endless }), { name: 'RangeError', message: TOO_MANY_VALUES })
+  assert.ok(reads < 10, `${reads} reads`)
+  // a real array of the largest length (all holes)
+  const sparse = []
+  sparse.length = 2 ** 32 - 1
+  const started = performance.now()
+  assert.throws(() => readScriptData(sparse), { name: 'RangeError', message: TOO_MANY_VALUES })
+  assert.ok(performance.now() - started < 200)
+  // the count is of values, wherever they are: MAX_VALUES values pass, one more does not
+  const most = new Array(MAX_VALUES - 1).fill(0)
+  assert.equal(readScriptData(most).length, MAX_VALUES - 1)
+  assert.throws(() => readScriptData([most, 0]), { message: TOO_MANY_VALUES })
+  const nested = Array.from({ length: 1024 }, () => new Array(MAX_VALUES / 1024).fill(0))
+  assert.throws(() => readScriptData(nested), { message: TOO_MANY_VALUES })
+  assert.throws(() => readScriptData(new Map(most.map((_, i) => [i, i]))), { message: TOO_MANY_VALUES })
+  assert.throws(() => readScriptData(new Set(most.concat([1]).map((_, i) => i))), { message: TOO_MANY_VALUES })
+  // and such a message could not have been sent: it is over the largest packet
+  assert.ok(writePacket('entityEvent', ['app', 0, 'probe', most]).length > MAX_VALUES)
 })
 
 // Every way a value can carry code: each piece of it logs when it runs. The value is read (the code runs: it is
@@ -462,7 +590,14 @@ test('a getter that sends while its message is read: both messages are whole, an
       const copy = readScriptData(data)
       const write = client ? writeClientPacket : writePacket
       const sent = readPacket(Uint8Array.prototype.slice.call(write('entityEvent', ['app', 0, 'probe', copy])))[1][3]
-      assert.equal((sent instanceof Map ? sent.get('after') : sent.after).length, big)
+      const outer = sent instanceof Map ? Object.fromEntries(sent) : sent
+      for (const key of ['first', 'last']) if (outer[key] instanceof Map) outer[key] = Object.fromEntries(outer[key])
+      assert.deepEqual(outer, {
+        first: { body: 'x'.repeat((step * 53) % 2100) },
+        nested: 1,
+        after: 'z'.repeat(big),
+        last: { deep: 'q'.repeat(big) },
+      })
       assert.equal(inner.length, 2)
       assert.deepEqual(readPacket(inner[0]), ['onChatAdded', { body: 'i'.repeat(innerSize) }])
       assert.equal(inner[1].body, 'j'.repeat(innerSize))

@@ -10,16 +10,41 @@
 // with nothing in them a script wrote code for. Packing the copy runs no script code, so no pack begins inside
 // another (packets.js refuses one that would, as a backstop).
 //
-// The copy is what the packer would have read from the value, for the values a script ordinarily sends: null,
-// booleans, numbers, strings, bigints, undefined; arrays; plain objects and class instances (their own enumerable
-// properties; an instance's toJSON is used, as the packer used it); Map, Set, Date, Error, RegExp, ArrayBuffer and
-// typed arrays (new ones of the engine's own classes, with the value's contents). A function is undefined (or its
-// toJSON's result), as it was. An object met twice is copied once, so shared and circular references are kept for
-// the packer that keeps them (the server's). A symbol is passed on and refused by the packer.
+// What the copy holds, and how it compares with what the packer read from the value itself:
+//
+// - null, booleans, numbers, strings, bigints and undefined are themselves. A symbol is passed on, and refused by
+//   the packer as it was.
+// - An array is an array of its elements up to its length (holes are undefined). A plain object, and an instance
+//   of a class of the script's, is a plain object of its own enumerable properties; where the packer asked an
+//   object's toJSON (one whose `constructor` is not Object: a class instance, an object without a prototype), it
+//   is asked here, and its result is copied in the object's place. A function is its toJSON's result, or undefined.
+// - Map, Set, Date, Error (its name, message and cause), RegExp, ArrayBuffer and typed arrays are new ones of the
+//   engine's own classes with the value's contents (a Node Buffer stays a Buffer).
+// - A value met twice is copied once, so shared and circular references are kept for the packer that keeps them
+//   (the server's), also when the circle passes through a toJSON.
+//
+// For these the copy packs to the bytes the value packed to, on the server's packer and a client's
+// (test/scriptData.test.js compares them). Where it does not:
+// - an instance whose toJSON returns a primitive, or a function, met twice, was written the second time as a
+//   reference to the first and is now written as the value again (the receiver reads the same);
+// - entries of a Map or a Set that become equal once read (two functions, both undefined) are one entry here. They
+//   were one at the receiver too, except that a client's packer writes a Set as an array, which is now that much
+//   shorter;
+// - a subclass of a built-in is copied as the built-in, with its contents (the packer wrote `class Rows extends
+//   Map` as an empty object, and tagged a subclass of a typed array with no known type).
 //
 // A kind is told by what the value is, not by what it says it is (`constructor`, Symbol.toStringTag): the contents
 // of a built-in are read with the built-in's own methods, never with a method the value carries (a typed array's
 // slice consults its constructor's Symbol.species, which a script can set).
+//
+// The values of one message are counted: a message of more than MAX_VALUES could not be sent (the largest packet
+// is PACKET_CAP bytes, and a value takes at least one), and an array may say any length (a Proxy's, or
+// `list.length = 2 ** 32 - 1`), which was read element by element until memory ran out.
+
+import { PACKET_CAP } from './writeLedger.js'
+
+export const MAX_VALUES = PACKET_CAP
+export const TOO_MANY_VALUES = `the data has more than ${MAX_VALUES} values and cannot be sent`
 
 const TypedArray = Object.getPrototypeOf(Uint8Array.prototype).constructor
 const typedArrayKind = Object.getOwnPropertyDescriptor(TypedArray.prototype, Symbol.toStringTag).get
@@ -37,6 +62,7 @@ const setAdd = Set.prototype.add
 const regexSource = Object.getOwnPropertyDescriptor(RegExp.prototype, 'source').get
 const regexFlags = Object.getOwnPropertyDescriptor(RegExp.prototype, 'flags').get
 const owns = Object.prototype.hasOwnProperty
+const tagOf = Object.prototype.toString
 const TYPED = {
   Int8Array,
   Uint8Array,
@@ -51,6 +77,7 @@ const TYPED = {
   BigUint64Array,
 }
 if (typeof Float16Array === 'function') TYPED.Float16Array = Float16Array // eslint-disable-line no-undef
+const NodeBuffer = typeof Buffer === 'function' ? Buffer : null
 
 // the result of a built-in's own method on the value, or `missing` when the value is not of that built-in's kind
 const missing = Symbol('missing')
@@ -75,62 +102,72 @@ function copyBytes(buffer, offset, length) {
 }
 
 export function readScriptData(value) {
-  return read(value, new Map())
+  // seen: the copy of each object read; pending: an object whose toJSON result is being read, and that result
+  return read(value, { seen: new Map(), pending: new Map(), left: MAX_VALUES })
 }
 
-function read(value, seen) {
+function read(value, state) {
+  if (--state.left < 0) throw new RangeError(TOO_MANY_VALUES)
   const type = typeof value
   if (value === null || (type !== 'object' && type !== 'function')) return value
+  const { seen, pending } = state
   if (seen.has(value)) return seen.get(value)
-  if (type === 'function') {
-    // as the packer had it: a function's toJSON speaks for it, and without one it is undefined
-    const toJSON = value.toJSON
-    if (toJSON) {
-      const json = toJSON.call(value)
-      if (json !== value) return read(json, seen)
-    }
-    return undefined
-  }
+  // met again inside its own toJSON result (`toJSON() { return { owner: this } }`): it is that result
+  if (pending.has(value)) return read(pending.get(value), state)
+  if (type === 'function') return readJSON(value, state, undefined)
   if (Array.isArray(value)) {
     const copy = []
     seen.set(value, copy)
-    // (the length is read once; an array a Proxy stands for may answer anything)
+    // (the length is read once; an array a Proxy stands for may answer anything, and the count above bounds it)
     const length = Math.min(Math.max(Math.trunc(Number(value.length)) || 0, 0), 2 ** 32 - 1)
-    for (let i = 0; i < length; i++) copy.push(read(value[i], seen))
+    if (length > state.left) throw new RangeError(TOO_MANY_VALUES)
+    for (let i = 0; i < length; i++) copy.push(read(value[i], state))
     return copy
   }
-  const proto = Object.getPrototypeOf(value)
-  if (proto !== Object.prototype && proto !== null) {
-    const built = readBuiltIn(value, seen)
+  // the packer wrote an object whose `constructor` is Object as a plain object, without asking anything else
+  if (value.constructor !== Object) {
+    const built = readBuiltIn(value, state)
     if (built !== missing) return built
-    // an instance of a class of the script's: its toJSON speaks for it (the packer asked objects that are not
-    // plain ones, and only those)
-    const toJSON = value.toJSON
-    if (toJSON) {
-      const json = toJSON.call(value)
-      if (json !== value) {
-        const copy = read(json, seen)
-        seen.set(value, copy)
-        return copy
-      }
-    }
+    const json = readJSON(value, state, missing)
+    if (json !== missing) return json
   }
   const copy = {}
   seen.set(value, copy)
   for (const key in value) {
-    if (owns.call(value, key)) put(copy, key, read(value[key], seen))
+    if (owns.call(value, key)) put(copy, key, read(value[key], state))
   }
   return copy
 }
 
-function readBuiltIn(value, seen) {
+// what a value's toJSON says in its place (the copy of its result), or `otherwise` when it has none or names itself
+function readJSON(value, state, otherwise) {
+  const toJSON = value.toJSON
+  if (toJSON) {
+    const json = toJSON.call(value)
+    if (json !== value) {
+      state.pending.set(value, json)
+      const copy = read(json, state)
+      state.pending.delete(value)
+      state.seen.set(value, copy)
+      return copy
+    }
+  }
+  if (otherwise !== missing) state.seen.set(value, otherwise)
+  return otherwise
+}
+
+function readBuiltIn(value, state) {
+  const { seen } = state
+  // (what a value says it is decides nothing, but one that says it is an ordinary object is not asked further: a
+  // built-in that hides behind that tag is copied as the ordinary object it claims to be)
+  if (tagOf.call(value) === '[object Object]') return missing
   const kind = typedArrayKind.call(value)
   if (kind !== undefined) {
     const Type = TYPED[kind]
     if (!Type) return missing
-    const copy = new Type(
-      copyBytes(typedArrayBuffer.call(value), typedArrayOffset.call(value), typedArrayBytes.call(value))
-    )
+    const bytes = copyBytes(typedArrayBuffer.call(value), typedArrayOffset.call(value), typedArrayBytes.call(value))
+    // (a Node Buffer is packed as bytes; a Uint8Array has its own form on the server's packer)
+    const copy = NodeBuffer && value instanceof NodeBuffer ? NodeBuffer.from(bytes) : new Type(bytes)
     seen.set(value, copy)
     return copy
   }
@@ -152,7 +189,7 @@ function readBuiltIn(value, seen) {
     // the entries as they are now, then each read (reading one can run script code, which may change the map)
     const entries = []
     mapEach.call(value, (entry, key) => entries.push(key, entry))
-    for (let i = 0; i < entries.length; i += 2) mapSet.call(copy, read(entries[i], seen), read(entries[i + 1], seen))
+    for (let i = 0; i < entries.length; i += 2) mapSet.call(copy, read(entries[i], state), read(entries[i + 1], state))
     return copy
   }
   if (ask(setSize, value) !== missing) {
@@ -160,7 +197,7 @@ function readBuiltIn(value, seen) {
     seen.set(value, copy)
     const entries = []
     setEach.call(value, entry => entries.push(entry))
-    for (const entry of entries) setAdd.call(copy, read(entry, seen))
+    for (const entry of entries) setAdd.call(copy, read(entry, state))
     return copy
   }
   const source = ask(regexSource, value)
@@ -174,9 +211,9 @@ function readBuiltIn(value, seen) {
     // what the packer writes of an error: its name, its message and its cause
     const copy = new Error('')
     seen.set(value, copy)
-    put(copy, 'name', read(value.name, seen))
-    put(copy, 'message', read(value.message, seen))
-    put(copy, 'cause', read(value.cause, seen))
+    put(copy, 'name', read(value.name, state))
+    put(copy, 'message', read(value.message, state))
+    put(copy, 'cause', read(value.cause, state))
     return copy
   }
   return missing

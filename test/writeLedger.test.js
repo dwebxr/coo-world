@@ -340,6 +340,48 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
   assert.equal(socket.ws.terminations, 0)
 })
 
+// a getter in app.send data that sends: the data is read before anything is packed (extras/scriptData.js), so the
+// inner message goes out first, whole, and the outer one after it, whole (packed inside the reading of the outer
+// one it could come out unreadable, and the outer one with its bytes in it)
+test('Apps: a send from a getter in the data of another send delivers both messages whole, the inner one first', () => {
+  const network = makeNetwork()
+  const socket = addSocket(network)
+  const world = { network, events: { emit() {} }, entities: { get: () => ({ data: { id: socket.id } }) } }
+  const Apps = loadClass('systems/Apps.js', 'Apps')
+  const apps = new Apps(world)
+  const entity = { data: { id: 'app' }, blueprint: { version: 3 } }
+  for (const inner of [
+    () => apps.appMethods.send(entity, 'inner', { body: 'x', n: 2 }),
+    () => apps.appMethods.sendTo(entity, socket.id, 'inner', { body: 'x', n: 2 }),
+  ]) {
+    for (const outer of [
+      data => apps.appMethods.send(entity, 'outer', data),
+      data => apps.appMethods.sendTo(entity, socket.id, 'outer', data),
+    ]) {
+      socket.ws.packets.length = 0
+      let innerResult
+      const data = {
+        // (the shape the inner message has: the outer one has written it before the getter runs)
+        a: { body: 'x', n: 1 },
+        get g() {
+          innerResult = inner()
+          return 1
+        },
+        after: 'y'.repeat(9000),
+      }
+      assert.equal(outer(data), true)
+      assert.equal(innerResult, true)
+      assert.deepEqual(
+        socket.ws.packets.map(packet => readPacket(packet)),
+        [
+          ['onEntityEvent', ['app', 3, 'inner', { body: 'x', n: 2 }]],
+          ['onEntityEvent', ['app', 3, 'outer', { a: { body: 'x', n: 1 }, g: 1, after: 'y'.repeat(9000) }]],
+        ]
+      )
+    }
+  }
+})
+
 test('Apps: unknown players and internal-event refusals return false without sending', () => {
   const logs = []
   const Apps = loadClass('systems/Apps.js', 'Apps', {

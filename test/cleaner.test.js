@@ -377,6 +377,9 @@ test('cleaner: an assets URL that is not clean deletes nothing, and the log says
     ['https://world.example/a/../assets', 'it has a dot segment'],
     ['https://World.example/assets', 'it is not in its normalised form'],
     ['https://world.example:443/assets', 'it is not in its normalised form'],
+    // Codex: an empty segment would compare as /a/assets; a trailing slash makes asset://x resolve to …//x
+    ['https://world.example/a//assets', 'it has an empty path segment'],
+    ['https://world.example/assets/', 'it ends with a slash'],
   ]) {
     const f = fixture(t)
     await f.run({ assetsUrl, localStore: true })
@@ -388,8 +391,8 @@ test('cleaner: an assets URL that is not clean deletes nothing, and the log says
     )
     assert.ok(f.warnings[0].includes(`(${why})`), `${assetsUrl}: ${f.warnings[0]}`)
   }
-  // clean ones: with or without a trailing slash, at the origin root or under a path
-  for (const assetsUrl of ['https://world.example/assets', 'https://world.example/assets/', 'https://cdn.example']) {
+  // clean ones: at the origin root or under a path, $ sequences included (resolveReference puts them in literally)
+  for (const assetsUrl of ['https://world.example/assets', 'https://cdn.example', 'https://world.example/$&/assets']) {
     const f = fixture(t)
     await f.run({ assetsUrl, localStore: true })
     assert.deepEqual(f.warnings, [], assetsUrl)
@@ -835,6 +838,84 @@ test('cleaner: many places with an undecidable run cost linear time; the log nam
     f.warnings[0].startsWith(`[clean] skipped all deletion: ${JSON.stringify(first)} and 39980 more hold`),
     f.warnings[0].slice(0, 200)
   )
+})
+
+// Codex: `a%25%09%36%31.glb` decodes to `a%<TAB>61.glb`; a URL drops the tab and the server decodes %61, so the file
+// is aa.glb. Dropping controls and decoding now happen in one loop, so the name is found whatever their order
+test('cleaner: dropped controls and escapes in any order and position: the name is found', async t => {
+  const f = fixture(t)
+  f.files.add('aa.glb')
+  const cases = [
+    'https://page.example/?from=asset%3A%2F%2Fa%25%09%36%31.glb',
+    'https://page.example/?from=asset%3A%2F%2Fa%25%0D%36%31.glb',
+    'https://page.example/?from=asset%3A%2F%2Fa%25%0A%36%31.glb',
+    // a raw control inside or between escapes, which a URL drops before anything is decoded
+    'asset://a%\t2561.glb',
+    'asset://a%2\t561.glb',
+    'asset://a%25\t61.glb',
+    'asset://a%\n6\r1.glb',
+    'asset://a%2\t5%3\n6%3\r1.glb',
+  ]
+  for (const value of cases) {
+    f.tables.entities[0] = row({ ...appData(), props: { value } })
+    f.deleted.length = 0
+    await f.run()
+    assert.deepEqual(f.warnings, [], JSON.stringify(value))
+    assert.deepEqual(f.deleted.at(-1), ['assets', ['unused.glb']], JSON.stringify(value))
+  }
+})
+
+// Codex: `.js` is a valid store name, but discovery wanted four characters at least
+test('cleaner: a store file named just .js, named somewhere, is read like any other .js', async t => {
+  const f = fixture(t)
+  f.files.add('deep.glb')
+  f.tables.entities[0] = row({ ...appData(), props: { code: 'asset://.js' } })
+  f.scripts.set('.js', "world.load('model', 'asset://deep.glb')")
+  await f.run()
+  assert.deepEqual(f.warnings, [])
+  assert.deepEqual(f.scriptReads, ['.js'])
+  assert.deepEqual(f.deleted.at(-1), ['assets', ['unused.glb']])
+})
+
+// a seeded generator: a store name in up to four layers of percent-encoding, with tabs, CR and LF a URL would drop
+// put anywhere; the name is found, or the clean-up stops: never neither
+test('cleaner: a name in layers of encoding with dropped controls is found or stops the clean-up, never neither', async t => {
+  let seed = 0x5eed
+  const random = () => {
+    seed = (seed + 0x6d2b79f5) | 0
+    let x = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296
+  }
+  const hex = c => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`
+  const layer = text =>
+    [...text].map(c => (c === '%' || random() < 0.4 ? (random() < 0.5 ? hex(c) : hex(c).toUpperCase()) : c)).join('')
+  const NAME = 'a1b2c3d4.glb'
+  const f = fixture(t)
+  f.files.add(NAME)
+  const started = performance.now()
+  let found = 0
+  let stopped = 0
+  for (let i = 0; i < 400; i++) {
+    let text = `asset://${NAME}`
+    const layers = Math.floor(random() * 5)
+    for (let k = 0; k < layers; k++) text = layer(text)
+    const chars = [...text]
+    for (let c = Math.floor(random() * 4); c > 0; c--) {
+      chars.splice(Math.floor(random() * (chars.length + 1)), 0, ['\t', '\r', '\n'][Math.floor(random() * 3)])
+    }
+    const value = `${random() < 0.5 ? 'https://page.example/?from=' : ''}${chars.join('')}`
+    f.tables.entities[0] = row({ ...appData(), props: { value } })
+    f.deleted.length = 0
+    f.warnings.length = 0
+    await f.run()
+    const removed = f.deleted.at(-1)?.[1] ?? []
+    assert.ok(!removed.includes(NAME), `deleted for ${JSON.stringify(value)}`)
+    if (f.deleted.length) found++
+    else stopped++
+  }
+  assert.ok(found > 350, `${found} found, ${stopped} stopped`)
+  assert.ok(performance.now() - started < 2000)
 })
 
 test('cleaner: assets the store could not delete are reported, not counted as deleted', async t => {

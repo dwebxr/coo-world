@@ -33,7 +33,7 @@ import { assetName, assetsUrlProblem, previewValue, scriptSource } from '../core
 // store script followed) is cut into tokens at each character a store name cannot hold, and every store file whose
 // name equals a token, ignoring case, is kept: also percent-decoded (a run of up to PERCENT_RUN_MAX characters, at
 // most PERCENT_PASSES times), without dots, `_` or `-` at its ends, and with tabs, CR and LF inside it dropped (which
-// the URL parser drops from a URL), before decoding and after it. Keeping is the safe direction, so case is ignored on
+// the URL parser drops from a URL), in one loop with the decoding (each pass drops them, then decodes once). Keeping is the safe direction, so case is ignored on
 // purpose (a case-insensitive file system loads asset://<NAME> from <name>), and a file named like a common word is
 // kept whenever that word appears. The code followed (above) is read to a fixed point, each file at most `readLimit`
 // bytes, counted while it is read; a .js literal the listing does not hold (it holds content-hash names only) is
@@ -51,7 +51,8 @@ import { assetName, assetsUrlProblem, previewValue, scriptSource } from '../core
 //   PERCENT_PASSES decodings (it cannot be read with certainty, and decoding it further would cost too much);
 // - more than UNLISTED_SCRIPTS_MAX .js literals are not in the store listing;
 // - ASSETS_BASE_URL is not clean (assetURL.js assetsUrlProblem): it must start with a lower-case http:// or https://
-//   and have no query, fragment, userinfo, backslash or dot segment, in its normalised form;
+//   and have no query, fragment, userinfo, backslash, dot segment, empty path segment or trailing slash, in its
+//   normalised form;
 // - a kept blueprint or collection blueprint's script is not a store file for certain (assetURL.js scriptSource):
 //   one hosted outside ASSETS_BASE_URL, a page path (/assets/x.js, blob/../assets/x.js), a URL the runtime rewrites or
 //   with a query, fragment, `%`, backslash or dot segment, or anything else the server cannot read as the code that
@@ -72,7 +73,7 @@ const isEdgeCode = c => c === 46 || c === 95 || c === 45
 const isControlCode = c => c === 9 || c === 10 || c === 13
 const STORE_NAME = /^[A-Za-z0-9._-]+$/
 const PERCENT_BYTE = /%([0-9A-Fa-f]{2})/g
-const PERCENT_ENCODED = /%[0-9A-Fa-f]{2}/
+const decodeByte = (_, hex) => String.fromCharCode(parseInt(hex, 16))
 const URL_CONTROL = /[\t\r\n]/
 const URL_CONTROLS = /[\t\r\n]/g
 const SCRIPT = /\.js$/i
@@ -124,7 +125,7 @@ function createNameScan(files, onKeep, onUnlisted = () => {}) {
     if (lengths.has(to - from)) keepKey(text.slice(from, to).toLowerCase())
     // a .js name, case ignored (46 `.`, 106 `j`, 115 `s`)
     if (
-      to - from >= 4 &&
+      to - from >= 3 &&
       text.charCodeAt(to - 3) === 46 &&
       (text.charCodeAt(to - 2) | 32) === 106 &&
       (text.charCodeAt(to - 1) | 32) === 115
@@ -142,25 +143,22 @@ function createNameScan(files, onKeep, onUnlisted = () => {}) {
   }
   const run = (text, from, to, percent) => {
     if (percent) {
-      // ASCII bytes only (store names are ASCII), up to PERCENT_PASSES times, so a name encoded more than once is
-      // found; what is left of `%` then cannot be part of a name, so the decoded text is scanned with `%` as a
-      // separator. A run too long to decode, or still changing after the last pass, cannot be decided.
+      // One loop, one budget: each pass drops tabs, CR and LF (as a URL does) and then decodes once, ASCII bytes only
+      // (store names are ASCII), and every form it passes through is scanned, with `%` as a separator (what is left
+      // of it cannot be part of a name). So a name that escapes and dropped controls hide, in any order (%25%09%36%31
+      // becomes %<TAB>61, then %61, then a), is found. A run too long to decode, or still changing after
+      // PERCENT_PASSES passes, cannot be decided.
       if (to - from > PERCENT_RUN_MAX) return cannotDecide()
-      let decoded = text.slice(from, to)
-      let settled = false
-      for (let pass = 0; pass < PERCENT_PASSES; pass++) {
-        const next = decoded.replace(PERCENT_BYTE, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-        if (next === decoded) {
-          settled = true
-          break
-        }
-        decoded = next
+      let form = text.slice(from, to)
+      runs(form, false)
+      for (let pass = 0; ; pass++) {
+        const next = form.replace(URL_CONTROLS, '').replace(PERCENT_BYTE, decodeByte)
+        if (next === form) return
+        if (pass === PERCENT_PASSES) return cannotDecide()
+        form = next
+        runs(form, false)
+        if (URL_CONTROL.test(form)) runs(form, false, true)
       }
-      if (!settled && PERCENT_ENCODED.test(decoded)) return cannotDecide()
-      runs(decoded, false)
-      // decoding can bring tabs, CR or LF in (%09, %0D, %0A), which a URL drops: joined here too
-      if (URL_CONTROL.test(decoded)) runs(decoded, false, true)
-      return
     }
     look(text, from, to)
     let a = from

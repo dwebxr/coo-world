@@ -30,7 +30,8 @@ export function resolveReference(url, assetsUrl) {
   if (!url) return url
   url = loaderReference(url)
   if (url.startsWith('blob')) return url
-  if (url.startsWith(ASSET_PROTOCOL)) return assetsUrl ? url.replace('asset:/', assetsUrl) : url
+  // the assets URL put in literally: as a replacement string, `$&`, `$'`, `` $` `` or `$$` in it would be patterns
+  if (url.startsWith(ASSET_PROTOCOL)) return assetsUrl ? `${assetsUrl}${url.slice(ASSET_PROTOCOL.length - 1)}` : url
   if (url.match(/^https?:\/\//i)) return url
   if (url.startsWith('//')) return `https:${url}`
   if (url.startsWith('/')) return url
@@ -41,15 +42,19 @@ export function resolveReference(url, assetsUrl) {
 const DOT_SEGMENT = /(?:^|[/\\])\.{1,2}(?:[/\\]|$)/
 
 // Why an assets URL is not clean enough for the clean-up to tell where references go (null when it is): it must start
-// with the literal lower-case http:// or https://, have no userinfo, `?`, `#`, backslash or dot segment, and be its
-// own normalised form (apart from one trailing slash). `https:/host/assets`, `https://host/assets?rev=1`, a fragment
-// or credentials make a reference resolve elsewhere than the store, or fail, so the clean-up does not run with them.
+// with the literal lower-case http:// or https://, have no userinfo, `?`, `#`, backslash, dot segment, empty path
+// segment or trailing slash, and be its own normalised form (the origin root written without its slash). Each of
+// these makes a reference resolve elsewhere than the store, or fail: `https:/host/assets`, `https://host/assets?rev=1`
+// (the name lands in the query), `https://host/a//assets` (another path than /a/assets), `https://host/assets/`
+// (asset://x becomes …/assets//x), credentials. The clean-up does not run with them; index.js already refuses a
+// trailing slash at start-up.
 export function assetsUrlProblem(value) {
   if (typeof value !== 'string' || !value) return 'not set'
   if (!/^https?:\/\//.test(value)) return 'it does not start with a lower-case http:// or https://'
   if (/[?#]/.test(value)) return 'it has a query or a fragment'
   if (value.includes('\\')) return 'it has a backslash'
   if (DOT_SEGMENT.test(value)) return 'it has a dot segment'
+  if (value.endsWith('/')) return 'it ends with a slash'
   let url
   try {
     url = new URL(value)
@@ -57,17 +62,16 @@ export function assetsUrlProblem(value) {
     return 'it does not parse'
   }
   if (url.username || url.password) return 'it has userinfo'
-  if (url.href !== value && url.href !== `${value}/` && `${url.href}/` !== value) {
-    return 'it is not in its normalised form'
-  }
+  if (url.pathname !== '/' && url.pathname.split('/').slice(1).includes('')) return 'it has an empty path segment'
+  if (url.href !== value && url.href !== `${value}/`) return 'it is not in its normalised form'
   return null
 }
 
-// an assets URL's origin and path segments (a trailing slash dropped), or null when it is not clean
+// an assets URL's origin and path segments (exactly, none dropped), or null when it is not clean
 function storeRoot(assetsUrl) {
   if (assetsUrlProblem(assetsUrl)) return null
   const url = new URL(assetsUrl)
-  return { origin: url.origin, segments: url.pathname.split('/').filter(Boolean) }
+  return { origin: url.origin, segments: url.pathname === '/' ? [] : url.pathname.split('/').slice(1) }
 }
 
 // Where a blueprint's script comes from, as far as the server can know it for certain (the start-up clean-up):

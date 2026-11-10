@@ -156,6 +156,103 @@ test('scriptSource: every "certain store file" is exactly what the server loader
   }
 })
 
+// Codex: resolveReference put the base in with String.prototype.replace, so `$&`, `$'`, `` $` `` or `$$` in it were
+// replacement patterns (https://world.example/$&/assets made asset://root.js a request for .../asset://assets/root.js)
+test('resolveReference: the assets URL is put in literally, `$` sequences included', () => {
+  for (const base of [
+    'https://world.example/$&/assets',
+    "https://world.example/$'/assets",
+    'https://world.example/$`/a',
+    'https://world.example/$$/a',
+    'https://world.example/$1/a',
+  ]) {
+    assert.equal(resolveReference('asset://root.js', base), `${base}/root.js`)
+    assert.equal(resolveURL.call({ assetsUrl: base }, 'asset://root.js'), `${base}/root.js`)
+  }
+})
+
+// the same claim for assets bases generated from parts (seeded): whenever the clean-up takes a base as clean, every
+// "certain store file" holds against the server loader and a client; with a base it refuses, nothing is certain
+test('scriptSource: for every generated assets base it accepts, certainty holds on the server and a client', async () => {
+  let seed = 0xba5e
+  const random = () => {
+    seed = (seed + 0x6d2b79f5) | 0
+    let x = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296
+  }
+  const pick = list => list[Math.floor(random() * list.length)]
+  const schemes = ['https://', 'http://', 'HTTPS://', 'https:/', 'https:', 'https:///', ' https://', 'ht\ttps://']
+  const hosts = [
+    'world.example',
+    'cdn.example',
+    'World.example',
+    'world.example:443',
+    'world.example:8443',
+    'user@world.example',
+    'world.example.',
+    'xn--wrld-zqa.example',
+    'wörld.example',
+  ]
+  const parts = ['assets', 'a', 'w', '', '$&', "$'", '$`', '$$', '%61', '%2F', '.', '..', 'x\\y', 'A', 'ä', 'a b']
+  const started = performance.now()
+  let clean = 0
+  let certain = 0
+  for (let i = 0; i < 600; i++) {
+    const segments = Array.from({ length: Math.floor(random() * 4) }, () => pick(parts))
+    let base = `${pick(schemes)}${pick(hosts)}${segments.length ? `/${segments.join('/')}` : ''}`
+    if (random() < 0.2) base += '/'
+    if (random() < 0.1) base += pick(['?rev=1', '#x', '?'])
+    const accepted = scriptSource('asset://s.js', base).source === 'store'
+    const spellings = [
+      'asset://s.js',
+      ' asset://s.js ',
+      'asset://S.js',
+      `${base}/s.js`,
+      `${base}//s.js`,
+      `${base}/./s.js`,
+      `${base}/s.js?`,
+      `${base}/s.js#x`,
+      `${base}/%73.js`,
+      `${base}s.js`,
+      `${base}/x/../s.js`,
+      `${base.replace('://', ':/')}/s.js`,
+      `${base.replace('https://', 'HTTPS://')}/s.js`,
+      `${base.slice(0, 10)}\t${base.slice(10)}/s.js`,
+      `${base}/s\n.js`,
+    ]
+    if (!accepted) {
+      for (const spelling of spellings) {
+        assert.notEqual(
+          scriptSource(spelling, base).source,
+          'store',
+          `${JSON.stringify(spelling)} with ${JSON.stringify(base)}`
+        )
+      }
+      continue
+    }
+    clean++
+    const store = name => new URL(`${base}/${name}`).href
+    for (const spelling of spellings) {
+      const source = scriptSource(spelling, base)
+      if (source.source !== 'store') continue
+      certain++
+      const label = `${JSON.stringify(spelling)} with ${JSON.stringify(base)}`
+      for (const mode of [undefined, '/world/assets']) {
+        requested.length = 0
+        const text = await loader(base, mode).fetchText(spelling)
+        if (requested.length) assert.equal(new URL(requested[0]).href, store(source.name), label)
+        else assert.equal(text, `file:${path.join(mode, source.name)}`, label)
+      }
+      for (const page of PAGES)
+        assert.equal(clientRequest(spelling, base, page), store(source.name), `${label} on ${page}`)
+    }
+  }
+  assert.ok(clean > 20 && clean < 600, `${clean} clean bases`)
+  assert.ok(certain > clean, `${certain} certain`)
+  assert.ok(performance.now() - started < 2000)
+})
+
 test('scriptSource: nothing is certain with an assets base that is not clean (Codex: https:/…, ?rev=1)', () => {
   for (const base of [
     'https:/world.example/assets',
@@ -164,6 +261,9 @@ test('scriptSource: nothing is certain with an assets base that is not clean (Co
     'https://user:pw@world.example/assets',
     'https://World.example/assets',
     'https://world.example/a/../assets',
+    // Codex: the empty segment compared as /a/assets
+    'https://world.example/a//assets',
+    'https://world.example/assets/',
   ]) {
     for (const spelling of ['asset://s.js', 'https://world.example/assets/s.js', 'https://world.example/assetss.js']) {
       assert.equal(scriptSource(spelling, base).source, 'unknown', `${spelling} with ${base}`)

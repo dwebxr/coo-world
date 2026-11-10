@@ -28,6 +28,7 @@ const defaults = {
 let nodeIds = -1
 
 const EPSILON = 0.000000001
+const CURSOR_MAX_LENGTH = 128
 
 // a mounting node of an app takes one unit of its budget; past the budget the app is crashed (once) and the
 // node is not mounted
@@ -444,7 +445,16 @@ export class Node {
     return this._cursor
   }
 
+  // written to the page's cursor style while the pointer is over the node: a primitive string of at most
+  // CURSOR_MAX_LENGTH characters, or nothing
   set cursor(value) {
+    if (value === undefined || value === null) {
+      this._cursor = value
+      return
+    }
+    if (typeof value !== 'string' || value.length > CURSOR_MAX_LENGTH) {
+      throw new Error(`[node] cursor must be a string of at most ${CURSOR_MAX_LENGTH} characters`)
+    }
     this._cursor = value
   }
 

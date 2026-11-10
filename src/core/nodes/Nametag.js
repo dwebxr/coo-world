@@ -1,4 +1,3 @@
-import { isNumber } from 'lodash-es'
 import { Node } from './Node'
 
 const defaults = {
@@ -61,8 +60,9 @@ export class Nametag extends Node {
     return this._health
   }
 
+  // drawn into the shared nametag atlas: a primitive finite number only
   set health(value = defaults.health) {
-    if (!isNumber(value)) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
       throw new Error('[nametag] health not a number')
     }
     if (this._health === value) return

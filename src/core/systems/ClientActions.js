@@ -4,6 +4,7 @@ import { System } from './System'
 import { ControlPriorities } from '../extras/ControlPriorities'
 import { isTouch } from '../../client/utils'
 import { clamp } from '../utils'
+import { nodeFailed } from '../extras/nodeFailure'
 
 const BATCH_SIZE = 500
 const FORWARD = new THREE.Vector3(0, 0, 1)
@@ -61,40 +62,67 @@ export class ClientActions extends System {
 
     // clear current action if its no longer in distance
     if (this.current.node) {
-      const distance = this.current.node.worldPos.distanceTo(cameraPos)
-      if (distance > this.current.node._distance) {
-        this.current.node = null
-        this.current.distance = Infinity
-        this.emit('change', false)
-        this.action.stop()
-      } else {
-        this.current.distance = distance
+      try {
+        const distance = this.current.node.worldPos.distanceTo(cameraPos)
+        if (distance > this.current.node._distance) {
+          this.current.node = null
+          this.current.distance = Infinity
+          this.emit('change', false)
+          this.action.stop()
+        } else {
+          this.current.distance = distance
+        }
+      } catch (err) {
+        this.failed(this.current.node, err)
       }
     }
 
     // continually check nodes[] in batches to find the one that should be active
     let didChange
     const size = Math.min(this.nodes.length, BATCH_SIZE)
+    const failures = []
     for (let i = 0; i < size; i++) {
       const idx = (this.cursor + i) % this.nodes.length
       const node = this.nodes[idx]
-      if (node.finished) continue
-      if (this.current.node === node) continue
-      const distance = node.worldPos.distanceTo(cameraPos)
-      if (distance <= node._distance && distance < this.current.distance) {
-        this.current.node = node
-        this.current.distance = distance
-        didChange = true
+      try {
+        if (node.finished) continue
+        if (this.current.node === node) continue
+        const distance = node.worldPos.distanceTo(cameraPos)
+        if (distance <= node._distance && distance < this.current.distance) {
+          this.current.node = node
+          this.current.distance = distance
+          didChange = true
+        }
+      } catch (err) {
+        failures.push([node, err])
       }
     }
     if (size) {
-      this.cursor = (this.cursor + size) % this.nodes.length
+      this.cursor = (this.cursor + size) % (this.nodes.length || 1)
     }
-    if (didChange) {
-      this.action.start(this.current.node)
-      this.emit('change', true)
+    for (const [node, err] of failures) this.failed(node, err)
+    if (didChange && this.current.node) {
+      try {
+        this.action.start(this.current.node)
+        this.emit('change', true)
+      } catch (err) {
+        this.failed(this.current.node, err)
+      }
     }
-    this.action.update(delta)
+    try {
+      this.action.update(delta)
+    } catch (err) {
+      if (this.current.node) this.failed(this.current.node, err)
+    }
+  }
+
+  // a node whose prompt throws (eg a value a script set) is dropped from the prompts and its app crashes; the
+  // rest of the frame goes on
+  failed(node, err) {
+    nodeFailed(node, 'actions', err)
+    const wasCurrent = this.current.node === node
+    this.unregister(node)
+    if (wasCurrent) this.emit('change', false)
   }
 
   destroy() {

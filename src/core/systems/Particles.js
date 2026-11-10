@@ -3,6 +3,7 @@ import * as THREE from '../extras/three'
 import CustomShaderMaterial from '../libs/three-custom-shader-material'
 import { DEG2RAD } from '../extras/general'
 import { uuid } from '../utils'
+import { nodeFailed } from '../extras/nodeFailure'
 
 const v1 = new THREE.Vector3()
 const v2 = new THREE.Vector3()
@@ -54,7 +55,12 @@ export class Particles extends System {
     this.uOrientationY.value.setFromEuler(e1)
 
     this.emitters.forEach(emitter => {
-      emitter.update(delta)
+      try {
+        emitter.update(delta)
+      } catch (err) {
+        // one emitter must not stop the frame (nodeFailure.js); its app crashes and unmounts it
+        nodeFailed(emitter.node, 'particles', err)
+      }
     })
   }
 
@@ -319,7 +325,11 @@ function createEmitter(world, system, node) {
       pending = false
     }
     if (msg.op === 'end') {
-      node._onEnd?.call(undefined) // script callbacks run without a receiver
+      try {
+        node._onEnd?.call(undefined) // script callbacks run without a receiver
+      } catch (err) {
+        console.error(err)
+      }
     }
   }
 

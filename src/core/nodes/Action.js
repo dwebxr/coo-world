@@ -1,5 +1,5 @@
 import * as THREE from '../extras/three'
-import { isFunction, isNumber } from 'lodash-es'
+import { isFunction } from 'lodash-es'
 
 import { Node } from './Node'
 
@@ -68,8 +68,10 @@ export class Action extends Node {
     return this._distance
   }
 
+  // read by the client's action system every frame: a primitive finite number only (a boxed Number's valueOf
+  // would run script code there)
   set distance(value = defaults.distance) {
-    if (!isNumber(value)) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
       throw new Error('[action] distance not a number')
     }
     this._distance = value
@@ -80,7 +82,7 @@ export class Action extends Node {
   }
 
   set duration(value = defaults.duration) {
-    if (!isNumber(value)) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
       throw new Error('[action] duration not a number')
     }
     this._duration = value

@@ -2,6 +2,8 @@ import * as THREE from '../extras/three'
 import { ControlPriorities } from '../extras/ControlPriorities'
 
 import { System } from './System'
+import { nodeFailed } from '../extras/nodeFailure'
+import { NODE_CLIMB_LIMIT } from '../extras/nodeLimits.js'
 
 const v1 = new THREE.Vector3()
 
@@ -29,7 +31,18 @@ export class ClientPointer extends System {
     })
   }
 
+  // the pointer path runs host code over script-owned nodes (hit resolution, cursors, callbacks): if it throws,
+  // the hit node's app crashes, the path is reset and the frame goes on
   update(delta) {
+    try {
+      this.updatePointer()
+    } catch (err) {
+      nodeFailed(this.pointerState.hit?.node, 'pointer', err)
+      this.pointerState.reset()
+    }
+  }
+
+  updatePointer() {
     let hit
     let pressed
     let released
@@ -49,6 +62,7 @@ export class ClientPointer extends System {
       pressed = this.control.mouseLeft.pressed
       released = this.control.mouseLeft.released
     }
+    this.pointerState.hit = hit
     this.pointerState.update(hit, pressed, released)
   }
 
@@ -103,6 +117,15 @@ export class PointerState {
     this.activePath = new Set()
     this.cursor = CURSOR_DEFAULT
     this.pressedNodes = new Set()
+    this.hit = null
+  }
+
+  reset() {
+    this.activePath.clear()
+    this.pressedNodes.clear()
+    this.hit = null
+    if (this.cursor !== CURSOR_DEFAULT && typeof document !== 'undefined') document.body.style.cursor = CURSOR_DEFAULT
+    this.cursor = CURSOR_DEFAULT
   }
 
   update(hit, pointerPressed, pointerReleased) {
@@ -130,11 +153,12 @@ export class PointerState {
     }
 
     // set cursor - check from leaf to root for first defined cursor
+    // (Node's cursor setter keeps only primitive strings; anything else here falls back to the default)
     let cursor = CURSOR_DEFAULT
     if (newPath.length > 0) {
       for (let i = newPath.length - 1; i >= 0; i--) {
         if (newPath[i].cursor) {
-          cursor = newPath[i].cursor
+          if (typeof newPath[i].cursor === 'string') cursor = newPath[i].cursor
           break
         }
       }
@@ -170,7 +194,7 @@ export class PointerState {
   getAncestorPath(hit) {
     const path = []
     let node = hit.node?.resolveHit?.(hit) || hit.node
-    while (node) {
+    while (node && path.length < NODE_CLIMB_LIMIT) {
       path.unshift(node)
       node = node.parent
     }

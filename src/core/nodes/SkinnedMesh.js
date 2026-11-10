@@ -2,7 +2,8 @@ import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js'
 
 import { Node } from './Node'
 import * as THREE from '../extras/three'
-import { isBoolean } from 'lodash-es'
+import { sealAll } from '../extras/sealMath.js'
+import { isBoolean } from '../extras/scriptPrimitives.js'
 
 const defaults = {
   object3d: null,
@@ -48,6 +49,8 @@ export class SkinnedMesh extends Node {
         n.castShadow = this._castShadow
         n.receiveShadow = this._receiveShadow
       }
+      // a bone's transform is what getBone() hands scripts (sealMath.js)
+      if (n.isBone) sealAll(n.position, n.quaternion, n.rotation, n.scale, n.matrix, n.matrixWorld)
     })
     this.ctx.world.stage.scene.add(this.obj)
     for (const clip of this._animations) {
@@ -59,8 +62,7 @@ export class SkinnedMesh extends Node {
 
   commit(didMove) {
     if (this.needsRebuild) {
-      this.unmount()
-      this.mount()
+      this.remount()
     }
     if (didMove) {
       if (this.obj) {
@@ -135,8 +137,14 @@ export class SkinnedMesh extends Node {
     }
   }
 
-  // only a mounted skinned mesh animates (its mixer, and its place in world.hot, go with its unmount)
-  play({ name, fade = 0.15, speed, loop = true }) {
+  // only a mounted skinned mesh animates (its mixer, and its place in world.hot, go with its unmount). The options are
+  // read once, into primitives, before that is checked: a getter, a toString or a valueOf on them is script code, which
+  // could end the run (an object used as a clip name would otherwise be converted after the check)
+  play(opts) {
+    const { name: rawName, fade: rawFade = 0.15, speed: rawSpeed, loop = true } = opts
+    const name = typeof rawName === 'string' ? rawName : String(rawName)
+    const fade = Number(rawFade)
+    const speed = rawSpeed === undefined ? undefined : Number(rawSpeed)
     if (!this.mounted || !this.obj || !this.canMount()) return
     if (!this.mixer) {
       this.mixer = new THREE.AnimationMixer(this.obj)
@@ -148,9 +156,9 @@ export class SkinnedMesh extends Node {
     if (this.action) {
       this.action.fadeOut(fade)
     }
-    this.action = this.actions[name]
+    this.action = Object.hasOwn(this.actions, name) ? this.actions[name] : undefined
     if (!this.action) {
-      const clip = this.clips[name]
+      const clip = Object.hasOwn(this.clips, name) ? this.clips[name] : undefined
       if (!clip) return console.warn(`[skinnedmesh] animation not found: ${name}`)
       this.action = this.mixer.clipAction(clip)
       this.actions[name] = this.action
@@ -162,8 +170,9 @@ export class SkinnedMesh extends Node {
   }
 
   stop(opts = defaultStopOpts) {
+    const fade = Number(opts.fade)
     if (!this.action) return
-    this.action.fadeOut(opts.fade)
+    this.action.fadeOut(fade)
     this.action = null
   }
 

@@ -1,5 +1,6 @@
 import Yoga from 'yoga-layout'
-import { every, isArray, isBoolean, isNumber, isString } from 'lodash-es'
+import { every, isArray } from 'lodash-es'
+import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
 import { Node } from './Node'
 import { Display, isDisplay } from '../extras/yoga'
 import { fillRoundRect, imageRoundRect } from '../extras/roundRect'
@@ -177,7 +178,7 @@ export class UIImage extends Node {
     this._left = source._left
     this._objectFit = source._objectFit
     this._backgroundColor = source._backgroundColor
-    this._margin = isArray(source._margin) ? [...source._margin] : source._margin
+    this._margin = isArray(source._margin) ? Object.freeze([...source._margin]) : source._margin
     return this
   }
 
@@ -433,7 +434,7 @@ export class UIImage extends Node {
 
   set margin(value = defaults.margin) {
     // the node keeps its own copy of an array (read once, then checked), never the script's array
-    const edge = isArray(value) ? Array.from(value) : value
+    const edge = isArray(value) ? Object.freeze(Array.from(value)) : value
     if (!isEdge(edge)) {
       throw new Error(`[uiimage] margin not a number or array of numbers`)
     }

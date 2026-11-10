@@ -1,4 +1,4 @@
-import { isBoolean, isNumber, isString } from 'lodash-es'
+import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
 import CustomShaderMaterial from '../libs/three-custom-shader-material'
 import * as THREE from '../extras/three'
 
@@ -376,8 +376,7 @@ export class Video extends Node {
 
   commit(didMove) {
     if (this.needsRebuild) {
-      this.unmount()
-      this.mount()
+      this.remount()
       return
     }
     if (didMove) {

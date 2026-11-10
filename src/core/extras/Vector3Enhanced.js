@@ -1,4 +1,5 @@
 import { Quaternion, MathUtils } from 'three'
+import { storable } from './storable.js'
 
 /**
  * This is an enhanced version of THREE.Vector3 to add the _onChange function
@@ -7,6 +8,11 @@ import { Quaternion, MathUtils } from 'three'
  * Current version is from THREE v167
  * 
  * The initial unmodified version was committed so you can diff what changed.
+ *
+ * A component is never an object: every method that stores a value it was given (the x/y/z setters, set, setScalar,
+ * setX/Y/Z, setComponent, copy, fromArray) stores an object (or a function) as NaN, without converting it, so no
+ * valueOf or toString a script defined runs when the engine later does arithmetic with the component. Primitives are
+ * stored as they are (converting them runs no script code).
  */
 
 export class Vector3Enhanced {
@@ -27,7 +33,7 @@ export class Vector3Enhanced {
 
 	set x( value ) {
 
-		this._x = value;
+		this._x = storable( value );
 		this._onChangeCallback();
 
 	}
@@ -40,7 +46,7 @@ export class Vector3Enhanced {
 
 	set y( value ) {
 
-		this._y = value;
+		this._y = storable( value );
 		this._onChangeCallback();
 
 	}
@@ -53,7 +59,7 @@ export class Vector3Enhanced {
 
 	set z( value ) {
 
-		this._z = value;
+		this._z = storable( value );
 		this._onChangeCallback();
 
 	}
@@ -62,9 +68,9 @@ export class Vector3Enhanced {
 
 		if ( z === undefined ) z = this._z; // sprite.scale.set(x,y)
 
-		this._x = x;
-		this._y = y;
-		this._z = z;
+		this._x = storable( x );
+		this._y = storable( y );
+		this._z = storable( z );
 
         this._onChangeCallback();
 
@@ -74,6 +80,7 @@ export class Vector3Enhanced {
 
 	setScalar( scalar ) {
 
+		scalar = storable( scalar );
 		this._x = scalar;
 		this._y = scalar;
 		this._z = scalar;
@@ -86,7 +93,7 @@ export class Vector3Enhanced {
 
 	setX( x ) {
 
-		this._x = x;
+		this._x = storable( x );
 
         this._onChangeCallback();
 
@@ -96,7 +103,7 @@ export class Vector3Enhanced {
 
 	setY( y ) {
 
-		this._y = y;
+		this._y = storable( y );
 
         this._onChangeCallback();
 
@@ -106,7 +113,7 @@ export class Vector3Enhanced {
 
 	setZ( z ) {
 
-		this._z = z;
+		this._z = storable( z );
 
         this._onChangeCallback();
 
@@ -118,9 +125,9 @@ export class Vector3Enhanced {
 
 		switch ( index ) {
 
-			case 0: this._x = value; break;
-			case 1: this._y = value; break;
-			case 2: this._z = value; break;
+			case 0: this._x = storable( value ); break;
+			case 1: this._y = storable( value ); break;
+			case 2: this._z = storable( value ); break;
 			default: throw new Error( 'index is out of range: ' + index );
 
 		}
@@ -152,9 +159,9 @@ export class Vector3Enhanced {
 
 	copy( v ) {
 
-		this._x = v.x;
-		this._y = v.y;
-		this._z = v.z;
+		this._x = storable( v.x );
+		this._y = storable( v.y );
+		this._z = storable( v.z );
 
         this._onChangeCallback();
 
@@ -780,9 +787,9 @@ export class Vector3Enhanced {
 
 	fromArray( array, offset = 0 ) {
 
-		this._x = array[ offset ];
-		this._y = array[ offset + 1 ];
-		this._z = array[ offset + 2 ];
+		this._x = storable( array[ offset ] );
+		this._y = storable( array[ offset + 1 ] );
+		this._z = storable( array[ offset + 2 ] );
 
         this._onChangeCallback();
 

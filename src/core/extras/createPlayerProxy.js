@@ -5,6 +5,7 @@ import { getRef } from '../nodes/Node'
 import { clamp, uuid } from '../utils'
 import * as THREE from './three'
 import { sanitizePlayerSelfModify } from './entityModifyPolicy'
+import { isPrimitive } from './scriptPrimitives.js'
 
 import { readVec3, warnOnce } from './physxConvert.js'
 
@@ -256,25 +257,52 @@ export function createPlayerProxy(entity, player) {
     hasEffect() {
       return !!player.data.effect
     },
+    // Normalise, admit, publish: the options are read once, into plain values, before anything is admitted (a getter
+    // on them is script code); the player's current effect is ended before ours is installed, since its onEnd (this
+    // app's or another's) can run script code that ends this run; the run is checked again after that, and nothing of
+    // ours is published until then.
     applyEffect(opts) {
-      assertCanStart()
-      if (!opts) return
+      const read = opts
+        ? {
+            anchor: opts.anchor,
+            emote: opts.emote,
+            snare: opts.snare,
+            freeze: opts.freeze,
+            turn: opts.turn,
+            duration: opts.duration,
+            cancellable: opts.cancellable,
+            onEnd: opts.onEnd,
+          }
+        : null
+      const anchorId = read?.anchor ? read.anchor.anchorId : undefined
       const effect = {}
-      // effect.id = uuid()
-      if (opts.anchor) effect.anchorId = opts.anchor.anchorId
-      if (opts.emote) effect.emote = opts.emote
-      if (opts.snare) effect.snare = opts.snare
-      if (opts.freeze) effect.freeze = opts.freeze
-      if (opts.turn) effect.turn = opts.turn
-      if (opts.duration) effect.duration = opts.duration
-      if (opts.cancellable) {
-        effect.cancellable = opts.cancellable
-        delete effect.freeze // overrides
+      // only primitive values go into the effect: it is sent to the network and the player reads (and sanitises) it
+      // every frame, so an object in it would run its own code later, outside this call. An effect with an object
+      // (or a function) as a field is refused, as any other invalid field is
+      let invalid = false
+      const put = (key, value) => {
+        if (!value) return
+        if (isPrimitive(value)) effect[key] = value
+        else invalid = true
       }
-      const safe = sanitizePlayerSelfModify({ ef: effect }, player.data.id)
+      if (read) {
+        // effect.id = uuid()
+        if (read.anchor) effect.anchorId = isPrimitive(anchorId) ? anchorId : undefined
+        put('emote', read.emote)
+        put('snare', read.snare)
+        put('freeze', read.freeze)
+        put('turn', read.turn)
+        put('duration', read.duration)
+        if (read.cancellable) {
+          put('cancellable', read.cancellable)
+          delete effect.freeze // overrides
+        }
+      }
+      const safe = read && !invalid ? sanitizePlayerSelfModify({ ef: effect }, player.data.id) : null
+      assertCanStart()
       if (!safe || !Object.prototype.hasOwnProperty.call(safe, 'ef')) return
-      // read once; called by the host when the effect ends, which may be during teardown
-      const onEnd = opts.onEnd
+      // called by the host when the effect ends, which may be during teardown
+      const onEnd = read.onEnd
       const config = {
         effect: safe.ef,
         onEnd: () => {
@@ -283,6 +311,12 @@ export function createPlayerProxy(entity, player) {
           player.setEffect(null)
           if (!entity.crashed && !world.fatalError && run === entity.deadHook && !run?.dead) callBack(onEnd)
         },
+      }
+      // (a callback that applies another effect each time is not followed for ever)
+      for (let tries = 0; player.data.effect; tries++) {
+        if (tries >= 3) throw new Error('[player] the current effect could not be ended')
+        player.setEffect(null)
+        assertCanStart()
       }
       activeEffectConfig = config
       player.setEffect(config.effect, config.onEnd)
@@ -330,7 +364,9 @@ export function createPlayerProxy(entity, player) {
       world.livekit.setScreenShareTarget(targetId)
     },
     setVoiceLevel(level) {
-      // removing the modifier is how a script ends it, so only a new or changed level is refused
+      // a level is a string (anything else is reported and changes nothing: it is not converted, an object's toString
+      // is script code); removing the modifier is how a script ends it, so only a new or changed level is refused
+      if (level && typeof level !== 'string') return console.error('[setVoiceLevel] level must be a string')
       if (level) assertCanStart()
       if (!world.network.isServer) {
         return console.error(`[setVoiceLevel] must be applied on the server`)
@@ -347,7 +383,9 @@ export function createPlayerProxy(entity, player) {
         return
       }
       if (level && voiceMod) {
-        voiceMod = world.livekit.updateModifier(voiceMod, level)
+        // (a level the voice system refuses leaves the current modifier as it was, and still tracked: it ends with the
+        // run)
+        voiceMod = world.livekit.updateModifier(voiceMod, level) || voiceMod
         return
       }
     },

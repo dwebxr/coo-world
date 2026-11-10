@@ -1,5 +1,6 @@
 import { isTouch } from '../../client/utils'
 import { bindRotations } from '../extras/bindRotations'
+import { sealAll, sealMath } from '../extras/sealMath'
 import { buttons, codeToProp } from '../extras/buttons'
 import * as THREE from '../extras/three'
 import { System } from './System'
@@ -351,8 +352,10 @@ export class ClientControls extends System {
           if (value !== null && !Array.isArray(value)) {
             throw new Error('[control] actions must be null or array')
           }
+          // read the list first (its entries can be script getters), then check the control is still there
+          const actions = value ? copyActions(value) : null
           if (released) return
-          control.actions = value ? copyActions(value) : null
+          control.actions = actions
           self.buildActions()
         },
         release: () => {
@@ -975,10 +978,11 @@ function createButton(controls, control, prop) {
   }
 }
 
+// (the vectors, quaternions and eulers of a control's entries are the engine's, written every frame: sealMath.js)
 function createVector(controls, control, prop) {
   return {
     $vector: true,
-    value: new THREE.Vector3(),
+    value: sealMath(new THREE.Vector3()),
     capture: false,
   }
 }
@@ -986,8 +990,8 @@ function createVector(controls, control, prop) {
 function createPose(controls, control, prop) {
   return {
     $pose: true,
-    position: new THREE.Vector3(),
-    quaternion: new THREE.Quaternion(),
+    position: sealMath(new THREE.Vector3()),
+    quaternion: sealMath(new THREE.Quaternion()),
     // matrix: new THREE.Matrix4(),
     // capture: false,
   }
@@ -1052,6 +1056,7 @@ function createCamera(controls, control) {
   const quaternion = new THREE.Quaternion().copy(world.rig.quaternion)
   const rotation = new THREE.Euler(0, 0, 0, 'YXZ').copy(world.rig.rotation)
   bindRotations(quaternion, rotation)
+  sealAll(position, quaternion, rotation)
   const zoom = world.camera.position.z
   return {
     $camera: true,

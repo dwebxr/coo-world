@@ -1,7 +1,8 @@
 import { callForScript } from '../extras/scriptValues'
 import { stoppedError } from '../extras/physicsFailure.js'
 import { Teardown, tornDown } from '../extras/runTeardown.js'
-import { isBoolean } from 'lodash-es'
+import { sealAll } from '../extras/sealMath.js'
+import { isBoolean, isPrimitive } from '../extras/scriptPrimitives.js'
 import * as THREE from '../extras/three'
 import { getNodeRef, isRefAllowed, registerNodeRefGetter } from './refs'
 import {
@@ -23,11 +24,17 @@ export { NODE_CLIMB_LIMIT, NODE_DEPTH_LIMIT, NODE_LIMIT, NodeLimitError } from '
 // every getProxy() of every node class is covered: create, get, clone, parent/children, traverse.
 const runBound = new WeakSet() // the wrapped methods and setters (a subclass proxy copies its base's descriptors)
 
-// the app run a node belongs to: the one it was mounted for, or else the one that created it (app.create, clone)
+// The app run a node belongs to: the one it was mounted for, or else the one that created or loaded it (app.create,
+// a clone, world.load); a node that was neither (a descendant under an inactive part of a model, a loaded child)
+// belongs to its nearest ancestor's run. A node another live app adopts (mounts) follows that app from then on.
 function nodeRunOwner(node) {
-  const ctx = node.ctx
-  if (ctx?.run) return ctx
-  return node._created
+  let current = node
+  for (let steps = 0; current && steps <= NODE_CLIMB_LIMIT; steps++) {
+    if (current.ctx?.run) return current.ctx
+    if (current._created) return current._created
+    current = current.parent
+  }
+  return null
 }
 
 function assertNodeRunActive(node) {
@@ -47,11 +54,24 @@ const proxyNodes = new WeakMap() // proxy -> node
 const nodeSetters = new WeakMap() // node -> Map(name -> the setter a node class defined)
 const sharedSetters = new Map() // name -> the shared wrapper
 
+// the node of the handle a setter is called on: the handle itself, or one it inherits from (Object.create(handle));
+// a setter copied onto another object, or called without one, has no node and is refused
+function receiverNode(receiver) {
+  let current = receiver
+  for (let steps = 0; current !== null && current !== undefined && steps < 64; steps++) {
+    if (typeof current !== 'object' && typeof current !== 'function') return null
+    const node = proxyNodes.get(current)
+    if (node) return node
+    current = Object.getPrototypeOf(current)
+  }
+  return null
+}
+
 function sharedSetter(key) {
   let set = sharedSetters.get(key)
   if (!set) {
     set = function (value) {
-      const node = proxyNodes.get(this)
+      const node = receiverNode(this)
       if (!node) throw new TypeError('[node] not a node')
       assertNodeRunActive(node)
       Reflect.apply(nodeSetters.get(node).get(key), this, [value])
@@ -74,6 +94,9 @@ function bindProxyToRun(node, proxy) {
         assertNodeRunActive(node)
         return Reflect.apply(method, this, args)
       }
+      // (the same name and arity as the method it stands for)
+      Object.defineProperty(bound, 'name', { value: method.name, configurable: true })
+      Object.defineProperty(bound, 'length', { value: method.length, configurable: true })
       runBound.add(bound)
       Object.defineProperty(proxy, key, { ...desc, value: bound })
     } else if (desc.set && !runBound.has(desc.set)) {
@@ -198,6 +221,8 @@ export class Node {
       }
       this.setTransformed()
     })
+    // scripts hold these through the node's handle: sealed once wired (sealMath.js)
+    sealAll(this.position, this.rotation, this.quaternion, this.scale, this.matrix, this.matrixWorld)
     this._onPointerEnter = data.onPointerEnter
     this._onPointerLeave = data.onPointerLeave
     this._onPointerDown = data.onPointerDown
@@ -252,20 +277,48 @@ export class Node {
     if (!this.canMount()) return
     // top down mount
     this.updateTransform()
+    // (checked again right before the node is charged and mounted: nothing the engine called in between may have ended
+    // the run)
+    if (!this.canMount()) return
     const entity = this.ctx.entity
     if (entity?.isApp) chargeNode(this, entity)
     this.mounted = true
     this.mount()
+    // a mount that ran script code which unmounted this node (its run retired meanwhile) is taken back: what the mount
+    // made after the unmount goes again
+    if (!this.mounted) return this.rollBackMount()
     const children = this.children
-    for (let i = 0, l = children.length; i < l; i++) {
+    for (let i = 0, l = children.length; i < l && this.mounted; i++) {
       children[i].activate(this.ctx)
     }
   }
 
+  rollBackMount() {
+    try {
+      this.unmount()
+    } catch (err) {
+      console.error('[node] unmount after an interrupted mount failed', err)
+    }
+  }
+
+  // A class's commit that rebuilds: unmount, then mount again only if that is still allowed (the unmount can run script
+  // code that ends the node's run), and take back a mount that was interrupted the same way.
+  remount() {
+    this.unmount()
+    if (!this.mounted || !this.canMount()) return false
+    this.mount()
+    if (!this.mounted) {
+      this.rollBackMount()
+      return false
+    }
+    return true
+  }
+
   // Unmounts bottom up. Every mounted node in the subtree is unmounted and returns its budget even when an unmount
-  // throws; the first error is rethrown afterwards. An unmount can run script code (a method a script defined on a
-  // transform the host reads, say), which may change the children: nothing mounts under this node meanwhile, and the
-  // children are read again until none is mounted (each pass unmounts at least one, so the passes are bounded).
+  // throws; the first error is rethrown afterwards. An unmount that reaches script code (through a callback: the
+  // engine's math objects, through which scripts once could, are sealed) may change the children: nothing mounts under
+  // this node meanwhile, and the children are read again until none is mounted (each pass unmounts at least one, so the
+  // passes are bounded).
   deactivate() {
     if (!this.mounted) return
     let failed = false
@@ -395,6 +448,8 @@ export class Node {
   }
 
   set active(value) {
+    // (a primitive: an object would be kept, and its truth is all that counts)
+    if (!isPrimitive(value)) throw new Error('[node] active must be a boolean')
     if (this._active === value) return
     this._active = value
     if (!this._active && this.mounted) {

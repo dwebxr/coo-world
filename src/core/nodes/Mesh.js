@@ -1,5 +1,5 @@
 import * as THREE from '../extras/three'
-import { isBoolean } from 'lodash-es'
+import { isBoolean } from '../extras/scriptPrimitives.js'
 
 import { Node, resolveValueRef, secureRef } from './Node'
 import { getTrianglesFromGeometry } from '../extras/getTrianglesFromGeometry'
@@ -144,8 +144,7 @@ export class Mesh extends Node {
 
   commit(didMove) {
     if (this.needsRebuild) {
-      this.unmount()
-      this.mount()
+      this.remount()
       return
     }
     if (didMove) {

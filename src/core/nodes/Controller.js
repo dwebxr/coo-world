@@ -10,7 +10,8 @@ import {
   scratchPxVec3,
   scratchPxExtVec3,
 } from '../extras/physxConvert.js'
-import { isNumber, isBoolean, isString, isFunction } from 'lodash-es'
+import { isFunction } from 'lodash-es'
+import { isNumber, isBoolean, isString } from '../extras/scriptPrimitives.js'
 
 import { DEG2RAD } from '../extras/general'
 import { finiteNumber, lengthOk, positionOk } from '../extras/physicsValidate.js'
@@ -148,8 +149,7 @@ export class Controller extends Node {
 
   commit(didMove) {
     if (this.needsRebuild) {
-      this.unmount()
-      this.mount()
+      this.remount()
       return
     }
     if (didMove) {

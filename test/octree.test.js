@@ -247,7 +247,8 @@ test('Image: invalid creation -> commit after matrix copy -> hit -> destroy', ()
     node.matrixWorld.identity()
     const move = world.stage.octree.move.bind(world.stage.octree)
     world.stage.octree.move = item => {
-      assert.deepEqual(node.mesh.matrixWorld.elements, node.matrixWorld.elements)
+      // (a node's matrix keeps its values in a Float64Array: sealMath.js)
+      assert.deepEqual([...node.mesh.matrixWorld.elements], [...node.matrixWorld.elements])
       return move(item)
     }
     node.commit(true)

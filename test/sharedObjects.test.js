@@ -255,16 +255,14 @@ test('XR ray smoothing: same pose values as before, with the smoothing state kep
   world.rig.quaternion.setFromAxisAngle(new m.THREE.Vector3(0, 1, 0), 0.5)
   const control = world.controls.bind({ priority: 1, object: { isApp: true, data: { id: 'a' } } })
   const poses = { Left: control.xrLeftRayPose, Right: control.xrRightRayPose }
-  // a script replaces every method it can on the poses it holds; none may receive an engine object
-  const received = []
+  // the poses a script holds are sealed engine objects (sealMath.js): it cannot put its own methods or accessors on them
   for (const pose of Object.values(poses)) {
     for (const target of [pose.position, pose.quaternion]) {
-      const set = target.set
-      target.set = (...args) => {
-        received.push(...args)
-        return set.apply(target, args)
-      }
-      target.lerp = target.slerp = target.copy = target.setFromRotationMatrix = value => received.push(value)
+      assert.ok(Object.isSealed(target))
+      assert.throws(() => {
+        target.set = () => {}
+      }, TypeError)
+      assert.throws(() => Object.defineProperty(target, 'x', { get: () => 0 }), TypeError)
     }
   }
   const frames = [
@@ -325,11 +323,6 @@ test('XR ray smoothing: same pose values as before, with the smoothing state kep
     actual.forEach((value, i) => assert.ok(Math.abs(value - expected[side][i]) < 1e-12, `${side} ${i}`))
     assert.equal('lPosition' in pose, false, 'no smoothing state on the script-visible pose')
   }
-  assert.ok(received.length > 0)
-  assert.ok(
-    received.every(value => typeof value === 'number'),
-    'only numbers reached script-held methods'
-  )
   // the smoothing state is the host's and leaves with its control (the script keeps its poses)
   assert.equal(world.controls.raySmoothing.size, 2)
   control.release()
@@ -422,7 +415,9 @@ test('control.camera: a script-held camera that throws or lies is contained per 
   camera.position.x = NaN
   world.controls.postLateUpdate()
   assert.deepEqual(world.rig.position.toArray(), [1, 2, 3], 'a non-finite camera never reaches the rig')
-  Object.defineProperty(camera.position, 'x', {
+  // its vectors are sealed (no accessor can be put on them), but the camera entry itself is the script's
+  assert.throws(() => Object.defineProperty(camera.position, 'x', { get: () => 0 }), TypeError)
+  Object.defineProperty(camera, 'zoom', {
     get() {
       throw new Error('poison')
     },
@@ -435,21 +430,24 @@ test('control.camera: a script-held camera that throws or lies is contained per 
     console.error = original
   }
   assert.equal(app.crashed, true, 'the app crashes; the frame goes on')
-  // a read-only camera gets numbers: a replaced set receives no host vector
+  // a read-only camera gets numbers, and no method of its vectors can be replaced
   const other = world.controls.bind({ priority: 1, object: { isApp: true, data: { id: 'b' } } })
   const view = other.camera
-  let received = null
-  view.position.set = (...args) => (received = args)
+  assert.throws(() => {
+    view.position.set = () => {}
+  }, TypeError)
   world.controls.postLateUpdate()
-  assert.deepEqual(received, [1, 2, 3])
+  assert.deepEqual(view.position.toArray(), [1, 2, 3])
 })
 
 test('nodes: particles shape/bursts and sky sunDirection are copies, not shared defaults or script objects', () => {
   const a = m.createNode('particles').getProxy()
   const b = m.createNode('particles').getProxy()
-  a.shape[1] = 999
-  a.bursts.push({ time: 0, count: 5 })
-  assert.equal(b.shape[1], 1, 'the default shape is not shared')
+  // each node keeps its own frozen copy: nothing can be put into it, nor into another node's through it
+  assert.throws(() => (a.shape[1] = 999), TypeError)
+  assert.throws(() => a.bursts.push({ time: 0, count: 5 }), TypeError)
+  assert.notEqual(a.shape, b.shape, 'the default shape is not shared')
+  assert.equal(b.shape[1], 1)
   assert.deepEqual(b.bursts, [])
   const shape = ['sphere', 2, 1]
   b.shape = shape
@@ -468,6 +466,7 @@ test('nodes: particles shape/bursts and sky sunDirection are copies, not shared 
   view.margin = margin
   margin[0] = 100
   assert.deepEqual(view.margin, [1, 2, 3, 4])
+  assert.ok(Object.isFrozen(view.margin), 'the node keeps a frozen copy')
 })
 
 test('engine world events: enter, leave, health and command payloads are frozen copies', () => {

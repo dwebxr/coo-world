@@ -1,4 +1,4 @@
-import { isBoolean } from 'lodash-es'
+import { isBoolean, isPrimitive } from '../extras/scriptPrimitives.js'
 import * as THREE from '../extras/three'
 
 import { getNodeRef, Node } from './Node'
@@ -22,6 +22,10 @@ export class LOD extends Node {
   }
 
   insert(node, maxDistance) {
+    // a number, kept as one: the distance is compared on every sort and every frame (an object's valueOf would run
+    // there, in the middle of a mount or of the LOD system's update)
+    if (!isPrimitive(maxDistance)) throw new Error('[lod.insert] maxDistance must be a number')
+    maxDistance = Number(maxDistance)
     this.lods.push({ node, maxDistance })
     this.lods.sort((a, b) => a.maxDistance - b.maxDistance) // ascending
     node.active = false

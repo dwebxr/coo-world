@@ -82,9 +82,12 @@ export class App extends Entity {
   }
 
   // (app.create) the node belongs to this run until it is mounted (its proxy is bound to that run: Node.js)
-  createNode(name, data) {
+  // a node for `run` (app.create: the run that asked, captured before its arguments were read; constructing can read
+  // script values too): refused once another run is current
+  createNode(name, data, run = this.deadHook) {
     const node = createNode(name, data)
-    node._created = { entity: this, run: this.deadHook }
+    if (run !== this.deadHook) throw stoppedError(this)
+    node._created = { entity: this, run }
     return node
   }
 
@@ -259,10 +262,18 @@ export class App extends Entity {
     }
   }
 
+  // A build asked for during a teardown takes its place in the build order when it is asked for (its sequence number):
+  // a newer build (one asked for after the teardown, a blueprint update) supersedes it, and so does any build that
+  // starts before the deferred one runs. A destroy wins over builds.
   deferTransition(kind, arg) {
     const pending = this.pendingTransition
-    if (kind === 'destroy' || !pending) this.pendingTransition = { kind, arg }
-    else if (pending.kind === 'build') pending.arg = pending.arg || arg
+    if (kind === 'destroy') {
+      this.pendingTransition = { kind, arg }
+      return
+    }
+    if (pending?.kind === 'destroy') return
+    const seq = ++this.n
+    this.pendingTransition = { kind, arg: (pending && pending.arg) || arg, seq }
   }
 
   runDeferredTransition() {
@@ -271,11 +282,14 @@ export class App extends Entity {
     this.pendingTransition = null
     queueMicrotask(() => {
       if (pending.kind === 'destroy') return this.destroy(pending.arg)
-      if (this.destroyed || this.world.fatalError) return
-      this.build(pending.arg).catch(err => {
+      if (this.n !== pending.seq || this.destroyed || this.world.fatalError) return
+      const promise = this.build(pending.arg)
+      const build = this.n
+      promise.catch(err => {
         handlePhysicsFailure(err, { entity: this, phase: 'deferred build' })
         console.error(`[app] deferred build failed (entity ${this.data.id})`)
-        this.building = false
+        // (only the build that still owns the sequence: a newer one keeps its own state)
+        if (this.n === build) this.building = false
       })
     })
   }
@@ -503,6 +517,12 @@ export class App extends Entity {
     const n = ++this.n // invalidate builds already waiting on assets
     queueMicrotask(() => {
       if (this.n !== n || this.destroyed || this.world.fatalError) return
+      // the crashed run is torn down now, through the same teardown as a removal, whether or not the crash block can
+      // be loaded (it is shown by the build below, which can fail on its own). As soon as the current task's own code
+      // has returned: a crash can be reported from inside a host loop (a physics step, the stage's clean pass) that
+      // must not see its nodes and actors released under it
+      this.unbuild()
+      if (this.n !== n || this.destroyed || this.world.fatalError) return
       const promise = this.build(true)
       const build = this.n
       promise.catch(err => {
@@ -640,15 +660,20 @@ export class App extends Entity {
       !!this.world.fatalError
     return new Promise((resolve, reject) => {
       if (!signal || isDead()) return
+      // the url and the options are read once, into host values, before the request is admitted (reading them can run
+      // script code, which may end the run: it is checked again right before the request starts)
+      let href
       let init
       try {
+        href = typeof url === 'string' ? url : String(url)
         init = { ...toHostFetchOptions(options), signal }
       } catch (err) {
         return reject(toScriptError(err))
       }
+      if (isDead() || signal.aborted) return
       let request
       try {
-        request = fetch(url, init)
+        request = fetch(href, init)
       } catch (err) {
         return reject(toScriptError(err))
       }
@@ -700,10 +725,11 @@ export class App extends Entity {
   }
 
   // player handles belong to the current run (the cache is emptied by unbuild); none once its players stage started
-  getPlayerProxy(playerId) {
-    if (tornDown(this.deadHook, Teardown.PLAYERS)) throw stoppedError(this)
+  // `run` is the run that asks (world.getPlayer/getPlayers capture it on entry, before anything can end it)
+  getPlayerProxy(playerId, run = this.deadHook) {
+    if (run !== this.deadHook || tornDown(run, Teardown.PLAYERS)) throw stoppedError(this)
     if (playerId === undefined) playerId = this.world.entities.player?.data.id
-    if (this.players?.run !== this.deadHook) this.players = { run: this.deadHook, cache: new Map(), owned: new Set() }
+    if (this.players?.run !== run) this.players = { run, cache: new Map(), owned: new Set() }
     const players = this.players
     let proxy = players.cache.get(playerId)
     if (!proxy || !isPlayerProxyCurrent(proxy)) {
@@ -711,6 +737,11 @@ export class App extends Entity {
       // whatever the cache holds)
       if (proxy) players.cache.delete(playerId)
       if (proxy && players.owned.delete(proxy)) cleanupPlayerProxy(proxy)
+      // the cleanup can run script code (an effect's onEnd) that ends this run: a handle is only made for the run that
+      // asked, into that run's registry, while both are still current
+      if (run !== this.deadHook || tornDown(run, Teardown.PLAYERS) || this.players !== players) {
+        throw stoppedError(this)
+      }
       const player = this.world.entities.getPlayer(playerId)
       // no handle for a player that has left (it may still be listed while it leaves)
       if (!player || player.destroyed) return null

@@ -1,6 +1,7 @@
 import Yoga from 'yoga-layout'
 import * as THREE from '../extras/three'
-import { every, isArray, isBoolean, isNumber, isString } from 'lodash-es'
+import { every, isArray } from 'lodash-es'
+import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
 
 import { Node } from './Node'
 import { fillRoundRect } from '../extras/roundRect'
@@ -186,8 +187,8 @@ export class UIView extends Node {
     this._borderWidth = source._borderWidth
     this._borderColor = source._borderColor
     this._borderRadius = source._borderRadius
-    this._margin = isArray(source._margin) ? [...source._margin] : source._margin
-    this._padding = isArray(source._padding) ? [...source._padding] : source._padding
+    this._margin = isArray(source._margin) ? Object.freeze([...source._margin]) : source._margin
+    this._padding = isArray(source._padding) ? Object.freeze([...source._padding]) : source._padding
     this._flexDirection = source._flexDirection
     this._justifyContent = source._justifyContent
     this._alignItems = source._alignItems
@@ -374,7 +375,7 @@ export class UIView extends Node {
 
   set margin(value = defaults.margin) {
     // the node keeps its own copy of an array (read once, then checked), never the script's array
-    const edge = isArray(value) ? Array.from(value) : value
+    const edge = isArray(value) ? Object.freeze(Array.from(value)) : value
     if (!isEdge(edge)) {
       throw new Error(`[uiview] margin not a number or array of numbers`)
     }
@@ -398,7 +399,7 @@ export class UIView extends Node {
 
   set padding(value = defaults.padding) {
     // the node keeps its own copy of an array (read once, then checked), never the script's array
-    const edge = isArray(value) ? Array.from(value) : value
+    const edge = isArray(value) ? Object.freeze(Array.from(value)) : value
     if (!isEdge(edge)) {
       throw new Error(`[uiview] padding not a number or array of numbers`)
     }

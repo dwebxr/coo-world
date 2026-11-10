@@ -1,7 +1,7 @@
 import { handlePhysicsFailure } from '../extras/physicsFailure.js'
 import * as THREE from '../extras/three'
 import { vec3ToPxPos, quatToPxRot, warnOnce } from '../extras/physxConvert.js'
-import { isBoolean } from 'lodash-es'
+import { isBoolean } from '../extras/scriptPrimitives.js'
 
 import { getRef, Node, resolveValueRef, secureRef } from './Node'
 
@@ -208,8 +208,7 @@ export class Collider extends Node {
 
   commit(didMove) {
     if (this.needsRebuild) {
-      this.unmount()
-      this.mount()
+      this.remount()
       return
     }
     // a collider skipped for its transform tries again once that transform changed: mount() directly, since there is

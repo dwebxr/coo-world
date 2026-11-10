@@ -1,5 +1,6 @@
 import * as THREE from '../extras/three'
-import { every, isBoolean, isNumber, isString } from 'lodash-es'
+import { every } from 'lodash-es'
+import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
 
 import { Node } from './Node'
 

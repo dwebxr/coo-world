@@ -1,4 +1,4 @@
-import { isBoolean, isNumber, isString } from 'lodash-es'
+import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
 import { Node } from './Node'
 import * as THREE from '../extras/three'
 import CustomShaderMaterial from '../libs/three-custom-shader-material'

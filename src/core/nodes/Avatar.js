@@ -1,4 +1,4 @@
-import { isBoolean, isString } from 'lodash-es'
+import { isBoolean, isString } from '../extras/scriptPrimitives.js'
 import { Node } from './Node'
 import * as THREE from 'three'
 
@@ -53,8 +53,7 @@ export class Avatar extends Node {
 
   commit(didMove) {
     if (this.needsRebuild) {
-      this.unmount()
-      this.mount()
+      this.remount()
     }
     if (didMove) {
       this.instance?.move(this.matrixWorld)

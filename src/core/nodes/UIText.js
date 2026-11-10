@@ -1,5 +1,6 @@
 import Yoga from 'yoga-layout'
-import { every, isArray, isBoolean, isNumber, isString } from 'lodash-es'
+import { every, isArray } from 'lodash-es'
+import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
 
 import { Node } from './Node'
 import { Display, isDisplay } from '../extras/yoga'
@@ -171,8 +172,8 @@ export class UIText extends Node {
     this._left = source._left
     this._backgroundColor = source._backgroundColor
     this._borderRadius = source._borderRadius
-    this._margin = isArray(source._margin) ? [...source._margin] : source._margin
-    this._padding = isArray(source._padding) ? [...source._padding] : source._padding
+    this._margin = isArray(source._margin) ? Object.freeze([...source._margin]) : source._margin
+    this._padding = isArray(source._padding) ? Object.freeze([...source._padding]) : source._padding
     this._value = source._value
     this._fontSize = source._fontSize
     this._color = source._color
@@ -344,7 +345,7 @@ export class UIText extends Node {
 
   set margin(value = defaults.margin) {
     // the node keeps its own copy of an array (read once, then checked), never the script's array
-    const edge = isArray(value) ? Array.from(value) : value
+    const edge = isArray(value) ? Object.freeze(Array.from(value)) : value
     if (!isEdge(edge)) {
       throw new Error(`[uitext] margin not a number or array of numbers`)
     }
@@ -368,7 +369,7 @@ export class UIText extends Node {
 
   set padding(value = defaults.padding) {
     // the node keeps its own copy of an array (read once, then checked), never the script's array
-    const edge = isArray(value) ? Array.from(value) : value
+    const edge = isArray(value) ? Object.freeze(Array.from(value)) : value
     if (!isEdge(edge)) {
       throw new Error(`[uitext] padding not a number or array of numbers`)
     }

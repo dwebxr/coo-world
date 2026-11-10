@@ -11,18 +11,26 @@ import { hardenForScripts } from '../extras/scriptHardening'
 const vec2 = new THREE.Vector2()
 
 // A linked instance's matrix is its node's own matrixWorld, which scripts hold. InstancedMesh.setMatrixAt would call
-// that object's toArray (a script can define one) and hand it the shared instance buffer. Instead the values are read
-// with the class's own method into a private array (reading `elements` can still run script code: a script can make it
-// an accessor, so callers check their bookkeeping again afterwards), kept only if they are numbers, and written into the
-// buffer by the host.
+// that object's toArray (a script could define one) and hand it the shared instance buffer. Instead the values are
+// read with the class's own method into an array of the caller's own (node matrices are sealed, with typed elements,
+// so no script code runs while they are read: sealMath.js), kept only if they are numbers, and written into the buffer
+// by the host. Every read that is outstanding at once uses its own array (a read nested inside another, should one
+// ever run script code, cannot overwrite the values the outer one has), and callers still check their bookkeeping
+// after the read.
 const toArray = THREE.Matrix4.prototype.toArray
 const copyMatrix = THREE.Matrix4.prototype.copy
-const matrixValues = new Array(16)
+const matrixArrays = [] // one per nesting depth, made on first use
+let matrixDepth = 0
 
 function readMatrix(matrix) {
-  toArray.call(matrix, matrixValues, 0)
-  for (let i = 0; i < 16; i++) if (typeof matrixValues[i] !== 'number') matrixValues[i] = 0
-  return matrixValues
+  const values = (matrixArrays[matrixDepth] ??= new Float64Array(16))
+  matrixDepth++
+  try {
+    toArray.call(matrix, values, 0)
+  } finally {
+    matrixDepth--
+  }
+  return values
 }
 
 function writeMatrix(iMesh, idx, values) {

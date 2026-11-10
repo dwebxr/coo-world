@@ -39,6 +39,7 @@ import {
 import * as assetURL from '../../src/core/extras/assetURL.js'
 import * as runTeardown from '../../src/core/extras/runTeardown.js'
 import { revokeRunObjectURLs } from '../../src/core/extras/scriptBlob.js'
+import { isPrimitive } from '../../src/core/extras/scriptPrimitives.js'
 import { resolveAssetFile } from '../../src/core/extras/resolveAssetFile.js'
 
 class System extends EventEmitter {
@@ -109,6 +110,7 @@ export function loadClient(file, name, context = {}) {
     NODE_LIMIT,
     ...runTeardown,
     revokeRunObjectURLs,
+    isPrimitive,
     ...assetURL,
     resolveAssetFile,
     ...context,

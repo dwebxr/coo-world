@@ -7,7 +7,14 @@ import { BufferedLerpVector3 } from '../extras/BufferedLerpVector3'
 import { BufferedLerpQuaternion } from '../extras/BufferedLerpQuaternion'
 import { isEmoteUrl } from '../extras/entityModifyPolicy'
 import { readAnchorPose } from '../extras/anchorPose'
-import { avatarChosen, avatarSettled, playerAvatarUrl, switchToBuiltinAvatar } from '../extras/playerAvatarFallback'
+import {
+  avatarChosen,
+  avatarSettled,
+  beginAvatarLoad,
+  isCurrentAvatarLoad,
+  playerAvatarUrl,
+  switchToBuiltinAvatar,
+} from '../extras/playerAvatarFallback'
 
 const anchorPosition = new THREE.Vector3()
 const anchorQuaternion = new THREE.Quaternion()
@@ -80,9 +87,11 @@ export class PlayerRemote extends Entity {
 
   applyAvatar() {
     const avatarUrl = playerAvatarUrl(this)
+    const load = beginAvatarLoad(this)
     if (this.avatarUrl === avatarUrl) return
     this.world.loader.load('avatar', avatarUrl).then(
       src => {
+        if (!isCurrentAvatarLoad(this, load)) return
         if (this.avatar) this.avatar.deactivate()
         this.avatar = src.toNodes().get('avatar')
         this.base.add(this.avatar)
@@ -95,8 +104,9 @@ export class PlayerRemote extends Entity {
         avatarSettled(this, avatarUrl)
       },
       err => {
-        avatarSettled(this, avatarUrl)
-        throw err
+        // reported like the local player's, instead of an unhandled rejection
+        if (isCurrentAvatarLoad(this, load)) avatarSettled(this, avatarUrl)
+        console.error(err)
       }
     )
   }

@@ -14,7 +14,14 @@ import { outranks, isAdmin, isBuilder, isMuted } from '../extras/playerRanks'
 import { createPlayerAura, chatBubble } from '../extras/playerAura'
 import { isEmoteUrl, sanitizeName, sanitizePlayerSelfModify } from '../extras/entityModifyPolicy'
 import { readAnchorPose } from '../extras/anchorPose'
-import { avatarChosen, avatarSettled, playerAvatarUrl, switchToBuiltinAvatar } from '../extras/playerAvatarFallback'
+import {
+  avatarChosen,
+  avatarSettled,
+  beginAvatarLoad,
+  isCurrentAvatarLoad,
+  playerAvatarUrl,
+  switchToBuiltinAvatar,
+} from '../extras/playerAvatarFallback'
 import {
   readVec3,
   writeVec3,
@@ -181,10 +188,12 @@ export class PlayerLocal extends Entity {
 
   applyAvatar() {
     const avatarUrl = this.getAvatarUrl()
+    const load = beginAvatarLoad(this)
     if (this.avatarUrl === avatarUrl) return
     this.world.loader
       .load('avatar', avatarUrl)
       .then(src => {
+        if (!isCurrentAvatarLoad(this, load)) return
         if (this.avatar) this.avatar.deactivate()
         this.avatar = src.toNodes().get('avatar')
         this.avatar.disableRateCheck() // max fps for local player
@@ -199,7 +208,7 @@ export class PlayerLocal extends Entity {
         avatarSettled(this, avatarUrl)
       })
       .catch(err => {
-        avatarSettled(this, avatarUrl)
+        if (isCurrentAvatarLoad(this, load)) avatarSettled(this, avatarUrl)
         console.error(err)
       })
   }

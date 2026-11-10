@@ -20,7 +20,20 @@ export function switchToBuiltinAvatar(player) {
   return player.avatarFallback === 'loading'
 }
 
-// called when an avatar load settles (either way)
+// Every avatar request starts a new load generation; a load that completes after a newer request (or after a
+// request for the avatar already installed) is stale and installs nothing, so the avatar shown is always the
+// latest one asked for, and the fallback cannot be replaced by an older, slower load.
+export function beginAvatarLoad(player) {
+  player.avatarLoad = (player.avatarLoad || 0) + 1
+  return player.avatarLoad
+}
+
+export function isCurrentAvatarLoad(player, load) {
+  return player.avatarLoad === load && !player.destroyed
+}
+
+// called when the current avatar load settles (either way): the fallback is 'ready' once the built-in avatar is
+// installed, or once its load failed (there is nothing left to fall back to)
 export function avatarSettled(player, url) {
   if (player.avatarFallback === 'loading' && url === BUILTIN_AVATAR_URL) player.avatarFallback = 'ready'
 }

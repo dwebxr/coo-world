@@ -12,8 +12,29 @@ import { createNode } from '../extras/createNode'
 import { createEmoteFactory } from '../extras/createEmoteFactory'
 import { ASSET_PROTOCOL, assetName, assetRefusal } from '../extras/assetURL'
 import { resolveAssetFile } from '../extras/resolveAssetFile'
+import { createOutboundFetch } from '../extras/outboundFetch'
+import { LoadingManager } from 'three'
 
 const isRemote = url => typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'))
+
+// a remote model or script: larger and slower than a script's own request may be (outboundFetch.js defaults)
+const REMOTE_LOAD = { maxBytes: 32 * 1024 * 1024, timeoutMs: 30_000 }
+// loaded models, emotes and scripts kept for reuse. Apps hold what they use; this only bounds what a world
+// that keeps loading new URLs (world.load in a script) can pin in memory
+const CACHE_LIMIT = 512
+// every avatar is the same stub on the server, so they share one entry whatever URL a player names
+const AVATAR_KEY = 'avatar/*'
+
+// A model's own files may only come from inside it (data: and blob: URLs). A .glb can name external buffers
+// and images by URL; the parser would fetch them from wherever the file says, outside the outbound policy.
+function createEmbeddedOnlyManager() {
+  const manager = new LoadingManager()
+  manager.setURLModifier(url => {
+    if (typeof url === 'string' && (url.startsWith('data:') || url.startsWith('blob:'))) return url
+    throw assetRefusal('a model may not load external files on the server', url)
+  })
+  return manager
+}
 
 /**
  * Server Loader System
@@ -28,7 +49,8 @@ export class ServerLoader extends System {
     this.promises = new Map()
     this.results = new Map()
     this.rgbeLoader = new RGBELoader()
-    this.gltfLoader = new GLTFLoader()
+    this.gltfLoader = new GLTFLoader(createEmbeddedOnlyManager())
+    this.outbound = null
     this.preloadItems = []
     // this.gltfLoader.register(parser => new VRMLoaderPlugin(parser))
 
@@ -44,14 +66,57 @@ export class ServerLoader extends System {
     // ...
   }
 
+  key(type, url) {
+    return type === 'avatar' ? AVATAR_KEY : `${type}/${url}`
+  }
+
   has(type, url) {
-    const key = `${type}/${url}`
-    return this.promises.has(key)
+    return this.promises.has(this.key(type, url))
   }
 
   get(type, url) {
-    const key = `${type}/${url}`
-    return this.results.get(key)
+    const key = this.key(type, url)
+    const result = this.results.get(key)
+    if (result !== undefined) this.touch(key)
+    return result
+  }
+
+  // most recently used last; the oldest entries leave once there are more than CACHE_LIMIT
+  touch(key) {
+    for (const map of [this.promises, this.results]) {
+      if (!map.has(key)) continue
+      const value = map.get(key)
+      map.delete(key)
+      map.set(key, value)
+    }
+  }
+
+  trim() {
+    for (const key of this.promises.keys()) {
+      if (this.promises.size <= CACHE_LIMIT) break
+      this.promises.delete(key)
+      this.results.delete(key)
+    }
+  }
+
+  // The world's one fetch for URLs it did not choose (remote models and scripts here, app scripts' fetch through
+  // App.fetch): public addresses only, bounded in time, size and number (outboundFetch.js). The world's own
+  // assets origin is trusted, and so are the origins the operator lists in OUTBOUND_TRUSTED_ORIGINS.
+  get outboundFetch() {
+    if (!this.outbound) {
+      const listed = String(globalThis.process?.env?.OUTBOUND_TRUSTED_ORIGINS || '')
+        .split(',')
+        .map(origin => origin.trim())
+        .filter(Boolean)
+      this.outbound = createOutboundFetch({ trustedOrigins: [this.world.assetsUrl, ...listed].filter(Boolean) })
+    }
+    return this.outbound
+  }
+
+  async fetchRemote(url) {
+    const response = await this.outboundFetch(url, {}, REMOTE_LOAD)
+    if (!response.ok) throw new Error(`asset request failed: HTTP ${response.status}`)
+    return response
   }
 
   preload(type, url) {
@@ -102,7 +167,7 @@ export class ServerLoader extends System {
   async fetchArrayBuffer(url) {
     const { file, remote } = this.locate(url)
     if (remote) {
-      const response = await fetch(remote)
+      const response = await this.fetchRemote(remote)
       const arrayBuffer = await response.arrayBuffer()
       return arrayBuffer
     } else {
@@ -115,7 +180,7 @@ export class ServerLoader extends System {
   async fetchText(url) {
     const { file, remote } = this.locate(url)
     if (remote) {
-      const response = await fetch(remote)
+      const response = await this.fetchRemote(remote)
       const text = await response.text()
       return text
     } else {
@@ -125,8 +190,9 @@ export class ServerLoader extends System {
   }
 
   load(type, url) {
-    const key = `${type}/${url}`
+    const key = this.key(type, url)
     if (this.promises.has(key)) {
+      this.touch(key)
       return this.promises.get(key)
     }
     // the url stays as given: fetchArrayBuffer/fetchText locate() it when they read
@@ -248,6 +314,11 @@ export class ServerLoader extends System {
       })
     }
     this.promises.set(key, promise)
+    // a failed load is not kept: the next request tries again (the asset may have been uploaded since)
+    promise?.catch?.(() => {
+      if (this.promises.get(key) === promise) this.promises.delete(key)
+    })
+    this.trim()
     return promise
   }
 

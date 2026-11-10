@@ -176,7 +176,7 @@ export function createOutboundFetch(options = {}) {
 
   // one request/response exchange (no redirect handling): resolves { status, statusText, headers, body } with
   // the decoded body, or { redirect } for a redirect status with a Location
-  function exchange(url, { method, headers, body, signal, deadline, onBytes }) {
+  function exchange(url, { method, headers, body, signal, deadline, onBytes, maxBytes }) {
     return new Promise((resolve, reject) => {
       let settled = false
       const finish = (err, value) => {
@@ -253,8 +253,8 @@ export function createOutboundFetch(options = {}) {
           stream.on('data', chunk => {
             if (settled) return
             size += chunk.length
-            if (size > config.maxBytes) {
-              return finish(refuse('too_large', `the response is larger than ${config.maxBytes} bytes`))
+            if (size > maxBytes) {
+              return finish(refuse('too_large', `the response is larger than ${maxBytes} bytes`))
             }
             if (!onBytes(chunk.length)) {
               return finish(refuse('busy', 'too much response data is being held; try again later'))
@@ -287,7 +287,12 @@ export function createOutboundFetch(options = {}) {
 
   // fetch(url, init, { key }): `init` takes method, headers (a plain object of strings), body and signal.
   // Resolves a standard Response holding the whole decoded body; rejects with an OutboundError (`code`).
-  return async function outboundFetch(input, init = {}, { key = null } = {}) {
+  // `maxBytes` and `timeoutMs` may be set per call (a model load allows more than a script's request)
+  return async function outboundFetch(
+    input,
+    init = {},
+    { key = null, maxBytes = config.maxBytes, timeoutMs = config.timeoutMs } = {}
+  ) {
     let url
     try {
       url = new URL(String(input))
@@ -318,7 +323,7 @@ export function createOutboundFetch(options = {}) {
       held += bytes
       return true
     }
-    const deadline = Date.now() + config.timeoutMs
+    const deadline = Date.now() + timeoutMs
     try {
       let currentMethod = method
       for (let hop = 0; ; hop++) {
@@ -335,6 +340,7 @@ export function createOutboundFetch(options = {}) {
           signal: init.signal,
           deadline,
           onBytes,
+          maxBytes,
         })
         if (!result.redirect) {
           const empty =

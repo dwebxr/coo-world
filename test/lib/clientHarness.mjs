@@ -22,6 +22,8 @@ import { normalizeSettingValue } from '../../src/core/extras/settingsPolicy.js'
 import { createEventLedger } from '../../src/core/extras/appEventQueue.js'
 import * as assetURL from '../../src/core/extras/assetURL.js'
 import { resolveAssetFile } from '../../src/core/extras/resolveAssetFile.js'
+import { createOutboundFetch } from '../../src/core/extras/outboundFetch.js'
+import { LoadingManager } from 'three'
 
 class System extends EventEmitter {
   constructor(world) {
@@ -72,6 +74,8 @@ export function loadClient(file, name, context = {}) {
     internalEvents,
     ...assetURL,
     resolveAssetFile,
+    createOutboundFetch,
+    LoadingManager,
     ...context,
   }
   const code = source.replace(/^import[\s\S]*?from ['"][^'"]+['"]\n/gm, '').replace(/^export /gm, '')

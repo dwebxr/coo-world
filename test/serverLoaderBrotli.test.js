@@ -9,10 +9,10 @@ import { loadClient } from './lib/clientHarness.mjs'
 import { GLTFLoader } from '../src/core/libs/gltfloader/GLTFLoader.js'
 import { installFetchBrotliGuard } from '../src/server/fetchGuard.js'
 
-// A model whose external buffer comes back Brotli-encoded must fail its load (not hang): the guard refuses the
-// buffer and ServerLoader passes parse errors to reject. Runs in its own process with the guard installed.
-// (Pre-existing and out of scope: an external buffer that is not refused cannot load on the server either,
-// because three's FileLoader reports progress with ProgressEvent, which Node lacks, and throws outside parse.)
+// A model that names an external buffer must fail its load on the server (not hang) without the buffer being
+// requested: the loader's manager only lets a model use what is inside it (data: and blob: URLs), so a .glb
+// cannot make the server fetch a URL of its author's choosing. The Brotli guard stays installed here as it is in
+// the server process, and no decoder may be created either way.
 const unhandled = []
 const requested = []
 const decoders = { br: 0 }
@@ -94,13 +94,10 @@ after(async () => {
   await fs.remove(dir)
 })
 
-test('server loader: a model whose external buffer is Brotli-encoded fails its load', async () => {
+test('server loader: a model that names an external buffer fails its load, and the buffer is never requested', async () => {
   const result = await settle(loader().load('model', 'asset://br.gltf'), 5000)
   assert.equal(result.status, 'rejected', 'the load settles instead of hanging')
-  assert.deepEqual(requested, ['/buffer-br.bin'], 'the external buffer was requested')
-  // the rejection is the refused buffer, not some earlier failure (GLTFLoader replaces the fetch error, so the
-  // Brotli cause itself is asserted in fetchGuard.test.js)
-  assert.match(String(result.error), /Failed to load buffer ".*\/buffer-br\.bin"/)
+  assert.deepEqual(requested, [], 'the external buffer was not requested')
   assert.equal(decoders.br, 0)
   await new Promise(resolve => setTimeout(resolve, 50))
   assert.deepEqual(unhandled, [])

@@ -36,8 +36,14 @@ export async function launchBrowser(engine) {
 
 // `onPage` receives the page and its collectors before the world is awaited, so a run that aborts while
 // loading can still save them (see saveArtifacts)
-export async function openWorld(browser, url, { viewport = { width: 1280, height: 800 }, settle = 6000, onPage } = {}) {
+// `initScript`: a file run in the page before any of its own scripts, eg a test hook
+export async function openWorld(
+  browser,
+  url,
+  { viewport = { width: 1280, height: 800 }, settle = 6000, onPage, initScript } = {}
+) {
   const page = await browser.newPage({ viewport })
+  if (initScript) await page.addInitScript({ path: initScript })
   const consoleLines = []
   const pageErrors = []
   page.on('console', m => consoleLines.push(`[${m.type()}] ${m.text()}`))

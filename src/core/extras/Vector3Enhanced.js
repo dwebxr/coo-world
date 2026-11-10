@@ -13,9 +13,6 @@ export class Vector3Enhanced {
 
 	constructor( x = 0, y = 0, z = 0 ) {
 
-		Vector3Enhanced.prototype.isVector3 = true;
-        Vector3Enhanced.prototype.isVector3Enhanced = true;
-
 		this._x = x;
 		this._y = y;
 		this._z = z;
@@ -864,6 +861,11 @@ export class Vector3Enhanced {
 	}
 
 }
+
+// type flags live on the prototype, set once here: THREE's Vector3 assigns them in its constructor on every
+// construction, which a frozen prototype (scriptHardening.js) would refuse
+Vector3Enhanced.prototype.isVector3 = true;
+Vector3Enhanced.prototype.isVector3Enhanced = true;
 
 const _vector = /*@__PURE__*/ new Vector3Enhanced();
 const _quaternion = /*@__PURE__*/ new Quaternion();

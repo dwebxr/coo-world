@@ -6,6 +6,7 @@ import { System } from './System'
 import { LooseOctree } from '../extras/LooseOctree'
 import { serializeError } from '../extras/serializeError'
 import { NODE_CLIMB_LIMIT } from '../extras/nodeLimits.js'
+import { hardenForScripts } from '../extras/scriptHardening'
 
 const vec2 = new THREE.Vector2()
 const CLEAN_RETRY_CAP = 10
@@ -367,7 +368,9 @@ export class Stage extends System {
       },
     }
     material.raw = raw
-    material.proxy = proxy
+    // frozen, with its accessor functions: a linked material hands the same facade to every app that uses it,
+    // so nothing on it may be redefined or used to pass data between scripts. The setters keep working.
+    material.proxy = hardenForScripts(proxy)
     material.textures = textures
     return material
   }

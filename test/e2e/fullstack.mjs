@@ -8,7 +8,7 @@
 // Requires the four builds (see .github/workflows/e2e.yml). Logs and screenshots go to test/e2e/out/.
 import http from 'node:http'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import Database from 'better-sqlite3'
 import { Packr } from 'msgpackr'
 import WebSocket from 'ws'
@@ -57,6 +57,8 @@ try {
   server = await startServer({
     port: PORT,
     worldSource: WORLD_SOURCE,
+    // host-side test methods for the probe apps that used to patch THREE prototypes from a script (A7)
+    preload: fileURLToPath(new URL('./lib/script-class-hook.js', import.meta.url)),
     logPath: path.join(OUT, `fullstack-${ENGINE}-server.log`),
   })
   base = `http://localhost:${PORT}`

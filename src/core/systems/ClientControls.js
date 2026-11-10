@@ -6,6 +6,7 @@ import { System } from './System'
 import { createControlProxy } from './controlProxy'
 import { callEntry, callScript } from '../extras/callScript'
 import { readOnce, toText } from '../extras/scriptText'
+import { setQuaternionFromPoint, setVectorFromPoint } from '../extras/xrPose'
 
 const LMB = 1 // bitmask
 const RMB = 2 // bitmask
@@ -683,11 +684,14 @@ function updateXRHand(controls, src, frame, referenceSpace, side) {
           const pose = control.entries[rayPoseProp]
           // apply tremor smoothing to local change
           if (!pose.lPosition) {
-            pose.lPosition = new THREE.Vector3().copy(ray.transform.position)
-            pose.lQuaternion = new THREE.Quaternion().copy(ray.transform.orientation)
+            pose.lPosition = setVectorFromPoint(new THREE.Vector3(), ray.transform.position)
+            pose.lQuaternion = setQuaternionFromPoint(new THREE.Quaternion(), ray.transform.orientation)
           }
-          pose.lPosition.lerp(v1.copy(ray.transform.position), 1 - XR_TREMOR_SMOOTHING_FACTOR)
-          pose.lQuaternion.slerp(q1.copy(ray.transform.orientation), 1 - XR_TREMOR_SMOOTHING_FACTOR)
+          // the browser's pose objects never reach a method of an object a script may hold (xrPose.js)
+          setVectorFromPoint(v1, ray.transform.position)
+          setQuaternionFromPoint(q1, ray.transform.orientation)
+          pose.lPosition.lerp(v1, 1 - XR_TREMOR_SMOOTHING_FACTOR)
+          pose.lQuaternion.slerp(q1, 1 - XR_TREMOR_SMOOTHING_FACTOR)
           // world transform is applied above in this.applyXRRig()
         }
       }
@@ -698,8 +702,8 @@ function updateXRHand(controls, src, frame, referenceSpace, side) {
         if (grip) {
           const pose = control.entries[gripPoseProp]
           // todo: tremor smoothing?
-          pose.position.copy(grip.transform.position)
-          pose.quaternion.copy(grip.transform.orientation)
+          setVectorFromPoint(pose.position, grip.transform.position)
+          setQuaternionFromPoint(pose.quaternion, grip.transform.orientation)
           // pose.matrix.fromArray(grip.transform.matrix)
         }
       }

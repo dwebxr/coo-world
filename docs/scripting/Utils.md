@@ -41,6 +41,13 @@ Certain `three.js` classes and methods are exposed directly in the scripting API
 - [`Euler`](https://threejs.org/docs/#api/en/math/Euler)
 - [`Matrix4`](https://threejs.org/docs/#api/en/math/Matrix4)
 
+These classes are shared with the engine and with every other app, so they are frozen: a script cannot add,
+replace or delete anything on a class or its prototype (`Vector3.prototype.foo = …` throws a `TypeError`).
+The objects you create from them are yours and stay ordinary, mutable objects. To extend a class, write a
+function that takes the object, or subclass it (`class MyVector extends Vector3 { … }`).
+
+`Object3D` is not available. Use nodes (`app.create('group')`) for hierarchies and the classes above for math.
+
 ---
 
 ## Fetch

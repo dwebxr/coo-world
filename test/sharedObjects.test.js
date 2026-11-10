@@ -336,6 +336,39 @@ test('XR ray smoothing: same pose values as before, with the smoothing state kep
   assert.equal(world.controls.raySmoothing.size, 0)
 })
 
+test("controls: an app's control is inert once its run has ended, even if it was never released", () => {
+  const world = controls()
+  const lock = pointerLock(world)
+  try {
+    world.ui = { suppressors: 0, suppressReticle: () => (world.ui.suppressors++, () => world.ui.suppressors--) }
+    const entity = { isApp: true, data: { id: 'a' }, deadHook: { dead: false } }
+    let pressed = 0
+    const c = world.controls.bind({ priority: 1, object: entity }, { entity, run: entity.deadHook })
+    c.keyE.onPress = () => pressed++
+    // the run ends (App.unbuild replaces the hook) and nothing releases the control
+    entity.deadHook = { dead: false }
+    c.pointer.lock()
+    c.hideReticle()
+    c.setActions([{ type: 'keyE', label: 'Use' }])
+    world.controls.onKeyDown({ code: 'KeyE', repeat: false, target: {}, preventDefault() {} })
+    assert.equal(lock.calls.request, 0)
+    assert.equal(world.ui.suppressors, 0)
+    assert.deepEqual(world.controls.actions, [])
+    assert.equal(pressed, 0)
+    // a control of the current run works
+    const live = world.controls.bind({ priority: 1, object: entity }, { entity, run: entity.deadHook })
+    live.keyE.onPress = () => pressed++
+    live.pointer.lock()
+    live.hideReticle()
+    world.controls.onKeyDown({ code: 'KeyE', repeat: false, target: {}, preventDefault() {} })
+    assert.equal(lock.calls.request, 1)
+    assert.equal(world.ui.suppressors, 1)
+    assert.equal(pressed, 1)
+  } finally {
+    lock.restore()
+  }
+})
+
 test('control.camera: a script-held camera that throws or lies is contained per control', () => {
   const world = controls()
   const app = {

@@ -76,9 +76,10 @@ app.on('update', () => {
 
 `coords`, `position` and `delta` are new vectors on every read (changing one changes nothing else). `lock()`
 and `unlock()` do nothing once the control is released, except that the control's own `onRelease` callback can
-still call `unlock()`. A pointer lock a control took ends with it: releasing the control (or the app stopping or
-being rebuilt) unlocks the pointer if that control locked it last, and leaves a lock another control took alone.
-Calling `app.control()` again keeps the lock: the app's new control holds it from then on.
+still call `unlock()` for a lock the control still holds. A pointer lock a control took ends with it: releasing the
+control (or the app stopping or being rebuilt) unlocks the pointer if that control locked it last, and leaves a lock
+another control took alone. Calling `app.control()` again keeps the lock: the app's new control holds it from then
+on (so the previous control's `onRelease` no longer unlocks it).
 
 ### Scroll
 
@@ -119,6 +120,10 @@ pointer lock it took ends. After that (also when the app stops or is rebuilt, wh
 control still answers, but changes nothing: `setActions` and `hideReticle` do nothing, and its buttons no longer
 fire. A touch object kept from `onTouch`/`onTouchEnd` answers with the touch's last values once the touch has
 ended or the control was released.
+
+The engine releases every control an app run made when the run ends, whatever was done to the control object. Once
+the app's teardown has started (its `destroy` handlers, and the callbacks the teardown runs, such as `onRelease` or
+an effect's `onEnd`), `app.control()` throws `[app] this app has stopped`.
 
 If a control's per-frame values make the engine fail (for example an accessor that throws on `camera.position`),
 the app crashes like any other script error and the frame goes on for everyone else.

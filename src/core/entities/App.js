@@ -39,6 +39,14 @@ if (typeof window !== 'undefined') {
   safeMode = new URLSearchParams(window.location.search).get('safemode')
 }
 
+// the controls an app run made (app.control), released by unbuild; closed once the run's teardown has started
+function runControlsOf(entity) {
+  if (entity.runControls?.run !== entity.deadHook) {
+    entity.runControls = { run: entity.deadHook, controls: new Set(), closing: false }
+  }
+  return entity.runControls
+}
+
 export class App extends Entity {
   constructor(world, data, local) {
     super(world, data, local)
@@ -252,6 +260,9 @@ export class App extends Entity {
         )
       }
     }
+    // from here on the run makes no control: every callback the teardown runs (the destroy listeners, an onRelease,
+    // an effect's onEnd) comes after this, so none can leave one behind
+    runControlsOf(this).closing = true
     // notify any running script; a throwing listener must not skip the teardown below
     this.destroying = true
     try {
@@ -262,8 +273,16 @@ export class App extends Entity {
     } finally {
       this.destroying = false
     }
-    // cancel any control
-    stage('control', () => this.control?.release())
+    // release every control the run made, through the host (ClientControls.releaseControl): never through the
+    // proxy a script holds, which a script can make throw on any read
+    const runControls = this.runControls
+    if (runControls?.run === this.deadHook) {
+      while (runControls.controls.size) {
+        const [control] = runControls.controls
+        runControls.controls.delete(control)
+        stage('control', () => this.world.controls.releaseControl(control))
+      }
+    }
     this.control = null
     // cancel any effects; the cleanups are host-private (createPlayerProxy) and each runs on its own. While they run
     // the run's registry is closing: a cleanup callback (an effect's onEnd) that looks a player up gets the stopped
@@ -618,6 +637,13 @@ export class App extends Entity {
     let glb = this.world.loader.get(type, this.blueprint.model)
     if (!glb) return
     return glb.toNodes()
+  }
+
+  // the controls the current run makes (Apps.control); app.control() throws once the run's teardown has started
+  getRunControls() {
+    const runControls = runControlsOf(this)
+    if (runControls.closing) throw stoppedError(this)
+    return runControls.controls
   }
 
   // player handles belong to the current run (the cache is emptied by unbuild)

@@ -416,19 +416,27 @@ export class Apps extends System {
         return proxy
       },
       control(entity, options) {
+        // every control a run makes is listed for its teardown, which releases it through the host; once the teardown
+        // has started, no control is made (App.getRunControls throws the stopped error)
+        const controls = entity.getRunControls()
         const previous = entity.control
         // TODO: only allow on user interaction
         // TODO: show UI with a button to release()
-        const control = world.controls.bind({
-          ...options,
-          priority: ControlPriorities.APP,
-          object: entity,
-        })
+        const control = world.controls.bind(
+          {
+            ...options,
+            priority: ControlPriorities.APP,
+            object: entity,
+          },
+          { entity, run: entity.deadHook }
+        )
+        controls.add(control)
         try {
           if (previous) {
             // a pointer lock the previous control took stays with the app (ClientControls.handOverPointer)
-            world.controls.handOverPointer?.(previous, control)
-            previous.release()
+            world.controls.handOverPointer(previous, control)
+            world.controls.releaseControl(previous)
+            controls.delete(previous)
           }
         } finally {
           entity.control = control

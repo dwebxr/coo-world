@@ -28,7 +28,9 @@ const s1 = new THREE.Vector3()
 
 const captured = new Set()
 
-// what bind() returned -> its control, for the host only (Apps.control hands a pointer lock to an app's new control)
+// what bind() returned -> { control, release }, for the host only: the host releases a control and hands its pointer
+// lock over by this lookup, never by reading the object a script holds (a script can make any property read on it
+// throw, eg by defining a non-configurable `release` on it)
 const controlsByProxy = new WeakMap()
 
 let actionIds = 0
@@ -315,16 +317,19 @@ export class ClientControls extends System {
     window.addEventListener('blur', this.onBlur)
   }
 
-  bind(options = {}) {
+  // `owner` (host-only, from Apps.control) is the app run the control belongs to: once that run has ended the control
+  // is inert, whatever its script did to the object it holds
+  bind(options = {}, owner = null) {
     const self = this
     const entries = {}
     let reticleSupressor
     // a released control (by its script, or when its app run ended) keeps answering, but changes nothing
     let released = false
+    const runEnded = () => !!owner && owner.run !== owner.entity.deadHook
     const control = {
       options,
       get active() {
-        return !released && !self.world.fatalError && !options.object?.crashed
+        return !released && !runEnded() && !self.world.fatalError && !options.object?.crashed
       },
       // true while its onRelease callback runs
       releasing: false,
@@ -332,7 +337,7 @@ export class ClientControls extends System {
       actions: null,
       api: {
         hideReticle(value = true) {
-          if (released) return
+          if (released || runEnded()) return
           if (reticleSupressor && value) return
           if (!reticleSupressor && !value) return
           if (reticleSupressor) {
@@ -412,15 +417,20 @@ export class ClientControls extends System {
       }
       return undefined
     })
-    controlsByProxy.set(proxy, control)
+    controlsByProxy.set(proxy, { control, release: control.api.release })
     return proxy
+  }
+
+  // releases the control bind() returned as `proxy` (the host's own release, whatever the proxy now answers)
+  releaseControl(proxy) {
+    controlsByProxy.get(proxy)?.release()
   }
 
   // an app that replaces its control (app.control() again) keeps the pointer lock its previous control took: the new
   // control holds it from now on, so releasing the previous one does not unlock the pointer
   handOverPointer(fromProxy, toProxy) {
-    const from = controlsByProxy.get(fromProxy)
-    const to = controlsByProxy.get(toProxy)
+    const from = controlsByProxy.get(fromProxy)?.control
+    const to = controlsByProxy.get(toProxy)?.control
     if (from && to && this.pointerOwner === from) this.pointerOwner = to
   }
 
@@ -1005,14 +1015,15 @@ function createPointer(controls, control, prop) {
     get locked() {
       return controls.pointer.locked
     },
-    // a released control (or one of a stopped app) changes nothing; its own onRelease callback may still unlock
+    // a released control (or one of a stopped app) changes nothing; its own onRelease callback may still unlock a
+    // lock it holds (not one another control took since, or that went to its app's new control)
     lock() {
       if (!control.active) return
       controls.pointerOwner = control
       controls.lockPointer()
     },
     unlock() {
-      if (!control.active && !control.releasing) return
+      if (!control.active && !(control.releasing && controls.pointerOwner === control)) return
       controls.unlockPointer()
     },
   }

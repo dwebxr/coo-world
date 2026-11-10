@@ -22,6 +22,7 @@ before(async () => {
     export { createPlayerProxy } from './src/core/extras/createPlayerProxy'
     export { Apps } from './src/core/systems/Apps'
     export { Stage } from './src/core/systems/Stage'
+    export { createNode } from './src/core/extras/createNode'
     export { Object3D } from 'three'
   `)
   m = await import(bundle.url)
@@ -154,4 +155,115 @@ test("a material's color is a copy: the renderer's own Color stays out of reach;
   run(`world.textureX = 0.5; world.emissiveIntensity = 2; world.fog = false`, material.proxy)
   assert.equal(material.raw.emissiveIntensity, 2)
   assert.equal(material.raw.fog, false)
+})
+
+// a world with the real Stage and two apps, each with a mounted mesh of the same linked material
+function linkedMeshes() {
+  const world = { rig: new m.Object3D(), camera: new m.Object3D(), setupMaterial() {} }
+  world.stage = new m.Stage(world)
+  const geometry = new m.THREE.BoxGeometry(1, 1, 1)
+  const material = new m.THREE.MeshStandardMaterial({ color: 'white' })
+  const app = id => ({ isApp: true, data: { id }, world, deadHook: { dead: false }, liveNodes: 0 })
+  const mount = entity => {
+    const node = m.createNode('mesh', { type: 'geometry', geometry, material, linked: true })
+    node.activate({ world, entity, run: entity.deadHook })
+    return node
+  }
+  // what App.unbuild does to the run: its nodes unmount, then the run's hook is replaced
+  const end = (entity, nodes) => {
+    for (const node of nodes) node.deactivate()
+    entity.deadHook.dead = true
+    entity.deadHook = { dead: false }
+  }
+  return { app, mount, end }
+}
+
+test("a mesh's material belongs to its app run: kept past the app's teardown it cannot change a shared material", () => {
+  const { app, mount, end } = linkedMeshes()
+  const a = app('a')
+  const b = app('b')
+  const meshA = mount(a)
+  const meshA2 = mount(a)
+  const meshB = mount(b)
+  assert.equal(meshA.material, meshB.material, 'one linked material (and host facade) for both apps')
+  const host = { mesh: meshA.getProxy(), other: meshA2.getProxy() }
+  const result = run(
+    `'use strict'
+    const material = world.mesh.material
+    const attempts = []
+    for (const attack of [
+      () => Object.defineProperty(material, 'color', { get() { return 'poison' } }),
+      () => { material.extra = 1 },
+      () => { delete material.color },
+      () => { Object.getOwnPropertyDescriptor(material, 'color').set.extra = 1 },
+      () => Object.setPrototypeOf(material, {}),
+    ]) {
+      try {
+        attack()
+        attempts.push('allowed')
+      } catch (err) {
+        attempts.push(err.name)
+      }
+    }
+    // kept: called from a late promise after the app is gone
+    world.late = () => { material.color = 'red' }
+    world.destroy = () => { material.color = 'blue' }
+    world.material = material
+    return {
+      same: material === world.mesh.material,
+      sameMaterial: material === world.other.material,
+      frozen: Object.isFrozen(material),
+      attempts,
+    }
+  `,
+    host
+  )
+  assert.equal(result.same, true, 'the same object within the run')
+  assert.equal(result.sameMaterial, true, 'and for another mesh of the run with that material')
+  assert.equal(result.frozen, true)
+  assert.deepEqual(result.attempts, ['TypeError', 'TypeError', 'TypeError', 'TypeError', 'TypeError'])
+  assert.notEqual(meshB.getProxy().material, host.material, "the other app's run gets its own")
+  // the app's own (synchronous) destroy handler still runs inside its run
+  host.destroy()
+  assert.equal(meshB.material.color.getHex(), 0x0000ff)
+  end(a, [meshA, meshA2])
+  assert.throws(() => host.late(), /this app has stopped/)
+  assert.equal(meshB.material.color.getHex(), 0x0000ff, "the other app's material is unchanged")
+  // reading still answers
+  assert.equal(run(`return world.material.color.getHex()`, host), 0x0000ff)
+  // the other app's run still writes
+  run(`world.mesh.material.color = 'lime'`, { mesh: meshB.getProxy() })
+  assert.equal(meshB.material.color.getHexString(), '00ff00')
+})
+
+test("a video's material is bound to its app run the same way", () => {
+  const entity = { isApp: true, data: { id: 'v' }, deadHook: { dead: false } }
+  const video = m.createNode('video')
+  // what mounting gives it: its app run and its own mesh
+  const offset = new m.THREE.Vector2()
+  video.ctx = { entity, run: entity.deadHook }
+  video.mesh = { material: { uniforms: { uOffset: { value: offset } } } }
+  const host = { video: video.getProxy() }
+  const result = run(
+    `'use strict'
+    const material = world.video.material
+    world.material = material
+    material.textureX = 0.25
+    let redefined = 'allowed'
+    try {
+      Object.defineProperty(material, 'textureX', { set() {} })
+    } catch (err) {
+      redefined = err.name
+    }
+    return { same: material === world.video.material, frozen: Object.isFrozen(material), redefined }
+  `,
+    host
+  )
+  assert.deepEqual(result, { same: true, frozen: true, redefined: 'TypeError' })
+  assert.equal(offset.x, 0.25)
+  entity.deadHook.dead = true
+  entity.deadHook = { dead: false }
+  assert.throws(() => run(`world.material.textureY = 0.5`, host), /this app has stopped/)
+  assert.equal(offset.y, 0)
+  assert.equal(run(`return world.material.textureX`, host), 0.25)
 })

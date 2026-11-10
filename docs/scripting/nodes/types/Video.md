@@ -28,7 +28,9 @@ This can be used if you just want to play audio headlessly with more control ove
 
 ### `.material`
 
-`material.textureX` and `material.textureY` offset the video texture (finite numbers only).
+`material.textureX` and `material.textureY` offset the video texture (finite numbers only). As a mesh's material,
+it belongs to the run of the app the video is mounted for: the same frozen object within the run, and setting a
+property throws `[app] this app has stopped` once that app has stopped.
 
 ### `.color`: String
 

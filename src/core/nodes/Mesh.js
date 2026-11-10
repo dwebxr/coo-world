@@ -4,6 +4,7 @@ import { isBoolean } from 'lodash-es'
 import { Node, resolveValueRef, secureRef } from './Node'
 import { getTrianglesFromGeometry } from '../extras/getTrianglesFromGeometry'
 import { getTextureBytesFromMaterial } from '../extras/getTextureBytesFromMaterial'
+import { materialForScript } from '../extras/scriptMaterial'
 
 const _v1 = new THREE.Vector3()
 const _v2 = new THREE.Vector3()
@@ -427,8 +428,9 @@ export class Mesh extends Node {
           }
           self.geometry = value
         },
+        // bound to the run of the app this mesh is mounted for (a linked material is shared by every app using it)
         get material() {
-          return self.material
+          return materialForScript(self, self.material)
         },
         set material(value) {
           throw new Error('[mesh] set material not supported')

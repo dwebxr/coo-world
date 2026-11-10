@@ -4,6 +4,8 @@ import * as THREE from '../extras/three'
 
 import { getRef, Node, resolveValueRef, secureRef } from './Node'
 import { uuid } from '../utils'
+import { materialForScript } from '../extras/scriptMaterial'
+import { hardenForScripts } from '../extras/scriptHardening'
 
 const v1 = new THREE.Vector3()
 const v2 = new THREE.Vector3()
@@ -867,7 +869,7 @@ export class Video extends Node {
   get material() {
     if (!this._materialProxy) {
       const self = this
-      this._materialProxy = {
+      this._materialProxy = hardenForScripts({
         get textureX() {
           return self.mesh.material.uniforms.uOffset.value.x
         },
@@ -883,7 +885,7 @@ export class Video extends Node {
           if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error('[video] textureY not a number')
           self.mesh.material.uniforms.uOffset.value.y = value
         },
-      }
+      })
     }
     return this._materialProxy
   }
@@ -1113,8 +1115,9 @@ export class Video extends Node {
           // deprecated (use .time)
           self.time = value
         },
+        // as a mesh's: bound to the run of the app this video is mounted for
         get material() {
-          return self.material
+          return materialForScript(self, self.material)
         },
         set material(value) {
           self.material = value

@@ -257,6 +257,45 @@ test('a load that finishes after destroy() writes nothing, and an older load nev
   assert.equal(loader.get('script', 'asset://other.js').code, '// kept')
 })
 
+test('a load that is no longer the one registered for its key writes nothing, without a destroy() in between', async () => {
+  // the entry is replaced while the loader lives on (as dropping an entry for a reload would): only the check that
+  // a load is still the registered one tells the two apart
+  const { reads, readFile } = deferredReads()
+  const loader = makeLocalLoader(readFile)
+  const key = loader.key('script', 'asset://swap.js')
+  const replaced = loader.load('script', 'asset://swap.js')
+  await tick()
+  loader.promises.delete(key)
+  const current = loader.load('script', 'asset://swap.js')
+  await tick()
+  reads[1].resolve('// current')
+  await current
+  reads[0].resolve('// replaced')
+  await replaced
+  assert.equal(loader.get('script', 'asset://swap.js').code, '// current')
+  assert.equal(loader.promises.get(key), current)
+
+  // nor does a replaced load that fails remove the current one
+  const failing = loader.load('script', 'asset://swap-2.js')
+  await tick()
+  loader.promises.delete(loader.key('script', 'asset://swap-2.js'))
+  const kept = loader.load('script', 'asset://swap-2.js')
+  await tick()
+  reads[2].reject(new Error('gone'))
+  await assert.rejects(failing, /gone/)
+  assert.equal(loader.has('script', 'asset://swap-2.js'), true)
+  reads[3].resolve('// kept')
+  assert.equal((await kept).code, '// kept')
+  // and one that is dropped and not replaced leaves no result behind
+  const dropped = loader.load('script', 'asset://gone.js')
+  await tick()
+  loader.promises.delete(loader.key('script', 'asset://gone.js'))
+  reads[4].resolve('// dropped')
+  await dropped
+  assert.equal(loader.get('script', 'asset://gone.js'), undefined)
+  assert.ok(cached(loader), 'every result belongs to an entry')
+})
+
 test('one resource has one cache entry whatever its spelling; a query names another one', async () => {
   const loader = makeLoader()
   const first = loader.load('script', 'asset://script.js')
@@ -280,9 +319,10 @@ test('one resource has one cache entry whatever its spelling; a query names anot
     loader.key('script', 'https://example.com/a.js')
   )
   assert.notEqual(loader.key('script', 'asset://script.js'), loader.key('model', 'asset://script.js'))
-  // in the world's store (an assets directory), the name is the location
+  // in the world's store (an assets directory), the name is the location; the assets URL is another resource
   const local = makeLocalLoader(() => Promise.resolve(''))
   assert.equal(local.key('script', ' asset://a.js '), local.key('script', 'asset://a.js'))
+  assert.notEqual(local.key('script', 'asset://a.js'), local.key('script', 'https://example.com/assets/a.js'))
   assert.equal(local.key('script', 'asset://../a.js'), 'script/asset://../a.js', 'a refused value keys as itself')
 })
 

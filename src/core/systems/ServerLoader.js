@@ -19,10 +19,12 @@ const isRemote = url => typeof url === 'string' && (url.startsWith('http://') ||
 
 // a remote model or script: larger and slower than a script's own request may be (outboundFetch.js defaults)
 const REMOTE_LOAD = { maxBytes: 32 * 1024 * 1024, timeoutMs: 30_000 }
-// Loads kept for reuse, of every kind and from every location (the world's store and remote URLs alike): at most
-// this many entries, the least recently used leaving first. Only finished loads leave; one in progress stays, so
-// the same location is never loaded twice at once. Apps hold what they use: this bounds what a world that keeps
-// loading new locations (world.load in a script) can pin in memory, not what a loaded model takes
+// Finished loads kept for reuse, of every kind and from every location (the world's store and remote URLs alike):
+// at most this many, the least recently used leaving first. A load in progress is never dropped, so the same
+// location is never loaded twice at once; while more than this many are in progress the cache holds them all, and
+// those are bounded elsewhere (remote loads by the outbound policy's admission, at most 16 at once, and local reads
+// by how fast the disk answers). Apps hold what they use: this bounds what a world that keeps loading new
+// locations (world.load in a script) can pin in memory, not what a loaded model takes
 const CACHE_LIMIT = 512
 // every avatar is the same stub on the server (nothing is fetched), so they share one entry whatever URL a player
 // names
@@ -57,7 +59,6 @@ export class ServerLoader extends System {
     this.promises = new Map()
     this.results = new Map()
     this.settled = new WeakSet() // promises of loads that have finished
-    this.generation = 0 // destroy() starts a new one: a load from before it publishes nothing
     this.rgbeLoader = new RGBELoader()
     this.gltfLoader = new GLTFLoader(createEmbeddedOnlyManager())
     this.outbound = null
@@ -77,9 +78,11 @@ export class ServerLoader extends System {
   }
 
   // A cache key names what a load reads, so one resource has one entry whatever its spelling: surrounding spaces,
-  // a fragment, a default port or letter case in the host, and an asset:// name or the assets URL it maps to are
-  // the same location. A query is kept: outside the store it can name another resource. A value locate() refuses
-  // keys as itself, trimmed (its load fails, and a failed load is not kept)
+  // a fragment, a default port or letter case in the host are the same location. An asset:// name and the assets
+  // URL it maps to share an entry only where assets are read over HTTP (no assets directory); with an assets
+  // directory asset://<name> is the local file and the URL a remote resource, which can differ, so they stay
+  // apart. A query is kept: outside the store it can name another resource. A value locate() refuses keys as
+  // itself, trimmed (its load fails, and a failed load is not kept)
   key(type, url) {
     if (type === 'avatar') return AVATAR_KEY
     return `${type}/${this.location(url)}`
@@ -291,10 +294,10 @@ export class ServerLoader extends System {
     let settle
     const promise = new Promise((resolve, reject) => (settle = { resolve, reject }))
     this.promises.set(key, promise)
-    // A load writes to the cache only while it is the one registered for its key, in the loader's current life:
-    // not after it was dropped, replaced by a newer load of the same key, or the loader was destroyed
-    const generation = this.generation
-    const current = () => this.generation === generation && this.promises.get(key) === promise
+    // A load writes to the cache only while it is the one registered for its key: not after it was dropped or
+    // replaced by a newer load of the same key, and not after destroy(), which empties `promises` (so no load from
+    // before it is ever the registered one again)
+    const current = () => this.promises.get(key) === promise
     const finish = (ok, value) => {
       this.settled.add(promise)
       if (current()) {
@@ -323,7 +326,6 @@ export class ServerLoader extends System {
   }
 
   destroy() {
-    this.generation++
     this.promises.clear()
     this.results.clear()
     this.preloadItems = []

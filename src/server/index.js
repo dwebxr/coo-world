@@ -113,9 +113,9 @@ const db = await getDB({ worldDir })
 
 // init cleaner (before storage is opened: it reads storage.json itself, read-only)
 const storageFile = path.join(worldDir, '/storage.json')
-// it reads stored references as clients resolve them: the store at the assets URL, and at the page's /assets/
-// where this server serves it (assetRoutes below, ASSETS=local)
-await cleaner.init({ db, storageFile, assetsUrl: assets.url, servesStore: Boolean(assets.dir) })
+// the assets URL tells it which scripts are store files for certain; with ASSETS=local (an assets directory) a
+// missing store script names nothing, with S3 a CDN may still serve it
+await cleaner.init({ db, storageFile, assetsUrl: assets.url, localStore: Boolean(assets.dir) })
 
 // init storage
 const storage = new Storage(storageFile, { limits: storageLimits })

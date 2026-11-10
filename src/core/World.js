@@ -257,9 +257,9 @@ export class World extends EventEmitter {
     }
   }
 
-  // A URL to load from (assetURL.js resolveReference, which the start-up clean-up reads stored references with too).
-  // asset:// maps to the assets URL, never to a file path: the server and the node agent read local assets only
-  // through resolveAssetFile (ServerLoader.locate), which keeps them inside the assets directory.
+  // A URL to load from (assetURL.js resolveReference). asset:// maps to the assets URL, never to a file path: the
+  // server and the node agent read local assets only through resolveAssetFile (ServerLoader.locate), which keeps
+  // them inside the assets directory.
   resolveURL(url) {
     const resolved = resolveReference(url, this.assetsUrl)
     if (!this.assetsUrl && typeof resolved === 'string' && resolved.startsWith(ASSET_PROTOCOL)) {

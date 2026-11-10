@@ -1311,10 +1311,11 @@ function AppTransformFields({ app }) {
 // that will also somehow need to support both model and avatar kinds.
 function AppModelBtn({ world, value, onChange, children }) {
   const [key, setKey] = useState(0)
-  const handleDownload = e => {
+  const handleDownload = async e => {
     if (e.shiftKey) {
       e.preventDefault()
-      const file = world.loader.getFile(value)
+      // a file the loader no longer keeps is downloaded again
+      const file = world.loader.getFile(value) || (await world.loader.loadFile(value).catch(err => console.error(err)))
       if (!file) return
       downloadFile(file)
     }

@@ -57,30 +57,36 @@ const DOT_SEGMENT = /(?:^|[/\\])\.{1,2}(?:[/\\]|$)/
 //   which resolveReference leaves as it is (what URL.createObjectURL returns: a browser tab's own object, which
 //   nobody else can load). `Blob:x` or `blob/x` is not one: the runtime turns them into a request elsewhere;
 // - { source: 'store', name }: a file of the asset store, only when the reference (trimmed, as the loaders take it)
-//   is the canonical asset://<name>, or an absolute http(s) URL whose normalised form is directly under the
-//   absolute assets URL `assetsUrl` and whose own text has no `?`, `#`, `%` or dot segment (so the file the server
-//   reads by that name is the one requested);
+//   is the canonical asset://<name>, or an absolute URL that the runtime sends to the store unchanged: it starts with
+//   the literal lower-case http:// or https:// that both resolveReference and the server's loader (ServerLoader
+//   locate) take as remote, resolveReference returns it as it is, it has no userinfo, its own text has no `?`, `#`,
+//   `%`, backslash or dot segment, and its normalised form is one valid name directly under the absolute assets
+//   URL `assetsUrl`. So the file the clean-up reads by that name is the object the loaders fetch;
 // - { source: 'unknown' }: anything else. Another origin; a page path such as /assets/x.js or blob/../assets/x.js,
-//   which lands wherever the page is served from (a proxy can put another application there); a query, an encoded
-//   name or a dot segment; a string the URL parser refuses. The source that runs cannot be read for certain.
+//   which lands wherever the page is served from (a proxy can put another application there); anything the runtime
+//   rewrites (`https:/host/x`, a tab inside the scheme and `HTTPS://` become other requests or none); a query, an
+//   encoded name, a backslash or a dot segment; a string the URL parser refuses. The source that runs cannot be read
+//   for certain.
 export function scriptSource(value, assetsUrl) {
   const ref = loaderReference(value)
   if (typeof ref !== 'string' || !ref) return { source: 'none' }
   if (ref.startsWith('blob:')) return { source: 'none' }
   const canonical = assetName(ref)
   if (canonical) return { source: 'store', name: canonical }
-  if (!isAbsoluteHttpURL(assetsUrl) || /[?#%]/.test(ref) || DOT_SEGMENT.test(ref)) return { source: 'unknown' }
+  const unknown = { source: 'unknown' }
+  if (!isAbsoluteHttpURL(assetsUrl) || !/^https?:\/\//.test(ref)) return unknown
+  if (resolveReference(ref, assetsUrl) !== ref || /[?#%\\]/.test(ref) || DOT_SEGMENT.test(ref)) return unknown
   let url
   try {
     url = new URL(ref)
   } catch {
-    return { source: 'unknown' }
+    return unknown
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return { source: 'unknown' }
+  if (url.username || url.password) return unknown
   const root = new URL(assetsUrl.endsWith('/') ? assetsUrl : `${assetsUrl}/`)
-  if (url.origin !== root.origin || !url.pathname.startsWith(root.pathname)) return { source: 'unknown' }
+  if (url.origin !== root.origin || !url.pathname.startsWith(root.pathname)) return unknown
   const name = assetName(ASSET_PROTOCOL + url.pathname.slice(root.pathname.length))
-  return name ? { source: 'store', name } : { source: 'unknown' }
+  return name ? { source: 'store', name } : unknown
 }
 
 // an http(s) URL that parses, with the literal lower-case prefix the server's loader fetches as remote

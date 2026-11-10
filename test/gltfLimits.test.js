@@ -152,6 +152,21 @@ test('the structure: an index is a whole number in range (a string index is refu
   )
   // a well-formed document with every kind of reference passes
   const full = doc({
+    buffers: [{ byteLength: 140, uri: dataURI(140) }],
+    bufferViews: [
+      { buffer: 0, byteLength: 36 },
+      { buffer: 0, byteOffset: 36, byteLength: 6 },
+      { buffer: 0, byteOffset: 44, byteLength: 64 },
+      { buffer: 0, byteOffset: 108, byteLength: 8 },
+      { buffer: 0, byteOffset: 116, byteLength: 24 },
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5126, type: 'VEC3', count: 3 },
+      { bufferView: 1, componentType: 5123, type: 'SCALAR', count: 3 },
+      { bufferView: 2, componentType: 5126, type: 'MAT4', count: 1 },
+      { bufferView: 3, componentType: 5126, type: 'SCALAR', count: 2 },
+      { bufferView: 4, componentType: 5126, type: 'VEC3', count: 2 },
+    ],
     scene: 0,
     scenes: [{ nodes: [0] }],
     nodes: [
@@ -161,7 +176,7 @@ test('the structure: an index is a whole number in range (a string index is refu
     meshes: [
       {
         weights: [0],
-        primitives: [{ attributes: { POSITION: 0 }, indices: 0, material: 0, mode: 4, targets: [{ POSITION: 0 }] }],
+        primitives: [{ attributes: { POSITION: 0 }, indices: 1, material: 0, mode: 4, targets: [{ POSITION: 0 }] }],
       },
     ],
     materials: [
@@ -173,10 +188,10 @@ test('the structure: an index is a whole number in range (a string index is refu
     textures: [{ source: 0, sampler: 0 }],
     samplers: [{}],
     images: [{ bufferView: 0, mimeType: 'image/png' }],
-    skins: [{ joints: [1], skeleton: 1, inverseBindMatrices: 0 }],
+    skins: [{ joints: [1], skeleton: 1, inverseBindMatrices: 2 }],
     cameras: [{ type: 'perspective', perspective: { yfov: 1, znear: 0.1 } }],
     animations: [
-      { samplers: [{ input: 0, output: 0 }], channels: [{ sampler: 0, target: { node: 1, path: 'translation' } }] },
+      { samplers: [{ input: 3, output: 4 }], channels: [{ sampler: 0, target: { node: 1, path: 'translation' } }] },
     ],
   })
   assert.ok(checkGLTF(text(full)))
@@ -212,6 +227,185 @@ test('required extensions must be ones this client loads; optional compression w
     checkGLTF(text(doc({ extensionsUsed: ['KHR_texture_transform'], extensionsRequired: ['KHR_texture_transform'] })))
   )
   refused(doc({ extensionsRequired: [5] }), /extension name is not a string/)
+  // each name once (the parser looks every used name up in the required list)
+  refused(doc({ extensionsUsed: Array(3).fill('VRM') }), /an extension is named twice/)
+  refused(doc({ extensionsUsed: ['VRM'], extensionsRequired: ['VRM', 'VRM'] }), /an extension is named twice/)
+})
+
+test('accessors are what the parser and three.js assume of them: animations, skins, primitives, strides', () => {
+  // a document with two keyframes (times: accessor 0), a translation per keyframe (1), three per keyframe for
+  // CUBICSPLINE (2), and a node whose mesh has two morph targets (accessors 3, 4)
+  const floats = (type, count, bufferView, more = {}) => ({ bufferView, componentType: 5126, type, count, ...more })
+  const animated = (sampler, path = 'translation', more = {}) =>
+    doc({
+      buffers: [{ byteLength: 400, uri: dataURI(400) }],
+      bufferViews: [
+        { buffer: 0, byteLength: 8 },
+        { buffer: 0, byteOffset: 8, byteLength: 24 },
+        { buffer: 0, byteOffset: 32, byteLength: 72 },
+        { buffer: 0, byteOffset: 104, byteLength: 36 },
+        { buffer: 0, byteOffset: 140, byteLength: 16 },
+        { buffer: 0, byteOffset: 156, byteLength: 64 },
+        { buffer: 0, byteOffset: 220, byteLength: 48 },
+      ],
+      accessors: [
+        floats('SCALAR', 2, 0),
+        floats('VEC3', 2, 1),
+        floats('VEC3', 6, 2),
+        floats('VEC3', 3, 3),
+        floats('SCALAR', 4, 4),
+        floats('MAT4', 1, 5),
+        floats('VEC4', 3, 6),
+      ],
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 3 }, targets: [{ POSITION: 3 }, { POSITION: 3 }] }] }],
+      animations: [
+        { samplers: [{ input: 0, output: 1, ...sampler }], channels: [{ sampler: 0, target: { node: 0, path } }] },
+      ],
+      ...more,
+    })
+  assert.ok(checkGLTF(text(animated({}))))
+  assert.ok(checkGLTF(text(animated({ interpolation: 'CUBICSPLINE', output: 2 }))))
+  assert.ok(checkGLTF(text(animated({ interpolation: 'STEP' }))))
+  assert.ok(checkGLTF(text(animated({ output: 4 }, 'weights'))), 'two weights per keyframe')
+  // Codex's probe: 7 values for 2 CUBICSPLINE keyframes is a value size of 10.5, and three's interpolant looped on
+  // `i !== 3.5` forever
+  const seven = animated({ interpolation: 'CUBICSPLINE', output: 7 })
+  seven.bufferViews.push({ buffer: 0, byteOffset: 268, byteLength: 84 })
+  seven.accessors.push(floats('VEC3', 7, 7))
+  refused(seven, /channel 0 output does not have 3 values per keyframe/)
+  for (const [json, reason] of [
+    [animated({ interpolation: 'CUBICSPLINE' }), /does not have 3 values per keyframe/],
+    [animated({ output: 2 }), /does not have 1 values per keyframe/],
+    [animated({ output: 1 }, 'weights'), /output is not SCALAR values for weights/],
+    [animated({ output: 0 }, 'weights'), /does not have 2 values per keyframe/],
+    [animated({ output: 1 }, 'rotation'), /output is not VEC4 values for rotation/],
+    [animated({ output: 6 }, 'rotation'), /does not have 1 values per keyframe/],
+    [animated({ output: 4 }, 'scale'), /output is not VEC3 values for scale/],
+    [animated({}, 'colour'), /animates a path this client cannot play/],
+    [animated({ input: 1 }), /sampler 0 input is not a float time per keyframe/],
+    [animated({ input: 4 }), /does not have 1 values per keyframe/],
+    [animated({ interpolation: 'SMOOTH' }), /sampler 0 has an unknown interpolation/],
+    [animated({ input: undefined }), /sampler 0 has no input or output/],
+  ]) {
+    refused(json, reason)
+  }
+  refused(
+    { ...animated({ output: 4 }, 'weights'), nodes: [{}] },
+    /animates the weights of a node without morph targets/
+  )
+  // integer outputs only where the path allows them (normalized), not for translation
+  const normalizedRotation = animated({ output: 6 }, 'rotation')
+  normalizedRotation.accessors[6] = { bufferView: 6, componentType: 5122, type: 'VEC4', count: 2, normalized: true }
+  assert.ok(checkGLTF(text(normalizedRotation)))
+  const integerTranslation = animated({})
+  integerTranslation.accessors[1] = { bufferView: 1, componentType: 5122, type: 'VEC3', count: 2, normalized: true }
+  refused(integerTranslation, /output is not VEC3 values for translation/)
+  // a channel without a node (KHR_animation_pointer's) is skipped by the parser, and not checked
+  const pointer = animated({ output: 4 })
+  pointer.animations[0].channels[0].target = { path: 'pointer' }
+  assert.ok(checkGLTF(text(pointer)))
+
+  // skins: a float 4x4 inverse bind matrix per joint
+  const skinned = matrices => animated({}, 'translation', { skins: [{ joints: [0], inverseBindMatrices: matrices }] })
+  assert.ok(checkGLTF(text(skinned(5))))
+  refused(skinned(3), /skin 0 inverseBindMatrices are not a float 4x4 matrix per joint/)
+  refused(
+    animated({}, 'translation', { skins: [{ joints: [0, 0], inverseBindMatrices: 5 }] }),
+    /not a float 4x4 matrix per joint/
+  )
+
+  // primitives: attributes of one count, targets of the same, indices unsigned and not interleaved, as many
+  // targets on every primitive of a mesh
+  const meshes = (primitives, more = {}) => animated({}, 'translation', { meshes: [{ primitives }], ...more })
+  for (const [primitives, reason] of [
+    [[{ attributes: { POSITION: 3, NORMAL: 1 } }], /primitive 0 attributes have different counts/],
+    [
+      [{ attributes: { POSITION: 3 }, targets: [{ POSITION: 1 }] }],
+      /primitive 0 target 0 attributes have different counts/,
+    ],
+    [[{ attributes: { POSITION: 3 }, indices: 3 }], /indices are not unsigned whole numbers/],
+    [[{ attributes: { POSITION: 3 }, indices: 0 }], /indices are not unsigned whole numbers/],
+    [
+      [
+        { attributes: { POSITION: 3 }, targets: [{ POSITION: 3 }] },
+        { attributes: { POSITION: 3 }, targets: [] },
+      ],
+      /mesh 0 primitives have different numbers of morph targets/,
+    ],
+    [[{}], /primitive 0 has no attributes/],
+  ]) {
+    refused(meshes(primitives), reason)
+  }
+  const interleavedIndices = meshes([{ attributes: { POSITION: 3 }, indices: 7 }])
+  interleavedIndices.bufferViews.push({ buffer: 0, byteOffset: 268, byteLength: 12, byteStride: 4 })
+  interleavedIndices.accessors.push({ bufferView: 7, componentType: 5123, type: 'SCALAR', count: 3 })
+  refused(interleavedIndices, /primitive 0 indices are interleaved/)
+  // instancing: one count of instances, transforms of their types
+  const instanced = attributes =>
+    animated({}, 'translation', { nodes: [{ mesh: 0, extensions: { EXT_mesh_gpu_instancing: { attributes } } }] })
+  assert.ok(checkGLTF(text(instanced({ TRANSLATION: 1 }))))
+  refused(instanced({ TRANSLATION: 1, SCALE: 3 }), /node 0 instancing attributes have different counts/)
+  refused(instanced({ ROTATION: 1 }), /node 0 instancing ROTATION is not VEC4/)
+
+  // strides and lengths: what fits in the bufferView as the parser reads it
+  const strided = (view, accessor) =>
+    doc({
+      bufferViews: [{ buffer: 0, byteLength: 36, ...view }],
+      accessors: [{ bufferView: 0, componentType: 5126, type: 'VEC3', count: 3, ...accessor }],
+    })
+  assert.ok(checkGLTF(text(strided({ byteStride: 12 }, {}))))
+  assert.ok(
+    checkGLTF(text(strided({ byteStride: 16 }, { count: 2 }))),
+    'interleaved, the last element short of a stride'
+  )
+  for (const [view, accessor, reason] of [
+    [{ byteStride: 2 }, {}, /bufferView 0 byteStride is not a multiple of 4 from 4 to 252/],
+    [{ byteStride: 14 }, {}, /not a multiple of 4/],
+    [{ byteStride: 256 }, {}, /not a multiple of 4/],
+    [{ byteStride: 8 }, {}, /accessor 0 elements do not fit the byteStride of bufferView 0/],
+    [{ byteStride: 12 }, { byteOffset: 4 }, /elements do not fit the byteStride/],
+    [{}, { byteOffset: 2 }, /accessor 0 byteOffset is not a multiple of its component size/],
+    [{}, { count: 4 }, /accessor 0 is longer than bufferView 0/],
+    [{ byteStride: 16 }, {}, /accessor 0 is longer than bufferView 0/],
+  ]) {
+    refused(strided(view, accessor), reason)
+  }
+  refused(
+    doc({ accessors: [{ componentType: 5126, type: 'VEC3', count: 3, byteOffset: 4 }] }),
+    /byteOffset without a bufferView/
+  )
+  refused(
+    doc({ accessors: [{ componentType: 5126, type: 'VEC3', count: 3, normalized: 1 }] }),
+    /normalized is not true or false/
+  )
+  // sparse: no more entries than elements (the parser refuses indices that are not strictly increasing in range,
+  // gltfBudget.test.js), indices and values within their bufferViews
+  const sparse = (count, more = {}) =>
+    doc({
+      bufferViews: [
+        { buffer: 0, byteLength: 12 },
+        { buffer: 0, byteOffset: 12, byteLength: 24 },
+      ],
+      accessors: [
+        {
+          componentType: 5126,
+          type: 'VEC3',
+          count: 2,
+          sparse: { count, indices: { bufferView: 0, componentType: 5121 }, values: { bufferView: 1 }, ...more },
+        },
+      ],
+    })
+  assert.ok(checkGLTF(text(sparse(2))))
+  refused(sparse(3), /accessor 0 has more sparse entries than elements/)
+  refused(
+    sparse(2, { values: { bufferView: 1, byteOffset: 4 } }),
+    /accessor 0 sparse values are longer than their bufferView/
+  )
+  refused(
+    sparse(2, { indices: { bufferView: 0, componentType: 5123, byteOffset: 1 } }),
+    /sparse indices byteOffset is not aligned/
+  )
 })
 
 test('the node hierarchy is a tree of bounded depth', () => {
@@ -233,10 +427,12 @@ test('the node hierarchy is a tree of bounded depth', () => {
 })
 
 test('three-vrm: expression binds, material binds and spring colliders are counted as the plugins expand them', () => {
-  // VRM 0: a bind makes one object per node using its mesh (and walks every node to find them)
+  // VRM 0: a bind makes one object per node using its mesh (and walks every node to find them, then the subtree of
+  // each: here a Group and its two meshes)
   const vrm0 = (binds, meshNodes, more = {}) => ({
     ...doc(),
-    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }, { attributes: { POSITION: 0 } }] }],
+    materials: [{ name: 'm' }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }, { attributes: { POSITION: 0 } }] }],
     nodes: Array.from({ length: meshNodes }, () => ({ mesh: 0 })),
     extensions: {
       VRM: {
@@ -250,18 +446,20 @@ test('three-vrm: expression binds, material binds and spring colliders are count
   const counted = checkGLTF(text(vrm0(100, 100))).vrm
   assert.equal(counted.expressionBinds, 10000, '100 binds x 100 nodes')
   assert.equal(counted.expressionPrimitives, 20000)
-  assert.equal(counted.expressionWork, 10000)
+  assert.equal(counted.expressionWork, 100 * (100 + 100 * 3))
   refused(vrm0(200, 100), /three-vrm expressionBinds: 20000, more than 16384/)
   refused(vrm0(10, 100), /expressionBinds: 1000, more than 500/, {
     ...GLTF_LIMITS,
     vrm: { ...GLTF_LIMITS.vrm, expressionBinds: 500 },
   })
-  // a material value walks the scene, and may bind every material in it
+  // a material value walks the scene (300 objects, the humanoid rig's 64 and the expression), and looks each mesh
+  // with a material of its name (and its outline copy: 200) up in the materials found so far; it binds each found
   const materialValues = {
     blendShapeMaster: { blendShapeGroups: [{ materialValues: Array(10).fill({ materialName: 'm' }) }] },
   }
   const withMaterials = checkGLTF(text({ ...vrm0(0, 100), extensions: { VRM: materialValues } })).vrm
-  assert.equal(withMaterials.expressionWork, 10 * (100 + 200))
+  assert.equal(withMaterials.expressionWork, 10 * (300 + 64 + 1 + 200 * 200))
+  assert.equal(withMaterials.expressionBinds, 10 * 200)
   // VRM 0 springs: each joint (every node below a listed bone) visits the colliders of its groups
   const springs0 = {
     secondaryAnimation: {
@@ -269,8 +467,10 @@ test('three-vrm: expression binds, material binds and spring colliders are count
       boneGroups: [{ bones: [0], colliderGroups: Array(200).fill(0) }],
     },
   }
+  // (the node's object is a Group with its two meshes, and the ten colliders are added below it: 13 joints)
   const sprung = checkGLTF(text({ ...vrm0(0, 1), extensions: { VRM: springs0 } })).vrm
-  assert.equal(sprung.springColliderWork, 1 * 200 * 10)
+  assert.equal(sprung.springJoints, 13)
+  assert.equal(sprung.springColliderWork, 13 * 200 * 10)
   // VRM 1: repeated collider group and collider references multiply what each joint visits
   const vrm1 = (joints, groupRefs, colliderRefs) => ({
     ...doc(),
@@ -291,7 +491,7 @@ test('three-vrm: expression binds, material binds and spring colliders are count
   const expressions = {
     ...doc(),
     nodes: [{ mesh: 0 }],
-    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
     materials: [{}],
     extensions: {
       VRMC_vrm: {
@@ -303,7 +503,8 @@ test('three-vrm: expression binds, material binds and spring colliders are count
     },
   }
   const v1 = checkGLTF(text(expressions)).vrm
-  assert.deepEqual([v1.expressions, v1.expressionBinds, v1.expressionPrimitives, v1.firstPersonWork], [1, 2, 1, 2])
+  // first person: the node, its subtree, and the two annotations it searches
+  assert.deepEqual([v1.expressions, v1.expressionBinds, v1.expressionPrimitives, v1.firstPersonWork], [1, 2, 1, 4])
   refused(
     {
       ...expressions,
@@ -321,18 +522,81 @@ test('three-vrm: expression binds, material binds and spring colliders are count
   refused(constraints, /constraints: 5, more than 4/, { ...GLTF_LIMITS, vrm: { ...GLTF_LIMITS.vrm, constraints: 4 } })
 })
 
+test('three-vrm walks are counted in objects of the scene graph, as the plugins walk them, not in nodes', () => {
+  const vrmLimits = vrm => ({ ...GLTF_LIMITS, vrm: { ...GLTF_LIMITS.vrm, ...vrm } })
+  // Codex's probe: one bone listed, on a node whose mesh has 21 primitives (a Group and 21 meshes), with one collider
+  // added below it: 23 joints, each visiting the collider (counted as 1 and 1 before)
+  const probe = {
+    ...doc(),
+    extensionsUsed: ['VRM'],
+    nodes: [{ mesh: 0 }],
+    meshes: [{ primitives: Array.from({ length: 21 }, () => ({ attributes: { POSITION: 0 } })) }],
+    extensions: {
+      VRM: {
+        secondaryAnimation: {
+          colliderGroups: [{ node: 0, colliders: [{ radius: 1 }] }],
+          boneGroups: [{ bones: [0], colliderGroups: [0] }],
+        },
+      },
+    },
+  }
+  const springs = checkGLTF(text(probe)).vrm
+  assert.deepEqual([springs.springJoints, springs.springColliderWork], [23, 23])
+  refused(probe, /three-vrm springJoints: 23, more than 20/, vrmLimits({ springJoints: 20 }))
+  // sorting the joints: each walks up from its parent and its collider (the object depth: the node, the Group, the
+  // mesh), and at each object the joints there (each object below the one listing has one), then the scene down
+  assert.equal(springs.springSortWork, 23 * (1 + 1) * 3 * (1 + 1) + 23 + 64)
+  refused(probe, /springSortWork: \d+, more than 100/, vrmLimits({ springSortWork: 100 }))
+
+  // expressions: a VRM 1 morph bind walks its node's subtree (here 101 objects), each one
+  const below = binds => ({
+    ...doc(),
+    nodes: [{ mesh: 0, children: Array.from({ length: 100 }, (_, i) => i + 1) }, ...Array(100).fill({})],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, targets: [{ POSITION: 0 }] }] }],
+    extensions: {
+      VRMC_vrm: {
+        expressions: { custom: { x: { morphTargetBinds: Array(binds).fill({ node: 0, index: 0 }) } } },
+      },
+    },
+  })
+  assert.equal(checkGLTF(text(below(10))).vrm.expressionWork, 10 * 101)
+  refused(below(200), /expressionWork: 20200, more than 20000/, vrmLimits({ expressionWork: 20000 }))
+  // first person: every node, and the subtree of each node with a mesh
+  assert.equal(checkGLTF(text(below(0))).vrm.firstPersonWork, 101 + 101)
+
+  // MToon outlines: an outlined primitive gets two draw groups on its geometry, which every mesh with the same
+  // primitive shares; each use of such a mesh draws all of them (n meshes: n x 2n draws)
+  const outlined = n => ({
+    ...doc(),
+    nodes: Array.from({ length: n }, (_, i) => ({ mesh: i })),
+    materials: [
+      { extensions: { VRMC_materials_mtoon: { outlineWidthMode: 'worldCoordinates', outlineWidthFactor: 1 } } },
+    ],
+    meshes: Array.from({ length: n }, () => ({ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] })),
+  })
+  assert.equal(checkGLTF(text(outlined(1))).vrm.outlineDraws, 2)
+  assert.equal(checkGLTF(text(outlined(100))).vrm.outlineDraws, 100 * 200)
+  refused(outlined(300), /three-vrm outlineDraws: 180000, more than 131072/)
+  // without an outline, nothing is added
+  const plain = outlined(300)
+  plain.materials = [{}]
+  assert.equal(checkGLTF(text(plain)).vrm.outlineDraws, 0)
+})
+
 test('the bundled avatar, emotes and models pass, with their three-vrm counts', () => {
   const avatar = checkGLTF(fs.readFileSync(new URL('../src/world/assets/avatar.vrm', import.meta.url)))
   assert.deepEqual(avatar.vrm, {
     expressions: 14,
     expressionBinds: 14,
     expressionPrimitives: 14,
-    expressionWork: 854,
+    expressionWork: 868,
     springJoints: 0,
     springColliders: 0,
     springColliderWork: 0,
-    firstPersonWork: 0,
+    springSortWork: 0,
+    firstPersonWork: 62,
     constraints: 0,
+    outlineDraws: 2,
   })
   for (const name of [
     'world/assets/mp-idle.glb',
@@ -360,6 +624,16 @@ test('the budget: bytes beyond twice the file, counts per kind, image decodes si
   assert.throws(() => budget.bytes(0, 'after'), /more than/, 'every later charge is refused too')
   assert.throws(() => createGLTFBudget().bytes(NaN, 'x'), /impossible size/)
   assert.throws(() => createGLTFBudget().bytes(-1, 'x'), /impossible size/)
+  // steps of work: one total per file
+  const work = createGLTFBudget({ limits: { ...GLTF_LIMITS, work: 10 } })
+  work.work(10, 'ten')
+  assert.throws(() => work.work(1, 'one more'), /the parser would take more than 10 steps \(at one more\)/)
+  assert.equal(GLTF_LIMITS.work, 2 ** 26)
+  assert.throws(() => createGLTFBudget().work(NaN, 'x'), /impossible amount of work/)
+  assert.throws(
+    () => createGLTFBudget().refuse('a document rule', 'x'),
+    error => error.isGLTFLimit && error.message === 'model file: a document rule'
+  )
   const counts = createGLTFBudget()
   counts.count('scenes', 64)
   assert.throws(() => counts.count('scenes'), /scenes: 65, more than 64/)

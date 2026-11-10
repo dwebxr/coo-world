@@ -4,11 +4,14 @@
 // - checkGLTF(data): before parsing. The container and the document's structure: chunk lengths, the JSON's size and
 //   nesting, every index a non-negative integer in range, every list a real list within a length, the node
 //   hierarchy a tree of bounded depth, no glTF 1.0 leftovers the parser still honours, required extensions this
-//   client can load, and three-vrm's work counted the way its plugins expand it (three-vrm is not vendored, so it is
-//   bounded before it runs).
+//   client can load; the accessors what the parser and three.js assume of them (an animation's keyframe times and
+//   values per keyframe, a skin's matrices, a primitive's counts and indices, strides and lengths: a fractional
+//   value size made three's interpolants loop forever); and three-vrm's work counted in the units its plugins
+//   iterate (three-vrm is not vendored, so it is bounded before it runs).
 // - createGLTFBudget(): the per-file budget the vendored GLTFLoader (src/core/libs/gltfloader/GLTFLoader.js, see its
-//   COO_BUDGET sites) charges where it allocates, copies, clones or creates objects, and where it is about to decode
-//   an image. Nothing is predicted: what the parser does is what is counted.
+//   COO_BUDGET and COO_WORK sites) charges where it allocates, copies, clones or creates objects, where it loops or
+//   walks as far as the document says, and where it is about to decode an image. Nothing is predicted: what the
+//   parser does is what is counted.
 //
 // Both throw a GLTFLimitError with the reason.
 
@@ -27,6 +30,9 @@ export const GLTF_LIMITS = Object.freeze({
   // the bufferViews are each a copy of the file's data). The bundled avatar's parse allocates 17.8 MB: twice its
   // 4.8 MB, and 8.1 MB more (its face's morph-target texture and the copy of its texture image)
   allocatedBytes: 64 * MiB,
+  // steps of the loops and walks the document sizes and no byte charge bounds (sparse entries, subtree walks, the
+  // entries of each list the parser goes through). The bundled avatar's parse takes 673, an emote's about 600
+  work: 1 << 26,
   // objects it creates, per file, counting every clone (a mesh used by several nodes is instantiated per node)
   counts: Object.freeze({
     scenes: 64,
@@ -51,17 +57,23 @@ export const GLTF_LIMITS = Object.freeze({
   // RGBA, a third more once mipmapped on the GPU). The bundled avatar decodes 4 Mi (its 2048 x 2048 texture)
   imagePixels: MAX_IMAGE_PIXELS,
   imagePixelsPerFile: 256 * MiB,
-  // three-vrm, counted before it runs as its plugins expand it (@pixiv/three-vrm 3.3.3)
+  // three-vrm, counted before it runs in the units its plugins iterate (@pixiv/three-vrm 3.3.3): most walk the
+  // parsed scene graph, so an object is anything the parser or a plugin puts in it (a node's object, a mesh per
+  // primitive and the Group holding them, a camera, a light and its target, a spring collider, an expression)
   vrm: Object.freeze({
     expressions: 1024, // a VRMExpression object each, added to the scene
-    expressionBinds: 16384, // bind objects: a morph bind per node using its mesh, a material bind per material
-    expressionPrimitives: 262144, // primitives those binds refer to
-    expressionWork: 16 * MiB, // iterations: each VRM 0 bind walks every node, each material bind every material
-    springJoints: 16384,
+    expressionBinds: 16384, // bind objects: a morph bind per node using its mesh, a material bind per mesh material
+    expressionPrimitives: 262144, // primitives those binds refer to (what each expression update writes)
+    // steps: objects walked (a morph bind's subtree; the scene, per material value or expression with material
+    // binds), nodes searched, materials filtered or looked up
+    expressionWork: 16 * MiB,
+    springJoints: 16384, // VRM 0: every object below each bone listed; VRM 1: each two consecutive joints listed
     springColliders: 4096,
     springColliderWork: 1 * MiB, // joints x the colliders of their groups (what each spring update visits)
-    firstPersonWork: 1 * MiB, // nodes with a mesh x mesh annotations (each node searches the annotations)
+    springSortWork: 16 * MiB, // sorting the joints: per dependency (parent, colliders) a walk up, and the joints there
+    firstPersonWork: 1 * MiB, // every node, the subtree of each with a mesh, and each annotation it searches
     constraints: 4096,
+    outlineDraws: 131072, // draws outlines add: two per outlined mesh sharing a geometry, for each use of it
   }),
 })
 
@@ -212,8 +224,20 @@ const LOADABLE_EXTENSIONS = new Set([
   'VRMC_vrm_animation',
 ])
 
-const COMPONENT_TYPES = [5120, 5121, 5122, 5123, 5125, 5126]
-const ACCESSOR_TYPES = ['SCALAR', 'VEC2', 'VEC3', 'VEC4', 'MAT2', 'MAT3', 'MAT4']
+// componentType: bytes of a component; type: components of an element
+const COMPONENT_BYTES = { 5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126: 4 }
+const TYPE_SIZES = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4, MAT2: 4, MAT3: 9, MAT4: 16 }
+const FLOAT = 5126
+const UNSIGNED_INDICES = [5121, 5123, 5125]
+const NORMALIZED_INTEGERS = [5120, 5121, 5122, 5123]
+const INTERPOLATIONS = ['LINEAR', 'STEP', 'CUBICSPLINE']
+// what an animation channel's output holds, by path (the parser makes a track of each of them)
+const ANIMATION_OUTPUTS = {
+  translation: { type: 'VEC3', normalized: false },
+  scale: { type: 'VEC3', normalized: false },
+  rotation: { type: 'VEC4', normalized: true },
+  weights: { type: 'SCALAR', normalized: true },
+}
 
 export function checkGLTF(data, limits = GLTF_LIMITS) {
   const { json, bin } = readGLTF(data, limits)
@@ -287,6 +311,10 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
   if (!used.every(name => typeof name === 'string') || !required.every(name => typeof name === 'string')) {
     refuse('an extension name is not a string')
   }
+  // each named once (the specification's rule): the parser looks every used name up in the required list
+  if (new Set(used).size !== used.length || new Set(required).size !== required.length) {
+    refuse('an extension is named twice in extensionsUsed or extensionsRequired')
+  }
   for (const name of required) {
     if (!LOADABLE_EXTENSIONS.has(name)) {
       refuse(`it requires an extension this client cannot load (${name.slice(0, 60)})`)
@@ -313,33 +341,75 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
     whole(view.byteOffset, `bufferView ${i} byteOffset`)
     whole(view.byteLength, `bufferView ${i} byteLength`)
     whole(view.byteStride, `bufferView ${i} byteStride`, 1)
+    // the specification's byteStride: 4 to 252, a multiple of 4 (so a whole number of any component type)
+    if (view.byteStride !== undefined && (view.byteStride < 4 || view.byteStride > 252 || view.byteStride % 4 !== 0)) {
+      refuse(`bufferView ${i} byteStride is not a multiple of 4 from 4 to 252`)
+    }
     const meshopt = object(object(view.extensions, `bufferView ${i} extensions`).EXT_meshopt_compression, 'meshopt')
     index(meshopt.buffer, 'buffers', `bufferView ${i} meshopt buffer`)
     for (const key of ['byteOffset', 'byteLength', 'byteStride', 'count'])
       whole(meshopt[key], `bufferView ${i} meshopt ${key}`)
   })
+  // an accessor's elements: bytes per component and per element, and whether they fit in their bufferView where the
+  // parser reads them (the specification's alignment and stride rules)
   collections.accessors.forEach((accessor, i) => {
     index(accessor.bufferView, 'bufferViews', `accessor ${i} bufferView`)
     whole(accessor.byteOffset, `accessor ${i} byteOffset`)
     whole(accessor.count, `accessor ${i} count`)
     if (accessor.count === undefined) refuse(`accessor ${i} has no count`)
-    if (!COMPONENT_TYPES.includes(accessor.componentType) || !ACCESSOR_TYPES.includes(accessor.type)) {
+    const componentBytes = COMPONENT_BYTES[accessor.componentType]
+    const size = TYPE_SIZES[accessor.type]
+    if (!Object.hasOwn(COMPONENT_BYTES, accessor.componentType) || !Object.hasOwn(TYPE_SIZES, accessor.type)) {
       refuse(`accessor ${i} has an invalid componentType or type`)
+    }
+    if (accessor.normalized !== undefined && typeof accessor.normalized !== 'boolean') {
+      refuse(`accessor ${i} normalized is not true or false`)
     }
     numbers(accessor.min, `accessor ${i} min`)
     numbers(accessor.max, `accessor ${i} max`)
+    const elementBytes = componentBytes * size
+    if (accessor.bufferView !== undefined) {
+      const view = collections.bufferViews[accessor.bufferView]
+      const offset = accessor.byteOffset || 0
+      if (offset % componentBytes !== 0) refuse(`accessor ${i} byteOffset is not a multiple of its component size`)
+      const stride = view.byteStride
+      if (stride !== undefined && (stride % componentBytes !== 0 || (offset % stride) + elementBytes > stride)) {
+        refuse(`accessor ${i} elements do not fit the byteStride of bufferView ${accessor.bufferView}`)
+      }
+      const end = accessor.count === 0 ? 0 : offset + (accessor.count - 1) * (stride || elementBytes) + elementBytes
+      if (end > (view.byteLength || 0)) refuse(`accessor ${i} is longer than bufferView ${accessor.bufferView}`)
+    } else if (accessor.byteOffset !== undefined && accessor.byteOffset !== 0) {
+      refuse(`accessor ${i} has a byteOffset without a bufferView`)
+    }
     if (accessor.sparse !== undefined) {
       const sparse = object(accessor.sparse, `accessor ${i} sparse`)
       whole(sparse.count, `accessor ${i} sparse count`, 1)
+      // the parser refuses indices that are not strictly increasing inside the accessor (COO_SPARSE), so there are
+      // at most as many as the accessor has elements
+      if (sparse.count > accessor.count) refuse(`accessor ${i} has more sparse entries than elements`)
       for (const part of ['indices', 'values']) {
         const def = object(sparse[part], `accessor ${i} sparse ${part}`)
         if (def.bufferView === undefined) refuse(`accessor ${i} sparse ${part} has no bufferView`)
         index(def.bufferView, 'bufferViews', `accessor ${i} sparse ${part} bufferView`)
         whole(def.byteOffset, `accessor ${i} sparse ${part} byteOffset`)
       }
-      if (![5121, 5123, 5125].includes(sparse.indices.componentType)) refuse(`accessor ${i} has invalid sparse indices`)
+      if (!UNSIGNED_INDICES.includes(sparse.indices.componentType)) refuse(`accessor ${i} has invalid sparse indices`)
+      const indexBytes = COMPONENT_BYTES[sparse.indices.componentType]
+      for (const [part, bytes] of [
+        ['indices', indexBytes],
+        ['values', elementBytes],
+      ]) {
+        const offset = sparse[part].byteOffset || 0
+        if (offset % (part === 'indices' ? indexBytes : componentBytes) !== 0) {
+          refuse(`accessor ${i} sparse ${part} byteOffset is not aligned`)
+        }
+        if (offset + sparse.count * bytes > (collections.bufferViews[sparse[part].bufferView].byteLength || 0)) {
+          refuse(`accessor ${i} sparse ${part} are longer than their bufferView`)
+        }
+      }
     }
   })
+  const accessors = collections.accessors
   collections.images.forEach((image, i) => {
     index(image.bufferView, 'bufferViews', `image ${i} bufferView`)
     if (image.uri !== undefined && typeof image.uri !== 'string') refuse(`image ${i} uri is not a string`)
@@ -374,47 +444,118 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
     }
     visit(material, `material ${i}`)
   })
+  // the elements of the accessors a map names (an attributes or target map, instancing attributes): all one count
+  const sameCount = (map, where, count) => {
+    for (const accessor of Object.values(map)) {
+      if (count === undefined) count = accessors[accessor].count
+      else if (accessors[accessor].count !== count) refuse(`${where} attributes have different counts`)
+    }
+    return count
+  }
   collections.meshes.forEach((mesh, i) => {
     numbers(mesh.weights, `mesh ${i} weights`)
+    let targetCount
     items(mesh.primitives, `mesh ${i} primitives`).forEach((primitive, k) => {
       const where = `mesh ${i} primitive ${k}`
+      if (primitive.attributes === undefined) refuse(`${where} has no attributes`)
       indexMap(primitive.attributes, 'accessors', `${where} attribute`)
+      const count = sameCount(primitive.attributes, where)
       index(primitive.indices, 'accessors', `${where} indices`)
+      if (primitive.indices !== undefined) {
+        const indices = accessors[primitive.indices]
+        if (indices.type !== 'SCALAR' || !UNSIGNED_INDICES.includes(indices.componentType)) {
+          refuse(`${where} indices are not unsigned whole numbers`)
+        }
+        if (indices.bufferView !== undefined && collections.bufferViews[indices.bufferView].byteStride !== undefined) {
+          refuse(`${where} indices are interleaved`)
+        }
+      }
       index(primitive.material, 'materials', `${where} material`)
       whole(primitive.mode, `${where} mode`)
       if (primitive.mode > 6) refuse(`${where} has an unknown mode`)
-      items(list(primitive.targets, `${where} targets`, limits.targets), `${where} targets`).forEach((target, t) =>
+      const targets = items(list(primitive.targets, `${where} targets`, limits.targets), `${where} targets`)
+      targets.forEach((target, t) => {
         indexMap(target, 'accessors', `${where} target ${t}`)
-      )
+        sameCount(target, `${where} target ${t}`, count)
+      })
+      // every primitive of a mesh has as many targets (the weights animated, and the mesh's weights, are per target)
+      if (targetCount === undefined) targetCount = targets.length
+      else if (targets.length !== targetCount) refuse(`mesh ${i} primitives have different numbers of morph targets`)
       const draco = object(object(primitive.extensions, `${where} extensions`).KHR_draco_mesh_compression, 'draco')
       index(draco.bufferView, 'bufferViews', `${where} draco bufferView`)
     })
   })
+  const targetsOf = mesh => list(collections.meshes[mesh].primitives, 'primitives')[0]?.targets?.length ?? 0
   collections.cameras.forEach((camera, i) => {
     if (typeof camera.type !== 'string') refuse(`camera ${i} has no type`)
   })
   collections.skins.forEach((skin, i) => {
-    for (const joint of list(skin.joints, `skin ${i} joints`)) index(joint, 'nodes', `skin ${i} joint`)
+    const joints = list(skin.joints, `skin ${i} joints`)
+    for (const joint of joints) index(joint, 'nodes', `skin ${i} joint`)
     index(skin.skeleton, 'nodes', `skin ${i} skeleton`)
     index(skin.inverseBindMatrices, 'accessors', `skin ${i} inverseBindMatrices`)
+    if (skin.inverseBindMatrices !== undefined) {
+      // a float 4x4 matrix per joint (the parser reads the joint's at 16 x its index)
+      const matrices = accessors[skin.inverseBindMatrices]
+      if (matrices.type !== 'MAT4' || matrices.componentType !== FLOAT || matrices.count < joints.length) {
+        refuse(`skin ${i} inverseBindMatrices are not a float 4x4 matrix per joint`)
+      }
+    }
   })
   collections.animations.forEach((animation, i) => {
     // glTF 1.0: the vendored parser still reads accessors through `parameters` when it is there
     if (animation.parameters !== undefined) refuse(`animation ${i} has glTF 1.0 parameters`)
     const samplers = items(animation.samplers, `animation ${i} samplers`)
     samplers.forEach((sampler, k) => {
-      index(sampler.input, 'accessors', `animation ${i} sampler ${k} input`)
-      index(sampler.output, 'accessors', `animation ${i} sampler ${k} output`)
+      const where = `animation ${i} sampler ${k}`
+      if (sampler.input === undefined || sampler.output === undefined) refuse(`${where} has no input or output`)
+      index(sampler.input, 'accessors', `${where} input`)
+      index(sampler.output, 'accessors', `${where} output`)
+      if (sampler.interpolation !== undefined && !INTERPOLATIONS.includes(sampler.interpolation)) {
+        refuse(`${where} has an unknown interpolation`)
+      }
+      // the keyframe times: one float each (a track's value size is its values over its times)
+      const input = accessors[sampler.input]
+      if (input.type !== 'SCALAR' || input.componentType !== FLOAT || input.count < 1) {
+        refuse(`${where} input is not a float time per keyframe`)
+      }
     })
     items(animation.channels, `animation ${i} channels`).forEach((channel, k) => {
+      const where = `animation ${i} channel ${k}`
       if (!Number.isSafeInteger(channel.sampler) || channel.sampler < 0 || channel.sampler >= samplers.length) {
-        refuse(`animation ${i} channel ${k} sampler is not an index of its samplers`)
+        refuse(`${where} sampler is not an index of its samplers`)
       }
-      index(
-        object(channel.target, `animation ${i} channel ${k} target`).node,
-        'nodes',
-        `animation ${i} channel ${k} node`
-      )
+      const target = object(channel.target, `${where} target`)
+      index(target.node, 'nodes', `${where} node`)
+      // a channel without a node is skipped by the parser (KHR_animation_pointer's, for one)
+      if (target.node === undefined) return
+      // the output: per keyframe (three per keyframe for CUBICSPLINE: in-tangent, value, out-tangent), one element
+      // of the path's type, or a weight per morph target. Anything else is a fractional value size, which three's
+      // interpolants and PropertyMixer loop on forever (`i !== stride`)
+      const kind = typeof target.path === 'string' && Object.hasOwn(ANIMATION_OUTPUTS, target.path)
+      if (!kind) refuse(`${where} animates a path this client cannot play`)
+      const expected = ANIMATION_OUTPUTS[target.path]
+      const sampler = samplers[channel.sampler]
+      const output = accessors[sampler.output]
+      if (
+        output.type !== expected.type ||
+        !(
+          output.componentType === FLOAT ||
+          (expected.normalized && output.normalized === true && NORMALIZED_INTEGERS.includes(output.componentType))
+        )
+      ) {
+        refuse(`${where} output is not ${expected.type} values for ${target.path}`)
+      }
+      let perKeyframe = sampler.interpolation === 'CUBICSPLINE' ? 3 : 1
+      if (target.path === 'weights') {
+        const mesh = collections.nodes[target.node].mesh
+        const morphTargets = mesh === undefined ? 0 : targetsOf(mesh)
+        if (morphTargets === 0) refuse(`${where} animates the weights of a node without morph targets`)
+        perKeyframe *= morphTargets
+      }
+      if (output.count !== accessors[sampler.input].count * perKeyframe) {
+        refuse(`${where} output does not have ${perKeyframe} values per keyframe`)
+      }
     })
   })
 
@@ -439,11 +580,19 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
     numbers(node.weights, `node ${i} weights`)
     const nodeExtensions = object(node.extensions, `node ${i} extensions`)
     index(object(nodeExtensions.KHR_lights_punctual, 'light').light, 'lights', `node ${i} light`)
-    indexMap(
-      object(nodeExtensions.EXT_mesh_gpu_instancing, 'instancing').attributes,
-      'accessors',
-      `node ${i} instancing`
-    )
+    const instancing = object(object(nodeExtensions.EXT_mesh_gpu_instancing, 'instancing').attributes, 'instancing')
+    indexMap(instancing, 'accessors', `node ${i} instancing`)
+    // one count of instances (the parser takes the first attribute's), and each transform of its type
+    sameCount(instancing, `node ${i} instancing`)
+    for (const [name, type] of [
+      ['TRANSLATION', 'VEC3'],
+      ['ROTATION', 'VEC4'],
+      ['SCALE', 'VEC3'],
+    ]) {
+      if (instancing[name] !== undefined && accessors[instancing[name]].type !== type) {
+        refuse(`node ${i} instancing ${name} is not ${type}`)
+      }
+    }
   })
   // parents before children, from the roots; with one parent each, a node the roots do not reach is in a cycle
   const order = []
@@ -461,24 +610,16 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
   return checkVRM(json, collections, parents, order, limits, { list, object, items, index })
 }
 
-// three-vrm's work, counted as its plugins (version 3.3.3) expand it. VRM 0 (`extensions.VRM`) and VRM 1
-// (`VRMC_vrm`, `VRMC_springBone`, `VRMC_node_constraint`)
+// three-vrm's work, counted before it runs, in the units its plugins (version 3.3.3) iterate: most of them walk the
+// parsed scene graph (`object.traverse`), so the counts are of the objects the parser and the plugins put in it, not
+// of the document's nodes. VRM 0 (`extensions.VRM`) and VRM 1 (`VRMC_vrm`, `VRMC_springBone`, `VRMC_node_constraint`).
+// Each count names its unit; an upper bound where the plugin's own choice depends on the parsed result.
 function checkVRM(json, collections, parents, order, limits, { list, object, items, index }) {
   const caps = limits.vrm
   const extensions = object(json.extensions, 'extensions')
   const nodes = collections.nodes
-  const primitivesOf = mesh => (mesh === undefined ? 0 : list(collections.meshes[mesh].primitives, 'primitives').length)
-  const nodesUsingMesh = new Map()
-  let meshNodes = 0
-  let meshInstances = 0
-  nodes.forEach(node => {
-    if (node.mesh === undefined) return
-    nodesUsingMesh.set(node.mesh, (nodesUsingMesh.get(node.mesh) || 0) + 1)
-    meshNodes++
-    meshInstances += primitivesOf(node.mesh)
-  })
-  // the objects of the parsed scene (nodes and their meshes), what a scene traversal visits
-  const sceneObjects = nodes.length + meshInstances
+  const materials = collections.materials
+  const primitivesOf = mesh => (mesh === undefined ? [] : list(collections.meshes[mesh].primitives, 'primitives'))
   const counts = {
     expressions: 0,
     expressionBinds: 0,
@@ -487,65 +628,165 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
     springJoints: 0,
     springColliders: 0,
     springColliderWork: 0,
+    springSortWork: 0,
     firstPersonWork: 0,
     constraints: 0,
+    outlineDraws: 0,
   }
-
   const v0 = extensions.VRM === undefined ? null : object(extensions.VRM, 'VRM')
+  const vrm1 = extensions.VRMC_vrm === undefined ? null : object(extensions.VRMC_vrm, 'VRMC_vrm')
+  const springs =
+    extensions.VRMC_springBone === undefined ? null : object(extensions.VRMC_springBone, 'VRMC_springBone')
+
+  // the spring bone plugin adds a collider object below its node (VRM 0: each collider of a collider group, at the
+  // group's node; VRM 1: each collider, at its node) before it walks the bones
+  const collidersAt = new Array(nodes.length).fill(0)
+  const v0Secondary = v0 ? object(v0.secondaryAnimation, 'VRM secondaryAnimation') : {}
+  const v0ColliderGroups = items(v0Secondary.colliderGroups, 'VRM colliderGroups')
+  const v0CollidersIn = v0ColliderGroups.map((group, i) => {
+    if (group.node === undefined) refuse(`VRM colliderGroup ${i} names no node`)
+    index(group.node, 'nodes', `VRM colliderGroup ${i} node`)
+    const colliders = list(group.colliders, `VRM colliderGroup ${i} colliders`).length
+    collidersAt[group.node] += colliders
+    counts.springColliders += colliders
+    return colliders
+  })
+  const v1Colliders = springs ? items(springs.colliders, 'VRMC_springBone colliders') : []
+  v1Colliders.forEach((collider, i) => {
+    if (collider.node === undefined) refuse(`VRMC_springBone collider ${i} names no node`)
+    index(collider.node, 'nodes', `VRMC_springBone collider ${i} node`)
+    collidersAt[collider.node]++
+  })
+  counts.springColliders += v1Colliders.length
+
+  // the objects the parser makes for a node: the node's own object, or a Group or Bone holding what it carries (a
+  // mesh: itself for one primitive, a Group and a mesh per primitive for more; a camera; a light, with its target
+  // unless it is a point light). A mesh used by several nodes is cloned for each
+  const lights = collections.lights
+  const joints = new Set(collections.skins.flatMap(skin => list(skin.joints, 'joints')))
+  const objectsOf = (node, i) => {
+    const carried = []
+    if (node.mesh !== undefined) {
+      const primitives = primitivesOf(node.mesh).length
+      carried.push(primitives === 1 ? 1 : primitives + 1)
+    }
+    if (node.camera !== undefined) carried.push(1)
+    const light = object(node.extensions, 'extensions').KHR_lights_punctual?.light
+    if (light !== undefined) carried.push(lights[light].type === 'point' ? 1 : 2)
+    const carriedObjects = carried.reduce((sum, n) => sum + n, 0)
+    // one thing carried is the node itself; a joint of a skin is a Bone holding it
+    return carried.length === 1 && !joints.has(i) ? carriedObjects : 1 + carriedObjects
+  }
+  // objects in each node's subtree (with the colliders), the deepest object, and every object of the scene graph
+  // (with what the plugins add to the scene itself: the normalized humanoid rig, an object per expression)
+  const below = nodes.map((node, i) => objectsOf(node, i) + collidersAt[i])
+  const objectDepth = new Array(nodes.length).fill(0)
+  let deepest = 0
+  for (const i of order) {
+    objectDepth[i] = (parents[i] === -1 ? 0 : objectDepth[parents[i]]) + 1
+    deepest = Math.max(deepest, objectDepth[i] + 2) // a mesh in a Group in the node, or a collider
+  }
+  for (let k = order.length - 1; k >= 0; k--) {
+    if (parents[order[k]] !== -1) below[parents[order[k]]] += below[order[k]]
+  }
+  let nodeObjects = 0
+  for (let i = 0; i < nodes.length; i++) if (parents[i] === -1) nodeObjects += below[i]
+
+  // the meshes of the scene graph: one per primitive of each node's mesh; and by material (index, and name: VRM 0
+  // material values find their materials by name; an outline copy is named "<name> (Outline)")
+  let meshObjects = 0
+  let meshNodes = 0
+  const meshesByMaterial = new Map()
+  const meshesByName = new Map()
+  const materialName = m => (m === undefined ? '' : typeof materials[m].name === 'string' ? materials[m].name : '')
+  nodes.forEach(node => {
+    if (node.mesh === undefined) return
+    meshNodes++
+    for (const primitive of primitivesOf(node.mesh)) {
+      meshObjects++
+      meshesByMaterial.set(primitive.material, (meshesByMaterial.get(primitive.material) || 0) + 1)
+      const name = materialName(primitive.material)
+      meshesByName.set(name, (meshesByName.get(name) || 0) + 1)
+    }
+  })
+  // an outlined mesh holds two materials (its own and the outline copy); every scene walk for materials sees both
+  const sceneMaterials = 2 * meshObjects
+
+  // expressions first: their objects are in the scene the material walks visit
+  const v0Groups = v0
+    ? items(object(v0.blendShapeMaster, 'VRM blendShapeMaster').blendShapeGroups, 'VRM blendShapeGroups')
+    : []
+  const v1Expressions = []
+  if (vrm1) {
+    const expressions = object(vrm1.expressions, 'VRMC_vrm expressions')
+    for (const group of ['preset', 'custom']) {
+      for (const [name, expression] of Object.entries(object(expressions[group], `VRMC_vrm expressions ${group}`))) {
+        if (expression === null || expression === undefined) continue
+        v1Expressions.push([`VRMC_vrm expression ${name.slice(0, 40)}`, object(expression, 'expression')])
+      }
+    }
+  }
+  counts.expressions = v0Groups.length + v1Expressions.length
+  const RIG_OBJECTS = 64 // the normalized humanoid: a root and an object per human bone (at most 55)
+  const sceneObjects = nodeObjects + RIG_OBJECTS + counts.expressions
+
+  // for each mesh, the nodes using it and the objects below them (summed once, so each bind costs one look-up)
+  const usingMesh = new Map()
+  nodes.forEach((node, i) => {
+    if (node.mesh === undefined) return
+    const using = usingMesh.get(node.mesh) || { nodes: 0, below: 0 }
+    using.nodes++
+    using.below += below[i]
+    usingMesh.set(node.mesh, using)
+  })
+
   if (v0) {
     const humanoid = object(v0.humanoid, 'VRM humanoid')
     items(humanoid.humanBones, 'VRM humanBones').forEach((bone, i) =>
       index(bone.node, 'nodes', `VRM humanBone ${i} node`)
     )
-    // expressions: a bind walks every node for those using its mesh, then binds each; a material value walks the
-    // scene for its materials
-    const master = object(v0.blendShapeMaster, 'VRM blendShapeMaster')
-    for (const [g, group] of items(master.blendShapeGroups, 'VRM blendShapeGroups').entries()) {
-      counts.expressions++
+    for (const [g, group] of v0Groups.entries()) {
       for (const [b, bind] of items(group.binds, `VRM blendShapeGroup ${g} binds`).entries()) {
         index(bind.mesh, 'meshes', `VRM blendShapeGroup ${g} bind ${b} mesh`)
-        const using = nodesUsingMesh.get(bind.mesh) || 0
-        counts.expressionWork += nodes.length
-        counts.expressionBinds += using
-        counts.expressionPrimitives += using * primitivesOf(bind.mesh)
+        // a bind walks every node for those using its mesh, then the subtree of each (for its primitives), and
+        // binds each one
+        const using = usingMesh.get(bind.mesh) || { nodes: 0, below: 0 }
+        counts.expressionWork += nodes.length + using.below
+        counts.expressionBinds += using.nodes
+        counts.expressionPrimitives += using.nodes * primitivesOf(bind.mesh).length
       }
       for (const value of items(group.materialValues, `VRM blendShapeGroup ${g} materialValues`)) {
-        if (value === undefined) continue
-        counts.expressionWork += sceneObjects
-        counts.expressionBinds += meshInstances // at most one bind per material in the scene
+        // a material value walks the scene, and looks each mesh whose material has its name up in what it found so
+        // far; then binds each material found
+        const named =
+          typeof value.materialName === 'string'
+            ? 2 *
+              ((meshesByName.get(value.materialName) || 0) + (meshesByName.get(`${value.materialName} (Outline)`) || 0))
+            : 0
+        counts.expressionWork += sceneObjects + named * named
+        counts.expressionBinds += named
       }
     }
-    // spring bones: a bone group makes a joint for every node below each bone it lists; each joint visits the
-    // colliders of the group's collider groups
-    const secondary = object(v0.secondaryAnimation, 'VRM secondaryAnimation')
-    const colliderGroups = items(secondary.colliderGroups, 'VRM colliderGroups')
-    const collidersIn = colliderGroups.map((group, i) => {
-      index(group.node, 'nodes', `VRM colliderGroup ${i} node`)
-      const colliders = list(group.colliders, `VRM colliderGroup ${i} colliders`).length
-      counts.springColliders += colliders
-      return colliders
-    })
-    const below = new Array(nodes.length).fill(1)
-    for (let k = order.length - 1; k >= 0; k--)
-      if (parents[order[k]] !== -1) below[parents[order[k]]] += below[order[k]]
-    items(secondary.boneGroups, 'VRM boneGroups').forEach((group, g) => {
+    // spring bones: a bone group makes a joint for every object below each bone it lists (the parser's and the
+    // colliders); each joint visits the colliders of the group's collider groups
+    items(v0Secondary.boneGroups, 'VRM boneGroups').forEach((group, g) => {
       let joints = 0
       for (const bone of list(group.bones, `VRM boneGroup ${g} bones`)) {
         index(bone, 'nodes', `VRM boneGroup ${g} bone`)
+        if (bone === undefined) continue
         joints += below[bone]
       }
       index(group.center, 'nodes', `VRM boneGroup ${g} center`)
       let colliders = 0
       for (const ref of list(group.colliderGroups, `VRM boneGroup ${g} colliderGroups`)) {
-        if (!Number.isSafeInteger(ref) || ref < 0 || ref >= colliderGroups.length) {
+        if (!Number.isSafeInteger(ref) || ref < 0 || ref >= v0CollidersIn.length) {
           refuse(`VRM boneGroup ${g} colliderGroup is not an index`)
         }
-        colliders += collidersIn[ref]
+        colliders += v0CollidersIn[ref]
       }
       counts.springJoints += joints
       counts.springColliderWork += joints * colliders
     })
-    // first person: each node with a mesh searches the annotations
     const firstPerson = object(v0.firstPerson, 'VRM firstPerson')
     index(firstPerson.firstPersonBone, 'nodes', 'VRM firstPersonBone')
     const annotations = items(firstPerson.meshAnnotations, 'VRM meshAnnotations')
@@ -555,53 +796,55 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
     index(meta.texture, 'textures', 'VRM meta texture')
   }
 
-  const vrm1 = extensions.VRMC_vrm === undefined ? null : object(extensions.VRMC_vrm, 'VRMC_vrm')
   if (vrm1) {
     const humanBones = object(object(vrm1.humanoid, 'VRMC_vrm humanoid').humanBones, 'VRMC_vrm humanBones')
     for (const [name, bone] of Object.entries(humanBones))
       index(object(bone, name).node, 'nodes', `VRMC_vrm humanBone ${name}`)
     index(object(vrm1.meta, 'VRMC_vrm meta').thumbnailImage, 'images', 'VRMC_vrm thumbnailImage')
-    const expressions = object(vrm1.expressions, 'VRMC_vrm expressions')
-    for (const group of ['preset', 'custom']) {
-      for (const [name, expression] of Object.entries(object(expressions[group], `VRMC_vrm expressions ${group}`))) {
-        if (expression === null || expression === undefined) continue
-        const where = `VRMC_vrm expression ${name.slice(0, 40)}`
-        const def = object(expression, where)
-        counts.expressions++
-        for (const [b, bind] of items(def.morphTargetBinds, `${where} morphTargetBinds`).entries()) {
-          index(bind.node, 'nodes', `${where} morphTargetBind ${b} node`)
-          counts.expressionBinds++
-          counts.expressionPrimitives += bind.node === undefined ? 0 : primitivesOf(nodes[bind.node].mesh)
-        }
-        const materialBinds = [
-          ...items(def.materialColorBinds, `${where} materialColorBinds`),
-          ...items(def.textureTransformBinds, `${where} textureTransformBinds`),
-        ]
-        if (materialBinds.length > 0) counts.expressionWork += sceneObjects // the scene walked for its materials
-        materialBinds.forEach((bind, b) => {
-          index(bind.material, 'materials', `${where} material bind ${b} material`)
-          counts.expressionWork += meshInstances // each bind filters every material in the scene
-          counts.expressionBinds += meshInstances // a bind per mesh using the material, at most
-        })
+    for (const [where, def] of v1Expressions) {
+      for (const [b, bind] of items(def.morphTargetBinds, `${where} morphTargetBinds`).entries()) {
+        index(bind.node, 'nodes', `${where} morphTargetBind ${b} node`)
+        if (bind.node === undefined) continue
+        // a bind walks its node's subtree for the node's primitives
+        counts.expressionWork += below[bind.node]
+        counts.expressionBinds++
+        counts.expressionPrimitives += primitivesOf(nodes[bind.node].mesh).length
       }
+      const materialBinds = [
+        ...items(def.materialColorBinds, `${where} materialColorBinds`),
+        ...items(def.textureTransformBinds, `${where} textureTransformBinds`),
+      ]
+      // the scene walked once for its materials; each bind filters all of them, and binds each mesh using its
+      // material (a shared material once per mesh)
+      if (materialBinds.length > 0) counts.expressionWork += sceneObjects
+      materialBinds.forEach((bind, b) => {
+        index(bind.material, 'materials', `${where} material bind ${b} material`)
+        counts.expressionWork += sceneMaterials
+        counts.expressionBinds += meshesByMaterial.get(bind.material) || 0
+      })
     }
     const firstPerson = object(vrm1.firstPerson, 'VRMC_vrm firstPerson')
     const annotations = items(firstPerson.meshAnnotations, 'VRMC_vrm meshAnnotations')
     annotations.forEach((annotation, i) => index(annotation.node, 'nodes', `VRMC_vrm meshAnnotation ${i} node`))
     counts.firstPersonWork += meshNodes * annotations.length
   }
+  // first person (either version): every node, and the subtree of each node with a mesh (for its primitives)
+  if (v0 || vrm1) {
+    counts.firstPersonWork += nodes.length
+    nodes.forEach((node, i) => {
+      if (node.mesh !== undefined) counts.firstPersonWork += below[i]
+    })
+  }
 
-  const springs =
-    extensions.VRMC_springBone === undefined ? null : object(extensions.VRMC_springBone, 'VRMC_springBone')
+  // VRM 1 spring bones: a joint between each two consecutive joints a spring lists
+  const jointsAt = new Array(nodes.length).fill(0)
+  let jointDependencies = 0 // what sorting the joints walks up from: each joint's parent and its colliders
   if (springs) {
-    const colliders = items(springs.colliders, 'VRMC_springBone colliders')
-    colliders.forEach((collider, i) => index(collider.node, 'nodes', `VRMC_springBone collider ${i} node`))
-    counts.springColliders += colliders.length
     // a collider group lists colliders (repeats are kept), a spring lists collider groups (repeats are kept)
     const collidersIn = items(springs.colliderGroups, 'VRMC_springBone colliderGroups').map((group, i) => {
       const refs = list(group.colliders, `VRMC_springBone colliderGroup ${i} colliders`)
       for (const ref of refs) {
-        if (!Number.isSafeInteger(ref) || ref < 0 || ref >= colliders.length) {
+        if (!Number.isSafeInteger(ref) || ref < 0 || ref >= v1Colliders.length) {
           refuse(`VRMC_springBone colliderGroup ${i} collider is not an index`)
         }
       }
@@ -619,9 +862,35 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
         groupColliders += collidersIn[ref]
       }
       const made = Math.max(0, joints.length - 1)
+      for (let j = 0; j < made; j++) if (joints[j].node !== undefined) jointsAt[joints[j].node]++
       counts.springJoints += made
       counts.springColliderWork += made * groupColliders
+      jointDependencies += made * (1 + groupColliders)
     })
+  }
+  // VRM 0 joints: every object below each listed bone gets one, so an object's count is the listings above it
+  if (v0) {
+    const listed = new Array(nodes.length).fill(0)
+    items(v0Secondary.boneGroups, 'VRM boneGroups').forEach((group, g) => {
+      let colliders = 0
+      for (const ref of list(group.colliderGroups, `VRM boneGroup ${g} colliderGroups`)) colliders += v0CollidersIn[ref]
+      for (const bone of list(group.bones, `VRM boneGroup ${g} bones`)) {
+        if (bone === undefined) continue
+        listed[bone]++
+        jointDependencies += below[bone] * (1 + colliders)
+      }
+    })
+    const cover = new Array(nodes.length).fill(0)
+    for (const i of order) {
+      cover[i] = (parents[i] === -1 ? 0 : cover[parents[i]]) + listed[i]
+      jointsAt[i] += cover[i]
+    }
+  }
+  // sorting the joints (the manager, before its first update): from each dependency, a walk up to the root, and at
+  // each object above it the joints there; then a walk down from their common ancestor
+  if (counts.springJoints > 0) {
+    const mostJoints = Math.max(0, ...jointsAt)
+    counts.springSortWork = jointDependencies * deepest * (1 + mostJoints) + sceneObjects
   }
 
   nodes.forEach((node, i) => {
@@ -633,10 +902,45 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
       index(object(def[kind], kind).source, 'nodes', `node ${i} ${kind} source`)
   })
 
+  // MToon outlines: for each primitive of a mesh whose material is outlined, the plugin adds two draw groups to the
+  // primitive's geometry, which the parser shares between meshes with the same primitive; every mesh drawn with
+  // that geometry then draws all of its groups
+  const outlined = m => {
+    if (m === undefined) return false
+    if (v0) return true // VRM 0 MToon materials are converted when loaded: any of them may be
+    const mtoon = object(materials[m].extensions, 'extensions').VRMC_materials_mtoon
+    return typeof mtoon?.outlineWidthMode === 'string' && mtoon.outlineWidthMode !== 'none'
+  }
+  const groups = new Map()
+  const keyOf = primitive => primitiveKey(primitive)
+  collections.meshes.forEach(mesh => {
+    for (const primitive of list(mesh.primitives, 'primitives')) {
+      if (outlined(primitive.material)) groups.set(keyOf(primitive), (groups.get(keyOf(primitive)) || 0) + 2)
+    }
+  })
+  if (groups.size > 0) {
+    nodes.forEach(node => {
+      for (const primitive of primitivesOf(node.mesh)) counts.outlineDraws += groups.get(keyOf(primitive)) || 0
+    })
+  }
+
   for (const [name, value] of Object.entries(counts)) {
     if (value > caps[name]) refuse(`three-vrm ${name}: ${value}, more than ${caps[name]}`)
   }
   return { nodes: nodes.length, vrm: counts }
+}
+
+// the parser's cache key for a primitive's geometry (its createPrimitiveKey, without Draco: this client has no
+// decoder): primitives with the same key share one geometry
+function primitiveKey(primitive) {
+  const attributesKey = map =>
+    Object.keys(map ?? {})
+      .sort()
+      .map(key => `${key}:${map[key]};`)
+      .join('')
+  let key = `${primitive.indices}:${attributesKey(primitive.attributes)}:${primitive.mode}`
+  for (const target of Array.isArray(primitive.targets) ? primitive.targets : []) key += `:${attributesKey(target)}`
+  return key
 }
 
 // The per-file budget the parser charges (see the COO_BUDGET sites in the vendored GLTFLoader). `fileBytes`: the
@@ -644,9 +948,10 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
 // total)`: told of every charge (tests)
 export function createGLTFBudget({ fileBytes = 0, limits = GLTF_LIMITS, onCharge } = {}) {
   const maxBytes = limits.allocatedBytes + 2 * fileBytes
-  const used = { bytes: 0, pixels: 0, counts: {} }
-  // every later charge is refused too (the totals stay past the limit), so a part of the parse still running after
-  // the refusal allocates nothing more
+  const used = { bytes: 0, pixels: 0, work: 0, counts: {} }
+  // every later charge of the kind refused is refused too (its total stays past the limit), so a part of the parse
+  // still running (promise chains the parser started side by side) allocates, or walks, nothing more than the
+  // limits allow. (Refusing every kind after the first refusal would reject chains nothing waits on any more.)
   const fail = (what, reason) => {
     onCharge?.('refused', 0, what, reason)
     refuse(reason)
@@ -667,6 +972,17 @@ export function createGLTFBudget({ fileBytes = 0, limits = GLTF_LIMITS, onCharge
       used.counts[kind] = total
       onCharge?.('count', n, kind, total)
       if (total > limit) fail(kind, `${kind}: ${total}, more than ${limit}`)
+    },
+    // steps of a loop or walk the document sizes, charged before it runs (or, for a walk, at each object visited)
+    work(n, what) {
+      if (!Number.isFinite(n) || n < 0) fail(what, `${what}: an impossible amount of work`)
+      used.work += n
+      onCharge?.('work', n, what, used.work)
+      if (used.work > limits.work) fail(what, `the parser would take more than ${limits.work} steps (at ${what})`)
+    },
+    // a document the parser cannot use (a rule of the specification it would otherwise loop or write on through)
+    refuse(reason, what) {
+      fail(what, reason)
     },
     // an image about to be decoded, sized from its header (embedded images must be PNG, JPEG or WebP)
     image(bytes, what) {

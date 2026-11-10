@@ -80,11 +80,14 @@ export function installShutdown({
   }
 }
 
-// The stop a crashed app gets (App.crash), for every app at once: its timers are cleared and its pending
-// continuations (world.load, world event listeners, timer callbacks already queued) see a dead run and return.
-// Script code that still runs (a fetch resolving) finds world.set refused once the final save has started.
-export function stopApps(entities) {
-  for (const entity of entities?.items?.values() ?? []) {
+// Stops every app for good: `world.appsStopped` is the latch App.build checks before it starts and after each of
+// its awaits (App.halted), so a build waiting for assets, a crash rebuild or a blueprint change never runs a script
+// or a destroy handler again; and each app gets the stop a crashed app gets (App.crash): its timers are cleared and
+// its pending continuations (world.load, world event listeners, timer callbacks already queued) see a dead run and
+// return. Script code that still runs (a fetch resolving) finds world.set refused once the final save has started.
+export function stopApps(world) {
+  world.appsStopped = true
+  for (const entity of world.entities?.items?.values() ?? []) {
     if (!entity?.isApp) continue
     entity.timers?.clear()
     if (entity.deadHook) entity.deadHook.dead = true

@@ -81,6 +81,17 @@ if (process.env.ASSETS_BASE_URL.endsWith('/')) {
 if (process.env.ASSETS === 's3' && !process.env.ASSETS_S3_URI) {
   throw new Error(`[envs] ASSETS_S3_URI must be set when using ASSETS=s3`)
 }
+// every join snapshot carries these; its size bound counts them at these lengths (joinBudget.js SNAPSHOT_FIXED_BYTES)
+for (const [name, max] of [
+  ['ASSETS_BASE_URL', 1024],
+  ['PUBLIC_API_URL', 1024],
+  ['LIVEKIT_WS_URL', 1024],
+  ['AI_PROVIDER', 128],
+  ['AI_MODEL', 128],
+  ['AI_EFFORT', 128],
+]) {
+  if ((process.env[name] || '').length > max) throw new Error(`[envs] ${name} must be at most ${max} characters`)
+}
 
 // SIGINT/SIGTERM from here on (shutdown.js): during start-up the process just exits; once the world exists (below,
 // before its scripts start) the final save runs under a deadline
@@ -114,7 +125,7 @@ shutdown.attach({
   network: world.network,
   stopWorld: () => {
     world.server.destroy()
-    stopApps(world.entities)
+    stopApps(world)
   },
   closeServer: () => fastify.close(),
 })
@@ -126,6 +137,9 @@ await world.init({
   storage,
   collections: collections.list,
 })
+// World.start() does not wait for the systems: no connection is taken before the network has loaded the world, the
+// user ids and the join-state accounting (it refuses any that arrives earlier, too)
+await world.network.ready
 
 fastify.register(cors)
 fastify.register(compress, compressOptions())

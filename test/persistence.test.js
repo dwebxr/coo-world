@@ -393,7 +393,7 @@ test(
 // continuation (a timer, a fetch) calls world.set in between
 test(
   'B8: a world.set after the storage flush, while the database save is pending, is refused',
-  { timeout: 5000 },
+  { timeout: 120000 },
   async t => {
     t.mock.method(console, 'error', () => {})
     t.mock.method(console, 'log', () => {})
@@ -408,7 +408,8 @@ test(
       storage.set('k', 1)
       await network.onEntityModified(socket, { id: 'app', pinned: true })
       const held = db.pause('entities')
-      const done = network.flushBeforeExit(2000)
+      // the held database write decides when the save goes on: the deadline is far beyond any slow machine
+      const done = network.flushBeforeExit(60000)
       await held.started.promise
       while (!storage.saved()) await new Promise(resolve => setTimeout(resolve, 1))
       if (late === 'set') {

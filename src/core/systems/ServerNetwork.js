@@ -28,11 +28,13 @@ import { internalEvents } from '../extras/internalEvents'
 import { createInboundGate, createInboundScheduler, packetNodeLimit } from '../extras/inboundPolicy'
 import { SNAPSHOT_CAP, createWriteLedger } from '../extras/writeLedger'
 import {
+  OWN_AVATAR_MAX_LENGTH,
   SNAPSHOT_STEP_NAMES,
   encodeSnapshot,
   fitsJoinState,
   joinStateReport,
   settingsBytes,
+  snapshotFits,
 } from '../extras/joinBudget'
 import { briefError, createLogOnce } from '../extras/logOnce'
 import { readInboundPacket } from '../../server/inboundDecode'
@@ -119,7 +121,18 @@ export class ServerNetwork extends System {
     this.tipAnnounce = { queue: [], tokens: evmGating.TIP_ANNOUNCE_BURST, at: Date.now(), timer: null, last: new Map() }
   }
 
-  async start() {
+  // World.start() does not wait for this. Until `ready` settles (spawn, blueprints, apps, settings, the user ids and
+  // the join-state accounting all loaded) no connection or packet is taken (onConnection, admit); the server
+  // listens only after it (index.js)
+  start() {
+    this.starting = true
+    this.ready = this.hydrate().finally(() => {
+      this.starting = false
+    })
+    return this.ready
+  }
+
+  async hydrate() {
     // get spawn
     const spawnRow = await this.db('config').where('key', 'spawn').first()
     this.spawn = null
@@ -334,7 +347,7 @@ export class ServerNetwork extends System {
 
   // Admission charges the bytes and nodes before the inbox retains a copy.
   admit(socket, packet) {
-    if (this.stopping) return false
+    if (this.stopping || this.starting) return false
     return this.gate.admit(socket, packet, { builder: socket.player?.isBuilder() === true })
   }
 
@@ -409,21 +422,38 @@ export class ServerNetwork extends System {
     const settled = appPersistenceData(data, change)
     if (settled.mover || settled.uploader) return
     const record = persistenceRecord(settled)
-    this.dirtyApps.set(settled.id, { revision: ++this.persistenceRevision, record })
+    this.dirtyApps.set(settled.id, { ...this.replacementOf(settled.id), revision: ++this.persistenceRevision, record })
   }
 
   markAppDeleted(id) {
-    this.dirtyApps.set(id, { revision: ++this.persistenceRevision, record: null })
+    this.dirtyApps.set(id, { ...this.replacementOf(id), revision: ++this.persistenceRevision, record: null })
   }
 
-  // An app that holds a joining user's id moves to a fresh id: removed under the old one and added again under the
-  // new one, persisted and broadcast like any removal and addition, with its blueprint, transform, pinned flag and
-  // (when it is plain bounded JSON) state. Its script starts again; a move or upload in progress is dropped.
+  // a later change to a re-keyed app (rekeyApp) keeps the old row's removal with it until it is written
+  replacementOf(id) {
+    const replaces = this.dirtyApps.get(id)?.replaces
+    return replaces === undefined ? {} : { replaces }
+  }
+
+  // An app that holds a joining user's id moves to a fresh id, with its blueprint, transform, pinned flag and state
+  // (when it is plain bounded JSON; anything else a script put there, a throwing getter or a Proxy included, becomes
+  // {}). Its script starts again; a move or upload in progress is dropped. Broadcast as a removal and an addition.
+  // One migration that cannot lose the app: the record under the new id is queued first, as a row that replaces
+  // the old one (saveDirty writes both in one transaction where the database has them, the new row before the old
+  // one's removal otherwise), and only then is the old entity torn down, whose failure does not stop the move. An
+  // interruption at any point leaves the record under the old id, the new one, or (without a transaction) both;
+  // a duplicate left that way is moved again at that user's next join.
   rekeyApp(entity) {
     const old = entity.data
     let id
     do id = uuid()
     while (this.world.entities.get(id) || this.userIds.has(id))
+    let state = {}
+    try {
+      if (isBoundedJsonObject(old.state)) state = JSON.parse(JSON.stringify(old.state))
+    } catch {
+      // script state that cannot be read as JSON never stops the move or the join
+    }
     const data = {
       id,
       type: 'app',
@@ -434,13 +464,37 @@ export class ServerNetwork extends System {
       mover: null,
       uploader: null,
       pinned: old.pinned === true,
-      state: isBoundedJsonObject(old.state) ? JSON.parse(JSON.stringify(old.state)) : {},
+      state,
     }
-    this.world.entities.remove(old.id)
+    // the replacement first; a pending change under the old id is folded into it
+    this.dirtyApps.delete(old.id)
+    this.dirtyApps.set(id, {
+      revision: ++this.persistenceRevision,
+      record: persistenceRecord(appPersistenceData(data)),
+      replaces: old.id,
+    })
+    try {
+      this.world.entities.remove(old.id)
+    } catch (err) {
+      this.logOnce(
+        this,
+        `rekey-teardown:${old.id}`,
+        `[network] app teardown failed while moving it: ${briefError(err)}`
+      )
+      // the entity is gone from the world all the same
+      this.world.entities.items.delete(old.id)
+      this.world.entities.untrackApp?.(old.id)
+    }
+    // the old row is removed by the replacement's own write, never on its own before it
+    this.dirtyApps.delete(old.id)
     this.send('entityRemoved', old.id)
-    this.markAppDirty(data)
     this.send('entityAdded', data)
-    this.world.entities.add(data)
+    try {
+      this.world.entities.add(data)
+    } catch (err) {
+      // the record is queued: the app comes back at the next start
+      this.logOnce(this, `rekey-add:${id}`, `[network] app could not be started under its new id: ${briefError(err)}`)
+    }
     this.logOnce(
       this,
       `rekey:${old.id}`,
@@ -473,6 +527,8 @@ export class ServerNetwork extends System {
   // microtask, so the loop yields a turn of the event loop after every row: the deadline timer, other timers and a
   // second signal run between rows, and the deadline is also checked by the clock before each one. On Postgres the
   // queries are asynchronous anyway; a statement already sent finishes or is cut off by the exit.
+  // The one exception is a row that replaces another (rekeyApp): its insert and the old row's removal are one
+  // transaction where the database has them, and otherwise the insert comes first, so the app is never lost.
   async saveDirty() {
     const counts = { blueprints: 0, apps: 0, deleted: 0 }
     const now = moment().toISOString()
@@ -480,19 +536,29 @@ export class ServerNetwork extends System {
       ['blueprints', this.dirtyBlueprints],
       ['entities', this.dirtyApps],
     ]) {
-      for (const [id, { revision, record }] of [...dirty]) {
+      for (const [id, { revision, record, replaces }] of [...dirty]) {
         if (this.saveExpired()) return
         await new Promise(resolve => setImmediate(resolve))
         if (this.saveExpired()) return
         try {
-          if (record === null) {
-            await this.db(table).where('id', id).delete()
-            counts.deleted++
-          } else {
-            await this.db(table)
+          const upsert = db =>
+            db(table)
               .insert({ ...record, createdAt: now, updatedAt: now })
               .onConflict('id')
               .merge({ ...record, updatedAt: now })
+          if (record === null) {
+            await this.db(table).where('id', id).delete()
+            if (replaces !== undefined) await this.db(table).where('id', replaces).delete()
+            counts.deleted++
+          } else if (replaces !== undefined && typeof this.db.transaction === 'function') {
+            await this.db.transaction(async trx => {
+              await upsert(trx)
+              await trx(table).where('id', replaces).delete()
+            })
+            counts.apps++
+          } else {
+            await upsert(this.db)
+            if (replaces !== undefined) await this.db(table).where('id', replaces).delete()
             counts[table === 'blueprints' ? 'blueprints' : 'apps']++
           }
           if (dirty.get(id)?.revision === revision) dirty.delete(id)
@@ -578,10 +644,15 @@ export class ServerNetwork extends System {
     }
     const value = JSON.stringify(data)
     this.dirtyConfig.set(key, value)
+    // past the final save's deadline (saveExpired)
+    const expired = () => this.flushExpired || Date.now() >= (this.flushDeadline ?? Infinity)
     const promise = (this.configPromise || Promise.resolve())
       .then(async () => {
-        // past the final save's deadline (saveExpired)
-        if (this.flushExpired || Date.now() >= (this.flushDeadline ?? Infinity)) return false
+        if (expired()) return false
+        // a turn of the event loop between queued writes, as in saveDirty: a synchronous database would otherwise
+        // run the whole queue before a timer or a signal is seen
+        await new Promise(resolve => setImmediate(resolve))
+        if (expired()) return false
         try {
           if (this.loadedConfig.get(key) !== value) {
             await this.db('config').insert({ key, value }).onConflict('key').merge({ value })
@@ -606,7 +677,8 @@ export class ServerNetwork extends System {
   }
 
   async onConnection(ws, params) {
-    if (this.stopping) return ws.close()
+    // still loading (start): the user ids and the join-state accounting are not complete yet
+    if (this.stopping || this.starting) return ws.close()
     let cancelled = false
     // a wait that ends early when this connection closes (the takeover ping)
     let stopWaiting = null
@@ -648,6 +720,7 @@ export class ServerNetwork extends System {
         if (cancelled) return
         if (auth) {
           user = await this.db('users').where('id', auth.userId).first()
+          if (user) this.userIds.add(user.id)
           if (cancelled) return
         }
       }
@@ -659,12 +732,13 @@ export class ServerNetwork extends System {
           rank: 0,
           createdAt: moment().toISOString(),
         }
+        // reserved before the row exists, so a join cancelled from here on still keeps the id from apps
+        this.userIds.add(user.id)
         await this.db('users').insert(user)
         if (cancelled) return
         authToken = await createJWT({ userId: user.id })
         if (cancelled) return
       }
-      this.userIds.add(user.id)
 
       const refuseDuplicate = () => {
         const packet = writePacket('kick', 'duplicate_user')
@@ -731,6 +805,22 @@ export class ServerNetwork extends System {
       const holder = this.world.entities.get(user.id)
       if (holder?.isApp) this.rekeyApp(holder)
 
+      // the join snapshot must fit with one more player, at its worst (joinBudget.js snapshotFits); world growth is
+      // held to the same bound, so whoever is admitted here can always join again
+      if (!snapshotFits(this.world, 1)) {
+        this.logOnce(
+          this,
+          'snapshot-players',
+          `[network] a player was turned away: the world's state and ${this.world.entities.players?.size ?? 0} players fill what one join snapshot can hold; the world's size, not playerLimit or WS_MAX_SOCKETS, is the limit here`
+        )
+        this.write(ws, writePacket('kick', 'player_limit'), { name: 'kick' })
+        ws.close()
+        return
+      }
+      // the joiner's own avatar is the one part of its record no step drops: a stored value longer than the policy
+      // allows (only legacy data can be) falls back to the default
+      const ownAvatar = user.avatar || this.world.settings.avatar?.url || 'asset://avatar.vrm'
+
       // create socket
       socket = new Socket({ id: user.id, ws, network: this })
       socket.wallet = solanaGating.createWalletSession()
@@ -747,7 +837,10 @@ export class ServerNetwork extends System {
           userId: user.id, // deprecated, same as userId
           name: name || sanitizeName(user.name) || 'Anonymous',
           health: HEALTH_MAX,
-          avatar: user.avatar || this.world.settings.avatar?.url || 'asset://avatar.vrm',
+          avatar:
+            typeof ownAvatar === 'string' && ownAvatar.length <= OWN_AVATAR_MAX_LENGTH
+              ? ownAvatar
+              : 'asset://avatar.vrm',
           sessionAvatar: avatar || null,
           rank: user.rank,
           enteredAt: Date.now(),

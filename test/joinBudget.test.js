@@ -5,10 +5,14 @@ import moment from 'moment'
 import { readPacket, writeClientPacket, writePacket } from '../src/core/packets.js'
 import { SNAPSHOT_CAP } from '../src/core/extras/writeLedger.js'
 import {
+  SNAPSHOT_FIXED_BYTES,
+  SNAPSHOT_PLAYER_BYTES,
   SNAPSHOT_STEPS,
   WORLD_JOIN_BYTES,
   encodeSnapshot,
   joinStateBytes,
+  snapshotBound,
+  snapshotFits,
   stateBytes,
 } from '../src/core/extras/joinBudget.js'
 import { isAvatarUrl, sanitizeName } from '../src/core/extras/entityModifyPolicy.js'
@@ -95,11 +99,38 @@ function fixture() {
   network.settingsBytes = writePacket('settingsModified', world.settings.serialize()).length
   network.collectionsBytes = writePacket('settingsModified', []).length
   const users = new Map()
+  // the stored app rows, as the database holds them; `store.hangAfter` makes every write after that many hang for
+  // ever (the process stopping there), `store.transactions()` gives the database transactions
+  const store = { rows: new Map(), writes: 0, hangAfter: Infinity }
+  const write = apply => {
+    if (store.writes++ >= store.hangAfter) return new Promise(() => {})
+    apply()
+    return Promise.resolve()
+  }
+  const appTable = rows => ({
+    insert: row => ({
+      onConflict: () => ({
+        merge: () =>
+          store.failInserts
+            ? Promise.reject(new Error('disk full'))
+            : write(() => rows.set(row.id, JSON.parse(row.data))),
+      }),
+    }),
+    where: (key, id) => ({ delete: () => write(() => rows.delete(id)) }),
+  })
   network.db = table => {
+    if (table === 'entities') return appTable(store.rows)
     assert.equal(table, 'users')
     return {
       where: (key, id) => ({ first: async () => users.get(id) }),
       insert: async row => users.set(row.id, row),
+    }
+  }
+  store.transactions = () => {
+    network.db.transaction = async fn => {
+      const staged = new Map(store.rows)
+      await fn(table => (assert.equal(table, 'entities'), appTable(staged)))
+      store.rows = staged
     }
   }
   network.onConnection = connectionMethod({
@@ -138,11 +169,22 @@ function fixture() {
     return { ws, method, snapshot, bytes: ws.packets[0]?.length }
   }
   world.blueprints.add({ id: 'bp', version: 0, name: 'Box' })
-  return { logs, network, world, builder, send, join, users }
+  return { logs, network, world, builder, send, join, users, store }
+}
+
+// lets a save that is stuck on a hanging write show where it stopped
+const settle = async (turns = 40) => {
+  for (let i = 0; i < turns; i++) await new Promise(resolve => setImmediate(resolve))
 }
 
 const sentTo = socket => socket.ws.packets.map(readPacket)
 const apps = world => [...world.entities.items.values()].filter(entity => entity.isApp)
+// brings the world to `room` bytes under its budget through the accounting alone (as if the operator's collections
+// were that large), where a test needs a full world but not thousands of apps
+const fillTo = (f, room) => {
+  f.network.collectionsBytes += WORLD_JOIN_BYTES - room - joinStateBytes(f.world)
+  assert.equal(joinStateBytes(f.world), WORLD_JOIN_BYTES - room)
+}
 
 test('join budget: 36 apps with 30,000-character ids are refused, and a new client still joins', async () => {
   const f = fixture()
@@ -161,13 +203,17 @@ test('join budget: 36 apps with 30,000-character ids are refused, and a new clie
 test('join budget: about 9,200 plain apps are refused before the snapshot is over its cap, and a new client joins', async () => {
   const f = fixture()
   const count = 9200
-  const datas = Array.from({ length: count }, () => app(nextId()))
   // the LARP-04 reproduction (7,275 apps of 144 bytes): these, with float transforms and a short blueprint id,
-  // encode at 116 bytes each, so it takes 9,200 of them with nothing refused to be over the cap
-  assert.ok(writePacket('snapshot', { entities: datas }).length > SNAPSHOT_CAP)
-  for (const data of datas) {
-    f.network.onEntityAdded(f.builder, data)
-    f.builder.ws.drain() // the sender reads its reverts
+  // encode at 116 bytes each, so it takes 9,200 of them with nothing refused to be over the cap (encoded once)
+  const unbudgeted = () => writePacket('snapshot', { entities: Array.from({ length: count }, () => app(nextId())) })
+  assert.ok(unbudgeted().length > SNAPSHOT_CAP)
+  let removed = 0
+  for (let i = 0; i < count; i++) {
+    f.network.onEntityAdded(f.builder, app(nextId()))
+    // the sender reads its reverts as they come
+    for (const packet of f.builder.ws.packets) if (readPacket(packet)[0] === 'onEntityRemoved') removed++
+    f.builder.ws.packets.length = 0
+    f.builder.ws.drain()
   }
   const accepted = apps(f.world).length
   assert.ok(accepted > 3000 && accepted < count, `${accepted} accepted`)
@@ -177,8 +223,7 @@ test('join budget: about 9,200 plain apps are refused before the snapshot is ove
     [...f.world.entities.appSizes.values()].reduce((s, v) => s + v.record + v.state, 0)
   )
   // the refused ones were taken back from the sender, and the refusal was logged once
-  const removed = sentTo(f.builder).filter(([method]) => method === 'onEntityRemoved')
-  assert.equal(removed.length, count - accepted)
+  assert.equal(removed, count - accepted)
   assert.deepEqual(
     f.logs.filter(line => line.includes('world is full')),
     ['onEntityAdded: world is full (join-state budget exceeded)']
@@ -210,10 +255,9 @@ test('join budget: a client-set app state counts, a larger one is refused at the
   const state = { notes: 'n'.repeat(8000) }
   for (let i = 0; i < 40; i++) f.network.onEntityAdded(f.builder, app(`s${i}`, 'bp', { state }))
   assert.equal(f.world.entities.appSizes.get('s0').state, stateBytes(state))
-  for (let i = 0; f.world.entities.canFitApp(`f${i}`, app(`f${i}`)); i++)
-    f.network.onEntityAdded(f.builder, app(`f${i}`))
+  f.network.onEntityAdded(f.builder, app('f0'))
+  fillTo(f, 300)
   const full = joinStateBytes(f.world)
-  assert.ok(full <= WORLD_JOIN_BYTES && full > WORLD_JOIN_BYTES - 300)
   // a state change that grows a full world is refused and the sender gets the stored fields back
   f.builder.ws.packets.length = 0
   f.network.onEntityModified(f.builder, { id: 'f0', state: { notes: 'n'.repeat(1000) }, pinned: true })
@@ -233,9 +277,8 @@ test('join budget: a blueprint change that rebuilds its apps releases their stat
   f.world.blueprints.add({ id: 'big', version: 0, props: { text: '' } })
   const state = { notes: 'n'.repeat(8000) }
   for (let i = 0; i < 3; i++) f.network.onEntityAdded(f.builder, app(`r${i}`, 'big', { state }))
-  // fill the rest with stateless apps until nothing more fits
-  for (let i = 0; f.world.entities.canFitApp(`f${i}`, app(`f${i}`)); i++)
-    f.network.onEntityAdded(f.builder, app(`f${i}`))
+  // the rest of the budget taken
+  fillTo(f, 200)
   const charged = f.world.entities.appSizes.get('r0').state
   assert.equal(charged, stateBytes(state))
   // a modify that grows the blueprint by more than the free room but less than the three states it empties
@@ -259,8 +302,7 @@ test('join budget: settings are measured before they change; growth past the lim
   const f = fixture()
   f.network.onSettingsModified(f.builder, { key: 'voice', value: 'spatial' })
   assert.equal(f.network.settingsBytes, writePacket('settingsModified', f.world.settings.serialize()).length)
-  for (let i = 0; f.world.entities.canFitApp(`a${i}`, app(`a${i}`)); i++)
-    f.network.onEntityAdded(f.builder, app(`a${i}`))
+  fillTo(f, 200)
   const before = f.network.settingsBytes
   f.builder.ws.packets.length = 0
   f.network.onSettingsModified(f.builder, { key: 'desc', value: 'd'.repeat(2048) })
@@ -360,9 +402,23 @@ test('join budget: an app that holds a joining user id moves to a new id; the pl
   }
   assert.deepEqual(JSON.parse(JSON.stringify(kept)), { blueprint: 'bp', position, pinned: true, state: { score: 3 } })
   assert.equal(f.world.entities.appBytes, before, 'the same record under an id of the same length')
-  // persisted and broadcast like a removal and an addition
-  assert.equal(f.network.dirtyApps.get('legacyUser').record, null)
-  assert.equal(JSON.parse(f.network.dirtyApps.get(moved.data.id).record.data).blueprint, 'bp')
+  // persisted: after the save the stored row is under the new id only, with the same record
+  f.store.rows.set('legacyUser', { ...app('legacyUser', 'bp', { position, pinned: true }), state: null })
+  await f.network.saveDirty()
+  assert.deepEqual([...f.store.rows.keys()], [moved.data.id])
+  assert.deepEqual(f.store.rows.get(moved.data.id), {
+    state: null,
+    id: moved.data.id,
+    type: 'app',
+    blueprint: 'bp',
+    position,
+    quaternion: Array.from(moved.data.quaternion),
+    scale: [1.5, 1.5, 1.5],
+    mover: null,
+    uploader: null,
+    pinned: true,
+  })
+  // and broadcast like a removal and an addition
   const seen = watcher.ws.packets.slice(1).map(readPacket)
   assert.deepEqual(JSON.parse(JSON.stringify(seen.slice(0, 2))), [
     ['onEntityRemoved', 'legacyUser'],
@@ -379,6 +435,173 @@ test('join budget: an app that holds a joining user id moves to a new id; the pl
   assert.equal(again.method, 'onSnapshot')
   assert.equal(f.world.entities.get(moved.data.id), moved)
   assert.equal(f.logs.length, logs + 1)
+})
+
+// a re-keyed app under its old id in the database, the save interrupted after `hangAfter` writes
+async function interruptedRekey({ hangAfter, transactions, teardown = () => {}, pending = false }) {
+  const f = fixture()
+  f.users.set('legacyUser', { id: 'legacyUser', name: 'Returning', rank: 0 })
+  const stored = { ...app('legacyUser', 'bp', { position: [1, 2, 3] }), state: null }
+  f.store.rows.set('legacyUser', stored)
+  const entity = f.world.entities.add(app('legacyUser', 'bp', { position: [1, 2, 3] }), true)
+  entity.destroy = function () {
+    if (this.destroyed) return
+    this.destroyed = true
+    teardown()
+  }
+  // a change to the old app still waiting for the save
+  if (pending) f.network.markAppDirty(entity.data, { pinned: true })
+  const joined = await f.join({ authToken: 'legacyUser' })
+  assert.equal(joined.method, 'onSnapshot', 'the player joins whatever happens to the app')
+  if (transactions) f.store.transactions()
+  f.store.hangAfter = hangAfter
+  const moved = apps(f.world).find(other => other.data.blueprint === 'bp')
+  const saving = f.network.saveDirty()
+  await Promise.race([saving, settle()])
+  return { f, moved, rows: f.store.rows }
+}
+
+test('join budget: a re-keyed app is never lost, wherever the save stops (with and without transactions)', async t => {
+  t.mock.method(console, 'error', () => {})
+  for (const transactions of [false, true]) {
+    for (let hangAfter = 0; hangAfter <= 3; hangAfter++) {
+      for (const pending of [false, true]) {
+        const { rows, moved } = await interruptedRekey({ hangAfter, transactions, pending })
+        const label = `transactions=${transactions} stopped after ${hangAfter} writes pending=${pending}`
+        assert.ok(rows.has('legacyUser') || rows.has(moved.data.id), label)
+        const kept = rows.get(moved.data.id) || rows.get('legacyUser')
+        assert.equal(kept.blueprint, 'bp', label)
+        assert.deepEqual(kept.position, [1, 2, 3], label)
+        // a transaction is all or nothing: never both
+        if (transactions) assert.equal(rows.size, 1, label)
+      }
+    }
+  }
+  // a replacement write that fails leaves the old row and stays queued; the next save completes the move
+  for (const transactions of [false, true]) {
+    const f = fixture()
+    f.users.set('legacyUser', { id: 'legacyUser', name: 'Returning', rank: 0 })
+    f.store.rows.set('legacyUser', { ...app('legacyUser'), state: null })
+    f.world.entities.add(app('legacyUser'), true)
+    await f.join({ authToken: 'legacyUser' })
+    if (transactions) f.store.transactions()
+    f.store.failInserts = true
+    await f.network.saveDirty()
+    assert.deepEqual([...f.store.rows.keys()], ['legacyUser'], `transactions=${transactions}`)
+    f.store.failInserts = false
+    await f.network.saveDirty()
+    const moved = apps(f.world).find(entity => entity.data.blueprint === 'bp')
+    assert.deepEqual([...f.store.rows.keys()], [moved.data.id], `transactions=${transactions}`)
+  }
+  // a save that runs to the end leaves exactly the new row
+  const { rows, moved } = await interruptedRekey({ hangAfter: Infinity, transactions: false })
+  assert.deepEqual([...rows.keys()], [moved.data.id])
+  // and an edit to the moved app before the save still takes the old row away with it
+  const edited = await interruptedRekey({ hangAfter: 0, transactions: false })
+  edited.f.network.markAppDirty(edited.moved.data, { pinned: true })
+  edited.f.store.hangAfter = Infinity
+  edited.f.store.writes = 0
+  await edited.f.network.saveDirty()
+  assert.deepEqual([...edited.f.store.rows.keys()], [edited.moved.data.id])
+  assert.equal(edited.f.store.rows.get(edited.moved.data.id).pinned, true)
+})
+
+test('join budget: a throwing app teardown does not stop the re-key or the join', async t => {
+  t.mock.method(console, 'error', () => {})
+  const { f, rows, moved } = await interruptedRekey({
+    hangAfter: Infinity,
+    transactions: true,
+    teardown: () => {
+      throw new Error('destroy handler failed')
+    },
+  })
+  assert.ok(f.world.entities.get('legacyUser').isPlayer)
+  assert.notEqual(moved.data.id, 'legacyUser')
+  assert.deepEqual([...rows.keys()], [moved.data.id])
+  assert.ok(f.logs.some(line => line.includes('app teardown failed while moving it: destroy handler failed')))
+})
+
+test('join budget: script state that cannot be read (a throwing getter, a Proxy) never stops the re-key or the join', async () => {
+  for (const state of [
+    {
+      get boom() {
+        throw new Error('getter')
+      },
+    },
+    new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error('trap')
+        },
+        ownKeys() {
+          throw new Error('trap')
+        },
+      }
+    ),
+  ]) {
+    const f = fixture()
+    f.users.set('legacyUser', { id: 'legacyUser', name: 'Returning', rank: 0 })
+    f.world.entities.add(app('legacyUser'), true)
+    // what a server script assigned (app.state = ...)
+    f.world.entities.get('legacyUser').data.state = state
+    const joined = await f.join({ authToken: 'legacyUser' })
+    assert.equal(joined.method, 'onSnapshot')
+    assert.deepEqual(joined.ws.closeCodes, [])
+    const moved = apps(f.world).find(entity => entity.data.blueprint === 'bp')
+    assert.deepEqual(JSON.parse(JSON.stringify(moved.data.state)), {})
+  }
+})
+
+test('join budget: nothing is taken before the network has loaded; a join cancelled after its user row still reserves the id', async t => {
+  t.mock.method(console, 'log', () => {})
+  const f = fixture()
+  let release
+  const held = new Promise(resolve => (release = resolve))
+  const db = f.network.db
+  f.network.db = table => {
+    if (table === 'blueprints' || table === 'entities') return []
+    if (table === 'config') return { where: () => ({ first: async () => undefined }) }
+    return { ...db(table), select: () => held.then(() => [{ id: 'awayUser01' }]) }
+  }
+  f.world.settings.on = () => {}
+  const starting = f.network.start()
+  await settle()
+  assert.equal(f.network.starting, true)
+  // a connection and a packet that arrive while the user ids are still being read
+  const early = await f.join()
+  assert.equal(early.method, undefined)
+  assert.deepEqual(early.ws.closeCodes, [undefined])
+  f.send('entityAdded', app('awayUser01'))
+  f.send('entityAdded', app('earlyApp'))
+  assert.equal(f.world.entities.get('earlyApp'), undefined)
+  release()
+  await starting
+  assert.equal(f.network.starting, false)
+  // now both work, and the stored user's id is reserved
+  f.network.db = db
+  const joined = await f.join()
+  assert.equal(joined.method, 'onSnapshot')
+  f.send('entityAdded', app('awayUser01'))
+  f.send('entityAdded', app('laterApp'))
+  assert.equal(f.world.entities.get('awayUser01'), undefined)
+  assert.ok(f.world.entities.get('laterApp'))
+  // a join whose connection closes while its new user row is written
+  let inserted
+  f.network.db = table => ({
+    ...db(table),
+    insert: async row => {
+      inserted = row.id
+      ws.emit('close')
+    },
+  })
+  const ws = fakeWs()
+  ws.close = () => {}
+  await f.network.onConnection(ws, {})
+  assert.equal(ws.packets.length, 0, 'cancelled before a snapshot')
+  assert.ok(f.network.userIds.has(inserted), 'its id is reserved all the same')
+  f.network.onEntityAdded(f.builder, app(inserted))
+  assert.equal(f.world.entities.get(inserted), undefined)
 })
 
 test('join budget: a world stored over the budget boots whole, reports, refuses growth and accepts a delete', async t => {
@@ -425,9 +648,10 @@ test('join budget: a world stored over the budget boots whole, reports, refuses 
   assert.equal(f.network.dirtyApps.get('L'.repeat(3000)).record, null)
 })
 
-// the parts of the snapshot no budget tracks, at their largest, once every step was taken: the derivation of
-// WORLD_JOIN_BYTES in joinBudget.js
-function worstRest() {
+// the parts of the snapshot no budget tracks, at their largest, once every step was taken, with `count` players:
+// the derivation of SNAPSHOT_FIXED_BYTES and SNAPSHOT_PLAYER_BYTES in joinBudget.js
+const long = n => '€'.repeat(n) // a 3-byte character: the most a UTF-16 unit costs in UTF-8
+function worstRest(count = 64) {
   const id = n => `${String(n).padStart(4, '0')}${'i'.repeat(60)}`
   const player = (n, self) => ({
     id: id(n),
@@ -450,36 +674,43 @@ function worstRest() {
     evmTips: true,
     tokenGrantedRank: true,
   })
-  const players = Array.from({ length: 64 }, (_, i) => player(i, i === 0))
+  const players = Array.from({ length: count }, (_, i) => player(i, i === 0))
   return {
     id: id(0),
     serverTime: 123456.789,
-    assetsUrl: `https://${'a'.repeat(248)}`,
-    apiUrl: `https://${'b'.repeat(248)}`,
+    // the lengths index.js allows (1,024 for the URLs, 128 for the AI names)
+    assetsUrl: `https://${long(1016)}`,
+    apiUrl: `https://${long(1016)}`,
     maxUploadSize: '1024',
     collections: [],
     settings: {},
     chat: [],
-    ai: { enabled: true, provider: 'p'.repeat(64), model: 'm'.repeat(64), effort: 'e'.repeat(64) },
+    ai: { enabled: true, provider: long(128), model: long(128), effort: long(128) },
     blueprints: [],
     entities: players,
     livekit: {
-      wsUrl: `wss://${'l'.repeat(250)}`,
+      wsUrl: `wss://${long(1018)}`,
       levels: Object.fromEntries(players.map(p => [p.id, 'spatial'])),
       muted: new Set(players.map(p => p.id)),
-      token: 'j'.repeat(1024),
+      token: 'j'.repeat(2048),
     },
-    authToken: 't'.repeat(512),
+    authToken: 't'.repeat(1024),
     hasAdminCode: true,
   }
 }
 
-test('join budget: world state at its budget plus the worst case of the rest fits the snapshot cap', () => {
-  const rest = writePacket('snapshot', worstRest()).length
-  assert.ok(rest <= 55054, `${rest}`)
-  assert.ok(WORLD_JOIN_BYTES + rest <= SNAPSHOT_CAP - 200000, 'with more than 200 KB to spare')
-  const other = writePacket('entityAdded', worstRest().entities[1]).length
-  assert.ok(other <= 704, `${other}`)
+test('join budget: the per-player and fixed bounds hold for the worst records, and 64 players fit a full world', () => {
+  const size = count => writePacket('snapshot', worstRest(count)).length
+  const fixed = size(1)
+  const perPlayer = Math.max(size(2) - size(1), (size(65) - size(1)) / 64, (size(1001) - size(1)) / 1000)
+  assert.ok(fixed <= SNAPSHOT_FIXED_BYTES, `fixed parts ${fixed}`)
+  assert.ok(perPlayer <= SNAPSHOT_PLAYER_BYTES, `per player ${perPlayer}`)
+  for (const count of [1, 64, 300, 900]) {
+    assert.ok(size(count) <= snapshotBound(0, count), `${count} players: ${size(count)} > ${snapshotBound(0, count)}`)
+  }
+  // the numbers joinBudget.js states
+  assert.ok(snapshotBound(WORLD_JOIN_BYTES, 64) <= SNAPSHOT_CAP, '64 players at the full budget')
+  assert.equal(Math.floor((SNAPSHOT_CAP - WORLD_JOIN_BYTES - SNAPSHOT_FIXED_BYTES) / SNAPSHOT_PLAYER_BYTES), 231)
 })
 
 test("join budget: Codex's worst case (blueprints and apps at the budget, 64 players at their limits, full chat) joins", async () => {
@@ -530,6 +761,78 @@ test("join budget: Codex's worst case (blueprints and apps at the budget, 64 pla
   const self = joined.snapshot.entities.find(entity => entity.id === joined.snapshot.id)
   assert.ok(self.avatar, 'the joiner keeps its own avatar')
   assert.equal(joined.snapshot.livekit.muted.has('player0001'), true, 'a present player stays muted')
+})
+
+// The general formula is the per-player and fixed bounds test above; these cases only cross the bound, with small
+// player records (the joins build real snapshots, so their size is kept small) and a world brought to its budget
+// through the accounting: eight 60 KB blueprints and the rest as operator collections.
+test('join budget: a crowd is turned away at the join before the snapshot could overflow, and growth is held to it', async () => {
+  const f = fixture()
+  for (let i = 0; i < 8; i++) f.world.blueprints.add({ id: `big${i}`, version: 0, props: { notes: 'n'.repeat(60000) } })
+  // 50 KB under the budget, so growth has room in the budget and only the crowd can refuse it
+  f.network.collectionsBytes = WORLD_JOIN_BYTES - joinStateBytes(f.world) + f.network.collectionsBytes - 50000
+  const crowd = i => {
+    const id = `crowd${String(i).padStart(5, '0')}`
+    return {
+      id,
+      type: 'player',
+      position: [0, 1, 0],
+      quaternion: [0, 0, 0, 1],
+      owner: id,
+      userId: id,
+      name: 'p',
+      rank: 0,
+    }
+  }
+  const fit = Math.floor((SNAPSHOT_CAP - joinStateBytes(f.world) - SNAPSHOT_FIXED_BYTES) / SNAPSHOT_PLAYER_BYTES)
+  // as many as leave room for exactly one more (WS_MAX_SOCKETS raised or 0, playerLimit unset)
+  let count = 0
+  while (snapshotFits(f.world, 2)) f.world.entities.add(crowd(count++))
+  assert.equal(count, fit - 1)
+  const last = await f.join()
+  assert.equal(last.method, 'onSnapshot')
+  assert.ok(last.bytes <= SNAPSHOT_CAP)
+  // the next one is turned away with the player-limit kick, and the reason is logged once
+  const refused = await f.join()
+  assert.equal(refused.method, 'onKick')
+  assert.equal(readPacket(refused.ws.packets[0])[1], 'player_limit')
+  assert.equal(f.logs.filter(line => line.includes("the world's size, not playerLimit or WS_MAX_SOCKETS")).length, 1)
+  // growth is refused while they are here, though the budget has room for it
+  const grows = app('grows', 'bp', { state: { notes: 'n'.repeat(2000) } })
+  f.network.onEntityAdded(f.builder, grows)
+  assert.equal(f.world.entities.get('grows'), undefined)
+  // 2,048 players: every join is refused before a snapshot is built, so none can overflow
+  while (count < 2048) f.world.entities.add(crowd(count++))
+  for (let i = 0; i < 3; i++) assert.equal((await f.join()).method, 'onKick')
+  // as players leave, growth and joins come back
+  for (let i = 0; i < 2048; i++) f.world.entities.remove(`crowd${String(i).padStart(5, '0')}`)
+  f.network.onEntityAdded(f.builder, grows)
+  assert.ok(f.world.entities.get('grows'))
+  assert.equal((await f.join()).method, 'onSnapshot')
+})
+
+test('join budget: a world grown while few are here still leaves room for 64 players', async () => {
+  const f = fixture()
+  for (let i = 0; i < 8; i++) f.world.blueprints.add({ id: `big${i}`, version: 0, props: { notes: 'n'.repeat(60000) } })
+  // fill the rest of the budget with apps while nobody is here
+  for (let i = 0; f.world.entities.canFitApp(`a${i}`, app(`a${i}`)); i++)
+    f.network.onEntityAdded(f.builder, app(`a${i}`))
+  assert.ok(joinStateBytes(f.world) > WORLD_JOIN_BYTES - 300)
+  for (let i = 0; i < 63; i++) {
+    const id = `guest${String(i).padStart(5, '0')}`
+    f.world.entities.add({
+      id,
+      type: 'player',
+      position: [0, 1, 0],
+      quaternion: [0, 0, 0, 1],
+      owner: id,
+      userId: id,
+      name: 'g',
+    })
+  }
+  const joined = await f.join()
+  assert.equal(joined.method, 'onSnapshot', 'the 64th player joins a world at its budget')
+  assert.ok(joined.bytes <= SNAPSHOT_CAP)
 })
 
 test('join budget: each step is taken only when the ones before it were not enough', () => {
@@ -595,8 +898,7 @@ test('join budget: each step is taken only when the ones before it were not enou
 test('join budget: an AI change that would grow a full world is not applied', async t => {
   const f = fixture()
   f.world.blueprints.add({ id: 'ai-bp', version: 0, script: 'asset://ai.js' })
-  for (let i = 0; f.world.entities.canFitApp(`a${i}`, app(`a${i}`)); i++)
-    f.network.onEntityAdded(f.builder, app(`a${i}`))
+  fillTo(f, 200)
   const warnings = []
   t.mock.method(console, 'warn', line => warnings.push(line))
   const ServerAI = loadClient('core/systems/ServerAI.js', 'ServerAI', {

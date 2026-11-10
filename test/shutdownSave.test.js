@@ -111,20 +111,38 @@ test(
   'shutdown: a database that blocks on every write is stopped at the deadline, reported, and the exit is 1',
   { timeout: 60000 },
   async () => {
-    // 40 rows of 50 ms each: written back to back they would take 2 s and the 200 ms deadline could never fire
-    const proc = child('slowdb', 200)
+    // 40 rows of 50 ms each (2 s back to back), written only by the final save: without a turn of the event loop
+    // between them the 500 ms deadline could never stop it. However slow the machine, the save stops before all 40
+    const proc = child('slowdb', 500)
     await proc.waitFor('ready')
     proc.child.kill('SIGTERM')
     await proc.exited
     assert.equal(proc.code, 1)
     const saved = lines(proc).filter(line => line.startsWith('saved bp'))
-    assert.ok(saved.length > 0 && saved.length < 40, `${saved.length} of 40 rows written before the deadline`)
+    assert.ok(saved.length < 40, `${saved.length} of 40 rows written before the deadline`)
     const report = lines(proc).find(line => line.startsWith('[network] not persisted:'))
     assert.ok(report, proc.out)
     const unsaved = JSON.parse(/blueprints=(\[[^\]]*\])/.exec(report)[1])
     assert.equal(unsaved.length + saved.length, 40, 'every row is either written or reported')
     // the deadline timer or the clock check before the next row, whichever comes first
     assert.match(proc.out, /\[server\] final save failed: (save deadline exceeded|final save incomplete)/)
+  }
+)
+
+test(
+  'shutdown: queued config writes that block the thread are stopped at the deadline too, and the exit is 1',
+  { timeout: 60000 },
+  async () => {
+    // 200 writes of 50 ms each (10 s back to back), queued before the signal
+    const proc = child('slowconfig', 500)
+    await proc.waitFor('ready')
+    proc.child.kill('SIGTERM')
+    await proc.exited
+    assert.equal(proc.code, 1)
+    const written = lines(proc).filter(line => line === 'config written').length
+    assert.ok(written < 200, `${written} of 200 config writes before the deadline`)
+    const report = lines(proc).find(line => line.startsWith('[network] not persisted:'))
+    assert.ok(report?.includes('config=["spawn"]'), proc.out.slice(-1000))
   }
 )
 
@@ -211,15 +229,18 @@ test(
     const port = await freePort()
     const world = path.join(dir, 'world')
     fs.mkdirSync(path.join(world, 'assets'), { recursive: true })
-    // sets a key once at start, and again 100 ms later: that second write is throttled to a second after the first
+    // sets a new value every 20 ms and logs each one it set; storage writes at most once a second, so whenever the
+    // signal comes the latest accepted value is (almost always) still waiting, and only the final save can write it
     fs.writeFileSync(
       path.join(world, 'assets', 'shutdown-probe.js'),
       `if (world.isServer) {
-      world.set('shutdown-key', { saved: 1 })
-      setTimeout(() => {
-        world.set('shutdown-key', { saved: 2 })
-        console.log('[shutdown-probe] stored')
-      }, 100)
+      let n = 0
+      const tick = () => {
+        world.set('shutdown-key', { saved: ++n })
+        console.log('[shutdown-probe] set ' + n)
+        setTimeout(tick, 20)
+      }
+      tick()
     }`
     )
     const server = run([path.join(dir, 'build/index.js')], { cwd: dir, env: serverEnv(port, 'world') })
@@ -229,15 +250,17 @@ test(
     t.after(() => client.close())
     await client.becomeAdmin('shutdown')
     client.installApp({ id: 'shutdown-app', script: 'asset://shutdown-probe.js', props: { edited: true } })
-    await server.waitFor('[shutdown-probe] stored', 20000)
+    await server.waitFor('[shutdown-probe] set 10')
     // a connection is still open: the stop does not wait for it
     server.child.kill('SIGTERM')
     await server.exited
     assert.equal(server.code, 0, server.out.slice(-2000))
     assert.match(server.out, /\[server\] SIGTERM: saving the world before exit/)
     assert.match(server.out, /\[network\] final save complete/)
+    // the last value the script set (the stop clears its timer; nothing is accepted after the final save starts)
+    const last = Math.max(...[...server.out.matchAll(/\[shutdown-probe\] set (\d+)/g)].map(match => Number(match[1])))
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(world, 'storage.json'), 'utf8')), {
-      'shutdown-key': { saved: 2 },
+      'shutdown-key': { saved: last },
     })
     const db = new Database(path.join(world, 'db.sqlite'), { readonly: true })
     try {

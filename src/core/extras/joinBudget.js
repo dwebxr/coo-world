@@ -14,24 +14,43 @@ import { SNAPSHOT_CAP } from './writeLedger.js'
 // 814,740 and takes 671,973 of the snapshot; 704,753 with every app's mover and uploader set).
 //
 // The rest, which no budget tracks, is bounded by construction: whatever of it can be dropped is dropped, step by
-// step, when a snapshot does not fit (encodeSnapshot), and what cannot be dropped is bounded by the sanitizers.
-// Its worst case after every step, with the real encoder (joinBudget.test.js):
-// - 63 other players (WS_MAX_SOCKETS = 64 transports at most, the joiner included), each at most 704 bytes: ids
-//   and owner/userId of 64 characters, a 64-unit name of 3-byte characters (192 bytes, NAME_MAX_LENGTH), float
-//   transforms, mode, axis and gaze, health, rank, enteredAt, the two flags, and null for avatar, sessionAvatar,
-//   emote and effect (the steps clear them);
-// - the joiner's own record, at most 8,316 bytes: its avatar may be the world's default avatar URL (2,048 units,
-//   settingsPolicy FILE_URL_MAX_LENGTH, 6 KB of 3-byte characters) and its session avatar a 512-unit URL;
-// - voice state after the 'voice' step: levels and muted for the 64 present players only, the LiveKit URL and a
-//   token (1 KiB allowed);
-// - the envelope: two 256-character URLs, the upload size, the AI provider/model/effort (64 each), a 512-character
-//   session token, the server time and flags;
+// step, when a snapshot does not fit (encodeSnapshot), and what cannot be dropped is bounded per player and in
+// total (snapshotBound below). Worst cases after every step, with the real encoder (joinBudget.test.js):
+// - each player other than the joiner, at most 695 bytes in the snapshot (its record alone measures 704) counted as
+//   SNAPSHOT_PLAYER_BYTES = 1,024: its record (ids and owner/userId of 64 characters, which the 10 of uuid() ids, the
+//   only place user ids are made, are far under; a 64-unit name of 3-byte characters, NAME_MAX_LENGTH; float
+//   transforms, mode, axis and gaze, health, rank, enteredAt, the two flags; avatar, sessionAvatar, emote and effect
+//   null after the steps) and its voice level and mute entries (present players only after the 'voice' step);
+// - the parts there is one of, at most 22,166 bytes counted as SNAPSHOT_FIXED_BYTES = 24 KiB: the joiner's own
+//   record (at most 8,316: its avatar is the world's default avatar URL of up to 2,048 units, OWN_AVATAR_MAX_LENGTH,
+//   and its session avatar a 512-unit URL), and the envelope with ASSETS_BASE_URL, PUBLIC_API_URL and
+//   LIVEKIT_WS_URL of up to 1,024 characters and AI_PROVIDER, AI_MODEL and AI_EFFORT of up to 128 (index.js refuses
+//   to start with longer ones), a session token and a voice token of up to 1 and 2 KiB, the time and flags;
 // - chat: none after the 'chat' step (up to 50 messages of 500 characters otherwise).
-// Together 55,054 bytes. 768 KiB + 55,054 = 841,486, leaving 206,066 bytes (3.7 times that worst case) under the
-// cap for what the estimate leaves out: apps being moved or uploaded (their socket ids, about 22 bytes each), user
-// ids longer than 64, more than 64 players where WS_MAX_SOCKETS is raised (about 290 more fit) and the encoder's
-// container overhead. A world needing more than this would need a snapshot sent in parts (not done here).
+// So a snapshot with world state W and P players fits when W + 24 KiB + P x 1 KiB <= SNAPSHOT_CAP. World growth is
+// admitted against max(64, players present) and a join only while one more player still fits (snapshotFits), so
+// neither a crowd nor growth can make a later join fail: at the full 768 KiB world 231 players fit, in an empty
+// world about 990, and 64 always do. WS_MAX_SOCKETS (64 by default) and playerLimit can only lower that. A world that
+// needs more would need a snapshot sent in parts (not done here).
 export const WORLD_JOIN_BYTES = 768 * 1024
+export const SNAPSHOT_PLAYER_BYTES = 1024
+export const SNAPSHOT_FIXED_BYTES = 24 * 1024
+// players a world at its budget always has room for (growth is held to it even when fewer are present)
+export const GUARANTEED_PLAYERS = 64
+// the joiner's own avatar (the world's default avatar URL, settingsPolicy FILE_URL_MAX_LENGTH, or its stored one)
+export const OWN_AVATAR_MAX_LENGTH = 2048
+
+// the most the join snapshot can take with world state `worldBytes` and `players` players, after every step
+export function snapshotBound(worldBytes, players) {
+  return worldBytes + SNAPSHOT_FIXED_BYTES + players * SNAPSHOT_PLAYER_BYTES
+}
+
+const playersOf = world => world.entities?.players?.size ?? 0
+
+// whether a join snapshot is sure to fit with `extra` more players than are here now
+export function snapshotFits(world, extra = 0) {
+  return snapshotBound(joinStateBytes(world), playersOf(world) + extra) <= SNAPSHOT_CAP
+}
 
 // An app entity is measured as the snapshot carries it, with the fields that change in normal use at their largest
 // encoding, so moving, pinning or dragging an app never changes its size: transforms as floats, pinned one byte
@@ -76,9 +95,12 @@ export function joinStateBytes(world) {
   )
 }
 
-// whether a change of `delta` bytes may be applied: anything that does not grow is
+// whether a change of `delta` bytes may be applied: anything that does not grow is; growth must stay within the
+// budget and leave room for the players here (at least GUARANTEED_PLAYERS) in the join snapshot
 export function fitsJoinState(world, delta) {
-  return delta <= 0 || joinStateBytes(world) + delta <= WORLD_JOIN_BYTES
+  if (delta <= 0) return true
+  const next = joinStateBytes(world) + delta
+  return next <= WORLD_JOIN_BYTES && snapshotBound(next, Math.max(GUARANTEED_PLAYERS, playersOf(world))) <= SNAPSHOT_CAP
 }
 
 // The start-up line for a world that loaded over the budget (null when it fits): the totals and the five largest

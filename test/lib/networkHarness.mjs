@@ -44,11 +44,13 @@ import { Ranks } from '../../src/core/extras/ranks.js'
 import { clientIpKeys } from '../../src/server/uploadLimits.js'
 import { previewValue } from '../../src/core/extras/assetURL.js'
 import {
+  OWN_AVATAR_MAX_LENGTH,
   SNAPSHOT_STEP_NAMES,
   encodeSnapshot,
   fitsJoinState,
   joinStateReport,
   settingsBytes,
+  snapshotFits,
 } from '../../src/core/extras/joinBudget.js'
 import { isBoundedJsonObject } from '../../src/core/extras/entityModifyPolicy.js'
 
@@ -57,6 +59,9 @@ const source = fs.readFileSync(new URL('../../src/core/systems/ServerNetwork.js'
 const names = [
   'init',
   'start',
+  'hydrate',
+  'saveDirty',
+  'saveExpired',
   'onDisconnect',
   'onCommand',
   'onModifyRank',
@@ -89,6 +94,7 @@ const names = [
   'markAppDirty',
   'markAppDeleted',
   'rekeyApp',
+  'replacementOf',
   'saveConfig',
   'preFixedUpdate',
   'asScript',
@@ -275,6 +281,8 @@ export function connectionMethod(context) {
     SNAPSHOT_CAP,
     SNAPSHOT_STEP_NAMES,
     encodeSnapshot,
+    snapshotFits,
+    OWN_AVATAR_MAX_LENGTH,
     Socket,
     briefError,
     previewValue,

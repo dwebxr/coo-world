@@ -169,7 +169,8 @@ server script. On a client both do nothing (`get` returns `undefined`).
   overwritten (without growing) and deleted.
 - The store is written to disk about once a second, and once more when the server stops. From the moment that
   last write starts, `set` throws ("the server is stopping"), so a value is never accepted that would not be saved;
-  catch it if your script writes from a timer or after a `fetch`.
+  catch it if your script writes after a `fetch`. (When the server stops, app timers are cancelled and no script
+  starts again, so a stored value is written by whatever ran before the stop.)
 - If the server could not read the stored file when it started, the store is off for that run: `set` throws and
   `get` returns `undefined`, and the file is left untouched for the operator.
 - Every server script in the world can read and overwrite every key, so prefix your keys (`myapp:scores`) and do

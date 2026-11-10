@@ -746,7 +746,7 @@ test('VRM 0: UniVRM writes -1 for "none", accepted where three-vrm reads the fie
     meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
     extensions: {
       VRM: {
-        humanoid: { humanBones: [{ bone: 'hips', node: -1 }] },
+        humanoid: { humanBones: [{ bone: 'hips', node: 1 }] },
         blendShapeMaster: { blendShapeGroups: [{ binds: [{ mesh: -1, index: 0 }] }] },
         secondaryAnimation: { colliderGroups: [], boneGroups: [{ bones: [1], center: -1 }] },
         firstPerson: { firstPersonBone: -1, meshAnnotations: [{ mesh: -1 }] },
@@ -766,6 +766,10 @@ test('VRM 0: UniVRM writes -1 for "none", accepted where three-vrm reads the fie
     vrm0({ secondaryAnimation: { boneGroups: [{ bones: [-1] }] } }),
     /VRM boneGroup 0 bone is not an index of nodes/
   )
+  // and a human bone's node: three-vrm takes only a missing node as absent, and looked node -1 up (a TypeError, the
+  // reviewer's probe); a bone without a node is still accepted
+  refused(vrm0({ humanoid: { humanBones: [{ bone: 'hips', node: -1 }] } }), /VRM humanBone 0 node is not an index/)
+  assert.ok(checkGLTF(text(vrm0({ humanoid: { humanBones: [{ bone: 'leftEye' }] } }))))
 })
 
 test('the bundled avatar, emotes and models pass, with their three-vrm counts', () => {

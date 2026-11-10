@@ -3766,10 +3766,11 @@ class GLTFParser {
 
 		} ).catch( function ( error ) {
 
-			// COO_BUDGET: a refused texture is an empty placeholder here, and the parse fails at its end (budget.refused).
-			// three-vrm's MToon plugin wraps each texture it assigns in a promise it never awaits, and sets the colour
-			// space of what was assigned: a rejection, or nothing assigned, was an unhandled rejection
-			if ( error && error.isGLTFLimit && parser.budget ) {
+			// COO_BUDGET: a texture refused by the budget (the parse has failed: budget.refused) is an empty placeholder
+			// here, and the parse fails at its end. three-vrm's MToon plugin wraps each texture it assigns in a promise it
+			// never awaits, and sets the colour space of what was assigned: a rejection, or nothing assigned, was an
+			// unhandled rejection. Any other error goes on as it did
+			if ( error && error.isGLTFLimit && parser.budget && parser.budget.refused ) {
 
 				materialParams[ mapName ] = new Texture(); // COO_EXEMPT: an empty placeholder, once per refused texture slot
 				return materialParams[ mapName ];

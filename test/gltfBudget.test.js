@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import { GLTFLoader } from '../src/core/libs/gltfloader/GLTFLoader.js'
 import { VRMLoaderPlugin } from '@pixiv/three-vrm'
 import { Object3D, SkinnedMesh } from 'three'
-import { checkGLTF, createGLTFBudget, GLTF_LIMITS } from '../src/core/extras/gltfLimits.js'
+import { checkGLTF, createGLTFBudget, GLTF_LIMITS, GLTFLimitError } from '../src/core/extras/gltfLimits.js'
 import { png, jpeg } from './lib/imageBytes.mjs'
 import { glb } from './lib/glb.mjs'
 
@@ -825,6 +825,84 @@ test('a refused texture of an MToon material leaves no rejection unhandled (thre
     process.off('unhandledRejection', listener)
   }
   assert.deepEqual(unhandled.map(String), [])
+})
+
+test('a data: URI that does not decode is refused like any image that is not one: the model does not load', async () => {
+  // the reviewer's probe: its decode threw outside the budget's refusal, so the parse had not failed (budget.refused
+  // was not set), the texture became the placeholder kept for refused textures, and the model loaded without it. It
+  // is a refusal of the budget now: with a plain material and with MToon, the parse fails, and nothing is unhandled
+  const textured = (image, mtoon) =>
+    glb(
+      {
+        asset: { version: '2.0' },
+        extensionsUsed: mtoon ? ['VRMC_materials_mtoon'] : [],
+        ...scene,
+        nodes: [{ mesh: 0 }],
+        meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+        materials: [
+          mtoon
+            ? {
+                pbrMetallicRoughness: { baseColorTexture: { index: 0 } },
+                extensions: { VRMC_materials_mtoon: { specVersion: '1.0', shadeMultiplyTexture: { index: 0 } } },
+              }
+            : { pbrMetallicRoughness: { baseColorTexture: { index: 0 } } },
+        ],
+        textures: [{ source: 0 }],
+        images: [image],
+        accessors: [vec3(3, { bufferView: 0, min: [0, 0, 0], max: [0, 0, 0] })],
+        bufferViews: [{ buffer: 0, byteLength: 36 }],
+        buffers: [{ byteLength: 36 }],
+      },
+      new Uint8Array(36)
+    )
+  const unhandled = []
+  const listener = error => unhandled.push(error)
+  process.on('unhandledRejection', listener)
+  try {
+    for (const mtoon of [false, true]) {
+      const file = textured({ uri: 'data:image/png;base64,@@@@not-base64@@@@' }, mtoon)
+      const err = await parse(file, { vrm: true }).then(
+        () => assert.fail(`loaded (${mtoon ? 'MToon' : 'plain'})`),
+        error => error
+      )
+      assert.match(err.message, /image 0 is a data: URI that does not decode/)
+      assert.equal(err.budget.refused, err)
+      // a data: URI that does decode loads, its texture in the material
+      const good = `data:image/png;base64,${Buffer.from(png(16, 16)).toString('base64')}`
+      const { gltf } = await parse(textured({ uri: good }, mtoon), { vrm: true })
+      gltf.scene.traverse(o => o.isMesh && assert.ok([o.material].flat()[0].map?.image, 'the texture loaded'))
+    }
+    await new Promise(resolve => setTimeout(resolve, 50))
+  } finally {
+    process.off('unhandledRejection', listener)
+  }
+  assert.deepEqual(unhandled.map(String), [])
+})
+
+test('the placeholder for a refused texture is put in only once the parse has failed; other errors go on', async () => {
+  // a limit error with the parse not failed (budget.refused not set: a budget that throws without refusing) is not
+  // swallowed as a placeholder: the texture's error fails the material, and the parse, as it did before
+  const file = glb(
+    {
+      asset: { version: '2.0' },
+      ...scene,
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } } }],
+      textures: [{ source: 0 }],
+      images: [{ uri: `data:image/png;base64,${Buffer.from(png(16, 16)).toString('base64')}` }],
+      accessors: [vec3(3, { bufferView: 0, min: [0, 0, 0], max: [0, 0, 0] })],
+      bufferViews: [{ buffer: 0, byteLength: 36 }],
+      buffers: [{ byteLength: 36 }],
+    },
+    new Uint8Array(36)
+  )
+  const budget = createGLTFBudget({ fileBytes: file.byteLength })
+  budget.imageURI = () => {
+    throw new GLTFLimitError('a refusal the budget did not record')
+  }
+  await assert.rejects(new GLTFLoader().parseAsync(file, '', budget), /a refusal the budget did not record/)
+  assert.equal(budget.refused, null)
 })
 
 test('a parse past its time limit is refused at the next charge (a monotonic clock, checked as it goes)', async () => {

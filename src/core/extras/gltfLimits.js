@@ -823,13 +823,14 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
 
   if (v0) {
     // UniVRM writes -1 for "none" in the fields three-vrm reads as absent when they name nothing (a bone group's
-    // center, a bind's mesh, a mesh annotation's mesh, the first-person bone, the meta texture, a human bone's node)
+    // center, a bind's mesh, a mesh annotation's mesh, the first-person bone, the meta texture). Not a human bone's
+    // node: three-vrm takes only a missing one as absent, and looked node -1 up (a TypeError)
     const optional = (value, collection, where) => {
       if (value !== -1) index(value, collection, where)
     }
     const humanoid = object(v0.humanoid, 'VRM humanoid')
     items(humanoid.humanBones, 'VRM humanBones').forEach((bone, i) =>
-      optional(bone.node, 'nodes', `VRM humanBone ${i} node`)
+      index(bone.node, 'nodes', `VRM humanBone ${i} node`)
     )
     for (const [g, group] of v0Groups.entries()) {
       for (const [b, bind] of items(group.binds, `VRM blendShapeGroup ${g} binds`).entries()) {
@@ -1151,12 +1152,21 @@ export function createGLTFBudget({
         fail(what, `the images decoded would have more than ${limits.imagePixelsPerFile} pixels (at ${what})`)
       }
     },
-    // an image named by URI: a data: URI is measured as embedded bytes; a blob: URL is refused; any other URL is
-    // refused by the client's URL filter before a fetch, so nothing decodes it
+    // an image named by URI: a data: URI is measured as embedded bytes (one that does not decode is refused, like any
+    // other image that is not one); a blob: URL is refused; any other URL is refused by the client's URL filter
+    // before a fetch, so nothing decodes it
     imageURI(uri, what) {
       if (typeof uri !== 'string') return
       const scheme = uri.trim().toLowerCase()
-      if (scheme.startsWith('data:')) return budget.image(decodeDataURI(uri), what)
+      if (scheme.startsWith('data:')) {
+        let bytes
+        try {
+          bytes = decodeDataURI(uri)
+        } catch {
+          fail(what, `${what} is a data: URI that does not decode`)
+        }
+        return budget.image(bytes, what)
+      }
       if (scheme.startsWith('blob:')) fail(what, `${what} names a blob: URL`)
     },
   }

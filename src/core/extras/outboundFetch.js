@@ -23,8 +23,9 @@
 //   - one deadline covers the whole request: its body, resolving, connecting, redirects and the response body
 //   - at most `concurrency` requests at once, and `perKey` per caller key (an app); more are refused, not queued.
 //     A request keeps its slot until its DNS queries have really ended, also after a timeout or an abort
-//   - request headers are validated and bounded (`maxHeaders`, `maxHeaderBytes`); a body may be a string, an
-//     ArrayBuffer, a typed array or DataView, or a Blob, of at most `maxRequestBytes`
+//   - every request header sent, the ones set here and an inferred Content-Type included, is validated and
+//     counted against `maxHeaders` and `maxHeaderBytes` before anything is resolved or sent; a body may be a
+//     string, an ArrayBuffer, a typed array or DataView, or a Blob, of at most `maxRequestBytes`
 //
 // The request options are fetch's where they mean something here: method (GET, HEAD, POST, PUT, PATCH, DELETE,
 // OPTIONS), headers, body, signal and redirect. mode, credentials and cache describe a browser's request and are
@@ -178,6 +179,7 @@ const CREDENTIAL_HEADERS = new Set(['authorization', 'cookie'])
 const REQUEST_BODY_HEADERS = new Set(['content-encoding', 'content-language', 'content-location', 'content-type'])
 
 const hostOf = url => (url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname)
+const ignore = () => {}
 
 // A and AAAA through c-ares (node:dns Resolver): DNS only, so the hosts file is not consulted (a name that only
 // resolves on this machine is not a public one); off libuv's thread pool, where dns.lookup()'s getaddrinfo would
@@ -215,13 +217,15 @@ function resolveHost(createResolver, host, stop, work) {
           idle?.()
         }
       }
-      work.outstanding++
       try {
         resolver[method](host, end)
       } catch (err) {
-        end(err)
+        end(err) // a resolver method that throws is that query failing
       }
     })
+  // both counted before either starts: a first query that answers at once must not leave the second uncounted
+  // (and uncancellable)
+  work.outstanding += 2
   stop.addEventListener('abort', cancel, { once: true })
   const ended = Promise.all([query('resolve4'), query('resolve6')])
   if (stop.aborted) cancel()
@@ -251,8 +255,9 @@ function trimHttpWhitespace(value) {
 }
 
 // The caller's headers as a lower-case map: a plain object of strings, a Headers object or [name, value] pairs.
-// Bounded and validated as Node will send them, so a bad value is refused here instead of throwing mid-request.
-// Repeated names are combined by the platform's Headers, with its rules (Cookie with "; ", others with ", ")
+// Bounded (so reading them is) and validated as Node will send them, so a bad value is refused here instead of
+// throwing mid-request. Repeated names are combined by the platform's Headers, with its rules (Cookie with "; ",
+// others with ", "). What is finally sent is bounded again, all of it, by outgoingHeaders()
 function prepareHeaders(input, { maxHeaders, maxHeaderBytes }) {
   const headers = Object.create(null)
   if (input === undefined || input === null) return headers
@@ -282,14 +287,30 @@ function prepareHeaders(input, { maxHeaders, maxHeaderBytes }) {
       throw refuse('header', `the header ${previewValue(name)} has an invalid name or value`)
     }
   }
-  // the combined headers within the same bounds (separators add a little)
-  bytes = 0
-  for (const [name, value] of combined) {
-    bytes += name.length + value.length
-    headers[name] = name in headers ? `${headers[name]}, ${value}` : value
-  }
-  if (bytes > maxHeaderBytes) throw tooLarge()
+  for (const [name, value] of combined) headers[name] = name in headers ? `${headers[name]}, ${value}` : value
   return headers
+}
+
+// Every header a request sends, in one place: the caller's (combined), the Content-Type inferred from its body,
+// and Host, Accept-Encoding and Content-Length set here. Counted and sized together against maxHeaders and
+// maxHeaderBytes, then validated, before anything is resolved or sent
+function outgoingHeaders(headers, url, body, { maxHeaders, maxHeaderBytes }) {
+  const outgoing = { ...headers, host: url.host, 'accept-encoding': 'gzip, deflate' }
+  if (body) outgoing['content-length'] = String(body.length)
+  const entries = Object.entries(outgoing)
+  if (entries.length > maxHeaders) throw refuse('header', `more than ${maxHeaders} request headers`)
+  let bytes = 0
+  for (const [name, value] of entries) bytes += name.length + value.length
+  if (bytes > maxHeaderBytes) throw refuse('header', `the request headers are larger than ${maxHeaderBytes} bytes`)
+  for (const [name, value] of entries) {
+    try {
+      http.validateHeaderName(name)
+      http.validateHeaderValue(name, value)
+    } catch {
+      throw refuse('header', `the header ${previewValue(name)} has an invalid name or value`)
+    }
+  }
+  return outgoing
 }
 
 const withoutHeaders = (headers, drop) => {
@@ -389,8 +410,8 @@ const abortListener = (ref, signal) => () => ref.deref()?.abort(signal.reason)
 
 // A body over the chunks as received: handing it over copies nothing, and a chunk is let go once it is read. As
 // fetch's body, it follows the caller's signal: an abort before it is read to the end errors it with the signal's
-// reason (an AbortError for abort()) and lets the unread chunks go. The listener leaves when the body is read to
-// the end, cancelled or errored
+// reason (an AbortError for a plain abort(); whatever was passed to abort(reason) otherwise) and lets the unread
+// chunks go. The listener leaves when the body is read to the end, cancelled or errored
 function chunkStream(chunks, signal) {
   const body = { chunks, next: 0, controller: null, listener: null }
   const detach = () => {
@@ -408,7 +429,7 @@ function chunkStream(chunks, signal) {
       // already closed or errored
     }
   }
-  return new ReadableStream({
+  const source = {
     start(controller) {
       body.controller = controller
       if (!signal) return
@@ -430,7 +451,9 @@ function chunkStream(chunks, signal) {
       body.chunks = []
       detach()
     },
-  })
+  }
+  // nothing is pulled before the caller reads: an empty body is still open (and abortable) when handed over
+  return new ReadableStream(source, { highWaterMark: 0 })
 }
 
 // the reason phrases the Response constructor accepts
@@ -533,6 +556,8 @@ export function createOutboundFetch(options = {}) {
         else if (encoding !== 'identity' && encoding !== '') {
           return finish(refuse('encoding', `content-encoding ${JSON.stringify(encoding.slice(0, 24))} is not accepted`))
         }
+        // listened to from its creation, for its whole life (after settling an error is ignored)
+        decoder?.on('error', () => finish(failed('network', 'bad response body')))
         const stream = decoder ? res.pipe(decoder) : res
         const chunks = []
         let size = 0
@@ -545,9 +570,6 @@ export function createOutboundFetch(options = {}) {
           }
           chunks.push(chunk)
         })
-        decoder?.on('error', () => finish(failed('network', 'bad response body')))
-        res.on('error', () => finish(failed('network', 'connection lost')))
-        res.on('aborted', () => finish(failed('network', 'connection lost')))
         stream.on('end', () => {
           finish(null, { status, statusText, headers: responseHeaders(res, Boolean(decoder)), chunks })
         })
@@ -562,10 +584,9 @@ export function createOutboundFetch(options = {}) {
           port: url.port || (secure ? 443 : 80),
           path: `${url.pathname}${url.search}`,
           method,
-          headers: { ...headers, host: url.host, 'accept-encoding': 'gzip, deflate' },
+          headers, // as outgoingHeaders() checked them
           agent: false, // a connection of its own: no socket is reused, across requests or destinations
         }
-        if (body) requestOptions.headers['content-length'] = String(body.length)
         if (!net.isIP(host)) {
           // the TLS server name, and the name the certificate is verified for, is the URL's host, never the address
           if (secure) requestOptions.servername = host
@@ -573,14 +594,19 @@ export function createOutboundFetch(options = {}) {
             // Connect to the addresses that were checked; the name still goes out as Host and TLS server name.
             // With a fallback, Node's connect tries the first address for a third of the time left (at least
             // 250 ms) or until it fails to connect, then the fallback for the rest: one more checked address, never
-            // an unchecked one, and only before anything was sent
+            // an unchecked one, and only before anything was sent. The request's deadline still ends it all, so a
+            // deadline shorter than the first attempt leaves no time for the second
             const candidates = [target, target.fallback].filter(Boolean).map(({ address, family }) => ({
               address,
               family,
             }))
+            // never synchronously: a connect that fails at once (ENETUNREACH where a family has no route) must
+            // report after http has put its error listeners on the socket
             requestOptions.lookup = (hostname, opts, callback) => {
-              if (opts?.all) callback(null, candidates)
-              else callback(null, target.address, target.family)
+              process.nextTick(() => {
+                if (opts?.all) callback(null, candidates)
+                else callback(null, target.address, target.family)
+              })
             }
             if (candidates.length > 1) {
               requestOptions.autoSelectFamily = true
@@ -588,12 +614,19 @@ export function createOutboundFetch(options = {}) {
             }
           }
         }
+        // Every emitter of the exchange has an 'error' listener from the moment it is ours until it is gone, also
+        // after the exchange settled (finish() ignores what comes later): the request here, its socket below (http
+        // forwards a socket's errors to the request, and this listener stays when http's goes), the response and
+        // the decoder in receive()
         req = (secure ? https : http).request(requestOptions)
         req.on('error', fail)
         req.on('socket', socket => {
+          socket.on('error', ignore)
           if (!target) return
           // ahead of the request's own writes: nothing is sent to a peer that is not the checked address
           const check = () => {
+            // a socket that failed to connect is not checked: its own error is the outcome
+            if (socket.destroyed) return
             try {
               if (!isAllowedAddress(socket.remoteAddress || '')) {
                 finish(refuse('address', 'connected to an address that is not public'))
@@ -607,6 +640,8 @@ export function createOutboundFetch(options = {}) {
         })
         req.on('response', response => {
           res = response
+          res.on('error', () => finish(failed('network', 'connection lost')))
+          res.on('aborted', () => finish(failed('network', 'connection lost')))
           try {
             receive()
           } catch (err) {
@@ -678,7 +713,7 @@ export function createOutboundFetch(options = {}) {
         if (url.username || url.password) throw refuse('url', 'credentials in the URL are not allowed')
         const result = await exchange(url, {
           method,
-          headers,
+          headers: outgoingHeaders(headers, url, body, config),
           body,
           redirect: request.redirect,
           maxBytes,

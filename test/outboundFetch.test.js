@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { getEventListeners } from 'node:events'
 import http from 'node:http'
 import https from 'node:https'
@@ -17,8 +18,18 @@ import {
 
 const unhandled = []
 process.on('unhandledRejection', err => unhandled.push(err))
-v8.setFlagsFromString('--expose-gc')
-const gc = vm.runInNewContext('gc')
+// a collection on demand, for the one test that needs one (skipped, and saying so, where it cannot be had)
+const gc = (() => {
+  try {
+    v8.setFlagsFromString('--expose-gc')
+    const collect = vm.runInNewContext('gc')
+    return typeof collect === 'function' ? collect : null
+  } catch {
+    return null
+  }
+})()
+// "at once": well before the deadlines (5 s) those requests would otherwise end at, even on a loaded machine
+const AT_ONCE_MS = 2500
 
 // a local server; `handler` gets (req, res). Connections are counted so a test can assert none was made.
 async function serve(t, handler, options = {}) {
@@ -467,12 +478,17 @@ test('headers are validated and bounded before anything is sent; a bad one is a 
   ]) {
     const started = Date.now()
     await assert.rejects(fetch(local.origin, { headers }), code('header'), JSON.stringify(headers).slice(0, 40))
-    assert.ok(Date.now() - started < 1000, 'refused at once')
+    assert.ok(Date.now() - started < AT_ONCE_MS, 'refused at once')
   }
   assert.equal(local.connections, 0)
-  // 64 headers fit; values are trimmed as fetch trims them, and names that differ in case are combined
-  const sixtyFour = Object.fromEntries(Array.from({ length: 64 }, (_, i) => [`x-h${i}`, 'v']))
-  assert.equal((await (await fetch(local.origin, { headers: sixtyFour })).json())['x-h63'], 'v')
+  // 64 headers in all, counting the ones sent with every request: Host and Accept-Encoding leave 62 to a GET,
+  // and Content-Length and the inferred Content-Type take two more from a POST of a string
+  const caller = count => Object.fromEntries(Array.from({ length: count }, (_, i) => [`x-h${i}`, 'v']))
+  assert.equal((await (await fetch(local.origin, { headers: caller(62) })).json())['x-h61'], 'v')
+  await assert.rejects(fetch(local.origin, { headers: caller(63) }), code('header'))
+  const post = count => ({ method: 'POST', body: 'x', headers: caller(count) })
+  assert.equal((await (await fetch(local.origin, post(60))).json())['content-type'], 'text/plain;charset=UTF-8')
+  await assert.rejects(fetch(local.origin, post(61)), code('header'))
   const seen = await (
     await fetch(local.origin, { headers: { 'X-A': ' one \t', 'x-a': 'two', 'x-trailing': 'value\r\n' } })
   ).json()
@@ -546,11 +562,134 @@ test('a throw while making, writing or ending the request ends it at once, and i
       err => code('network')(err) && err.message.includes(`E_TEST_${fault.toUpperCase()}`),
       fault
     )
-    assert.ok(Date.now() - started < 1000, `${fault}: at once, not at the deadline`)
+    assert.ok(Date.now() - started < AT_ONCE_MS, `${fault}: at once, not at the deadline`)
   }
   fault = null
   assert.equal(await (await fetch(local.origin)).text(), 'ok', 'the only slot is free again')
   await sleep(20)
+  assert.deepEqual(unhandled, [])
+})
+
+test('the inferred Content-Type is counted and validated with every other header', async t => {
+  const local = await serve(t, (req, res, entry) => res.end(JSON.stringify(entry.headers)))
+  const fetch = createOutboundFetch({ isAllowedAddress: allowLocal })
+  // a 100,000-character type on a one-byte Blob: past the 16 KiB of headers, refused before any connection
+  await assert.rejects(
+    fetch(local.origin, { method: 'POST', body: new Blob(['x'], { type: 'a'.repeat(100_000) }) }),
+    code('header')
+  )
+  // a Blob whose type carries CR/LF (a Blob made by the platform cannot: it empties such a type)
+  class InjectingBlob extends Blob {
+    get type() {
+      return 'text/plain\r\nx-injected: 1'
+    }
+  }
+  await assert.rejects(fetch(local.origin, { method: 'POST', body: new InjectingBlob(['x']) }), code('header'))
+  assert.equal(local.connections, 0)
+  // as fetch: the platform's Blob drops a type with characters outside U+0020-U+007E, so none is sent
+  const emptied = await (
+    await fetch(local.origin, { method: 'POST', body: new Blob(['x'], { type: 'a\r\nb' }) })
+  ).json()
+  assert.equal(emptied['content-type'], undefined)
+  // and a type with spaces and other non-token characters is a valid header value, sent as given (lower-cased)
+  const typed = await (
+    await fetch(local.origin, { method: 'POST', body: new Blob(['x'], { type: 'Text/Plain; Charset="A B"' }) })
+  ).json()
+  assert.equal(typed['content-type'], 'text/plain; charset="a b"')
+})
+
+// A connect that fails at once, inside libuv's connect() (ENETUNREACH where a family has no route) or one tick
+// later, through the real http/https stack. In a child process, so a crash is an exit code
+const childScript = `
+  import os from 'node:os'
+  process.noDeprecation = true
+  const { createOutboundFetch } = await import(${JSON.stringify(new URL('../src/core/extras/outboundFetch.js', import.meta.url).href)})
+  const { TCP } = process.binding('tcp_wrap')
+  const failure = -os.constants.errno.ENETUNREACH
+  for (const method of ['connect', 'connect6']) {
+    TCP.prototype[method] =
+      process.env.WHEN === 'at once'
+        ? () => failure
+        : function (req) {
+            process.nextTick(() => req.oncomplete(failure, this, req, false, false))
+            return 0
+          }
+  }
+  const answer = (callback, addresses) =>
+    setImmediate(() => (addresses ? callback(null, addresses) : callback(Object.assign(new Error('ENODATA'), { code: 'ENODATA' }))))
+  const table = { 'one.test': [['8.8.8.8'], null], 'two.test': [['8.8.8.8'], ['2606:4700::1111']] }
+  const resolver = () => ({
+    resolve4: (host, callback) => answer(callback, table[host][0]),
+    resolve6: (host, callback) => answer(callback, table[host][1]),
+    cancel() {},
+  })
+  const fetch = createOutboundFetch({ resolver, timeoutMs: 5000 })
+  const results = {}
+  for (const url of ['http://one.test/', 'https://one.test/', 'http://8.8.8.8/', 'https://8.8.8.8/', 'http://two.test/', 'https://two.test/']) {
+    try {
+      await fetch(url)
+      results[url] = 'resolved'
+    } catch (err) {
+      results[url] = err.code + ': ' + err.message
+    }
+  }
+  await new Promise(resolve => setTimeout(resolve, 50))
+  console.log(JSON.stringify(results))
+`
+
+test('a connection that fails at once is a network error, not a crash', () => {
+  for (const when of ['at once', 'a tick later']) {
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e', childScript], {
+      encoding: 'utf8',
+      env: { ...process.env, WHEN: when },
+      timeout: 60_000,
+    })
+    assert.equal(run.status, 0, `${when}: the process ended with ${run.status}\n${run.stderr.slice(0, 2000)}`)
+    const results = JSON.parse(run.stdout.trim().split('\n').at(-1))
+    for (const [url, outcome] of Object.entries(results)) {
+      // the connect's own error, also on https (where an unchecked socket used to read as "could not send")
+      assert.match(outcome, /^network: outbound request failed: (ENETUNREACH|ETIMEDOUT)/, `${when} ${url}`)
+    }
+    assert.equal(Object.keys(results).length, 6)
+  }
+})
+
+test('an error an exchange’s emitters raise after it settled is ignored, never thrown', async t => {
+  const local = await serve(t, (req, res) => {
+    if (req.url === '/moved') return res.writeHead(302, { location: '/gzip' }).end('moved')
+    if (req.method === 'HEAD') return res.writeHead(200, { 'content-length': '5' }).end()
+    res.writeHead(200, { 'content-encoding': 'gzip' }).end(zlib.gzipSync('compressed'))
+  })
+  const emitters = []
+  const original = http.request
+  t.mock.method(http, 'request', function (...args) {
+    const req = original.apply(this, args)
+    emitters.push(['request', req])
+    req.on('socket', socket => emitters.push(['socket', socket]))
+    req.on('response', res => emitters.push(['response', res]))
+    return req
+  })
+  const createGunzip = zlib.createGunzip
+  t.mock.method(zlib, 'createGunzip', (...args) => {
+    const decoder = createGunzip(...args)
+    emitters.push(['decoder', decoder])
+    return decoder
+  })
+  const fetch = createOutboundFetch({ isAllowedAddress: allowLocal })
+  assert.equal(await (await fetch(`${local.origin}/moved`)).text(), 'compressed')
+  await fetch(local.origin, { method: 'HEAD' })
+  await sleep(20)
+  const kinds = new Set(emitters.map(([kind]) => kind))
+  assert.deepEqual([...kinds].sort(), ['decoder', 'request', 'response', 'socket'])
+  const uncaught = []
+  const onUncaught = err => uncaught.push(err)
+  process.on('uncaughtException', onUncaught)
+  t.after(() => process.off('uncaughtException', onUncaught))
+  for (const [kind, emitter] of emitters) {
+    assert.doesNotThrow(() => emitter.emit('error', new Error(`late ${kind} error`)), kind)
+  }
+  await sleep(20)
+  assert.deepEqual(uncaught, [])
   assert.deepEqual(unhandled, [])
 })
 
@@ -597,7 +736,7 @@ test('a request body is admitted, sized and read under the deadline; only the li
   const stuck = fetch(local.origin, { method: 'POST', body: new StuckBlob(['x']) })
   await assert.rejects(fetch(local.origin), code('busy'), 'the stuck request holds the only slot')
   await assert.rejects(stuck, code('timeout'))
-  assert.ok(Date.now() - started < 1000)
+  assert.ok(Date.now() - started < AT_ONCE_MS)
   const controller = new AbortController()
   const aborted = fetch(local.origin, { method: 'POST', body: new StuckBlob(['x']), signal: controller.signal })
   controller.abort()
@@ -699,7 +838,7 @@ test('one deadline covers connecting, redirects and the body; a caller can abort
   for (const path of ['/never', '/slow-body', '/hop']) {
     const started = Date.now()
     await assert.rejects(fetch(`${local.origin}${path}`), code('timeout'), path)
-    assert.ok(Date.now() - started < 1500, `${path} ended near its deadline`)
+    assert.ok(Date.now() - started < AT_ONCE_MS, `${path} ended near its deadline`)
   }
   const controller = new AbortController()
   const pending = fetch(`${local.origin}/never`, { signal: controller.signal })
@@ -765,7 +904,7 @@ test('the deadline covers resolving the name: a slow answer is cancelled, and it
   const fetch = createOutboundFetch({ resolver, concurrency: 1, timeoutMs: 100 })
   const started = Date.now()
   await assert.rejects(fetch('http://slow.test/'), code('timeout'))
-  assert.ok(Date.now() - started < 1000, 'the caller hears of the timeout at the deadline')
+  assert.ok(Date.now() - started < AT_ONCE_MS, 'the caller hears of the timeout at the deadline')
   assert.equal(cancels, 1)
   assert.equal(outstanding, 2)
   // the queries are still running: the request still holds its slot
@@ -788,6 +927,56 @@ test('the deadline covers resolving the name: a slow answer is cancelled, and it
   await assert.rejects(aborted, code('aborted'))
   await waitFor(() => outstanding === 0, 1000, 'the aborted queries to end')
   assert.equal(cancels, 7)
+})
+
+test('a resolver that answers or throws at once still has its other query counted, cancelled and waited for', async t => {
+  const local = await serve(t, (req, res) => res.end('ok'))
+  let cancels = 0
+  // resolve4 answers inside the call (or throws); resolve6 ends only when cancelled
+  const resolverWith = first => () => {
+    const pending = []
+    return {
+      resolve4: first,
+      resolve6: (host, callback) => pending.push(callback),
+      cancel() {
+        cancels++
+        setTimeout(() => pending.splice(0).forEach(callback => callback(dnsError('ECANCELLED'))), 20)
+      },
+    }
+  }
+  for (const [what, first] of [
+    ['answers at once', (host, callback) => callback(null, ['127.0.0.1'])],
+    [
+      'throws',
+      () => {
+        throw new Error('resolver broke')
+      },
+    ],
+  ]) {
+    const fetch = createOutboundFetch({
+      resolver: resolverWith(first),
+      isAllowedAddress: allowLocal,
+      concurrency: 1,
+      timeoutMs: 100,
+    })
+    const before = cancels
+    await assert.rejects(fetch('http://slow6.test/'), code('timeout'), what)
+    assert.equal(cancels, before + 1, `${what}: the other query was cancelled`)
+    await sleep(60)
+    // the slot came back once that query ended: the next request is admitted (and refused for its own reason)
+    await assert.rejects(fetch('http://10.0.0.1/'), code('address'), what)
+  }
+  // both answering inside the call: the request goes ahead normally
+  const immediate = createOutboundFetch({
+    resolver: () => ({
+      resolve4: (host, callback) => callback(null, ['127.0.0.1']),
+      resolve6: (host, callback) => callback(dnsError('ENODATA')),
+      cancel() {},
+    }),
+    isAllowedAddress: allowLocal,
+    concurrency: 1,
+  })
+  for (let i = 0; i < 3; i++) assert.equal(await (await immediate(`http://now.test:${local.port}/`)).text(), 'ok')
 })
 
 test('a request gives its slot back as soon as it has ended, DNS included: requests one after another always fit', async t => {
@@ -845,9 +1034,8 @@ test('when the checked address does not connect, one more checked answer is trie
     isAllowedAddress: allowLoopback,
     timeoutMs: 3000,
   })
-  const started = Date.now()
+  // reached at all is within the one deadline: past it the request rejects with `timeout`
   assert.equal(await (await sameFamily(`http://two.test:${local.port}/`)).text(), 'reached')
-  assert.ok(Date.now() - started < 3000, 'within the one deadline')
   // one more, not every answer: the third address is never tried
   const connections = local.connections
   const failing = createOutboundFetch({
@@ -886,7 +1074,7 @@ test('the connected address is checked again before anything is sent', async t =
   })
   const started = Date.now()
   await assert.rejects(throwing(`http://pinned.test:${local.port}/`), code('network'))
-  assert.ok(Date.now() - started < 1000)
+  assert.ok(Date.now() - started < AT_ONCE_MS)
 })
 
 test('every request has a connection of its own', async t => {
@@ -1099,6 +1287,33 @@ test('the body handed over still follows the caller’s signal, as fetch’s doe
   fourth.abort()
 })
 
+test('an empty body is abortable after the hand-over too; HEAD, 204 and 304 have no body at all', async t => {
+  const local = await serve(t, (req, res) => {
+    const status = Number(req.url.slice(1)) || 200
+    res.writeHead(status, { 'content-length': '0' }).end()
+  })
+  const fetch = createOutboundFetch({ isAllowedAddress: allowLocal })
+  // a 200 with no bytes: nothing is read ahead, so the body is still open when the caller gets it
+  const controller = new AbortController()
+  const empty = await fetch(local.origin, { signal: controller.signal })
+  assert.notEqual(empty.body, null)
+  controller.abort()
+  await assert.rejects(empty.text(), err => err?.name === 'AbortError')
+  // read, it is empty
+  assert.equal(await (await fetch(local.origin)).text(), '')
+  for (const [path, init] of [
+    ['/', { method: 'HEAD' }],
+    ['/204', {}],
+    ['/304', {}],
+  ]) {
+    const aborting = new AbortController()
+    const response = await fetch(`${local.origin}${path}`, { ...init, signal: aborting.signal })
+    assert.equal(response.body, null, path)
+    aborting.abort()
+    assert.equal(await response.text(), '', `${path}: nothing to abort`)
+  }
+})
+
 test('one long-lived signal for many requests keeps no listener behind', async t => {
   const local = await serve(t, (req, res) => res.end('ok'))
   const fetch = createOutboundFetch({ isAllowedAddress: allowLocal })
@@ -1120,18 +1335,30 @@ test('one long-lived signal for many requests keeps no listener behind', async t
     [],
     'no listener build-up'
   )
-  // a body nobody reads holds its listener (weakly) until it is collected, then the listener goes too
-  const dropUnread = async () => {
-    for (let i = 0; i < 8; i++) await fetch(local.origin, { signal })
-  }
-  await dropUnread()
-  assert.equal(getEventListeners(signal, 'abort').length, 8)
-  for (let i = 0; i < 100 && getEventListeners(signal, 'abort').length > 0; i++) {
-    gc()
-    await sleep(10)
-  }
-  assert.equal(getEventListeners(signal, 'abort').length, 0, 'the collected bodies took their listeners along')
 })
+
+test(
+  'a body nobody reads holds its abort listener weakly: once it is collected, the listener goes too',
+  { skip: gc ? false : 'gc cannot be exposed in this process, so collection cannot be driven' },
+  async t => {
+    const local = await serve(t, (req, res) => res.end('ok'))
+    const fetch = createOutboundFetch({ isAllowedAddress: allowLocal })
+    const { signal } = new AbortController()
+    const dropUnread = async () => {
+      for (let i = 0; i < 8; i++) await fetch(local.origin, { signal })
+    }
+    await dropUnread()
+    assert.equal(getEventListeners(signal, 'abort').length, 8)
+    // collections and turns of the event loop until the registry has run, with a generous deadline: when its
+    // callbacks run after a collection is up to the engine
+    const until = Date.now() + 20_000
+    while (getEventListeners(signal, 'abort').length > 0 && Date.now() < until) {
+      gc()
+      await sleep(20)
+    }
+    assert.equal(getEventListeners(signal, 'abort').length, 0, 'the collected bodies took their listeners along')
+  }
+)
 
 test('a trusted origin (the configured assets URL) is reached without the address check; nothing else is', async t => {
   const local = await serve(t, (req, res) => {

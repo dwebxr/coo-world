@@ -1454,13 +1454,16 @@ function imageRefusal(header, limits) {
 // `fileBytes`: the file's size (its data is copied twice: the GLB's binary chunk, then the bufferViews; and an honest
 // file's accessors are gone through about once). `onCharge(kind, n, what, total)`: told of every charge (tests).
 // `now`: a monotonic clock in milliseconds (tests). `maxTextureSize`: the renderer's, when it is known (the
-// morph-target textures three.js builds are padded to rows of it)
+// morph-target textures three.js builds are padded to rows of it; unknown, they are charged at their largest).
+// `renderer: false`: nothing will draw this file (the server), so no morph-target texture is ever built for it and
+// none is charged
 export function createGLTFBudget({
   fileBytes = 0,
   limits = GLTF_LIMITS,
   onCharge,
   now = () => globalThis.performance.now(),
   maxTextureSize,
+  renderer = true,
 } = {}) {
   const maxBytes = limits.allocatedBytes + 2 * fileBytes
   const maxWork = limits.work + fileBytes
@@ -1494,6 +1497,7 @@ export function createGLTFBudget({
     maxBytes,
     maxWork,
     maxTextureSize: Number.isSafeInteger(maxTextureSize) && maxTextureSize > 0 ? maxTextureSize : undefined,
+    morphTextures: renderer !== false,
     bytes(n, what) {
       clock(what)
       if (!Number.isFinite(n) || n < 0) fail(what, `${what}: an impossible size`)

@@ -127,9 +127,10 @@ after(async () => {
 test('server loader: a model that names an external buffer fails its load, and the buffer is never requested', async () => {
   const result = await settle(loader().load('model', 'asset://br.gltf'), 5000)
   assert.equal(result.status, 'rejected', 'the load settles instead of hanging')
-  // the manager's refusal itself, not some other failure of the parse
-  assert.equal(result.error?.code, 'ASSET_REFUSED')
-  assert.match(result.error.message, /asset refused \(a model may not load external files on the server\): "http:/)
+  // refused by the check before the parser runs (gltfLimits.js), as on a client; the loading manager behind it
+  // would refuse the request as well
+  assert.equal(result.error?.isGLTFLimit, true)
+  assert.match(result.error.message, /a model may not reference external files \(buffer 0\)/)
   assert.deepEqual(requested, [], 'the external buffer was not requested')
   assert.equal(decoders.br, 0)
   await new Promise(resolve => setTimeout(resolve, 50))

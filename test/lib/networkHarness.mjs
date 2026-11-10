@@ -37,6 +37,7 @@ import { createSolanaRpc } from '../../src/server/solanaRpc.js'
 import { createTokenBalanceService } from '../../src/server/tokenBalance.js'
 import { Ranks } from '../../src/core/extras/ranks.js'
 import { clientIpKeys } from '../../src/server/uploadLimits.js'
+import { previewValue } from '../../src/core/extras/assetURL.js'
 
 export const serverSource = fs.readFileSync(new URL('../../src/server/index.js', import.meta.url), 'utf8')
 const source = fs.readFileSync(new URL('../../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
@@ -120,6 +121,7 @@ function networkClass(context) {
     sanitizeBlueprintAdd,
     sanitizeBlueprintModify,
     WORLD_BLUEPRINT_BYTES,
+    previewValue,
     defaultSpawn: '{"position":[0,0,0],"quaternion":[0,0,0,1]}',
     SAVE_INTERVAL: 0,
     // the server's values; tests that wait on them set network.takeoverPingMs / takeoverCloseMs instead

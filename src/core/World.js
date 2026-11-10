@@ -256,19 +256,19 @@ export class World extends EventEmitter {
     }
   }
 
-  resolveURL(url, allowLocal) {
+  // A URL to load from. asset:// maps to the assets URL, never to a file path: the server and the node agent read
+  // local assets only through resolveAssetFile (ServerLoader.locate), which keeps them inside the assets directory.
+  resolveURL(url) {
     if (!url) return url
     url = url.trim()
     if (url.startsWith('blob')) {
       return url
     }
     if (url.startsWith('asset://')) {
-      if (this.assetsDir && allowLocal) {
-        return url.replace('asset:/', this.assetsDir)
-      } else if (this.assetsUrl) {
+      if (this.assetsUrl) {
         return url.replace('asset:/', this.assetsUrl)
       } else {
-        console.error('resolveURL: no assetsUrl or assetsDir defined')
+        console.error('resolveURL: no assetsUrl defined')
         return url
       }
     }

@@ -49,8 +49,8 @@ The header is a JSON object with the following structure:
 ### Blueprint Properties
 
 - `name`: The name of the app (used for the output filename if not specified)
-- `model`: (Optional) URL of the main 3D model file
-- `script`: (Optional) URL of the app's script file
+- `model`: (Optional) URL of the main 3D model file: `asset://<name>` (one file in the world's asset store; the name has letters, digits, `.`, `_` and `-`, up to 128 characters) or an `http(s)://` URL
+- `script`: (Optional) URL of the app's script file, in the same two forms. A world refuses an app whose `model`, `script` or `image.url` is anything else (a file path, `asset://../…`, `file:`, `data:` and other schemes)
 - `props`: Object containing additional properties with associated assets
 - `frozen`: Boolean flag indicating if the app is locked/frozen
 

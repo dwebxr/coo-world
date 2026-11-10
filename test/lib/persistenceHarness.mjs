@@ -5,6 +5,7 @@ import moment from 'moment'
 import * as entityPolicy from '../../src/core/extras/entityModifyPolicy.js'
 import * as blueprintPolicy from '../../src/core/extras/blueprintPolicy.js'
 import * as settingsPolicy from '../../src/core/extras/settingsPolicy.js'
+import * as assetURL from '../../src/core/extras/assetURL.js'
 import { appPersistenceData, persistenceRecord } from '../../src/core/extras/persistenceRecord.js'
 import { createInboundGate, createInboundScheduler } from '../../src/core/extras/inboundPolicy.js'
 import { createWriteLedger } from '../../src/core/extras/writeLedger.js'
@@ -49,6 +50,7 @@ export function load(file, name, extra = {}) {
     ...entityPolicy,
     ...blueprintPolicy,
     ...settingsPolicy,
+    ...assetURL,
     ...extra,
   }
   const code = source(file)

@@ -163,6 +163,49 @@ test('blueprint enforcement: a refused add removes the matching optimistic entit
   assert.ok(f.world.entities.get('next-app'), 'the pending refusal is consumed once')
 })
 
+test('blueprint enforcement: a model/script the server would read as a local file is refused at the packet', () => {
+  const f = fixture()
+  for (const [i, change] of [
+    { script: '/etc/passwd' },
+    { script: 'asset://../../../proc/self/environ' },
+    { model: '/dev/zero' },
+    { model: 'file:///etc/passwd' },
+    { image: { url: 'javascript:alert(1)' } },
+  ].entries()) {
+    f.send('blueprintAdded', { id: `bad${i}`, version: 0, ...change })
+    f.send('entityAdded', app(`app${i}`, `bad${i}`))
+    assert.equal(f.world.blueprints.get(`bad${i}`), undefined)
+    assert.equal(f.world.entities.get(`app${i}`), undefined)
+  }
+  f.send('blueprintAdded', { id: 'ok', version: 0, script: 'asset://ai.js', model: 'https://example.com/a.glb' })
+  assert.equal(f.world.blueprints.get('ok').script, 'asset://ai.js')
+  assert.deepEqual(
+    f.packets().map(([name]) => name),
+    ['onBlueprintAdded']
+  )
+  assert.equal(f.network.dirtyBlueprints.size, 1)
+})
+
+test('blueprint enforcement: a legacy stored model/script stays editable; setting a refused one reverts', () => {
+  const f = fixture()
+  const legacy = { id: 'bp', version: 3, name: 'old', script: '/etc/hosts', model: 'asset://../x.glb' }
+  f.world.blueprints.add(legacy)
+  // a modify that does not touch script or model, and one that repeats them unchanged
+  f.send('blueprintModified', { id: 'bp', version: 4, name: 'renamed' })
+  f.send('blueprintModified', { ...legacy, version: 5, name: 'again' })
+  assert.deepEqual(f.world.blueprints.get('bp'), { ...legacy, version: 5, name: 'again' })
+  assert.equal(f.packets().length, 2)
+  assert.deepEqual([...f.network.dirtyBlueprints.keys()], ['bp'])
+  // setting another refused value is refused and the author gets the stored blueprint back
+  f.send('blueprintModified', { id: 'bp', version: 6, script: '/etc/passwd' })
+  assert.equal(f.world.blueprints.get('bp').version, 5)
+  assert.deepEqual(f.packets(f.author), [['onBlueprintModified', f.world.blueprints.get('bp')]])
+  // replacing the legacy value with an asset works
+  f.send('blueprintModified', { id: 'bp', version: 7, script: 'asset://ai.js' })
+  assert.equal(f.world.blueprints.get('bp').script, 'asset://ai.js')
+  assert.equal(f.world.blueprints.get('bp').model, legacy.model)
+})
+
 test('blueprint enforcement: a refused new blueprint and its entity are both absent', () => {
   const f = fixture()
   for (const id of ['new', 'x'.repeat(65)]) {

@@ -43,7 +43,10 @@ export class Blueprints extends System {
   }
 
   preflight(data, add = false) {
-    const result = add ? sanitizeBlueprintAdd(data) : sanitizeBlueprintModify(data)
+    // the same rules the server applies, including model/script/image references (only those a change sets)
+    const result = add
+      ? sanitizeBlueprintAdd(data)
+      : sanitizeBlueprintModify(data, { current: this.items.get(data?.id) })
     if (!result.ok) {
       this.world.emit('toast', 'This change could not be saved')
       return false

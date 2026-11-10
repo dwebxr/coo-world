@@ -122,6 +122,39 @@ test('blueprint registry: refusal changes no state, emits no modify and sends no
   assert.equal(world.blueprints.get('bp'), original)
 })
 
+test('blueprint registry: a model/script/image the server would refuse is refused before sending', () => {
+  const world = clientWorld()
+  // a blueprint persisted under older rules, as a snapshot delivers it
+  const legacy = { id: 'bp', version: 0, script: '/legacy/odd.js', model: 'asset://../legacy.glb' }
+  world.blueprints.add(legacy)
+  for (const change of [
+    { script: '/etc/passwd' },
+    { model: 'file:///etc/passwd' },
+    { image: { url: 'asset://../x' } },
+  ]) {
+    assert.equal(world.blueprints.modify({ id: 'bp', version: 1, ...change }, true), false)
+  }
+  assert.equal(world.blueprints.add({ id: 'new', version: 0, script: 'asset://../x.js' }, true), false)
+  assert.equal(world.packets.length, 0)
+  assert.deepEqual(world.toasts, Array(4).fill('This change could not be saved'))
+  // edits that do not set those fields, or set them to values a client produces, are sent
+  assert.equal(world.blueprints.modify({ id: 'bp', version: 1, name: 'renamed' }, true), true)
+  assert.equal(world.blueprints.modify({ ...world.blueprints.get('bp'), version: 2, desc: 'full copy' }, true), true)
+  const script = `asset://${'ab'.repeat(32)}.js`
+  assert.equal(world.blueprints.modify({ id: 'bp', version: 3, script }, true), true)
+  assert.equal(
+    world.blueprints.add({ id: 'ai', version: 0, model: 'asset://ai.glb', script: 'asset://ai.js' }, true),
+    true
+  )
+  assert.deepEqual(world.packets.map(decode), [
+    { id: 'bp', version: 1, name: 'renamed' },
+    { ...legacy, version: 2, name: 'renamed', desc: 'full copy' },
+    { id: 'bp', version: 3, script },
+    { id: 'ai', version: 0, model: 'asset://ai.glb', script: 'asset://ai.js' },
+  ])
+  assert.equal(world.blueprints.get('bp').model, legacy.model, 'the stored legacy model is kept')
+})
+
 test('entity registry: refuses an oversized add before constructing an entity', () => {
   const App = class {
     constructor() {

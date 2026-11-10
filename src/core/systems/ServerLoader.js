@@ -27,14 +27,17 @@ const REMOTE_LOAD = { maxBytes: 32 * 1024 * 1024, timeoutMs: 30_000 }
 // refused); a local script read has no bound of its own. Apps hold what they use: this bounds what a world that
 // keeps loading new locations (world.load in a script) can pin in memory, not what a loaded model takes
 const CACHE_LIMIT = 512
-// Models and emotes read and parsed at once, local and remote alike. A turn covers reading the file and parsing
-// it, so the rest wait holding nothing yet: at most this many files (up to 32 MiB each from a remote URL) are held
-// for a parse, however many loads are asked for at once
+// Turns for models and emotes, local and remote alike. A turn covers reading the file and parsing it, so loads
+// beyond these wait holding nothing yet. While no turn has been given up, at most this many files (up to 32 MiB
+// each from a remote URL) are read or parsed at once, however many loads are asked for
 const MODEL_TURNS = 4
-// How long a turn's read and its parse may each take. Past either the load fails and its turn goes to the next
-// one, so a read or a parse that never ends cannot hold up the loads behind it; whatever the stuck work holds
-// stays until it ends, if it ever does. The read has a remote load's deadline (the outbound request ends at the
-// same time), a local read too; a parse gets a generous fixed one
+// Deadlines that free a turn whose read or parse does not settle (it waits on something that never answers).
+// When one runs, that load fails and its turn goes to the next load. A read given up is cancelled (the outbound
+// request is aborted, a local read stops); a parse cannot be, so a parse whose turn expired may still be running
+// and holding its memory until it settles, outside the four turns. A deadline cannot interrupt synchronous work
+// either: while a parse blocks the event loop nothing else runs, the timer included. And a phase that does
+// complete before its timer has run is accepted however long it took, so a large but valid model still loads on
+// a slow host. The read has a remote load's deadline (a local read too); a parse gets a generous fixed one
 const READ_DEADLINE_MS = REMOTE_LOAD.timeoutMs
 const PARSE_DEADLINE_MS = 60_000
 // every avatar is the same stub on the server (nothing is fetched), so they share one entry whatever URL a player
@@ -159,8 +162,8 @@ export class ServerLoader extends System {
     return this.outbound
   }
 
-  async fetchRemote(url) {
-    const response = await this.outboundFetch(url, {}, REMOTE_LOAD)
+  async fetchRemote(url, signal) {
+    const response = await this.outboundFetch(url, signal ? { signal } : {}, REMOTE_LOAD)
     if (!response.ok) throw new Error(`asset request failed: HTTP ${response.status}`)
     return response
   }
@@ -210,14 +213,15 @@ export class ServerLoader extends System {
     return refused
   }
 
-  async fetchArrayBuffer(url) {
+  // `signal` cancels the read: the outbound request (and its body) or the local file read
+  async fetchArrayBuffer(url, signal) {
     const { file, remote } = this.locate(url)
     if (remote) {
-      const response = await this.fetchRemote(remote)
+      const response = await this.fetchRemote(remote, signal)
       const arrayBuffer = await response.arrayBuffer()
       return arrayBuffer
     } else {
-      const buffer = await fs.readFile(file)
+      const buffer = await fs.readFile(file, signal ? { signal } : undefined)
       const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
       return arrayBuffer
     }
@@ -247,15 +251,17 @@ export class ServerLoader extends System {
   }
 
   // Reads, then parses what was read, in one of MODEL_TURNS, in the order asked: until a turn is free the load
-  // waits without having started. The turn is held through both, each within its deadline, and goes to the next
-  // load once the load settles (or is given up: a deadline, or destroy())
+  // waits without having started. The turn is held through both, each within its deadline (see PARSE_DEADLINE_MS
+  // for what one can and cannot do), and goes to the next load once the load settles or is given up (a deadline,
+  // or destroy()). `read` gets a signal that is aborted then, so a read given up stops
   inTurn(read, parse) {
     return new Promise((resolve, reject) => {
-      const turn = { done: false, timer: null }
+      const turn = { done: false, timer: null, reading: new AbortController() }
       turn.settle = (ok, value) => {
         if (turn.done) return
         turn.done = true
         clearTimeout(turn.timer)
+        turn.reading.abort() // nothing still reading for it (a finished read is not affected)
         this.turns.active.delete(turn)
         if (ok) resolve(value)
         else reject(value)
@@ -266,11 +272,15 @@ export class ServerLoader extends System {
           clearTimeout(turn.timer)
           turn.timer = setTimeout(() => fail(new Error(`a model's ${what} took longer than ${ms / 1000} s`)), ms)
           turn.timer?.unref?.() // a deadline does not keep a closing process alive
-          Promise.resolve().then(step).then(done, fail)
+          // started a microtask later, and only while the turn is live: a load given up meanwhile (destroy() right
+          // after load()) starts nothing
+          Promise.resolve()
+            .then(() => (turn.done ? undefined : step()))
+            .then(done, fail)
         })
       turn.run = () => {
         this.turns.active.add(turn)
-        within(READ_DEADLINE_MS, 'read', read)
+        within(READ_DEADLINE_MS, 'read', () => read(turn.reading.signal))
           // a load given up while reading parses nothing
           .then(data => (turn.done ? undefined : within(PARSE_DEADLINE_MS, 'parse', () => parse(data))))
           .then(
@@ -289,7 +299,7 @@ export class ServerLoader extends System {
     if (type === 'model') {
       return () =>
         this.inTurn(
-          () => this.fetchArrayBuffer(url),
+          signal => this.fetchArrayBuffer(url, signal),
           async arrayBuffer => {
             const node = glbToNodes(await this.parseGLB(arrayBuffer), this.world)
             return {
@@ -303,7 +313,7 @@ export class ServerLoader extends System {
     if (type === 'emote') {
       return () =>
         this.inTurn(
-          () => this.fetchArrayBuffer(url),
+          signal => this.fetchArrayBuffer(url, signal),
           async arrayBuffer => {
             const factory = createEmoteFactory(await this.parseGLB(arrayBuffer), url)
             return {

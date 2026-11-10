@@ -58,7 +58,11 @@ function makeLocalLoader(readFile) {
 // reads that end when the test says so: `reads` lists { name, resolve, reject } in the order they started
 function deferredReads() {
   const reads = []
-  const readFile = file => new Promise((resolve, reject) => reads.push({ name: path.basename(file), resolve, reject }))
+  // the signal a read was given is kept, so a test can see that a read given up was cancelled
+  const readFile = (file, options) =>
+    new Promise((resolve, reject) =>
+      reads.push({ name: path.basename(file), resolve, reject, signal: options?.signal ?? null })
+    )
   return { reads, readFile }
 }
 
@@ -389,9 +393,15 @@ test('a read or a parse that never ends is given up at its deadline, and destroy
   for (let i = 0; i < 5; i++) await tick()
   // their turns went to the two waiting loads, whose reads never end
   assert.equal(reads.length, 6)
+  assert.equal(reads[4].signal.aborted, false)
   t.mock.timers.tick(30_000)
   for (const load of loads.slice(4)) await assert.rejects(load, /read took longer than 30 s/)
   assert.equal(loader.turns.active.size, 0)
+  // a read given up is cancelled
+  assert.ok(
+    reads.slice(4).every(read => read.signal.aborted),
+    'the reads were told to stop'
+  )
   // a parse that ends after its load was given up changes nothing
   parses[0].onLoad({})
   assert.equal(loader.results.size, 0)
@@ -406,6 +416,10 @@ test('a read or a parse that never ends is given up at its deadline, and destroy
   for (const load of more) await assert.rejects(load, /destroyed/)
   assert.equal(loader.turns.active.size, 0)
   assert.equal(loader.turns.waiting.length, 0)
+  assert.ok(
+    reads.slice(7, 10).every(read => read.signal.aborted),
+    'the reads in progress were told to stop'
+  )
   for (const read of reads.slice(7)) read.resolve(Buffer.from('glb'))
   for (let i = 0; i < 5; i++) await tick()
   assert.equal(reads.length, 10, 'nothing else was read')
@@ -418,6 +432,55 @@ test('a read or a parse that never ends is given up at its deadline, and destroy
   for (let i = 0; i < 5; i++) await tick()
   parses.at(-1).onLoad({})
   assert.ok(await after)
+})
+
+test('a parse that completes before its deadline timer runs is accepted, however late; one still pending when it runs is given up', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+  const { reads, readFile } = deferredReads()
+  const loader = makeLocalLoader(readFile)
+  const parses = heldParses(loader)
+  const late = loader.load('model', 'asset://late.glb')
+  const stuck = loader.load('model', 'asset://stuck.glb')
+  await tick()
+  for (const read of reads) read.resolve(Buffer.from('glb'))
+  for (let i = 0; i < 5; i++) await tick()
+  assert.equal(parses.length, 2)
+  // the clock moves past the deadline while the timer does not run, as when a parse blocks the event loop for
+  // that long: the parse that then completes is the model, and it is kept
+  t.mock.timers.setTime(Date.now() + 61_000)
+  parses[0].onLoad({})
+  assert.ok(await late)
+  assert.ok(loader.get('model', 'asset://late.glb'), 'cached')
+  // the other parse is still pending when its timer runs: that load fails and its turn is free
+  t.mock.timers.tick(0)
+  await assert.rejects(stuck, /parse took longer than 60 s/)
+  assert.equal(loader.turns.active.size, 0)
+  assert.equal(loader.get('model', 'asset://stuck.glb'), undefined)
+})
+
+test('a load given up before its read started (destroy() right after load()) reads nothing', async () => {
+  const { reads, readFile } = deferredReads()
+  const loader = makeLocalLoader(readFile)
+  const loads = [loader.load('model', 'asset://never.glb'), loader.load('emote', 'asset://never-2.glb')]
+  loader.destroy()
+  for (const load of loads) await assert.rejects(load, /destroyed/)
+  for (let i = 0; i < 5; i++) await tick()
+  assert.equal(reads.length, 0, 'no read started')
+  assert.equal(loader.turns.active.size, 0)
+})
+
+test('a remote model read given up is cancelled: its outbound request is aborted', async () => {
+  const loader = makeLoader()
+  const closed = new Promise(resolve => {
+    const watch = () => (held.length ? held[0].on('close', resolve) : setImmediate(watch))
+    watch()
+  })
+  const load = loader.load('model', 'asset://hold-model.glb')
+  while (!held.length) await tick()
+  loader.destroy()
+  await assert.rejects(load, /destroyed/)
+  await closed // the server sees the request go
+  held.length = 0
 })
 
 test('one resource has one cache entry whatever its spelling; a query names another one', async () => {

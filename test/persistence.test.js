@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { database, fixture, load, Network, Settings, deferred } from './lib/persistenceHarness.mjs'
+import { Storage } from '../src/server/Storage.js'
 
 const ServerAI = load('core/systems/ServerAI.js', 'ServerAI', {
   fs: { readFileSync: () => '' },
@@ -344,3 +347,84 @@ test('N3: world entity teardown preserves app rows; explicit removal still tombs
   world.entities.remove('removed')
   assert.equal(network.dirtyApps.get('removed').record, null)
 })
+
+test(
+  'B8: the final flush also writes the script storage file and reports it when it could not',
+  { timeout: 5000 },
+  async t => {
+    const lines = []
+    t.mock.method(console, 'error', line => lines.push(line))
+    t.mock.method(console, 'log', () => {})
+    for (const [name, flush, outcome] of [
+      ['saved', async () => true, null],
+      ['failed', async () => false, /final save incomplete/],
+      ['stalled', () => new Promise(() => {}), /save deadline exceeded/],
+    ]) {
+      lines.length = 0
+      const { db, tables } = database()
+      const { network, world, socket } = fixture(t, db)
+      let calls = 0
+      let saved = false
+      world.storage = {
+        flush: async () => {
+          calls++
+          return (saved = await flush())
+        },
+        saved: () => saved,
+      }
+      await network.onEntityModified(socket, { id: 'app', pinned: true })
+      const done = network.flushBeforeExit(200)
+      if (outcome) await assert.rejects(done, outcome, name)
+      else await done
+      assert.equal(calls, 1, name)
+      assert.ok(tables.entities.has('app'), `${name}: the app is saved alongside`)
+      const reported = lines.filter(line => line.includes('not persisted:'))
+      if (outcome)
+        assert.ok(
+          reported.some(line => line.endsWith('storage=unsaved')),
+          name
+        )
+      else assert.deepEqual(reported, [], name)
+    }
+  }
+)
+
+// Codex's interleaving: the database save is still pending when the storage flush has finished, and a script
+// continuation (a timer, a fetch) calls world.set in between
+test(
+  'B8: a world.set after the storage flush, while the database save is pending, is refused',
+  { timeout: 120000 },
+  async t => {
+    t.mock.method(console, 'error', () => {})
+    t.mock.method(console, 'log', () => {})
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'final-save-'))
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+    const file = path.join(dir, 'storage.json')
+    for (const late of ['set', 'accepted']) {
+      const storage = new Storage(file, { intervalMs: 0 })
+      const { db, tables } = database()
+      const { network, world, socket } = fixture(t, db)
+      world.storage = storage
+      storage.set('k', 1)
+      await network.onEntityModified(socket, { id: 'app', pinned: true })
+      const held = db.pause('entities')
+      // the held database write decides when the save goes on: the deadline is far beyond any slow machine
+      const done = network.flushBeforeExit(60000)
+      await held.started.promise
+      while (!storage.saved()) await new Promise(resolve => setTimeout(resolve, 1))
+      if (late === 'set') {
+        assert.throws(() => storage.set('k', 2), /the server is stopping; the value was not stored/)
+        held.release.resolve()
+        await done
+        assert.equal(storage.get('k'), 1, 'memory holds what the file holds')
+      } else {
+        // a change that got in anyway (no path does today) is caught by the check at the end
+        storage.revision++
+        held.release.resolve()
+        await assert.rejects(done, /final save incomplete/)
+      }
+      assert.ok(tables.entities.has('app'))
+      assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { k: 1 })
+    }
+  }
+)

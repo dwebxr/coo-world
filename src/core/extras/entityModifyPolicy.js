@@ -12,6 +12,9 @@ const AVATAR_URL_MAX_LENGTH = 512
 // a .vrm in the world's asset store: a built-in name (avatar.vrm) or a content hash
 const AVATAR_ASSET_URL = /^asset:\/\/[A-Za-z0-9._-]+\.vrm$/
 const EMOTE_URL_MAX_LENGTH = 512
+// the longest name and session avatar a joining player can have (ServerNetwork.measureFixedBytes)
+export const PLAYER_NAME_MAX_LENGTH = NAME_MAX_LENGTH
+export const SESSION_AVATAR_MAX_LENGTH = AVATAR_URL_MAX_LENGTH
 // a .glb in the asset store, with an optional playback query (the static route ignores the query)
 const EMOTE_ASSET_URL = /^asset:\/\/[A-Za-z0-9._-]+\.glb(\?[A-Za-z0-9=&._-]*)?$/
 
@@ -80,10 +83,7 @@ export function sanitizePersistedApp(data, { blueprintExists } = {}) {
     const norm = scaled && Math.hypot(...scaled)
     quaternion = norm ? unitQuaternion(scaled.map(v => v / norm)) : [0, 0, 0, 1]
   }
-  if (
-    !boundedArray(data.quaternion, 4, Infinity) ||
-    Math.abs(Math.hypot(...data.quaternion) - 1) > 1e-12
-  ) {
+  if (!boundedArray(data.quaternion, 4, Infinity) || Math.abs(Math.hypot(...data.quaternion) - 1) > 1e-12) {
     repaired.push('quaternion')
   }
   let scale = appScale(data.scale)
@@ -285,6 +285,10 @@ export function sanitizeAppRelease(data, { mover = false, uploader = false } = {
   return Object.keys(safe).length > 1 ? safe : null
 }
 
+// the id a client may give a new app: what uuid() (utils.js) makes, 10 of [0-9a-zA-Z], fits. It shares the entity
+// map with players, so entityExists refuses a present player's id too. Ids already stored are not checked again.
+export const ENTITY_ID = /^[A-Za-z0-9_-]{1,64}$/
+
 // a new app entity. structural fields are required; the fields an undo re-add may carry
 // stale (mover, uploader, pinned, state) are coerced instead of rejected.
 export function sanitizeEntityAdd(data, socketId, { blueprintExists, entityExists } = {}) {
@@ -292,7 +296,7 @@ export function sanitizeEntityAdd(data, socketId, { blueprintExists, entityExist
   if (data.type !== 'app') return null
   const id = data.id
   const blueprint = data.blueprint
-  if (typeof id !== 'string' || !id || (entityExists && entityExists(id))) return null
+  if (typeof id !== 'string' || !ENTITY_ID.test(id) || (entityExists && entityExists(id))) return null
   if (typeof blueprint !== 'string' || (blueprintExists && !blueprintExists(blueprint))) return null
   const position = boundedArray(data.position, 3, TRANSFORM_LIMIT)
   const quaternion = unitQuaternion(data.quaternion)

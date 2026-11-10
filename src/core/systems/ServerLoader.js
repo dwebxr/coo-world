@@ -10,7 +10,7 @@ import { createVRMFactory } from '../extras/createVRMFactory'
 import { glbToNodes } from '../extras/glbToNodes'
 import { createNode } from '../extras/createNode'
 import { createEmoteFactory } from '../extras/createEmoteFactory'
-import { ASSET_PROTOCOL, assetName, assetRefusal } from '../extras/assetURL'
+import { ASSET_PROTOCOL, assetName, assetRefusal, loaderReference } from '../extras/assetURL'
 import { resolveAssetFile } from '../extras/resolveAssetFile'
 import { createOutboundFetch } from '../extras/outboundFetch'
 import { LoadingManager } from 'three'
@@ -187,7 +187,7 @@ export class ServerLoader extends System {
   // an absolute path, `blob:`, an invalid asset:// name and a non-string, so no other string reaches fs.readFile.
   locate(url) {
     if (typeof url !== 'string') throw assetRefusal('not a string', url)
-    const value = url.trim()
+    const value = loaderReference(url)
     if (value.startsWith(ASSET_PROTOCOL)) {
       if (this.world.assetsDir) return { file: resolveAssetFile(value, this.world.assetsDir) }
       if (assetName(value) === null) throw assetRefusal('invalid asset name', value)

@@ -1,4 +1,5 @@
 import { getPhysicsTrapCount } from './extras/physicsFailure.js'
+import { ASSET_PROTOCOL, resolveReference } from './extras/assetURL.js'
 import * as THREE from './extras/three'
 import EventEmitter from 'eventemitter3'
 
@@ -256,32 +257,15 @@ export class World extends EventEmitter {
     }
   }
 
-  // A URL to load from. asset:// maps to the assets URL, never to a file path: the server and the node agent read
-  // local assets only through resolveAssetFile (ServerLoader.locate), which keeps them inside the assets directory.
+  // A URL to load from (assetURL.js resolveReference). asset:// maps to the assets URL, never to a file path: the
+  // server and the node agent read local assets only through resolveAssetFile (ServerLoader.locate), which keeps
+  // them inside the assets directory.
   resolveURL(url) {
-    if (!url) return url
-    url = url.trim()
-    if (url.startsWith('blob')) {
-      return url
+    const resolved = resolveReference(url, this.assetsUrl)
+    if (!this.assetsUrl && typeof resolved === 'string' && resolved.startsWith(ASSET_PROTOCOL)) {
+      console.error('resolveURL: no assetsUrl defined')
     }
-    if (url.startsWith('asset://')) {
-      if (this.assetsUrl) {
-        return url.replace('asset:/', this.assetsUrl)
-      } else {
-        console.error('resolveURL: no assetsUrl defined')
-        return url
-      }
-    }
-    if (url.match(/^https?:\/\//i)) {
-      return url
-    }
-    if (url.startsWith('//')) {
-      return `https:${url}`
-    }
-    if (url.startsWith('/')) {
-      return url
-    }
-    return `https://${url}`
+    return resolved
   }
 
   inject(runtime) {

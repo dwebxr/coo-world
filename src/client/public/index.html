@@ -67,11 +67,14 @@
           timers.push(setTimeout(run, ms))
         }
         var watch = null
+        var bodyWait = null
         var stop = function () {
           for (var i = 0; i < timers.length; i++) clearTimeout(timers[i])
           timers = []
           if (watch) clearInterval(watch)
           watch = null
+          if (bodyWait) clearInterval(bodyWait)
+          bodyWait = null
         }
         var previousFocus = null
         var remove = function () {
@@ -97,19 +100,20 @@
           if (typeof value === 'string') return value
           return String(value.message || value)
         }
-        var waitingForBody = false
         var show = function (kind, title, cause) {
           if (ready || dismissed || box) return
           // A timer can fire before the parser has made <body> (the head has arrived, the rest of the document is
           // slow or stalled). Appending then throws, and with `box` already set no later message could be shown:
-          // the page stayed black for good. Wait for the document instead.
+          // the page stayed black for good. Look again until the body is there (not DOMContentLoaded: a script in
+          // the body that is slow to load holds that event back while the body is already present).
           if (!document.body) {
-            if (!waitingForBody) {
-              waitingForBody = true
-              document.addEventListener('DOMContentLoaded', function () {
-                waitingForBody = false
+            if (!bodyWait) {
+              bodyWait = setInterval(function () {
+                if (!document.body) return
+                clearInterval(bodyWait)
+                bodyWait = null
                 show(kind, title, cause)
-              })
+              }, 100)
             }
             return
           }

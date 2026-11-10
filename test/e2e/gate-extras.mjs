@@ -336,19 +336,22 @@ try {
     const shown = async (probe, selector, timeout, errors) => {
       try {
         await probe.locator(selector).waitFor({ state: 'visible', timeout })
-      } catch {
-        const state = await probe
-          .evaluate(() => ({
+      } catch (cause) {
+        // the dump has its own deadline: a page that is stuck must not turn a bounded wait into an endless one
+        const state = await Promise.race([
+          probe.evaluate(() => ({
             timings: window.__worldBootTimings ?? null,
             readyState: document.readyState,
             body: !!document.body,
             boxes: [...document.querySelectorAll('.boot-error')].map(box => box.className),
             rootChildren: document.getElementById('root')?.childNodes.length ?? null,
             boot: typeof window.__worldBoot,
-          }))
-          .catch(error => ({ evaluate: String(error) }))
+          })),
+          sleep(5000).then(() => ({ evaluate: 'no answer from the page in 5 s' })),
+        ]).catch(error => ({ evaluate: String(error) }))
         throw new Error(
-          `${selector} not visible after ${timeout} ms; page: ${JSON.stringify(state)}; errors: ${JSON.stringify(errors)}`
+          `${cause.message.split('\n')[0]} (${selector}); page: ${JSON.stringify(state)}; errors: ${JSON.stringify(errors)}`,
+          { cause }
         )
       }
     }
@@ -495,60 +498,83 @@ try {
       }
     }
 
-    // 6. the head of the document arrives and the rest stalls past the slow mark (a slow or interrupted
-    //    connection): the timer fires while there is no <body> yet. The message must still come once the document
-    //    is there (it used to throw on the missing body and then never show anything: a black page for good)
+    // 6. the timer fires while the document has no <body> yet (the head has arrived, the rest is slow or stalled).
+    //    The message must still come as soon as the body is there, also while a slow script in the body still holds
+    //    DOMContentLoaded back (it used to throw on the missing body and then never show anything: a black page
+    //    for good). A small server in front of the world puts a script at the end of the head, after the watchdog,
+    //    and holds its answer: the parser stops there, in every engine, with the watchdog running and no body.
     {
       const HOLD = 3000
-      const splitter = http.createServer(async (req, res) => {
-        try {
-          const upstream = await fetch(`http://127.0.0.1:${PORT}${req.url}`, {
-            headers: { 'accept-encoding': 'identity' },
-          })
-          const body = Buffer.from(await upstream.arrayBuffer())
-          const headers = {}
-          upstream.headers.forEach((value, name) => {
-            if (!['content-encoding', 'content-length', 'transfer-encoding', 'connection'].includes(name)) {
-              headers[name] = value
-            }
-          })
-          res.writeHead(upstream.status, headers)
-          if (req.url !== '/') return res.end(body)
-          const html = body.toString()
-          const cut = html.indexOf('</head>') + '</head>'.length
-          ok(cut > '</head>'.length, 'the document has a head to split after')
-          res.write(html.slice(0, cut))
-          await sleep(HOLD)
-          res.end(html.slice(cut))
-        } catch (error) {
-          res.destroy(error)
-        }
-      })
-      await new Promise((resolve, reject) => splitter.once('error', reject).listen(PORT + 2, '127.0.0.1', resolve))
-      const { context, probe, errors } = await fresh(
-        { error: 300, slow: 1000 },
-        p =>
-          p.route(/\.js(\?|$)/, route =>
-            route.request().url().includes('/env.js') ? route.continue() : route.abort()
-          ),
-        { url: `http://127.0.0.1:${PORT + 2}/`, waitUntil: 'commit' }
-      )
+      let front = null
+      let context = null
       try {
-        // the slow mark (1 s) passes while only the head is there
-        await sleep(1500)
-        eq(await probe.evaluate(() => !!document.body), false, 'the body has not arrived at the slow mark')
+        front = http.createServer(async (req, res) => {
+          try {
+            if (req.url === '/__e2e_hold') {
+              await sleep(HOLD)
+              res.writeHead(200, { 'content-type': 'text/javascript' })
+              return res.end('')
+            }
+            const upstream = await fetch(`http://127.0.0.1:${PORT}${req.url}`, {
+              headers: { 'accept-encoding': 'identity' },
+            })
+            let body = Buffer.from(await upstream.arrayBuffer())
+            const headers = {}
+            upstream.headers.forEach((value, name) => {
+              if (!['content-encoding', 'content-length', 'transfer-encoding', 'connection'].includes(name)) {
+                headers[name] = value
+              }
+            })
+            if (req.url === '/') {
+              const html = body.toString()
+              if (!html.includes('__worldBootTimings') || !html.includes('</head>')) {
+                throw new Error('the document has no watchdog or no head to hold')
+              }
+              body = Buffer.from(html.replace('</head>', '<script src="/__e2e_hold"></script></head>'))
+            }
+            res.writeHead(upstream.status, headers)
+            res.end(body)
+          } catch (error) {
+            res.destroy(error)
+          }
+        })
+        await new Promise((resolve, reject) => front.once('error', reject).listen(0, '127.0.0.1', resolve))
+        const fresh6 = await fresh(
+          { error: 300, slow: 1000 },
+          async p => {
+            // the app's script never arrives, and the first script of the body is slow: once the head is released
+            // the body is there, but DOMContentLoaded is still far away
+            await p.route(/\.js(\?|$)/, async route => {
+              if (!route.request().url().includes('/env.js')) return route.abort()
+              await sleep(HOLD + 6000)
+              await route.continue().catch(() => {})
+            })
+          },
+          { url: `http://127.0.0.1:${front.address().port}/`, waitUntil: 'commit' }
+        )
+        context = fresh6.context
+        const { probe, errors } = fresh6
+        // the slow mark (1 s) passes while the parser is held in the head
+        await sleep(1800)
+        const held = await probe.evaluate(() => ({ body: !!document.body, timings: window.__worldBootTimings }))
+        eq(held.body, false, 'no body at the slow mark')
+        eq(held.timings?.slow, 1000, 'the watchdog runs with the test timings')
         await shown(probe, '.boot-error.blocking', 15000 * TIMEOUT_SCALE, errors)
         eq(
           await probe.locator('.boot-error.blocking .boot-error-title').textContent(),
           'The world did not start.',
-          'the message comes once the document is there'
+          'the message comes once the body is there'
         )
+        eq(await probe.evaluate(() => document.readyState), 'loading', 'without waiting for DOMContentLoaded')
         eq(errors.length, 0, `no error from the watchdog itself: ${errors.join(' | ')}`)
         await closeStaysClosed(probe)
       } finally {
-        await context.close()
-        await new Promise(resolve => splitter.close(resolve))
-        splitter.closeAllConnections?.()
+        await context?.close().catch(() => {})
+        if (front) {
+          const closed = new Promise(resolve => front.close(resolve))
+          front.closeAllConnections?.()
+          await closed
+        }
       }
     }
 

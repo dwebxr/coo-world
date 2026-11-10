@@ -38,6 +38,7 @@ import { formatUnits, isTxHash } from '../extras/evmAbi'
 import { createSolanaRpc } from '../../server/solanaRpc'
 import { createTokenBalanceService } from '../../server/tokenBalance'
 import { grantTokenRank, persistRank, revokeTokenRank } from '../../server/rankGrants'
+import { eventPayload } from '../extras/eventPayload.js'
 
 const SAVE_INTERVAL = parseInt(process.env.SAVE_INTERVAL || '60') // seconds
 const PING_RATE = 10 // seconds
@@ -704,7 +705,7 @@ export class ServerNetwork extends System {
 
       // enter events on the server are sent after the snapshot.
       // on the client these are sent during PlayerRemote.js entity instantiation!
-      this.world.events.emit('enter', { playerId: socket.player.data.id })
+      this.world.events.emit('enter', eventPayload({ playerId: socket.player.data.id }))
     } catch (err) {
       this.logOnce(ws, 'connection', `onConnection: ${briefError(err)}`)
       try {
@@ -859,7 +860,7 @@ export class ServerNetwork extends System {
     }
     // emit event for all except admin
     if (cmd !== 'admin') {
-      this.world.events.emit('command', { playerId, args })
+      this.world.events.emit('command', eventPayload({ playerId, args }))
     }
   }
 

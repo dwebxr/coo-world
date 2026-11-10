@@ -33,6 +33,7 @@ import {
   pxToQuat,
   scratchPxVec3,
 } from '../extras/physxConvert.js'
+import { eventPayload } from '../extras/eventPayload.js'
 
 const teleportPosition = new THREE.Vector3()
 const anchorPosition = new THREE.Vector3()
@@ -1267,7 +1268,7 @@ export class PlayerLocal extends Entity {
     if (Object.prototype.hasOwnProperty.call(data, 'health')) {
       this.data.health = data.health
       this.nametag.health = data.health
-      this.world.events.emit('health', { playerId: this.data.id, health: data.health })
+      this.world.events.emit('health', eventPayload({ playerId: this.data.id, health: data.health }))
       // changed = true
     }
     if (Object.prototype.hasOwnProperty.call(data, 'avatar')) {

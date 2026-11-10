@@ -4,6 +4,7 @@ import { chatEnvelope, scriptChatMessage } from '../src/core/extras/chatPolicy.j
 import { applyInitials, copyFields } from '../src/core/extras/appFields.js'
 import { createLogOnce } from '../src/core/extras/logOnce.js'
 import { NODE_CLIMB_LIMIT } from '../src/core/extras/nodeLimits.js'
+import { eventPayload } from '../src/core/extras/eventPayload.js'
 import { sanitizePlayerSelfModify } from '../src/core/extras/entityModifyPolicy.js'
 import { readVec3, warnOnce } from '../src/core/extras/physxConvert.js'
 import { createEventLedger } from '../src/core/extras/appEventQueue.js'
@@ -261,6 +262,7 @@ const loadClass = (file, name, context = {}) => {
     copyFields,
     createLogOnce,
     NODE_CLIMB_LIMIT,
+    eventPayload,
     ...context,
   })
 }

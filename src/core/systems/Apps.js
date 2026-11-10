@@ -16,6 +16,7 @@ import { resolveOpenURL } from '../extras/worldOpenPolicy'
 import { toScriptError } from '../extras/scriptValues'
 import { createEventLedger } from '../extras/appEventQueue'
 import { applyInitials, copyFields } from '../extras/appFields'
+import { jsonCopy } from '../extras/scriptText'
 import { scriptChatMessage } from '../extras/chatPolicy'
 import { createLogOnce } from '../extras/logOnce'
 
@@ -24,6 +25,17 @@ const _rayDir = new THREE.Vector3()
 const _overlapOrigin = new THREE.Vector3()
 
 const isBrowser = typeof window !== 'undefined'
+
+// what a physics hit tells scripts about the shape it hit: primitive values only (the handle is shared by
+// every app's queries)
+function hitTag(handle) {
+  const tag = handle?.tag
+  return tag === undefined || tag === null || typeof tag === 'string' ? tag : undefined
+}
+function hitPlayerId(handle) {
+  const playerId = handle?.playerId
+  return playerId === undefined || playerId === null || typeof playerId === 'string' ? playerId : undefined
+}
 
 // app.configure reports a dropped field or a cut list once per app
 const warnConfigure = createLogOnce(message => console.warn(message))
@@ -196,8 +208,8 @@ export class Apps extends System {
           point: new THREE.Vector3().copy(hit.point),
           normal: new THREE.Vector3().copy(hit.normal),
           distance: hit.distance,
-          tag: hit.handle?.tag,
-          playerId: hit.handle?.playerId,
+          tag: hitTag(hit.handle),
+          playerId: hitPlayerId(hit.handle),
         }
       },
       overlapSphere(entity, radius, origin, layerMask) {
@@ -214,12 +226,12 @@ export class Apps extends System {
           return []
         }
         const hits = world.physics.overlapSphere(radius, _overlapOrigin, layerMask >>> 0)
-        return hits.map(hit => {
-          return hit.proxy
-        })
+        // new plain records, read now: the physics system reuses its hit objects for every query of every app
+        return hits.map(hit => ({ tag: hitTag(hit.handle) ?? null, playerId: hitPlayerId(hit.handle) ?? null }))
       },
       get(entity, key) {
-        return world.storage?.get(key)
+        // a copy: the stored object is shared by every app (and the store), so no script holds or patches it
+        return jsonCopy(world.storage?.get(key))
       },
       set(entity, key, value) {
         world.storage?.set(key, value)

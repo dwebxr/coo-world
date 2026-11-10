@@ -177,7 +177,7 @@ export class UIImage extends Node {
     this._left = source._left
     this._objectFit = source._objectFit
     this._backgroundColor = source._backgroundColor
-    this._margin = source._margin
+    this._margin = isArray(source._margin) ? [...source._margin] : source._margin
     return this
   }
 
@@ -430,11 +430,13 @@ export class UIImage extends Node {
   }
 
   set margin(value = defaults.margin) {
-    if (!isEdge(value)) {
+    // the node keeps its own copy of an array (read once, then checked), never the script's array
+    const edge = isArray(value) ? Array.from(value) : value
+    if (!isEdge(edge)) {
       throw new Error(`[uiimage] margin not a number or array of numbers`)
     }
-    if (this._margin === value) return
-    this._margin = value
+    if (this._margin === edge) return
+    this._margin = edge
     if (isArray(this._margin)) {
       const [top, right, bottom, left] = this._margin
       this.yogaNode?.setMargin(Yoga.EDGE_TOP, top * this.ui._res)

@@ -52,7 +52,7 @@ export class Sky extends Node {
     this._bg = source._bg
     this._hdr = source._hdr
     this._rotationY = source._rotationY
-    this._sunDirection = source._sunDirection
+    this._sunDirection = source._sunDirection ? source._sunDirection.clone() : source._sunDirection
     this._sunIntensity = source._sunIntensity
     this._sunColor = source._sunColor
     this._fogNear = source._fogNear
@@ -103,16 +103,26 @@ export class Sky extends Node {
     this.setDirty()
   }
 
+  // the environment hands this vector to the shadow system, which reads it every frame: the node keeps its own
+  // copy made from the given numbers (never the script's object) and hands scripts copies of it
   get sunDirection() {
-    return this._sunDirection
+    return this._sunDirection ? this._sunDirection.clone() : this._sunDirection
   }
 
   set sunDirection(value = defaults.sunDirection) {
     if (value !== null && !value?.isVector3) {
       throw new Error('[sky] sunDirection not a Vector3')
     }
-    if (this._sunDirection === value) return
-    this._sunDirection = value
+    let direction = null
+    if (value !== null) {
+      const x = value.x
+      const y = value.y
+      const z = value.z
+      if (![x, y, z].every(Number.isFinite)) throw new Error('[sky] sunDirection not a Vector3')
+      direction = new THREE.Vector3(x, y, z)
+    }
+    if (direction === null ? this._sunDirection === null : this._sunDirection?.equals(direction)) return
+    this._sunDirection = direction
     this.needsRebuild = true
     this.setDirty()
   }

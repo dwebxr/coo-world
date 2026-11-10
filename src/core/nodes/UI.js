@@ -417,7 +417,7 @@ export class UI extends Node {
     this._borderWidth = source._borderWidth
     this._borderColor = source._borderColor
     this._borderRadius = source._borderRadius
-    this._padding = source._padding
+    this._padding = isArray(source._padding) ? [...source._padding] : source._padding
     this._flexDirection = source._flexDirection
     this._justifyContent = source._justifyContent
     this._alignItems = source._alignItems
@@ -704,11 +704,13 @@ export class UI extends Node {
   }
 
   set padding(value = defaults.padding) {
-    if (!isEdge(value)) {
+    // the node keeps its own copy of an array (read once, then checked), never the script's array
+    const edge = isArray(value) ? Array.from(value) : value
+    if (!isEdge(edge)) {
       throw new Error(`[ui] padding not a number or array of numbers`)
     }
-    if (this._padding === value) return
-    this._padding = value
+    if (this._padding === edge) return
+    this._padding = edge
     if (isArray(this._padding)) {
       const [top, right, bottom, left] = this._padding
       this.yogaNode?.setPadding(Yoga.EDGE_TOP, top * this._res)

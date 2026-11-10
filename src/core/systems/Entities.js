@@ -3,6 +3,7 @@ import { PlayerLocal } from '../entities/PlayerLocal'
 import { PlayerRemote } from '../entities/PlayerRemote'
 import { System } from './System'
 import { preflightPacket } from '../extras/clientPreflight'
+import { eventPayload } from '../extras/eventPayload.js'
 
 const Types = {
   app: App,
@@ -53,7 +54,7 @@ export class Entities extends System {
       // that way they can actually respond correctly to follow-through events.
       // see ServerNetwork.js -> onConnection
       if (this.world.network.isClient && data.owner !== this.world.network.id) {
-        this.world.events.emit('enter', { playerId: entity.data.id })
+        this.world.events.emit('enter', eventPayload({ playerId: entity.data.id }))
       }
     }
     if (data.owner === this.world.network.id) {

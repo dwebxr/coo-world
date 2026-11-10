@@ -2,6 +2,7 @@ import moment from 'moment'
 import { uuid } from '../utils'
 import { CHAT_BODY_MAX_LENGTH, chatEnvelope, cutText, sanitizeChatMessage } from '../extras/chatPolicy'
 import { System } from './System'
+import { eventPayload } from '../extras/eventPayload.js'
 
 /**
  * Chat System
@@ -66,7 +67,7 @@ export class Chat extends System {
       return callback({ playerId, cmd, value, args })
     }
     if (cmd !== 'admin') {
-      this.world.events.emit('command', { playerId, cmd, value, args })
+      this.world.events.emit('command', eventPayload({ playerId, cmd, value, args }))
     }
     this.world.network.send('command', { cmd, value, args })
   }

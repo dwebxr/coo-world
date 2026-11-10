@@ -20,7 +20,7 @@ import {
 import { Node } from './Node'
 import { callForScript } from '../extras/scriptValues'
 import { finiteNumber, massOk, MAX_PUSH, MIN_MASS, normalizeQuat, positionOk, pushDelta } from '../extras/physicsValidate.js'
-import { isFunction, isNumber, isString } from 'lodash-es'
+import { isFunction } from 'lodash-es'
 
 const _v1 = new THREE.Vector3()
 const _v2 = new THREE.Vector3()
@@ -339,11 +339,12 @@ export class RigidBody extends Node {
     return this._tag
   }
 
+  // other apps' raycasts, overlaps and contacts report it: a primitive string only
   set tag(value = defaults.tag) {
-    if (isNumber(value)) {
+    if (typeof value === 'number') {
       value = value + ''
     }
-    if (value !== null && !isString(value)) {
+    if (value !== null && typeof value !== 'string') {
       throw new Error('[rigidbody] tag not a string')
     }
     this._tag = value

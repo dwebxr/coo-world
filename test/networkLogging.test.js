@@ -14,6 +14,7 @@ import {
 } from '../src/core/extras/entityModifyPolicy.js'
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../src/core/extras/settingsPolicy.js'
 import { briefError, createLogOnce } from '../src/core/extras/logOnce.js'
+import { eventPayload } from '../src/core/extras/eventPayload.js'
 import { Ranks } from '../src/core/extras/ranks.js'
 import { sanitizeBlueprintModify } from '../src/core/extras/blueprintPolicy.js'
 
@@ -75,6 +76,7 @@ function fixture() {
     isKnownSettingKey,
     normalizeSettingValue,
     briefError,
+    eventPayload,
     moment,
     Ranks,
     uuid: () => 'message',

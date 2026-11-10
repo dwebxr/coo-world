@@ -171,8 +171,8 @@ export class UIText extends Node {
     this._left = source._left
     this._backgroundColor = source._backgroundColor
     this._borderRadius = source._borderRadius
-    this._margin = source._margin
-    this._padding = source._padding
+    this._margin = isArray(source._margin) ? [...source._margin] : source._margin
+    this._padding = isArray(source._padding) ? [...source._padding] : source._padding
     this._value = source._value
     this._fontSize = source._fontSize
     this._color = source._color
@@ -343,11 +343,13 @@ export class UIText extends Node {
   }
 
   set margin(value = defaults.margin) {
-    if (!isEdge(value)) {
+    // the node keeps its own copy of an array (read once, then checked), never the script's array
+    const edge = isArray(value) ? Array.from(value) : value
+    if (!isEdge(edge)) {
       throw new Error(`[uitext] margin not a number or array of numbers`)
     }
-    if (this._margin === value) return
-    this._margin = value
+    if (this._margin === edge) return
+    this._margin = edge
     if (isArray(this._margin)) {
       const [top, right, bottom, left] = this._margin
       this.yogaNode?.setMargin(Yoga.EDGE_TOP, top * this.ui._res)
@@ -365,11 +367,13 @@ export class UIText extends Node {
   }
 
   set padding(value = defaults.padding) {
-    if (!isEdge(value)) {
+    // the node keeps its own copy of an array (read once, then checked), never the script's array
+    const edge = isArray(value) ? Array.from(value) : value
+    if (!isEdge(edge)) {
       throw new Error(`[uitext] padding not a number or array of numbers`)
     }
-    if (this._padding === value) return
-    this._padding = value
+    if (this._padding === edge) return
+    this._padding = edge
     if (isArray(this._padding)) {
       const [top, right, bottom, left] = this._padding
       this.yogaNode?.setPadding(Yoga.EDGE_TOP, top * this.ui._res)

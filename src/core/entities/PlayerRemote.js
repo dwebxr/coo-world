@@ -15,6 +15,7 @@ import {
   playerAvatarUrl,
   switchToBuiltinAvatar,
 } from '../extras/playerAvatarFallback'
+import { eventPayload } from '../extras/eventPayload.js'
 
 const anchorPosition = new THREE.Vector3()
 const anchorQuaternion = new THREE.Quaternion()
@@ -223,7 +224,7 @@ export class PlayerRemote extends Entity {
     if (Object.prototype.hasOwnProperty.call(data, 'health')) {
       this.data.health = data.health
       this.nametag.health = data.health
-      this.world.events.emit('health', { playerId: this.data.id, health: data.health })
+      this.world.events.emit('health', eventPayload({ playerId: this.data.id, health: data.health }))
     }
     if (Object.prototype.hasOwnProperty.call(data, 'avatar')) {
       this.data.avatar = data.avatar
@@ -260,7 +261,7 @@ export class PlayerRemote extends Entity {
     this.base.deactivate()
     this.avatar = null
     this.world.setHot(this, false)
-    this.world.events.emit('leave', { playerId: this.data.id })
+    this.world.events.emit('leave', eventPayload({ playerId: this.data.id }))
     this.aura.deactivate()
     this.aura = null
 

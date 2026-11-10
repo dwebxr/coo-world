@@ -148,10 +148,10 @@ export class Particles extends Node {
     super.copy(source, recursive)
 
     this._emitting = source._emitting
-    this._shape = source._shape
+    this._shape = [...source._shape]
     this._direction = source._direction
     this._rate = source._rate
-    this._bursts = source._bursts
+    this._bursts = source._bursts.map(burst => ({ ...burst }))
     this._duration = source._duration
     this._loop = source._loop
     this._max = source._max
@@ -248,11 +248,14 @@ export class Particles extends Node {
     return this._shape
   }
 
+  // shape and bursts are kept as the node's own copies (the defaults were one array shared by every particles
+  // node of every app); each value is read once, then checked
   set shape(value = defaults.shape) {
-    if (!isShape(value)) {
+    const shape = isArray(value) ? Array.from(value) : value
+    if (!isShape(shape)) {
       throw new Error('[particles] shape invalid')
     }
-    this._shape = value
+    this._shape = shape
     this.needsRebuild = true
     this.setDirty()
   }
@@ -288,10 +291,11 @@ export class Particles extends Node {
   }
 
   set bursts(value = defaults.bursts) {
-    if (!isBursts(value)) {
+    const bursts = isArray(value) ? Array.from(value, item => ({ time: item?.time, count: item?.count })) : value
+    if (!isBursts(bursts)) {
       throw new Error('[particles] bursts invalid')
     }
-    this._bursts = value
+    this._bursts = bursts
     this.needsRebuild = true
     this.setDirty()
   }

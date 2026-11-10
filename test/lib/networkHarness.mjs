@@ -26,6 +26,7 @@ import {
 } from '../../src/core/extras/entityModifyPolicy.js'
 import { readInboundPacket } from '../../src/server/inboundDecode.js'
 import { sanitizeChatMessage } from '../../src/core/extras/chatPolicy.js'
+import { eventPayload } from '../../src/core/extras/eventPayload.js'
 import * as solanaGating from '../../src/server/solana-gating.js'
 import * as evmGating from '../../src/server/evm-gating.js'
 import { parseTipAmount, tipAmountReason } from '../../src/core/extras/evmTokens.js'
@@ -157,6 +158,7 @@ function networkClass(context) {
     sanitizePersistedApp,
     sanitizeSpawn,
     sanitizeChatMessage,
+    eventPayload,
     isObject: value => value !== null && typeof value === 'object',
     ...context,
   })
@@ -254,6 +256,7 @@ export function connectionMethod(context) {
     briefError,
     solanaGating,
     evmGating,
+    eventPayload,
     ...context,
   })
 }

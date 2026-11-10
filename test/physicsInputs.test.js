@@ -463,7 +463,7 @@ function queries() {
         distance: 5,
         handle: { tag: 'box', playerId: 'p' },
       }),
-      overlapSphere: native('overlapSphere', [{ proxy: { tag: 'box', playerId: 'p' } }]),
+      overlapSphere: native('overlapSphere', [{ handle: { tag: 'box', playerId: 'p' } }]),
     },
   }
   const apps = new Apps(world)

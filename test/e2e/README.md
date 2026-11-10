@@ -45,6 +45,22 @@ renderer, harden state).
 the logs and screenshots away from `test/e2e/out/`, and `E2E_<ENGINE>_EXECUTABLE=<path>` pairs the
 harness with a specific browser build.
 
+`fullstack.mjs` A12 bounds what an event flood leaves behind by asking the server process itself:
+`startServer({ memoryProbe: true })` starts it with `--expose-gc`, preloads `lib/memory-probe.js` and opens an
+IPC channel to it. `server.retainedMiB()` sends a request with a fresh id over that channel; the process runs a full
+collection and replies with the same id and its `heapUsed` and `external` (JS objects and strings, and the memory
+behind Buffers and ArrayBuffers). After the floods that sum must come back within 48 MiB of its pre-flood value by a
+deadline 60 s × `E2E_TIMEOUT_SCALE` after the step starts waiting: no request starts after the deadline, each one
+gets at most the time left, a reading that arrives after it fails the step, and a request that times out only
+counts as not settled yet. The bound catches a server that keeps the large flood (114 MiB of events) but allows a
+server to keep the two smaller ones (9 MiB), and it does not see native allocations that V8 is not told about, pages
+the allocator keeps, or kernel socket buffers. The step's rejection assertions (the 1009 close codes, the drop logs,
+the ping after the flood) carry the rest. Resident memory was the earlier measure and made the step fail on a busy
+machine: it counts garbage the collector has not reached yet, and it stays high even after a collection because of
+free heap capacity and allocator fragmentation. `test/e2eMemoryProbe.test.js` checks the probe against a process
+that holds heap and buffer memory, drops it and makes garbage, and checks the request protocol and the deadline
+(`lib/memory.mjs`).
+
 ## Token gate (local only)
 
 Run `node test/e2e/token-gate.mjs --engine=chromium` (or `webkit` / `firefox`) after the four builds.

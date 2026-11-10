@@ -226,11 +226,12 @@ test('emotes a remote player keeps sending are bounded: a dropped one leaves the
   const locomotion = mixer.stats.actions.total
   assert.equal(locomotion, 13)
   const base = loads.length
-  // each emote is loaded, mixed and playing (its tracks bound to the bones) before the next one replaces it
+  // each emote is loaded, mixed and playing (its tracks bound to the bones) before the next one replaces it, all
+  // within one frame (a remote player cycling emotes the loader already holds), so each replaced one is still
+  // fading out when it is dropped
   for (let i = 0; i < 200; i++) {
     instance.setEmote(`asset://emote.glb?s=${1 + i / 1000}`)
     await tick()
-    instance.update(0.016)
   }
   assert.equal(loads.length - base, 200)
   // what stays in the mixer: the locomotion actions and the 16 most recent emotes, with their binding references
@@ -242,6 +243,7 @@ test('emotes a remote player keeps sending are bounded: a dropped one leaves the
   assert.ok(mixer.stats.controlInterpolants.inUse <= locomotion + 16, `${mixer.stats.controlInterpolants.inUse}`)
   assert.equal(mixer.existingAction(clips.get('asset://emote.glb?s=1')), null, 'the oldest left the mixer')
   assert.ok(mixer.existingAction(clips.get('asset://emote.glb?s=1.199')).isRunning(), 'the current one plays')
+  instance.update(0.016)
   // only the most recent few stay mixed: asking for an old one loads it again, a recent one does not
   instance.setEmote('asset://emote.glb?s=1.199')
   instance.setEmote('asset://emote.glb?s=1.198')

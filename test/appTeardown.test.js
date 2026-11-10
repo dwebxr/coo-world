@@ -25,6 +25,7 @@ before(async () => {
     export { ClientControls } from './src/core/systems/ClientControls'
     export { createNode } from './src/core/extras/createNode'
     export { ServerLiveKit } from './src/core/systems/ServerLiveKit'
+    export { placeWorldNode } from './src/core/extras/nodeLimits'
   `)
   m = await import(bundle.url)
 })
@@ -231,10 +232,11 @@ test('teardown: a rebuild ends the old run; its handles stop working, the new ru
     world.controls.actions.map(action => action.label),
     ['Use']
   )
-  // an old world-space node cannot be mounted into the new run
+  // an old world-space node cannot be mounted into the new run: its handle belongs to the old run
   const before = app.liveNodes
-  old.outside.active = false
-  old.outside.active = true
+  assert.throws(() => (old.outside.active = false), /this app has stopped/)
+  assert.throws(() => (old.outside.active = true), /this app has stopped/)
+  assert.throws(() => old.outside.add(old.local), /this app has stopped/)
   assert.equal(app.liveNodes, before)
   // the new run works
   current.player.damage(10)
@@ -545,6 +547,34 @@ test('world nodes: a world-space node moved under a node leaves its app world-no
   assert.equal(app.liveNodes, 2)
   app.destroy()
   assert.equal(app.liveNodes, 0)
+})
+
+// the review's inactive-node flood: inactive world-space nodes take a step of the world-node drain without being live,
+// so a drain bounded by the live-node budget left the node placed after 20,001 of them mounted (rebuilt, then removed;
+// the inactive ones are listed directly, the way world.add lists them, to keep the test small)
+test('world nodes: every registered world node is drained, however many inactive ones come first', async () => {
+  const { world, app } = makeWorld((world, app) => {
+    app.state.place = () => world.add(app.create('group'))
+  })
+  await tick()
+  const flood = () => {
+    for (let i = 0; i < 20001; i++) m.placeWorldNode(app, m.createNode('group', { active: false }))
+    app.data.state.place()
+  }
+  flood()
+  assert.equal(app.worldNodes.size, 20002)
+  assert.equal(app.liveNodes, 2, 'the root and the last world node')
+  world.scripts['s.js'] = (world, app) => {
+    app.state.place = () => world.add(app.create('group'))
+  }
+  world.blueprints.modify({ id: 'bp', version: 1 })
+  await tick()
+  assert.equal(app.liveNodes, 1, "after the rebuild: only the new run's root")
+  assert.equal(app.worldNodes.size, 0)
+  flood()
+  app.destroy()
+  assert.equal(app.liveNodes, 0)
+  assert.equal(app.worldNodes.size, 0)
 })
 
 test('fetch and setTimeout kept from an old run act for nobody after a rebuild', async () => {

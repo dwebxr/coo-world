@@ -1,4 +1,4 @@
-import { callForScript, toScriptError } from '../src/core/extras/scriptValues.js'
+import { callForScript } from '../src/core/extras/scriptValues.js'
 import * as runTeardown from '../src/core/extras/runTeardown.js'
 import { stoppedError } from '../src/core/extras/physicsFailure.js'
 import { chatEnvelope, scriptChatMessage } from '../src/core/extras/chatPolicy.js'
@@ -297,7 +297,6 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
       readVec3,
       warnOnce,
       callForScript,
-      toScriptError,
       stoppedError,
       ...runTeardown,
       console,

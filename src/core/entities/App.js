@@ -9,9 +9,10 @@ import { serializeError } from '../extras/serializeError'
 import { registerAppProxy } from '../nodes/refs'
 import { createScriptTimers } from '../extras/scriptTimers'
 import { createScriptResponse, toHostFetchOptions } from '../extras/scriptFetch'
+import { revokeRunObjectURLs } from '../extras/scriptBlob'
 import { toScriptError } from '../extras/scriptValues'
 import { copyProps } from '../extras/appFields'
-import { NODE_LIMIT, NodeLimitError } from '../extras/nodeLimits.js'
+import { NodeLimitError } from '../extras/nodeLimits.js'
 import { Teardown, beginTeardown, tornDown } from '../extras/runTeardown.js'
 import { createEventQueue } from '../extras/appEventQueue'
 import { briefError, createLogOnce } from '../extras/logOnce'
@@ -80,12 +81,17 @@ export class App extends Entity {
     this.build()
   }
 
+  // (app.create) the node belongs to this run until it is mounted (its proxy is bound to that run: Node.js)
   createNode(name, data) {
     const node = createNode(name, data)
+    node._created = { entity: this, run: this.deadHook }
     return node
   }
 
   async build(crashed) {
+    // asked for while this app's teardown is on the stack (a host listener of an event its script emitted from
+    // destroy): it waits until the teardown has finished (unbuild)
+    if (this.tearingDown) return this.deferTransition('build', crashed)
     this.building = true
     const n = ++this.n
     const failureVersion = this.physicsFailureVersion
@@ -239,10 +245,45 @@ export class App extends Entity {
     this.building = false
   }
 
+  // Transitions are serialised: a teardown runs to its end on the run it captured. A build or destroy asked for while
+  // it is on the stack (from a host listener of an event the script emits from destroy) waits until it has finished,
+  // coalesced (a destroy wins over a build, a crash rebuild over a plain one), and a re-entrant unbuild does nothing.
+  unbuild() {
+    if (this.tearingDown) return
+    this.tearingDown = true
+    try {
+      App.prototype.teardownRun.call(this)
+    } finally {
+      this.tearingDown = false
+      App.prototype.runDeferredTransition.call(this)
+    }
+  }
+
+  deferTransition(kind, arg) {
+    const pending = this.pendingTransition
+    if (kind === 'destroy' || !pending) this.pendingTransition = { kind, arg }
+    else if (pending.kind === 'build') pending.arg = pending.arg || arg
+  }
+
+  runDeferredTransition() {
+    const pending = this.pendingTransition
+    if (!pending) return
+    this.pendingTransition = null
+    queueMicrotask(() => {
+      if (pending.kind === 'destroy') return this.destroy(pending.arg)
+      if (this.destroyed || this.world.fatalError) return
+      this.build(pending.arg).catch(err => {
+        handlePhysicsFailure(err, { entity: this, phase: 'deferred build' })
+        console.error(`[app] deferred build failed (entity ${this.data.id})`)
+        this.building = false
+      })
+    })
+  }
+
   // Every stage runs even when an earlier one throws (a script's destroy listener, a script callback reached
   // from a cleanup, a node's unmount), so the nodes are unmounted and release their budget, listeners, timers
   // and requests are gone, and the run is latched dead whatever the script did.
-  unbuild() {
+  teardownRun() {
     const stage = (name, fn) => {
       try {
         fn()
@@ -295,17 +336,19 @@ export class App extends Entity {
     }
     this.players = null
     // deactivate local node (unless another app now holds it: one that took over a world-space node of this app's
-    // with this app's root moved under it). From here on nothing mounts for this run
+    // with this app's root moved under it). From here on nothing mounts for this run, and nothing is placed in world
+    // space for it, so the world-node list can only shrink: its size now bounds the drain below
     beginTeardown(run, Teardown.NODES)
+    const worldNodeCount = this.worldNodes.size
     stage('root', () => {
       const root = this.root
       if (root?.mounted && root._nodeOwner !== this) return
       root?.deactivate()
     })
     // deactivate world nodes
-    // (only nodes this app still owns: one another app took over left this list when it moved). The list is read
-    // again after every step (an unmount can run script code), bounded by the node budget
-    for (let steps = 0; this.worldNodes.size && steps <= NODE_LIMIT; steps++) {
+    // (only nodes this app still owns: one another app took over left this list when it moved). Every registered node
+    // is drained, active or not; the list is read again after every step (an unmount can run script code)
+    for (let steps = 0; this.worldNodes.size && steps < worldNodeCount; steps++) {
       const [node] = this.worldNodes
       this.worldNodes.delete(node)
       if (node._worldOwner !== this) continue
@@ -325,12 +368,15 @@ export class App extends Entity {
     beginTeardown(run, Teardown.REQUESTS)
     stage('requests', () => this.abortController?.abort())
     this.abortController = null
+    // revoke the object URLs the run made
+    beginTeardown(run, Teardown.OBJECT_URLS)
+    stage('object urls', () => revokeRunObjectURLs(run))
     // cancel script timers
     beginTeardown(run, Teardown.TIMERS)
     stage('timers', () => this.timers.clear())
     // mark dead and re-create hook (async etc): proxies, nodes and player handles of this run stop working
-    this.deadHook.dead = true
-    this.deadHook = { dead: false }
+    run.dead = true
+    if (this.deadHook === run) this.deadHook = { dead: false }
     // clear fields
     stage('fields', () => this.onFields?.([]))
   }
@@ -469,6 +515,8 @@ export class App extends Entity {
 
   destroy(local) {
     if (this.destroyed) return
+    // (asked for during this app's teardown: it runs once that has finished, see unbuild)
+    if (this.tearingDown) return this.deferTransition('destroy', local)
     this.destroyed = true
     this.n++
     this.eventQueue.clear()
@@ -607,7 +655,7 @@ export class App extends Entity {
       Promise.resolve(request).then(
         resp => {
           if (isDead()) return
-          resolve(createScriptResponse(resp, isDead))
+          resolve(createScriptResponse(resp, isDead, { entity: this, run }))
         },
         err => {
           if (isDead() || signal.aborted) return

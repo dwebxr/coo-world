@@ -135,7 +135,9 @@ export class SkinnedMesh extends Node {
     }
   }
 
+  // only a mounted skinned mesh animates (its mixer, and its place in world.hot, go with its unmount)
   play({ name, fade = 0.15, speed, loop = true }) {
+    if (!this.mounted || !this.obj || !this.canMount()) return
     if (!this.mixer) {
       this.mixer = new THREE.AnimationMixer(this.obj)
       this.ctx.world.setHot(this, true)

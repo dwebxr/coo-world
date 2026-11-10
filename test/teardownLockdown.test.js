@@ -328,7 +328,7 @@ test("player handles: an app's own cleanup callback can still end its effect and
   assert.equal(world.livekit.modifiers.p1.size, 1)
   const log = app.data.state.log
   app.destroy()
-  // ending works; anything else is refused once the app is being removed
-  assert.deepEqual(log, ['voice ok', 'cancel ok', `new effect: ${STOPPED}`, `damage: ${STOPPED}`])
+  // ending works, and so does a one-shot effect (damage) while the teardown runs; a new effect is refused
+  assert.deepEqual(log, ['voice ok', 'cancel ok', `new effect: ${STOPPED}`, 'damage ok'])
   assert.equal(world.livekit.modifiers.p1?.size ?? 0, 0)
 })

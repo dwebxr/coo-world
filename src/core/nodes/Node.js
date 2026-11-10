@@ -17,6 +17,74 @@ import {
 export { getRef, getNodeRef, resolveValueRef, secureRef } from './refs'
 export { NODE_CLIMB_LIMIT, NODE_DEPTH_LIMIT, NODE_LIMIT, NodeLimitError } from '../extras/nodeLimits.js'
 
+// Node proxies are bound to the app run their node belongs to (nodeRunOwner): once that run has ended (or crashed),
+// or its node teardown has started, every method and setter of the proxy throws the stopped error; getters keep
+// reading. The binding is applied where a proxy is stored (Node#proxy below), once for each method and setter, so
+// every getProxy() of every node class is covered: create, get, clone, parent/children, traverse.
+const runBound = new WeakSet() // the wrapped methods and setters (a subclass proxy copies its base's descriptors)
+
+// the app run a node belongs to: the one it was mounted for, or else the one that created it (app.create, clone)
+function nodeRunOwner(node) {
+  const ctx = node.ctx
+  if (ctx?.run) return ctx
+  return node._created
+}
+
+function assertNodeRunActive(node) {
+  const owner = nodeRunOwner(node)
+  const run = owner?.run
+  if (!run) return
+  const entity = owner.entity
+  if (run !== entity?.deadHook || tornDown(run, Teardown.NODES) || (entity.crashed && !entity.destroying)) {
+    throw stoppedError(entity)
+  }
+}
+
+// Setters share one wrapper per property name (a proxy can hold dozens of them; one closure each would make every
+// node proxy half as heavy again): it finds its node through the proxy it is called on, and the node's own setter for
+// that name. Methods keep a wrapper each, so a method taken off the proxy still works when called on its own.
+const proxyNodes = new WeakMap() // proxy -> node
+const nodeSetters = new WeakMap() // node -> Map(name -> the setter a node class defined)
+const sharedSetters = new Map() // name -> the shared wrapper
+
+function sharedSetter(key) {
+  let set = sharedSetters.get(key)
+  if (!set) {
+    set = function (value) {
+      const node = proxyNodes.get(this)
+      if (!node) throw new TypeError('[node] not a node')
+      assertNodeRunActive(node)
+      Reflect.apply(nodeSetters.get(node).get(key), this, [value])
+    }
+    runBound.add(set)
+    sharedSetters.set(key, set)
+  }
+  return set
+}
+
+function bindProxyToRun(node, proxy) {
+  proxyNodes.set(proxy, node)
+  let setters = nodeSetters.get(node)
+  if (!setters) nodeSetters.set(node, (setters = new Map()))
+  for (const key of Reflect.ownKeys(proxy)) {
+    const desc = Reflect.getOwnPropertyDescriptor(proxy, key)
+    if (typeof desc.value === 'function' && !runBound.has(desc.value)) {
+      const method = desc.value
+      const bound = function (...args) {
+        assertNodeRunActive(node)
+        return Reflect.apply(method, this, args)
+      }
+      runBound.add(bound)
+      Object.defineProperty(proxy, key, { ...desc, value: bound })
+    } else if (desc.set && !runBound.has(desc.set)) {
+      // (a subclass proxy copies its base's descriptors: those setters are already shared, their originals listed)
+      setters.set(key, desc.set)
+      Object.defineProperty(proxy, key, { ...desc, set: sharedSetter(key) })
+    }
+  }
+  return proxy
+}
+
 const _v1 = new THREE.Vector3()
 const _v2 = new THREE.Vector3()
 const _v3 = new THREE.Vector3()
@@ -149,6 +217,26 @@ export class Node {
     this._appRoot = null
     // true while this node unmounts: nothing mounts under it meanwhile (see deactivate)
     this._unmounting = false
+    // the app run that created this node (App.createNode, or a clone's source), until it is mounted for one
+    this._created = null
+  }
+
+  // the script-facing proxy (see bindProxyToRun): whatever a node class stores here is bound to the node's app run
+  get proxy() {
+    return this._proxy
+  }
+
+  set proxy(value) {
+    this._proxy = value ? bindProxyToRun(this, value) : value
+  }
+
+  // The one gate on the way to a node class's mount() and commit() (Node.activate and Node.clean are the only
+  // callers of either; a class's own commit mounts or rebuilds from there): nothing mounts or rebuilds while the node,
+  // or the node above it, is unmounting, nor for an app run that has ended or whose node teardown has started.
+  canMount() {
+    if (this._unmounting || this.parent?._unmounting) return false
+    const run = this.ctx?.run
+    return !run || (run === this.ctx.entity?.deadHook && !tornDown(run, Teardown.NODES))
   }
 
   // Mounts this node and its active descendants into `ctx` (the world and the entity that owns them). A mounted
@@ -160,10 +248,8 @@ export class Node {
     if (ctx) this.ctx = ctx
     if (!this._active || !this.ctx) return
     // a context from an app run that has ended (the app was rebuilt or removed), or whose node teardown has started,
-    // mounts nothing; nor does a node added under one that is unmounting
-    const run = this.ctx.run
-    if (run && (run !== this.ctx.entity?.deadHook || tornDown(run, Teardown.NODES))) return
-    if (this.parent?._unmounting) return
+    // mounts nothing; nor does a node added under one that is unmounting (canMount)
+    if (!this.canMount()) return
     // top down mount
     this.updateTransform()
     const entity = this.ctx.entity
@@ -337,7 +423,8 @@ export class Node {
       if (didTransform) {
         node.updateTransform()
       }
-      if (node.mounted) {
+      // (a commit can mount or rebuild: it passes the same gate as a mount)
+      if (node.mounted && node.canMount()) {
         node.commit(didTransform)
       }
       node.isDirty = false
@@ -386,6 +473,8 @@ export class Node {
   }
 
   copy(source, recursive) {
+    // a clone belongs to the run its source belongs to
+    this._created = nodeRunOwner(source) || null
     this.id = source.id
     this.position.copy(source.position)
     this.quaternion.copy(source.quaternion)

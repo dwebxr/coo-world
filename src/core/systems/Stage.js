@@ -10,6 +10,27 @@ import { hardenForScripts } from '../extras/scriptHardening'
 
 const vec2 = new THREE.Vector2()
 
+// A linked instance's matrix is its node's own matrixWorld, which scripts hold. InstancedMesh.setMatrixAt would call
+// that object's toArray (a script can define one) and hand it the shared instance buffer. Instead the values are read
+// with the class's own method into a private array (reading `elements` can still run script code: a script can make it
+// an accessor, so callers check their bookkeeping again afterwards), kept only if they are numbers, and written into the
+// buffer by the host.
+const toArray = THREE.Matrix4.prototype.toArray
+const copyMatrix = THREE.Matrix4.prototype.copy
+const matrixValues = new Array(16)
+
+function readMatrix(matrix) {
+  toArray.call(matrix, matrixValues, 0)
+  for (let i = 0; i < 16; i++) if (typeof matrixValues[i] !== 'number') matrixValues[i] = 0
+  return matrixValues
+}
+
+function writeMatrix(iMesh, idx, values) {
+  const array = iMesh.instanceMatrix.array
+  // (a slot past the buffer is written when clean() grows it)
+  if (idx * 16 + 16 <= array.length) array.set(values, idx * 16)
+}
+
 // what a material facade passes to the renderer, which reads it every frame for every app: primitives only (a boxed
 // Number or an object with its own valueOf would run script code inside the renderer)
 function materialNumber(value, name) {
@@ -470,6 +491,8 @@ class Model {
 
   create(node, matrix) {
     this.idleSince = null
+    // the values first (reading them can run script code), then the instance and its slot
+    const values = readMatrix(matrix)
     const item = {
       idx: this.items.length,
       node,
@@ -480,7 +503,7 @@ class Model {
       // octree
     }
     this.items.push(item)
-    this.iMesh.setMatrixAt(item.idx, item.matrix) // silently fails if too small, gets increased in clean()
+    writeMatrix(this.iMesh, item.idx, values) // a slot past the buffer is written when clean() grows it
     this.dirty = true
     const sItem = {
       matrix,
@@ -531,9 +554,11 @@ class Model {
     }
   }
 
+  // (the values are read first; they go to the instance's slot only if it is still there after that)
   move(item, matrix) {
-    item.matrix.copy(matrix)
-    this.iMesh.setMatrixAt(item.idx, matrix)
+    if (item.matrix !== matrix) copyMatrix.call(item.matrix, matrix)
+    const values = readMatrix(matrix)
+    if (this.items[item.idx] === item) writeMatrix(this.iMesh, item.idx, values)
     this.dirty = true
   }
 
@@ -550,20 +575,23 @@ class Model {
       this.dirty = true
     } else {
       // there are other instances after this one in the buffer, swap it with the last one and pop it off the end. The
-      // list is updated first and the moved instance's values written after: its matrix is a node's own matrixWorld,
-      // on which a script can define methods (setMatrixAt calls its toArray), and those may throw
+      // list is updated first; the moved instance's values are read after that (reading can run script code, which
+      // can take more instances out or move this one) and written only if it is still the instance in that slot
       const idx = item.idx
       last.idx = idx
       this.items[idx] = last
       this.items.pop()
       this.dirty = true
+      let values
       try {
-        this.iMesh.setMatrixAt(idx, last.matrix)
+        values = readMatrix(last.matrix)
       } catch (err) {
         // the slot must not keep showing the removed instance: it shows nothing until the moved one moves again
-        this.iMesh.instanceMatrix.array.fill(0, idx * 16, idx * 16 + 16)
+        if (this.items[idx] === last) this.iMesh.instanceMatrix.array.fill(0, idx * 16, idx * 16 + 16)
         throw err
       }
+      if (this.items[idx] !== last) return
+      writeMatrix(this.iMesh, idx, values)
       if (last.color) this.iMesh.setColorAt(idx, last.color)
       if (last.emissive) this.iMesh.setEmissiveAt(idx, last.emissive)
       if (last.emissiveIntensity || last.emissiveIntensity === 0) {
@@ -585,9 +613,12 @@ class Model {
       const newSize = count + 100
       // console.log('increase', this.mesh.name, 'from', size, 'to', newSize)
       this.iMesh.resize(newSize)
-      for (let i = size; i < count; i++) {
+      // (the list is read again after every read of a matrix, which can run script code)
+      for (let i = size; i < this.items.length && i < newSize; i++) {
         const item = this.items[i]
-        this.iMesh.setMatrixAt(i, item.matrix)
+        const values = readMatrix(item.matrix)
+        if (this.items[i] !== item) continue
+        writeMatrix(this.iMesh, i, values)
         if (item.color) this.iMesh.setColorAt(i, item.color)
         if (item.emissive) this.iMesh.setEmissiveAt(i, item.emissive)
         if (item.emissiveIntensity || item.emissiveIntensity === 0) {
@@ -595,8 +626,8 @@ class Model {
         }
       }
     }
-    this.iMesh.count = count
-    if (this.iMesh.parent && !count) {
+    this.iMesh.count = this.items.length
+    if (this.iMesh.parent && !this.items.length) {
       this.stage.scene.remove(this.iMesh)
       this.dirty = false
       return

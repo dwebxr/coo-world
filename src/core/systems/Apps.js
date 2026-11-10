@@ -185,7 +185,9 @@ export class Apps extends System {
         // tip: probably dont wanna call this every frame
         const players = []
         world.entities.players.forEach(player => {
-          players.push(entity.getPlayerProxy(player.data.id))
+          // (a player that is leaving is still listed while its leave event runs: it has no handle)
+          const proxy = entity.getPlayerProxy(player.data.id)
+          if (proxy) players.push(proxy)
         })
         return players
       },

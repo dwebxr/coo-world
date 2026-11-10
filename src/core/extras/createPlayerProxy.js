@@ -1,4 +1,4 @@
-import { callForScript, toScriptError } from './scriptValues.js'
+import { callForScript } from './scriptValues.js'
 import { stoppedError } from './physicsFailure.js'
 import { Teardown, tornDown } from './runTeardown.js'
 import { getRef } from '../nodes/Node'
@@ -377,10 +377,9 @@ export function createPlayerProxy(entity, player) {
       proxy[name] = (...args) => world.network.asScript(() => method(...args), entity, name)
     }
   }
-  // every call that acts or asks: refused once the app has stopped (crashed, removed) or its run has ended. Ending
-  // what the app started (cancelEffect, setVoiceLevel(null)) works for as long as its run lasts, so the app's own
-  // cleanup callbacks (an effect's onEnd while the app is removed) can still do it
-  const ends = (name, args) => name === 'cancelEffect' || (name === 'setVoiceLevel' && !args[0])
+  // every call that acts or asks: refused once the app has stopped (crashed, or removed and its teardown is over) or
+  // its run has ended; during the teardown the app's own callbacks (an effect's onEnd) can still act and end things,
+  // while starting effects and voice levels is refused from the players stage on (assertCanStart)
   for (const name of [
     'push',
     'teleport',
@@ -397,12 +396,7 @@ export function createPlayerProxy(entity, player) {
     const method = proxy[name]
     proxy[name] = (...args) => {
       if (run !== entity.deadHook) throw stoppedError(entity)
-      if (!ends(name, args) || world.fatalError) return callForScript(method, entity, args)
-      try {
-        return method(...args)
-      } catch (err) {
-        throw toScriptError(err)
-      }
+      return callForScript(method, entity, args)
     }
   }
   return proxy

@@ -15,12 +15,14 @@ export function getPhysicsTrapCount() {
   return traps
 }
 
-// a crashed app may still clean up from its destroy event (allowDestroy calls only); a removed app's script is
-// stopped once its destroy event is over (a promise or callback that resumes later is refused)
+// a crashed app may still clean up from its destroy event (allowDestroy calls only); a removed app's script runs for
+// as long as its teardown does (its destroy event, and the callbacks the teardown runs: what each stage releases is
+// refused by that stage, runTeardown.js) and is stopped once the teardown is over (a promise or callback that resumes
+// later is refused)
 export function assertScriptActive(entity, world = entity?.world, allowDestroy = false) {
   if (
     (entity?.crashed && !(allowDestroy && entity.destroying)) ||
-    (entity?.destroyed && !entity.destroying) ||
+    (entity?.destroyed && !entity.destroying && !entity.tearingDown) ||
     world?.fatalError
   ) {
     throw stoppedError(entity)

@@ -306,8 +306,10 @@ export class Audio extends Node {
     return !!this.source
   }
 
+  // plays only while mounted (and allowed to be: Node.canMount); the load and the audio unlock it waits for are
+  // re-checked when they complete, so a sound never starts for a node that was unmounted (its app removed) meanwhile
   async play(restartIfPlaying = false) {
-    if (!this.ctx.world) return // not mounted
+    if (!this.mounted || !this.canMount() || !this.ctx?.world) return
     const loader = this.ctx.world.loader
     const audio = this.ctx.world.audio
     if (!audio) return
@@ -323,7 +325,7 @@ export class Audio extends Node {
       console.error(err)
       return
     }
-    if (n !== this.n) return
+    if (n !== this.n || !this.mounted || !this.canMount()) return
 
     this.source = audio.ctx.createBufferSource()
     this.source.buffer = buffer
@@ -352,7 +354,7 @@ export class Audio extends Node {
     }
 
     audio.ready(() => {
-      if (n !== this.n) return
+      if (n !== this.n || !this.mounted || !this.canMount()) return
       this.startTime = audio.ctx.currentTime - this.offset
       this.source.start(0, this.offset)
       if (!this._loop) {

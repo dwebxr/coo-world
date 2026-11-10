@@ -117,15 +117,18 @@ async function readBody(resp, maxBytes, race, onData) {
   return new Blob(chunks, { type })
 }
 
-// an <img> for a file; rejects when the browser cannot decode it or it is larger than the pixel budget. The object
-// URL is released either way: no consumer reads the element's src, and a registered URL keeps the file's bytes
-// alive for as long as the page lives, whatever the caches drop
+// an <img> for a file; rejects when the browser cannot decode it, it has no size, or it is larger than the pixel
+// budget. The object URL is released either way: no consumer reads the element's src, and a registered URL keeps
+// the file's bytes alive for as long as the page lives, whatever the caches drop
 function decodeImage(file) {
   return new Promise((resolve, reject) => {
     const img = new Image()
     const src = URL.createObjectURL(file)
     img.onload = () => {
       URL.revokeObjectURL(src)
+      // no intrinsic size (an SVG without width and height, in some browsers): nothing to size a texture or a
+      // layout from, and its aspect ratio would be NaN
+      if (!(img.naturalWidth > 0 && img.naturalHeight > 0)) return reject(new Error('image has no width or height'))
       if (img.naturalWidth * img.naturalHeight > MAX_IMAGE_PIXELS) {
         return reject(new Error(`image is larger than ${MAX_IMAGE_PIXELS} pixels`))
       }

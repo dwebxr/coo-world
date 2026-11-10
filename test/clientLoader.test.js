@@ -96,8 +96,9 @@ function fakeImages(t) {
       this._src = value
       queueMicrotask(() => {
         if (state.outcome === 'error') return this.onerror?.()
-        this.naturalWidth = state.outcome === 'huge' ? 20000 : 64
-        this.naturalHeight = state.outcome === 'huge' ? 20000 : 64
+        const size = { huge: 20000, empty: 0, flat: 64 }[state.outcome] ?? 64
+        this.naturalWidth = size
+        this.naturalHeight = state.outcome === 'flat' ? 0 : size
         this.onload?.()
       })
     }
@@ -334,6 +335,11 @@ test('an image that cannot be decoded, or is larger than the pixel budget, is a 
   images.outcome = 'huge'
   await assert.rejects(loader.load('image', 'asset://huge.png'), /larger than 36000000 pixels/)
   assert.equal(images.revoked.length, 3, 'failed decodes release their object URL')
+  // no intrinsic width or height
+  images.outcome = 'empty'
+  await assert.rejects(loader.load('image', 'asset://empty.svg'), /no width or height/)
+  images.outcome = 'flat'
+  await assert.rejects(loader.load('texture', 'asset://flat.svg'), /no width or height/)
   images.outcome = 'ok'
   const img = await loader.load('image', 'asset://ok.png')
   assert.equal(img.naturalWidth, 64)
@@ -344,7 +350,7 @@ test('an image that cannot be decoded, or is larger than the pixel budget, is a 
   for (let i = 0; i < 20; i++) await loader.load('image', `https://elsewhere.example/${i}.png`)
   await loader.insert('image', 'asset://picked.png', new File(['bytes'], 'picked.png'))
   await loader.insert('texture', 'asset://picked2.png', new File(['bytes'], 'picked2.png'))
-  assert.equal(images.created.length, 27)
+  assert.equal(images.created.length, 29)
   assert.deepEqual(images.revoked.toSorted(), images.created.toSorted())
   // broken images are not kept either
   await tick()

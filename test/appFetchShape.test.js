@@ -108,7 +108,7 @@ test('source scan: the script response reads no resp.* field beyond the whitelis
     'statusText',
     'text',
   ])
-  assert.match(scriptFetch, /createScriptBlob\(await resp\.blob\(\)\)/)
+  assert.match(scriptFetch, /createScriptBlob\(await resp\.blob\(\)/)
 })
 
 test('toHostFetchOptions: every script property is read once, so a changing getter cannot slip a second value in', () => {

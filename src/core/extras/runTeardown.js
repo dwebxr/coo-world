@@ -19,8 +19,10 @@ export const Teardown = Object.freeze({
   LISTENERS: 4,
   // fetch
   REQUESTS: 5,
+  // object URLs (URL.createObjectURL): every one the run made is revoked here
+  OBJECT_URLS: 6,
   // setTimeout
-  TIMERS: 6,
+  TIMERS: 7,
 })
 
 const stages = new WeakMap() // run -> the latest stage that has started

@@ -97,7 +97,7 @@ async function guarded(fn, isDead) {
   return value
 }
 
-export function createScriptResponse(resp, isDead) {
+export function createScriptResponse(resp, isDead, owner = null) {
   return {
     ok: resp.ok,
     status: resp.status,
@@ -105,7 +105,7 @@ export function createScriptResponse(resp, isDead) {
     headers: Object.fromEntries(resp.headers.entries()),
     json: () => guarded(() => resp.json(), isDead),
     text: () => guarded(() => resp.text(), isDead),
-    blob: () => guarded(async () => createScriptBlob(await resp.blob()), isDead),
+    blob: () => guarded(async () => createScriptBlob(await resp.blob(), owner), isDead),
     arrayBuffer: () => guarded(() => resp.arrayBuffer(), isDead),
   }
 }

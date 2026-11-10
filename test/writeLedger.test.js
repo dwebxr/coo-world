@@ -1,4 +1,4 @@
-import { callForScript } from '../src/core/extras/scriptValues.js'
+import { callForScript, toScriptError } from '../src/core/extras/scriptValues.js'
 import { stoppedError } from '../src/core/extras/physicsFailure.js'
 import { chatEnvelope, scriptChatMessage } from '../src/core/extras/chatPolicy.js'
 import { applyInitials, copyFields } from '../src/core/extras/appFields.js'
@@ -296,6 +296,7 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
       readVec3,
       warnOnce,
       callForScript,
+      toScriptError,
       stoppedError,
       console,
       clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v)),

@@ -293,3 +293,42 @@ test('video.material: nothing before the video is mounted; a kept one cannot act
   assert.equal(a.data.state.material.textureX, 0, 'reading still answers (it follows the mounted mesh)')
   b.destroy()
 })
+
+test("player handles: an app's own cleanup callback can still end its effect and voice level while it is removed", async () => {
+  const { world } = makeWorld({ isServer: true })
+  const app = addApp(
+    world,
+    'a',
+    `
+    const log = (app.state.log = [])
+    const p = world.getPlayer('p1')
+    p.setVoiceLevel('global')
+    p.applyEffect({
+      freeze: true,
+      duration: 60,
+      onEnd: () => {
+        for (const [label, end] of [
+          ['voice', () => p.setVoiceLevel(null)],
+          ['cancel', () => p.cancelEffect()],
+          ['new effect', () => p.applyEffect({ freeze: true, duration: 600 })],
+          ['damage', () => p.damage(1)],
+        ]) {
+          try {
+            end()
+            log.push(label + ' ok')
+          } catch (err) {
+            log.push(label + ': ' + err.message)
+          }
+        }
+      },
+    })
+  `
+  )
+  await tick()
+  assert.equal(world.livekit.modifiers.p1.size, 1)
+  const log = app.data.state.log
+  app.destroy()
+  // ending works; anything else is refused once the app is being removed
+  assert.deepEqual(log, ['voice ok', 'cancel ok', `new effect: ${STOPPED}`, `damage: ${STOPPED}`])
+  assert.equal(world.livekit.modifiers.p1?.size ?? 0, 0)
+})

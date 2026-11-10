@@ -12,20 +12,32 @@ export function createScriptTimers({ limit = TIMER_LIMIT } = {}) {
   return {
     set(fn, ms) {
       if (timers.size >= limit) throw new Error(`[app] setTimeout: more than ${limit} pending timers`)
+      // the slot is taken before anything else runs, and the delay must be a primitive: the native setTimeout
+      // would call an object's valueOf, which could schedule more timers while this one is not counted yet
       const id = ++ids
-      const timer = setTimeout(() => {
+      timers.set(id, null)
+      const delay = typeof ms === 'number' || typeof ms === 'string' ? Number(ms) : 0
+      let timer
+      try {
+        timer = setTimeout(() => {
+          timers.delete(id)
+          try {
+            fn()
+          } catch (err) {
+            console.error(err)
+          }
+        }, delay)
+      } catch (err) {
         timers.delete(id)
-        try {
-          fn()
-        } catch (err) {
-          console.error(err)
-        }
-      }, ms)
-      timers.set(id, timer)
+        throw err
+      }
+      // cleared while being set (a clear() cannot run in between, but stay exact)
+      if (timers.has(id)) timers.set(id, timer)
+      else clearTimeout(timer)
       return id
     },
     clear() {
-      for (const timer of timers.values()) clearTimeout(timer)
+      for (const timer of timers.values()) if (timer !== null) clearTimeout(timer)
       timers.clear()
     },
     get size() {

@@ -54,3 +54,35 @@ test('createScriptTimers: a throwing callback is logged and does not affect the 
   assert.match(String(errors[0][0]), /timer boom/)
   assert.equal(timers.size, 0)
 })
+
+test('createScriptTimers: the delay is never coerced through script code, so the cap cannot be overrun', () => {
+  const timers = createScriptTimers()
+  let calls = 0
+  try {
+    const reentrant = {
+      valueOf() {
+        calls++
+        for (let i = 0; i < 1024; i++) timers.set(() => {}, 60000)
+        return 60000
+      },
+    }
+    timers.set(() => {}, reentrant)
+    assert.equal(calls, 0, 'valueOf is not called')
+    assert.equal(timers.size, 1)
+    for (let i = 1; i < 1024; i++) timers.set(() => {}, 60000)
+    assert.equal(timers.size, 1024)
+    assert.throws(() => timers.set(() => {}, reentrant), /more than 1024 pending timers/)
+    assert.equal(timers.size, 1024)
+  } finally {
+    timers.clear()
+  }
+  assert.equal(timers.size, 0)
+})
+
+test('createScriptTimers: numeric strings still work as delays', async () => {
+  const timers = createScriptTimers()
+  let fired = 0
+  timers.set(() => fired++, '1')
+  await sleep(20)
+  assert.equal(fired, 1)
+})

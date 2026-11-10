@@ -80,14 +80,21 @@ function copyBytes(value) {
   return null
 }
 
-// a reader that fails after the app's run ended (its request was aborted by the unbuild) stays pending instead
+// A reader of a run that has ended (rebuild, crash, removal) never settles: not when it is called after the end,
+// not when the read finishes after it (successfully or not), so a continuation of the old run cannot resume, even
+// into the app's next run. `isDead` is the request's run check (App.fetch).
+const PENDING = () => new Promise(() => {})
 async function guarded(fn, isDead) {
+  if (isDead?.()) return PENDING()
+  let value
   try {
-    return await fn()
+    value = await fn()
   } catch (err) {
-    if (isDead?.()) return new Promise(() => {})
+    if (isDead?.()) return PENDING()
     throw toScriptError(err)
   }
+  if (isDead?.()) return PENDING()
+  return value
 }
 
 export function createScriptResponse(resp, isDead) {

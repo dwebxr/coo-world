@@ -178,6 +178,42 @@ test('app.fetch: a body read cut off by the end of the run stays pending', async
   assert.equal(settled, false)
 })
 
+test('app.fetch: a read that succeeds after the run ended, or starts after it, never settles', async () => {
+  for (const variant of ['text', 'json', 'arrayBuffer', 'blob']) {
+    let fetchFn
+    let release
+    const { world } = makeApp(
+      (_w, _a, fetch) => (fetchFn = fetch),
+      // a body that is complete and readable whatever the abort signal does
+      async () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: new Headers(),
+        text: () => new Promise(resolve => (release = () => resolve('payload'))),
+        json: () => new Promise(resolve => (release = () => resolve({ a: 1 }))),
+        arrayBuffer: () => new Promise(resolve => (release = () => resolve(new ArrayBuffer(1)))),
+        blob: () => new Promise(resolve => (release = () => resolve(new Blob(['x'])))),
+      })
+    )
+    const resp = await fetchFn('https://example.com/x')
+    const results = []
+    resp[variant]().then(
+      value => results.push(['during', value]),
+      err => results.push(['during error', err.message])
+    )
+    world.blueprints.modify({ id: 'bp', version: world.blueprints.get('bp').version + 1 }) // the run ends
+    release()
+    await tick()
+    resp[variant]().then(
+      value => results.push(['after', value]),
+      err => results.push(['after error', err.message])
+    )
+    await tick()
+    assert.deepEqual(results, [], `${variant}: nothing reaches the old run`)
+  }
+})
+
 test('setTimeout: at most 1024 pending timers per app; the limit frees as timers fire or the run ends', async () => {
   let setTimeoutFn
   const { app } = makeApp((_w, _a, _f, _p, setTimeout) => (setTimeoutFn = setTimeout))

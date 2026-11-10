@@ -25,7 +25,8 @@ import {
   WRITE_OVERHEAD,
 } from '../src/core/extras/writeLedger.js'
 import { fakeWs, makeNetwork, Socket, connectionMethod } from './lib/networkHarness.mjs'
-import { readPacket, scriptPacketData } from '../src/core/packets.js'
+import { readPacket } from '../src/core/packets.js'
+import { readScriptData } from '../src/core/extras/scriptData.js'
 import { toEngineNumber } from '../src/core/extras/engineNumber.js'
 
 const bytes = n => new Uint8Array(n)
@@ -269,7 +270,7 @@ const loadClass = (file, name, context = {}) => {
     placeWorldNode,
     unplaceWorldNode,
     eventPayload,
-    scriptPacketData,
+    readScriptData,
     ...context,
   })
 }

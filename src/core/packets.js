@@ -91,19 +91,24 @@ export function packetMethodById(id) {
   return byId[id]?.method
 }
 
-// Packing reads the value it is given, and a value from a script runs the script's code while it is read (a getter, a
-// toJSON, a Proxy trap). That code can pack another message (an app.send, an app teardown that announces a change),
-// and msgpackr's packers share one buffer and one write position: the packet whose packing was interrupted would come
-// out with the other one's bytes in it. Every pack here is counted, and a packet another pack interrupted is refused
-// (it throws) instead of being returned.
-export const PACK_INTERRUPTED = 'the data cannot be packed: reading it packed another message'
-let packs = 0
+// msgpackr cannot be entered twice: its packers share one buffer and one write position, and each keeps where its
+// message began. A pack begun inside another (from code that runs while a value is read: a getter, a toJSON, a Proxy
+// trap) left the outer one's bytes wrong, could come out unreadable itself (a record the outer one had already
+// defined is only referred to), and, when it moved the buffer on, made the outer one write outside it and the next
+// message of anyone throw. What a script hands the engine to send is therefore read before it is packed, by our own
+// reader (extras/scriptData.js), and what is packed here is host data, whose packing runs no script code. Should a
+// pack still begin inside another, it is refused before the packer is touched, and the outer one goes on untouched.
+export const PACK_NESTED = 'a message cannot be packed while another one is being packed'
+let packing = false
 
 function packOnce(packer, value) {
-  const mark = ++packs
-  const packet = packer.pack(value)
-  if (packs !== mark) throw new Error(PACK_INTERRUPTED)
-  return packet
+  if (packing) throw new Error(PACK_NESTED)
+  packing = true
+  try {
+    return packer.pack(value)
+  } finally {
+    packing = false
+  }
 }
 
 export function writePacket(name, data) {
@@ -116,16 +121,6 @@ export function writeClientPacket(name, data) {
   const info = byName[name]
   if (!info) throw new Error(`writeClientPacket failed: ${name} (name not found)`)
   return packOnce(clientPackr, [info.id, data])
-}
-
-// A host copy of data a script hands the network (app.send, app.sendTo). Packing reads the script's object, and its
-// code can end the script's run: the data is packed here, once, before the host decides whether to send it, and what
-// goes out is the copy, plain host data whose packing runs no script code. The copy is packed and read back by this
-// side's packer, so packing it again writes the message the data itself would have. A primitive needs no copy.
-export function scriptPacketData(data, client) {
-  if (data === null || (typeof data !== 'object' && typeof data !== 'function')) return data
-  const packer = client ? clientPackr : packr
-  return packer.unpack(packOnce(packer, data))
 }
 
 export function readPacket(packet) {

@@ -3,12 +3,11 @@ import assert from 'node:assert/strict'
 import { Packr, Unpackr } from 'msgpackr'
 
 import {
-  PACK_INTERRUPTED,
+  PACK_NESTED,
   packetMethodById,
   packetNameById,
   peekPacketId,
   readPacket,
-  scriptPacketData,
   writeClientPacket,
   writePacket,
 } from '../src/core/packets.js'
@@ -174,57 +173,66 @@ test('peekPacketId: anything that is not a 2-element fixarray with a known fixin
   assert.equal(packetMethodById(999), undefined)
 })
 
-// a script's data is read while it is packed (a getter, a toJSON): code there that packs another message would leave
-// that message's bytes inside the packet being packed (msgpackr's packers share one buffer and write position)
-test('a packet whose packing another pack interrupted is refused, never returned with the other message in it', () => {
-  for (const [label, write, read] of [
-    ['writePacket', data => writePacket('entityEvent', ['app', 0, 'probe', data]), packet => readPacket(packet)],
-    ['writeClientPacket', data => writeClientPacket('entityEvent', ['app', 0, 'probe', data]), packet => readPacket(packet)],
-    ['scriptPacketData (server)', data => scriptPacketData(data, false), copy => copy],
-    ['scriptPacketData (client)', data => scriptPacketData(data, true), copy => copy],
-  ]) {
-    let inner
-    const data = {
-      before: 'x'.repeat(40),
-      get nested() {
-        inner = writePacket('chatAdded', { body: 'inner' })
-        return 1
-      },
-      after: 'y'.repeat(40),
-    }
-    assert.throws(() => write(data), { message: PACK_INTERRUPTED }, label)
-    assert.deepEqual(readPacket(inner), ['onChatAdded', { body: 'inner' }], `${label}: the inner packet is whole`)
-    // without the interruption the same data packs, and reads back whole
-    const plain = { before: 'x'.repeat(40), nested: 1, after: 'y'.repeat(40) }
-    const result = read(write(plain))
-    const back = label.startsWith('write') ? result[1][3] : result
-    // (a client packet is read by the server's packer here: its objects come back as maps)
-    assert.deepEqual(back instanceof Map ? Object.fromEntries(back) : back, plain, label)
-  }
-})
+// msgpackr cannot be entered twice (its packers share one buffer and write position). What scripts send is read
+// before it is packed (extras/scriptData.js, test/scriptData.test.js), so no pack reads a script's value; this is
+// the backstop for one that would: a pack begun inside another is refused before the packer is touched, and the
+// outer message is whole
+const WRITERS = [
+  ['writePacket', data => writePacket('entityEvent', ['app', 0, 'probe', data])],
+  ['writeClientPacket', data => writeClientPacket('entityEvent', ['app', 0, 'probe', data])],
+]
+// (a client packet is read by the server's packer here: its objects come back as maps)
+const plainObject = value => (value instanceof Map ? Object.fromEntries(value) : value)
+const sound = label => {
+  const packet = Uint8Array.prototype.slice.call(writePacket('chatAdded', { body: 'later', id: 'x' }))
+  assert.deepEqual(
+    readPacket(packet),
+    ['onChatAdded', { body: 'later', id: 'x' }],
+    `${label}: the next message is whole`
+  )
+}
 
-test('scriptPacketData: a host copy of the data, read once; primitives as they are', () => {
-  let reads = 0
-  const data = {
-    get v() {
-      reads++
-      return [1, { w: 'two' }]
-    },
-    bytes: new Uint8Array([1, 2, 3]),
-    fn() {},
+test('a pack begun while another one is in progress is refused; the outer message is whole', () => {
+  // the inner message has the shape of a part the outer has already written (Opus: the inner one came out
+  // unreadable, a reference to a record only the outer message defined)
+  const inners = [
+    ['writePacket', () => writePacket('chatAdded', { body: 'inner' })],
+    ['writeClientPacket', () => writeClientPacket('chatAdded', { body: 'inner' })],
+  ]
+  for (const [label, write] of WRITERS) {
+    for (const [innerLabel, inner] of inners) {
+      const which = `${label} with ${innerLabel} inside`
+      // the code that asked catches the refusal: the outer message goes on, and nothing of the inner one is in it
+      let refusal
+      const data = {
+        first: { body: 'x'.repeat(40) },
+        get nested() {
+          try {
+            inner()
+          } catch (err) {
+            refusal = err
+          }
+          return 1
+        },
+        after: 'y'.repeat(40),
+      }
+      const plain = { first: { body: 'x'.repeat(40) }, nested: 1, after: 'y'.repeat(40) }
+      const back = plainObject(readPacket(write(data))[1][3])
+      back.first = plainObject(back.first)
+      assert.equal(refusal?.message, PACK_NESTED, which)
+      assert.deepEqual(back, plain, which)
+      sound(which)
+      // it does not catch it: the outer call throws that refusal, and the packer is sound for the next message
+      const thrower = {
+        first: { body: 'x'.repeat(40) },
+        get nested() {
+          return inner()
+        },
+      }
+      assert.throws(() => write(thrower), { message: PACK_NESTED }, which)
+      sound(which)
+      // (and a pack is possible again: the refusal did not leave "a pack is in progress" behind)
+      assert.deepEqual(plainObject(readPacket(write({ nested: 1 }))[1][3]), { nested: 1 }, which)
+    }
   }
-  for (const client of [false, true]) {
-    reads = 0
-    const copy = scriptPacketData(data, client)
-    assert.equal(reads, 1)
-    assert.deepEqual(copy.v, [1, { w: 'two' }])
-    assert.deepEqual([...copy.bytes], [1, 2, 3])
-    assert.equal(copy.fn, undefined)
-    assert.equal(Object.getOwnPropertyDescriptor(copy, 'v').get, undefined, 'a plain value, not the getter')
-    // the copy goes out as the data itself would have
-    const write = client ? writeClientPacket : writePacket
-    const plain = { v: [1, { w: 'two' }], bytes: new Uint8Array([1, 2, 3]), fn() {} }
-    assert.deepEqual([...write('entityEvent', ['app', 0, 'probe', copy])], [...write('entityEvent', ['app', 0, 'probe', plain])])
-  }
-  for (const value of [undefined, null, 1, 'a', true]) assert.equal(scriptPacketData(value, false), value)
 })

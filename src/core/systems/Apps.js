@@ -19,7 +19,7 @@ import { toScriptError } from '../extras/scriptValues'
 import { createEventLedger } from '../extras/appEventQueue'
 import { applyInitials, copyFields } from '../extras/appFields'
 import { jsonCopy } from '../extras/scriptText'
-import { scriptPacketData } from '../packets'
+import { readScriptData } from '../extras/scriptData'
 import { scriptChatMessage } from '../extras/chatPolicy'
 import { createLogOnce } from '../extras/logOnce'
 
@@ -77,12 +77,13 @@ function assertRun(entity, run, stage) {
   if (run !== entity.deadHook || (stage && tornDown(run, stage))) throw stoppedError(entity)
 }
 
-// the data of an app.send or app.sendTo, read once into a host copy (scriptPacketData); the run is checked after the
-// read, whether it succeeded or threw (the code that ended the run may also have made the read fail)
-function readEventData(entity, run, data, client) {
+// the data of an app.send or app.sendTo, read once into a host copy (readScriptData: reading it runs its getters,
+// which is why the packer does not read it); the run is checked after the read, whether it succeeded or threw (the
+// code that ended the run may also have made the read fail)
+function readEventData(entity, run, data) {
   let copy
   try {
-    copy = scriptPacketData(data, client)
+    copy = readScriptData(data)
   } catch (err) {
     assertRun(entity, run)
     throw err
@@ -473,9 +474,9 @@ export class Apps extends System {
           console.error(`apps cannot send internal events (${name})`)
           return false
         }
-        // the data is read once, now (scriptPacketData: packing it runs its getters), and nothing is sent for a run
-        // that ended meanwhile (also when reading it failed)
-        const copy = readEventData(entity, run, data, !world.network.isServer)
+        // the data is read once, now (reading it runs its getters), and nothing is sent for a run that ended
+        // meanwhile (also when reading it failed)
+        const copy = readEventData(entity, run, data)
         // NOTE: on the client ignoreSocketId is a no-op because it can only send events to the server
         const event = [entity.data.id, entity.blueprint.version, name, copy]
         if (world.network.isServer) {
@@ -499,7 +500,7 @@ export class Apps extends System {
         const player = world.entities.get(playerId)
         if (!player) return false
         // (read once, as app.send reads it)
-        const copy = readEventData(entity, run, data, false)
+        const copy = readEventData(entity, run, data)
         const event = [entity.data.id, entity.blueprint.version, name, copy]
         return world.network.asScript(() => world.network.sendTo(playerId, 'entityEvent', event), entity, name)
       },

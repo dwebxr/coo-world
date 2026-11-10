@@ -481,14 +481,26 @@ test('headers are validated and bounded before anything is sent; a bad one is a 
     assert.ok(Date.now() - started < AT_ONCE_MS, 'refused at once')
   }
   assert.equal(local.connections, 0)
-  // 64 headers in all, counting the ones sent with every request: Host and Accept-Encoding leave 62 to a GET,
-  // and Content-Length and the inferred Content-Type take two more from a POST of a string
+  // 64 headers in all, counting the ones sent with every request. Host, Accept-Encoding and Connection leave 61
+  // to a GET, HEAD, DELETE or OPTIONS without a body; Content-Length takes one more from a POST, PUT or PATCH
+  // (0 without a body) and from any request with a body; the Content-Type inferred for a string one more again
   const caller = count => Object.fromEntries(Array.from({ length: count }, (_, i) => [`x-h${i}`, 'v']))
-  assert.equal((await (await fetch(local.origin, { headers: caller(62) })).json())['x-h61'], 'v')
-  await assert.rejects(fetch(local.origin, { headers: caller(63) }), code('header'))
-  const post = count => ({ method: 'POST', body: 'x', headers: caller(count) })
-  assert.equal((await (await fetch(local.origin, post(60))).json())['content-type'], 'text/plain;charset=UTF-8')
-  await assert.rejects(fetch(local.origin, post(61)), code('header'))
+  for (const [init, room] of [
+    [{}, 61],
+    [{ method: 'HEAD' }, 61],
+    [{ method: 'DELETE' }, 61],
+    [{ method: 'OPTIONS' }, 61],
+    [{ method: 'POST' }, 60],
+    [{ method: 'PUT' }, 60],
+    [{ method: 'PATCH' }, 60],
+    [{ method: 'DELETE', body: new Uint8Array([1]) }, 60],
+    [{ method: 'POST', body: new Uint8Array([1]) }, 60],
+    [{ method: 'POST', body: 'x' }, 59],
+  ]) {
+    const label = JSON.stringify({ method: init.method, body: typeof init.body })
+    assert.equal((await fetch(local.origin, { ...init, headers: caller(room) })).status, 200, `${label}: ${room} fit`)
+    await assert.rejects(fetch(local.origin, { ...init, headers: caller(room + 1) }), code('header'), label)
+  }
   const seen = await (
     await fetch(local.origin, { headers: { 'X-A': ' one \t', 'x-a': 'two', 'x-trailing': 'value\r\n' } })
   ).json()
@@ -585,35 +597,154 @@ test('the inferred Content-Type is counted and validated with every other header
     }
   }
   await assert.rejects(fetch(local.origin, { method: 'POST', body: new InjectingBlob(['x']) }), code('header'))
+  // a type that is not a string is refused (the platform's Blob gives a string): an object with a toString of
+  // 100,000 characters, which a size sum would read as NaN, and a Symbol
+  const typed = type =>
+    new (class extends Blob {
+      get type() {
+        return type()
+      }
+    })(['x'])
+  for (const type of [{ toString: () => 'a'.repeat(100_000) }, Symbol('type'), 5, null]) {
+    await assert.rejects(fetch(local.origin, { method: 'POST', body: typed(() => type) }), code('body'), String(type))
+  }
+  // a getter that answers differently on each read is read once: the first answer is checked, and nothing else
+  let reads = 0
+  const shifting = typed(() => (reads++ === 0 ? 'a'.repeat(100_000) : 'text/plain'))
+  await assert.rejects(fetch(local.origin, { method: 'POST', body: shifting }), code('header'))
+  assert.equal(reads, 1)
   assert.equal(local.connections, 0)
+  let later = 0
+  const shiftingBack = typed(() => (later++ === 0 ? 'text/plain' : 'a'.repeat(100_000)))
+  const sentType = await (await fetch(local.origin, { method: 'POST', body: shiftingBack })).json()
+  assert.equal(sentType['content-type'], 'text/plain', 'the string checked is the string sent')
+  assert.equal(later, 1)
   // as fetch: the platform's Blob drops a type with characters outside U+0020-U+007E, so none is sent
   const emptied = await (
     await fetch(local.origin, { method: 'POST', body: new Blob(['x'], { type: 'a\r\nb' }) })
   ).json()
   assert.equal(emptied['content-type'], undefined)
   // and a type with spaces and other non-token characters is a valid header value, sent as given (lower-cased)
-  const typed = await (
+  const quoted = await (
     await fetch(local.origin, { method: 'POST', body: new Blob(['x'], { type: 'Text/Plain; Charset="A B"' }) })
   ).json()
-  assert.equal(typed['content-type'], 'text/plain; charset="a b"')
+  assert.equal(quoted['content-type'], 'text/plain; charset="a b"')
 })
 
-// A connect that fails at once, inside libuv's connect() (ENETUNREACH where a family has no route) or one tick
-// later, through the real http/https stack. In a child process, so a crash is an exit code
+// a server that records each request's head as it arrives on the wire, and answers it
+async function rawServer(t) {
+  const heads = []
+  const server = net.createServer(socket => {
+    let data = ''
+    let answered = false
+    socket.setEncoding('latin1')
+    socket.on('error', () => {})
+    socket.on('data', chunk => {
+      data += chunk
+      const end = data.indexOf('\r\n\r\n')
+      if (answered || end === -1) return
+      answered = true
+      const [requestLine, ...lines] = data.slice(0, end).split('\r\n')
+      const headers = lines.map(line => {
+        const colon = line.indexOf(':')
+        return [line.slice(0, colon).toLowerCase(), line.slice(colon + 1).trim()]
+      })
+      heads.push({ requestLine, headers })
+      const body = requestLine.startsWith('HEAD ') ? '' : 'ok'
+      socket.end(`HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n${body}`)
+    })
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  return { heads, origin: `http://127.0.0.1:${server.address().port}` }
+}
+
+const headerBytes = headers => headers.reduce((sum, [name, value]) => sum + name.length + value.length, 0)
+
+test('the headers counted are the headers sent: every one Node puts on the wire was in the checked set', async t => {
+  const raw = await rawServer(t)
+  const handed = []
+  const original = http.request
+  t.mock.method(http, 'request', function (options, ...rest) {
+    handed.push(Object.entries(options.headers))
+    return original.call(this, options, ...rest)
+  })
+  const fetch = createOutboundFetch({ isAllowedAddress: allowLocal })
+  const cases = []
+  for (const method of ['GET', 'HEAD', 'DELETE', 'OPTIONS', 'POST', 'PUT', 'PATCH']) cases.push({ method })
+  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
+    cases.push({ method, body: 'text' }, { method, body: new Uint8Array([1, 2]) })
+  }
+  cases.push({ method: 'POST', body: new Blob(['x'], { type: 'application/json' }), headers: [['cookie', 'a=1']] })
+  for (const init of cases) {
+    await fetch(raw.origin, { headers: { 'x-a': '1' }, ...init })
+    const label = `${init.method} ${typeof init.body}`
+    const sent = raw.heads.at(-1).headers
+    const checked = handed.at(-1)
+    assert.deepEqual(sent.map(([name]) => name).sort(), checked.map(([name]) => name).sort(), label)
+    assert.deepEqual(new Map(sent), new Map(checked), `${label}: the same values`)
+    assert.equal(headerBytes(sent), headerBytes(checked), `${label}: the bytes counted are the bytes sent`)
+  }
+  assert.equal(raw.heads.length, cases.length)
+
+  // the byte cap holds on the wire: a GET sending exactly 16 KiB of names and values goes, one byte more does not
+  await fetch(raw.origin, { headers: { 'x-pad': '' } })
+  const room = 16 * 1024 - headerBytes(handed.at(-1))
+  await fetch(raw.origin, { headers: { 'x-pad': 'p'.repeat(room) } })
+  assert.equal(headerBytes(raw.heads.at(-1).headers), 16 * 1024)
+  const before = raw.heads.length
+  await assert.rejects(fetch(raw.origin, { headers: { 'x-pad': 'p'.repeat(room + 1) } }), code('header'))
+  await sleep(20)
+  assert.equal(raw.heads.length, before, 'nothing was sent')
+})
+
+// A connect attempt that fails at once, through the real http/https stack, in a child process so a crash is an
+// exit code. FAULT picks how:
+//   - through public API: net.Socket's 'lookup' event, which Node emits right before it connects, destroys the
+//     socket with ENETUNREACH ('destroyed') or throws ('throws'). Only names (an IP literal has no lookup)
+//   - through libuv's own connect(), with the internal tcp_wrap binding: it returns ENETUNREACH ('errno'),
+//     reports it a tick later ('later') or throws ('connect throws', first attempts only: a throw inside Node's
+//     own later attempts is not contained, see outboundFetch.js). Skipped where the binding is not available
 const childScript = `
   import os from 'node:os'
+  import net from 'node:net'
   process.noDeprecation = true
   const { createOutboundFetch } = await import(${JSON.stringify(new URL('../src/core/extras/outboundFetch.js', import.meta.url).href)})
-  const { TCP } = process.binding('tcp_wrap')
-  const failure = -os.constants.errno.ENETUNREACH
-  for (const method of ['connect', 'connect6']) {
-    TCP.prototype[method] =
-      process.env.WHEN === 'at once'
-        ? () => failure
-        : function (req) {
-            process.nextTick(() => req.oncomplete(failure, this, req, false, false))
-            return 0
-          }
+  const fault = process.env.FAULT
+  const failure = Object.assign(new Error('connect ENETUNREACH'), { code: 'ENETUNREACH' })
+  const names = ['http://one.test/', 'https://one.test/', 'http://two.test/', 'https://two.test/']
+  let urls = names
+  if (fault === 'destroyed' || fault === 'throws') {
+    const connect = net.Socket.prototype.connect
+    net.Socket.prototype.connect = function (...args) {
+      this.once('lookup', () => {
+        if (fault === 'throws') throw new Error('a connect attempt threw')
+        this.destroy(failure)
+      })
+      return connect.apply(this, args)
+    }
+  } else {
+    let TCP
+    try {
+      TCP = process.binding('tcp_wrap').TCP
+    } catch (err) {
+      console.log('SKIP the internal tcp_wrap binding is not available here: ' + err.message)
+      process.exit(0)
+    }
+    const errno = -os.constants.errno.ENETUNREACH
+    for (const method of ['connect', 'connect6']) {
+      TCP.prototype[method] = {
+        errno: () => errno,
+        later(req) {
+          process.nextTick(() => req.oncomplete(errno, this, req, false, false))
+          return 0
+        },
+        'connect throws': () => {
+          throw new Error('a connect attempt threw')
+        },
+      }[fault]
+    }
+    if (fault !== 'connect throws') urls = [...names, 'http://8.8.8.8/', 'https://8.8.8.8/']
   }
   const answer = (callback, addresses) =>
     setImmediate(() => (addresses ? callback(null, addresses) : callback(Object.assign(new Error('ENODATA'), { code: 'ENODATA' }))))
@@ -625,7 +756,7 @@ const childScript = `
   })
   const fetch = createOutboundFetch({ resolver, timeoutMs: 5000 })
   const results = {}
-  for (const url of ['http://one.test/', 'https://one.test/', 'http://8.8.8.8/', 'https://8.8.8.8/', 'http://two.test/', 'https://two.test/']) {
+  for (const url of urls) {
     try {
       await fetch(url)
       results[url] = 'resolved'
@@ -637,20 +768,33 @@ const childScript = `
   console.log(JSON.stringify(results))
 `
 
-test('a connection that fails at once is a network error, not a crash', () => {
-  for (const when of ['at once', 'a tick later']) {
-    const run = spawnSync(process.execPath, ['--input-type=module', '-e', childScript], {
-      encoding: 'utf8',
-      env: { ...process.env, WHEN: when },
-      timeout: 60_000,
+const runChild = fault =>
+  spawnSync(process.execPath, ['--input-type=module', '-e', childScript], {
+    encoding: 'utf8',
+    env: { ...process.env, FAULT: fault },
+    timeout: 60_000,
+  })
+
+test('a connection that fails at once is a network error, not a crash', async t => {
+  for (const [fault, outcome, count] of [
+    ['destroyed', /^network: outbound request failed: (ENETUNREACH|ETIMEDOUT)/, 4],
+    ['throws', /^network: outbound request failed: could not send the request/, 4],
+    ['errno', /^network: outbound request failed: (ENETUNREACH|ETIMEDOUT)/, 6],
+    ['later', /^network: outbound request failed: (ENETUNREACH|ETIMEDOUT)/, 6],
+    ['connect throws', /^network: outbound request failed: could not send the request/, 4],
+  ]) {
+    await t.test(fault, st => {
+      const run = runChild(fault)
+      assert.equal(run.status, 0, `${fault}: the process ended with ${run.status}\n${run.stderr.slice(0, 2000)}`)
+      const last = run.stdout.trim().split('\n').at(-1)
+      if (last.startsWith('SKIP ')) return st.skip(last.slice(5))
+      const results = JSON.parse(last)
+      for (const [url, result] of Object.entries(results)) {
+        // the connect's own error, also on https (where an unchecked socket used to read as "could not send")
+        assert.match(result, outcome, `${fault} ${url}`)
+      }
+      assert.equal(Object.keys(results).length, count)
     })
-    assert.equal(run.status, 0, `${when}: the process ended with ${run.status}\n${run.stderr.slice(0, 2000)}`)
-    const results = JSON.parse(run.stdout.trim().split('\n').at(-1))
-    for (const [url, outcome] of Object.entries(results)) {
-      // the connect's own error, also on https (where an unchecked socket used to read as "could not send")
-      assert.match(outcome, /^network: outbound request failed: (ENETUNREACH|ETIMEDOUT)/, `${when} ${url}`)
-    }
-    assert.equal(Object.keys(results).length, 6)
   }
 })
 

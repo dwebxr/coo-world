@@ -23,9 +23,10 @@
 //   - one deadline covers the whole request: its body, resolving, connecting, redirects and the response body
 //   - at most `concurrency` requests at once, and `perKey` per caller key (an app); more are refused, not queued.
 //     A request keeps its slot until its DNS queries have really ended, also after a timeout or an abort
-//   - every request header sent, the ones set here and an inferred Content-Type included, is validated and
-//     counted against `maxHeaders` and `maxHeaderBytes` before anything is resolved or sent; a body may be a
-//     string, an ArrayBuffer, a typed array or DataView, or a Blob, of at most `maxRequestBytes`
+//   - every request header sent is validated and counted against `maxHeaders` and `maxHeaderBytes` before
+//     anything is resolved or sent: the caller's, an inferred Content-Type, and Host, Accept-Encoding, Connection
+//     and Content-Length, which are set here explicitly, so the set handed to Node is the set sent; a body may be
+//     a string, an ArrayBuffer, a typed array or DataView, or a Blob, of at most `maxRequestBytes`
 //
 // The request options are fetch's where they mean something here: method (GET, HEAD, POST, PUT, PATCH, DELETE,
 // OPTIONS), headers, body, signal and redirect. mode, credentials and cache describe a browser's request and are
@@ -291,17 +292,30 @@ function prepareHeaders(input, { maxHeaders, maxHeaderBytes }) {
   return headers
 }
 
-// Every header a request sends, in one place: the caller's (combined), the Content-Type inferred from its body,
-// and Host, Accept-Encoding and Content-Length set here. Counted and sized together against maxHeaders and
-// maxHeaderBytes, then validated, before anything is resolved or sent
-function outgoingHeaders(headers, url, body, { maxHeaders, maxHeaderBytes }) {
-  const outgoing = { ...headers, host: url.host, 'accept-encoding': 'gzip, deflate' }
+// the methods Node sends Content-Length: 0 for when they have no body
+const EMPTY_LENGTH_METHODS = new Set(['POST', 'PUT', 'PATCH'])
+
+// Every header a request sends, in one place and as the very strings that are sent: the caller's (combined), the
+// Content-Type inferred from its body, and the ones set here, all explicitly so that Node adds none of its own:
+// Host, Accept-Encoding, Connection: close, and Content-Length for a body (0 for a POST, PUT or PATCH without
+// one, as Node would send it). Counted and sized together against maxHeaders and maxHeaderBytes, then validated,
+// before anything is resolved or sent: the set handed to http.request is this one
+function outgoingHeaders(headers, url, method, body, { maxHeaders, maxHeaderBytes }) {
+  const outgoing = { ...headers, host: url.host, 'accept-encoding': 'gzip, deflate', connection: 'close' }
   if (body) outgoing['content-length'] = String(body.length)
+  else if (EMPTY_LENGTH_METHODS.has(method)) outgoing['content-length'] = '0'
   const entries = Object.entries(outgoing)
-  if (entries.length > maxHeaders) throw refuse('header', `more than ${maxHeaders} request headers`)
   let bytes = 0
-  for (const [name, value] of entries) bytes += name.length + value.length
-  if (bytes > maxHeaderBytes) throw refuse('header', `the request headers are larger than ${maxHeaderBytes} bytes`)
+  for (const [name, value] of entries) {
+    if (typeof name !== 'string' || typeof value !== 'string') {
+      throw refuse('header', 'a header name and value must be strings')
+    }
+    bytes += name.length + value.length
+  }
+  if (!(entries.length <= maxHeaders)) throw refuse('header', `more than ${maxHeaders} request headers`)
+  if (!Number.isSafeInteger(bytes) || !(bytes <= maxHeaderBytes)) {
+    throw refuse('header', `the request headers are larger than ${maxHeaderBytes} bytes`)
+  }
   for (const [name, value] of entries) {
     try {
       http.validateHeaderName(name)
@@ -336,10 +350,15 @@ async function prepareBody(body, limit) {
     return { bytes: Buffer.from(view), type: null } // a copy, as fetch takes one
   }
   if (body instanceof Blob) {
-    if (body.size > limit) throw tooLarge()
+    // each read once: this type is the very string that is counted, validated and sent (the platform's Blob has
+    // a string type by definition; a subclass's getter may return anything, or something new on every read)
+    const size = body.size
+    const type = body.type
+    if (typeof type !== 'string') throw refuse('body', 'the Blob type is not a string')
+    if (!(size <= limit)) throw tooLarge()
     const bytes = Buffer.from(await body.arrayBuffer())
-    if (bytes.length > limit) throw tooLarge()
-    return { bytes, type: body.type || null }
+    if (!(bytes.length <= limit)) throw tooLarge()
+    return { bytes, type: type || null }
   }
   throw refuse('body', 'the body must be a string, an ArrayBuffer, a typed array or DataView, or a Blob')
 }
@@ -600,12 +619,20 @@ export function createOutboundFetch(options = {}) {
               address,
               family,
             }))
-            // never synchronously: a connect that fails at once (ENETUNREACH where a family has no route) must
-            // report after http has put its error listeners on the socket
+            // Never synchronously: a connect that fails at once (ENETUNREACH where a family has no route) must
+            // report after http has put its error listeners on the socket. Node's callback starts the first
+            // connect attempt, so a throw from it ends this request. What is contained: every error Node reports
+            // through an event or an errno, on every attempt. What is not: a JavaScript exception thrown inside
+            // Node's own later attempts (a fallback started from its timer or completion callback), which no
+            // code here runs around
             requestOptions.lookup = (hostname, opts, callback) => {
               process.nextTick(() => {
-                if (opts?.all) callback(null, candidates)
-                else callback(null, target.address, target.family)
+                try {
+                  if (opts?.all) callback(null, candidates)
+                  else callback(null, target.address, target.family)
+                } catch (err) {
+                  fail(err)
+                }
               })
             }
             if (candidates.length > 1) {
@@ -713,7 +740,7 @@ export function createOutboundFetch(options = {}) {
         if (url.username || url.password) throw refuse('url', 'credentials in the URL are not allowed')
         const result = await exchange(url, {
           method,
-          headers: outgoingHeaders(headers, url, body, config),
+          headers: outgoingHeaders(headers, url, method, body, config),
           body,
           redirect: request.redirect,
           maxBytes,

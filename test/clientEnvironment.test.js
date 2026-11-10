@@ -125,3 +125,29 @@ test('a newer sky wins over an older one whose assets finish loading later', asy
   assert.equal(scene.environment.name, 'asset://fast-sky.hdr')
   assert.ok(older)
 })
+
+test('a sky whose assets fail after one whose assets loaded keeps none of the earlier sky’s background or HDR', async t => {
+  const warnings = []
+  t.mock.method(console, 'warn', line => warnings.push(String(line)))
+  const { environment, scene } = makeEnvironment(async (type, url) => {
+    if (url.includes('missing')) throw new Error('asset request failed: HTTP 404')
+    const texture = type === 'hdr' ? new THREE.DataTexture() : new THREE.Texture()
+    texture.name = url
+    return texture
+  })
+  environment.addSky(skyNode('a'))
+  await tick()
+  assert.equal(scene.environment.name, 'asset://a-sky.hdr')
+  assert.equal(environment.sky.material.map.name, 'asset://a-bg.png')
+  assert.equal(environment.sky.visible, true)
+  environment.addSky(skyNode('missing-b'))
+  await tick()
+  assert.equal(scene.environment, null, 'the failed HDR is no environment, not the previous sky’s')
+  assert.equal(environment.sky.material.map, null, 'the hidden background lets go of the previous texture')
+  assert.equal(environment.sky.visible, false)
+  // the failing urls remembered for reporting are bounded
+  for (let i = 0; i < 200; i++) environment.addSky(skyNode(`missing-${i}`))
+  await tick()
+  assert.ok(environment.failedAssets.size <= 64, `${environment.failedAssets.size}`)
+  assert.equal(warnings.length, 2 + 400)
+})

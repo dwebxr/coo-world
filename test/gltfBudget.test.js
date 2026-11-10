@@ -1138,20 +1138,72 @@ test('the parser never hands a data: or blob: URI to resolveURL: without the che
   assert.deepEqual(violations, [], 'resolveURL was given a data: or blob: URI')
 })
 
+test('instanced exports with Blender custom properties load: the scene may hold 8 MiB of userData', async () => {
+  // the reviewer's probe: one mesh of 5 materials with a 200-character custom property, used by 1000 nodes (56 KB),
+  // was refused at 1 MiB (1,055,000 characters in the scene); and 800 nodes, each with a 300-character property of
+  // its own, using one mesh of 2 materials with a 500-character one. Both load, as the client loads them
+  const positions = new Uint8Array(36)
+  const instanced = (primitives, nodes, meshProperty, nodeProperty) =>
+    glb(
+      {
+        asset: { version: '2.0', generator: 'Khronos glTF Blender I/O v4.2.70' },
+        scene: 0,
+        scenes: [{ nodes: [...Array(nodes).keys()] }],
+        nodes: Array.from({ length: nodes }, (_, i) => ({
+          name: `Tree.${i}`,
+          mesh: 0,
+          translation: [i, 0, 0],
+          ...(nodeProperty ? { extras: { note: 'y'.repeat(nodeProperty) } } : {}),
+        })),
+        meshes: [
+          {
+            name: 'Tree',
+            extras: { note: 'x'.repeat(meshProperty) },
+            primitives: Array.from({ length: primitives }, (_, i) => ({ attributes: { POSITION: 0 }, material: i })),
+          },
+        ],
+        materials: Array.from({ length: primitives }, (_, i) => ({ name: `mat${i}` })),
+        accessors: [vec3(3, { bufferView: 0, min: [0, 0, 0], max: [0, 0, 0] })],
+        bufferViews: [{ buffer: 0, byteLength: 36 }],
+        buffers: [{ byteLength: 36 }],
+      },
+      positions
+    )
+  for (const [primitives, nodes, meshProperty, nodeProperty] of [
+    [5, 1000, 200, 0],
+    [2, 800, 500, 300],
+  ]) {
+    const { gltf, budget } = await parse(instanced(primitives, nodes, meshProperty, nodeProperty), { check: true })
+    assert.equal(gltf.scene.children.length, nodes)
+    assert.ok(budget.used.bytes < budget.maxBytes)
+  }
+})
+
 test('a userData copy is charged at least what it holds: the heap of the worst shapes, through the parser', async () => {
   // the reviewer's probe: a list of empty objects held 11.7 times the two bytes a character it was charged (68 clones
   // within the work limit held 1.6 GB, 135 MB charged). Measured here, on this Node, with extras just under the 64 KiB
   // an object may have, over eleven clones: the bytes charged for each copy are at least two thirds of what it holds
-  // (jsonCopyBytes holds 0.51 for this shape, 0.87 for many keys of one object, 1.01 for a long two-byte string)
+  // (the most held over charged of the shapes tried: 1.01, a long two-byte string; 0.95, one object of 5,560 short
+  // keys with two-byte strings, which held 1.40 times its charge at 24 bytes a property; 0.51, empty objects)
   v8.setFlagsFromString('--expose_gc')
   const gc = vm.runInNewContext('gc')
   const room = GLTF_LIMITS.userDataLength - 100
+  const printable = []
+  for (let c = 33; c < 127; c++) if (c !== 34 && c !== 92) printable.push(String.fromCharCode(c))
+  const shortKey = i => {
+    const k = i + printable.length
+    return printable[Math.floor(k / printable.length) % printable.length] + printable[k % printable.length]
+  }
   const shapes = {
     'a list of empty objects': { l: Array(Math.floor(room / 3)).fill({}) },
     'many keys of one object': Object.fromEntries(
       Array.from({ length: Math.floor(room / 10) }, (_, i) => [`k${i}`, 0])
     ),
     'a string of two-byte characters': { s: 'あ'.repeat(room - 10) },
+    // the reviewer's: an object's property table just past a step of its capacity, short keys, short two-byte values
+    'one object of 5,560 short keys': {
+      o: Object.fromEntries(Array.from({ length: 5560 }, (_, i) => [shortKey(i), 'ሴስ'])),
+    },
   }
   const file = (extras, uses) =>
     glb(
@@ -1186,6 +1238,10 @@ test('a userData copy is charged at least what it holds: the heap of the worst s
     const heapPerCopy = (eleven.heap - one.heap) / copies
     const chargedPerCopy = (eleven.charged - one.charged) / copies
     assert.ok(chargedPerCopy >= heapPerCopy / 1.5, `${shape}: ${chargedPerCopy} charged, ${heapPerCopy} held`)
+    // (the reviewer's shape is covered: 56 bytes a property, where 24 held 1.40 times the charge; here about 0.95)
+    if (shape === 'one object of 5,560 short keys') {
+      assert.ok(chargedPerCopy >= heapPerCopy / 1.2, `${shape}: ${chargedPerCopy} charged, ${heapPerCopy} held`)
+    }
     // (two bytes a character, the charge before, was far below it for the list of empty objects)
     if (shape === 'a list of empty objects') {
       const text = JSON.stringify(extras).length

@@ -22,9 +22,9 @@
 // work it and this check do, charged before it happens, and the time they take. The parser's charges are measured
 // at that moment: an allocation at its real size, an accessor's use at its declared size (elements x components),
 // a morph-target texture by three.js's own formula (for the renderer's texture size, or the largest any size would
-// take while that is not known), a JSON copy of userData at what the copy holds (jsonCopyBytes, from the measured
-// heap of the worst shapes). The three-vrm counts before parsing are bounds, each at least what it stands for
-// (checkVRM says which are exact). Cost inside three.js and three-vrm that is proportional to the charges is
+// take while that is not known), a JSON copy of userData at jsonCopyBytes' estimate (measured on V8 over the worst
+// shapes tried, not proven). The three-vrm counts before parsing are bounds in what they count, each at least what it
+// stands for (checkVRM says which are exact); the copies among them are at that same estimate. Cost inside three.js and three-vrm that is proportional to the charges is
 // covered by them; cost there that multiplies in ways the charges do not capture is not proven absent. The time
 // limit refuses at the next charge after it, but cannot interrupt one long loop inside a library. The server
 // parses with the same vendored parser without this check, a budget or a time limit.
@@ -56,9 +56,10 @@ export const GLTF_LIMITS = Object.freeze({
   // clone): each object's (node, mesh, primitive, material, image, scene, camera, light), in characters of JSON; and
   // all the userData the parsed scene holds (a mesh's for each of its primitives and each node using it), which every
   // clone of the scene copies. The most in those files: 1,957 for one object (a VRoid primitive's morph target
-  // names), 22,501 in a scene (VRM1_Constraint_Twist_Sample)
+  // names), 22,501 in a scene (VRM1_Constraint_Twist_Sample). The scene's room is for instanced exports with custom
+  // properties (one mesh of 5 materials with a 200-character property on 1000 nodes is 1,055,000)
   userDataLength: 64 * 1024,
-  sceneUserDataLength: 1024 * 1024,
+  sceneUserDataLength: 8 * 1024 * 1024,
   // the parser (createGLTFBudget): bytes it allocates, beyond twice the file's own size (the GLB's binary chunk and
   // the bufferViews are each a copy of the file's data). Most of it, for an avatar, is the morph-target textures
   // three.js builds: one per geometry, and a VRoid face is ten geometries sharing one set of vertices and targets.
@@ -121,11 +122,11 @@ export const GLTF_LIMITS = Object.freeze({
     constraints: 4096,
     outlineDraws: 131072, // draws outlines add: two per outlined mesh sharing a geometry, for each use of it
     // what the outline material three-vrm clones for each outlined primitive copies: the material's userData (its
-    // extras and the extensions the parser does not handle) and each texture's (its image's extras and mimeType), at
-    // what a JSON copy holds (jsonCopyBytes)
+    // extras and the extensions the parser does not handle) and each texture's (its image's extras and mimeType), each
+    // copy at jsonCopyBytes' estimate of what it holds
     outlineCopyBytes: 16 * MiB,
     // what an expression's texture-transform binds copy: each clones every texture slot of each material it binds
-    // (the texture's userData, at what a JSON copy holds)
+    // (the texture's userData, at jsonCopyBytes' estimate)
     textureBindCopyBytes: 16 * MiB,
   }),
 })
@@ -170,16 +171,19 @@ function jsonDepth(text) {
   return deepest
 }
 
-// The bytes a JSON copy of a value holds, at most, from its JSON text. three.js copies userData as JSON (the parse of
-// its stringify) with every clone of an object, material or texture, and the copy holds more than its text: 2 bytes a
-// character (a string's characters, two bytes each once any is past Latin-1), 24 more per `,` or `:` (each value
-// after the first in a list, each property: its slot, a number's box) and 96 more per `{` or `[` (each object or
-// list: its header and its backing store), counted outside strings. On Node 24, copies of 64 KiB of JSON of twenty
-// shapes held at most 0.87 of this (many keys of one object), a list of empty objects 0.51 (it was 10.7 times the
-// two bytes a character charged before), and one long string of two-byte characters 1.01 (its characters are two
-// bytes each, its header and object on top): test/gltfBudget.test.js measures the worst of them through the parser
+// An estimate, from its JSON text, of the bytes a JSON copy of a value holds. three.js copies userData as JSON (the
+// parse of its stringify) with every clone of an object, material or texture, and the copy holds more than its text:
+// 2 bytes a character (a string's characters, two bytes each once any is past Latin-1), 24 more per `,` (each value
+// after the first in a list: its slot, a number's box), 56 more per `:` (each property: its entry in the object's
+// property table, which grows in steps) and 96 more per `{` or `[` (each object or list: its header and its backing
+// store), counted outside strings. Measured, not proven: on V8 (Node 24), over the 52 shapes of 64 KiB or less tried
+// (lists, nesting, keys of every kind, objects of many short keys at each step of their table), the largest held ÷
+// charged was 1.01 (one long string of two-byte characters: its characters alone are two bytes each), objects of
+// many short keys at most 0.95, a list of empty objects 0.51 (10.7 times the two bytes a character charged before).
+// test/gltfBudget.test.js measures the worst of them through the parser
 export function jsonCopyBytes(text) {
-  let separators = 0
+  let commas = 0
+  let colons = 0
   let containers = 0
   let inString = false
   for (let i = 0; i < text.length; i++) {
@@ -190,13 +194,15 @@ export function jsonCopyBytes(text) {
       } else if (char === 34) inString = false
     } else if (char === 34) {
       inString = true
-    } else if (char === 44 || char === 58) {
-      separators++
+    } else if (char === 44) {
+      commas++
+    } else if (char === 58) {
+      colons++
     } else if (char === 123 || char === 91) {
       containers++
     }
   }
-  return 2 * text.length + 24 * separators + 96 * containers
+  return 2 * text.length + 24 * commas + 56 * colons + 96 * containers
 }
 
 // the JSON of a .glb (its header and chunks, read as GLTFLoader reads them: the last JSON and BIN chunks win) or of
@@ -919,7 +925,8 @@ export function checkGLTF(data, limits = GLTF_LIMITS, budget = null) {
 // and every VRM 1 material with an outline mode, counted as outlined); outlineCopyBytes (every texture slot at the
 // largest texture's userData, and 8 KiB more); textureBindCopyBytes (the most slots any material kind has, at the
 // largest texture's userData, for every material a VRM 0 material value names and every mesh a VRM 1 bind's
-// material is on).
+// material is on). The two copy counts are bounds in copies; each copy is at jsonCopyBytes' estimate of what it holds
+// (measured, not proven).
 function checkVRM(json, collections, parents, order, limits, { list, object, items, index, step }) {
   const caps = limits.vrm
   const extensions = object(json.extensions, 'extensions')
@@ -942,7 +949,7 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
     textureBindCopyBytes: 0,
   }
   // what a clone of a texture copies: its userData, which is its image's extras and the image's mimeType (one of
-  // IMAGE_TYPES, ten characters at most), at what a JSON copy holds. Which image a texture three-vrm clones holds is
+  // IMAGE_TYPES, ten characters at most), at jsonCopyBytes' estimate. Which image a texture three-vrm clones holds is
   // not modelled (an extension's source, the parser's texture cache and VRM 0's slots may each resolve it to another
   // than the one named): each is counted at the largest of any image
   let largestTexture = 0
@@ -1264,8 +1271,9 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
   // and the outline material it clones for each such primitive of each mesh. MToon is a ShaderMaterial: the clone
   // copies the material's userData as JSON (its extras, and the extensions the parser does not handle, which include
   // the MToon extension itself), and clones the texture in each of its texture uniforms (each counted at the largest
-  // texture's userData, above). At what a JSON copy holds, and 8 KiB for the uniforms, the material object and the
-  // MToon extension a VRM 0 material is converted to. A bound by construction (each term at least what it stands for)
+  // texture's userData, above), and 8 KiB for the uniforms, the material object and the MToon extension a VRM 0
+  // material is converted to. A bound in copies (every copy made is counted, each slot at the largest texture); each
+  // copy at jsonCopyBytes' estimate of what it holds, which is measured on V8, not proven
   const copied = value => (value === undefined ? 0 : jsonCopyBytes(JSON.stringify(value) || ''))
   const copies = new Map()
   const copyBytes = m => {

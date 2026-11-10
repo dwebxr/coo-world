@@ -833,7 +833,7 @@ test('extras are small: each object’s, and all the parsed scene holds, as the 
     // (the node's light extension, and the unknown extension's name around the data, count too)
     refused(at(place, label === 'an unknown extension' ? 65537 - 11 : 65537), pattern)
   }
-  // and all of it in the parsed scene, at most 1 MiB: a mesh's userData is on each of its primitives' meshes, for
+  // and all of it in the parsed scene, at most 8 MiB: a mesh's userData is on each of its primitives' meshes, for
   // each node using it, and every clone of the scene (an avatar's, for each player) copies all of it. The most in the
   // bundled files and VRoid's samples: 22,501
   const used = nodes =>
@@ -841,8 +841,32 @@ test('extras are small: each object’s, and all the parsed scene holds, as the 
       nodes: Array.from({ length: nodes }, () => ({ mesh: 0 })),
       meshes: [{ extras: fill(40000), primitives: [{ attributes: { POSITION: 0 } }, { attributes: { POSITION: 0 } }] }],
     })
-  assert.equal(checkGLTF(text(used(13))).sceneUserData, 13 * 2 * 40000)
-  refused(used(14), /the scene's userData is 1120000 characters of JSON, more than 1048576/)
+  assert.equal(checkGLTF(text(used(104))).sceneUserData, 104 * 2 * 40000)
+  refused(used(105), /the scene's userData is 8400000 characters of JSON, more than 8388608/)
+  // the reviewer's instanced exports with Blender custom properties (1 MiB refused the first): one mesh of 5
+  // materials with a 200-character property on 1000 nodes (56 KB); and 800 nodes, each with a 300-character
+  // property of its own, using one mesh of 2 materials with a 500-character one
+  const instanced = (primitives, nodes, meshProperty, nodeProperty) =>
+    doc({
+      asset: { version: '2.0', generator: 'Khronos glTF Blender I/O v4.2.70' },
+      scenes: [{ nodes: [...Array(nodes).keys()] }],
+      nodes: Array.from({ length: nodes }, (_, i) => ({
+        name: `Tree.${i}`,
+        mesh: 0,
+        translation: [i, 0, 0],
+        ...(nodeProperty ? { extras: { note: 'y'.repeat(nodeProperty) } } : {}),
+      })),
+      meshes: [
+        {
+          name: 'Tree',
+          extras: { note: 'x'.repeat(meshProperty) },
+          primitives: Array.from({ length: primitives }, (_, i) => ({ attributes: { POSITION: 0 }, material: i })),
+        },
+      ],
+      materials: Array.from({ length: primitives }, (_, i) => ({ name: `mat${i}` })),
+    })
+  assert.equal(checkGLTF(text(instanced(5, 1000, 200))).sceneUserData, 1000 * 5 * 211)
+  assert.ok(checkGLTF(text(instanced(2, 800, 500, 300))).sceneUserData > 1024 * 1024)
 })
 
 test('three-vrm walks are counted in objects of the scene graph, as the plugins walk them, not in nodes', () => {
@@ -1053,8 +1077,8 @@ test('the bundled avatar, emotes and models pass, with their three-vrm counts', 
     constraints: 0,
     outlineDraws: 2,
     // 8 KiB, its material's extensions (`{}`: 100 bytes copied) and ten slots of a texture's userData (an image's
-    // mimeType, counted at ten characters: `{"mimeType":"image/jpeg"}`, 170)
-    outlineCopyBytes: 8192 + 100 + 10 * 170,
+    // mimeType, counted at ten characters: `{"mimeType":"image/jpeg"}`, 202)
+    outlineCopyBytes: 8192 + 100 + 10 * 202,
     textureBindCopyBytes: 0,
   })
   for (const name of [

@@ -166,7 +166,11 @@ class Cleaner {
     for (const name of scripts) {
       try {
         const text = await assets.readText(name)
-        if (text === null) continue // no such file: it names nothing
+        // A script that does not exist (ENOENT locally, NoSuchKey on S3) names nothing: an absent file cannot reference
+        // anything at run time, and the app pointing at it is already broken. Taking it as incomplete discovery
+        // would let any builder switch cleaning off for the whole world with one blueprint naming a made-up script
+        // hash. Every other read failure still stops all deletion (below).
+        if (text === null) continue
         findAssetNames(text, assetsToKeep)
       } catch (err) {
         unreadable.push(`script ${name} (${err?.code || err?.message || 'read failed'})`)

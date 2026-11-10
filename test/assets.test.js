@@ -221,3 +221,71 @@ test('s3 assets: readText reads an object, null when it does not exist', async t
   assert.equal(await assets.readText('missing.js'), null)
   await assert.rejects(assets.readText('../x'), /invalid asset name/)
 })
+
+test('s3 assets: only a definite missing key is "no such script"; any other failure is thrown to the cleaner', async t => {
+  const { assets, client } = s3(t)
+  const failures = [
+    Object.assign(new Error('bucket'), { name: 'NoSuchBucket', $metadata: { httpStatusCode: 404 } }),
+    Object.assign(new Error('a 404 without a code'), { name: 'Unknown', $metadata: { httpStatusCode: 404 } }),
+    Object.assign(new Error('denied'), { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } }),
+    Object.assign(new Error('slow down'), { name: 'SlowDown', $metadata: { httpStatusCode: 503 } }),
+    Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }),
+  ]
+  for (const failure of failures) {
+    client.send = async () => {
+      throw failure
+    }
+    await assert.rejects(assets.readText('app.js'), failure, failure.name || failure.code)
+  }
+  client.send = async () => {
+    throw Object.assign(new Error('The specified key does not exist.'), {
+      name: 'NoSuchKey',
+      $metadata: { httpStatusCode: 404 },
+    })
+  }
+  assert.equal(await assets.readText('app.js'), null)
+})
+
+test('local assets: only ENOENT is "no such script"; other read failures are thrown to the cleaner', async t => {
+  const { assets, init, dir } = await localAssets(t)
+  await init()
+  fs.mkdirSync(path.join(dir, 'folder.js'))
+  await assert.rejects(assets.readText('folder.js'), { code: 'EISDIR' })
+  assert.equal(await assets.readText('absent.js'), null)
+})
+
+test('atomic write: a directory fsync that fails for real rejects; one the filesystem cannot do is skipped', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atomic-dir-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const file = path.join(dir, 'a.bin')
+  const failing = code => ({
+    ...fs.promises,
+    open: async (target, flags) => {
+      const handle = await fs.promises.open(target, flags)
+      if (flags === 'r') {
+        handle.sync = async () => {
+          throw Object.assign(new Error('directory fsync'), { code })
+        }
+      }
+      return handle
+    },
+  })
+  for (const code of ['EIO', 'ENOSPC', 'EACCES', 'EMFILE']) {
+    await assert.rejects(writeFileAtomic(file, code, { fs: failing(code) }), { code }, code)
+    assert.equal(fs.readFileSync(file, 'utf8'), code, 'the file is in place, but not known to be durable')
+  }
+  for (const code of ['EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'EISDIR']) {
+    await writeFileAtomic(file, code, { fs: failing(code) })
+    assert.equal(fs.readFileSync(file, 'utf8'), code)
+  }
+  // a directory that cannot even be opened (Windows) is skipped the same way
+  const unopenable = {
+    ...fs.promises,
+    open: async (target, flags) => {
+      if (flags === 'r') throw Object.assign(new Error('illegal operation on a directory'), { code: 'EISDIR' })
+      return fs.promises.open(target, flags)
+    },
+  }
+  await writeFileAtomic(file, 'windows', { fs: unopenable })
+  assert.equal(fs.readFileSync(file, 'utf8'), 'windows')
+})

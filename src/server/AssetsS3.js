@@ -250,16 +250,16 @@ export class AssetsS3 {
     return assets
   }
 
-  // the text of a stored asset://<name>, or null when there is no such object (cleaner: scripts' asset literals)
+  // the text of a stored asset://<name>, or null when there is no such object (cleaner: scripts' asset literals).
+  // Only S3's definite answer for a missing key (NoSuchKey) is "no such object"; any other error, a 404 for a
+  // missing bucket (NoSuchBucket) or a refused read (AccessDenied, 403) included, is thrown
   async readText(name) {
     if (assetName(`asset://${name}`) === null) throw new Error('invalid asset name')
     try {
       const response = await this.client.send(new GetObjectCommand({ Bucket: this.bucketName, Key: this.getKey(name) }))
       return await response.Body.transformToString('utf-8')
     } catch (error) {
-      if (error.name === 'NoSuchKey' || error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
-        return null
-      }
+      if (error?.name === 'NoSuchKey' || error?.Code === 'NoSuchKey') return null
       throw error
     }
   }

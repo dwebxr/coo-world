@@ -61,7 +61,7 @@ test('storage: each limit refuses the set with a script error and leaves the sto
   const world = scriptWorld(storage)
   world.set('a', { n: 1 })
   world.set('b', 'x'.repeat(40))
-  await storage.flush()
+  await storage.write()
   const before = fs.readFileSync(file, 'utf8')
   const state = () => [storage.get('a'), storage.get('b'), storage.get('c'), storage.values.size, storage.bytes]
   const kept = state()
@@ -251,9 +251,38 @@ test('storage: each write is fsynced and renamed into place; a crash before the 
   assert.deepEqual(fs.readdirSync(dir).sort(), ['storage.json', 'unrelated.json'])
   crash = false
   calls.length = 0
-  storage.stopped = false
-  assert.equal(await storage.flush(), true)
+  assert.equal(await storage.flush(), true, 'a second final save writes what the first could not')
   assert.deepEqual(onDisk(file), { old: false, new: 1 })
+})
+
+test('storage: a directory fsync that fails for real fails the write and keeps the store dirty', async t => {
+  const lines = quiet(t)
+  const { file } = tempWorld(t)
+  let code = 'EIO'
+  const dirSync = {
+    ...fs.promises,
+    open: async (target, flags) => {
+      const handle = await fs.promises.open(target, flags)
+      if (flags !== 'r') return handle
+      handle.sync = async () => {
+        throw Object.assign(new Error('directory fsync'), { code })
+      }
+      return handle
+    },
+  }
+  const storage = new Storage(file, { fs: dirSync, intervalMs: 0 })
+  storage.set('k', 1)
+  await storage.write()
+  assert.equal(storage.dirty, true, 'not known to be durable: written again')
+  assert.equal(storage.saved(), false)
+  assert.ok(lines.error.some(line => /failed to save storage\.json \(EIO\)/.test(line)))
+  // a filesystem that cannot fsync a directory at all: the write counts
+  for (code of ['EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'EISDIR']) {
+    storage.set('k', code)
+    await storage.write()
+    assert.equal(storage.saved(), true, code)
+  }
+  assert.deepEqual(onDisk(file), { k: 'EISDIR' })
 })
 
 for (const [name, text] of [
@@ -285,23 +314,106 @@ for (const [name, text] of [
   })
 }
 
-test('storage: a file that can be neither read nor moved aside disables world.set instead of writing over it', t => {
+test('storage: a read that fails once (EIO) is retried and the store loads; nothing is moved', t => {
   const lines = quiet(t)
   const { dir, file } = tempWorld(t)
-  // a directory under the file's name: unreadable as a file; a read-only parent keeps it from being moved
-  fs.mkdirSync(file)
-  fs.chmodSync(dir, 0o555)
-  let storage
-  try {
-    storage = new Storage(file, { intervalMs: 0 })
-  } finally {
-    fs.chmodSync(dir, 0o755)
+  fs.writeFileSync(file, JSON.stringify({ kept: 1 }))
+  let reads = 0
+  const flaky = (target, encoding) => {
+    if (++reads === 1) throw Object.assign(new Error('i/o error'), { code: 'EIO' })
+    return fs.readFileSync(target, encoding)
   }
-  if (!storage.unavailable) return t.skip('the platform let the directory be renamed (running as root?)')
-  assert.match(lines.error[0], /could not be read \(EISDIR\) and could not be moved aside/)
-  assert.throws(() => storage.set('k', 1), /world\.set: storage is unavailable/)
-  assert.equal(storage.get('k'), undefined)
-  assert.ok(fs.statSync(file).isDirectory())
+  const storage = new Storage(file, { intervalMs: 0, readFile: flaky, readPauseMs: 1 })
+  assert.equal(reads, 2)
+  assert.equal(storage.get('kept'), 1)
+  assert.equal(storage.unavailable, null)
+  assert.deepEqual(fs.readdirSync(dir), ['storage.json'])
+  assert.deepEqual(lines.error, [])
+})
+
+for (const code of ['EIO', 'EACCES', 'EMFILE', 'EBUSY', 'EISDIR']) {
+  test(`storage: a file that keeps failing to read (${code}) is left as it is and the store is off for the run`, async t => {
+    const lines = quiet(t)
+    const { dir, file } = tempWorld(t)
+    fs.writeFileSync(file, JSON.stringify({ precious: true }))
+    let reads = 0
+    const failing = () => {
+      reads++
+      throw Object.assign(new Error('cannot read'), { code })
+    }
+    const storage = new Storage(file, { intervalMs: 0, readFile: failing, readPauseMs: 1 })
+    assert.equal(reads, 5, 'read again four times')
+    assert.match(storage.unavailable, new RegExp(`could not be read \\(${code}\\)`))
+    assert.equal(lines.error.length, 1)
+    assert.match(
+      lines.error[0],
+      new RegExp(`could not be read \\(${code}\\) after 5 attempts.*the file is left as it is`)
+    )
+    assert.throws(() => storage.set('k', 1), /world\.set: storage is unavailable/)
+    assert.throws(() => storage.set('precious', undefined), /storage is unavailable/)
+    assert.equal(storage.get('precious'), undefined)
+    assert.equal(await storage.flush(), true, 'nothing was accepted, so nothing is unsaved')
+    assert.deepEqual(fs.readdirSync(dir), ['storage.json'], 'not renamed, no temp file')
+    assert.deepEqual(onDisk(file), { precious: true })
+  })
+}
+
+test('storage: once the final save starts, world.set is refused and only what was accepted counts', async t => {
+  quiet(t)
+  const { file } = tempWorld(t)
+  const storage = new Storage(file, { intervalMs: 0 })
+  const world = scriptWorld(storage)
+  world.set('k', 1)
+  const flushing = storage.flush()
+  assert.throws(() => world.set('k', 2), /the server is stopping; the value was not stored/)
+  assert.throws(() => world.set('other', undefined), /the server is stopping/)
+  assert.equal(await flushing, true)
+  assert.throws(() => world.set('k', 3), /the server is stopping/)
+  assert.deepEqual(onDisk(file), { k: 1 })
+  assert.equal(world.get('k'), 1)
+  // an accepted change the file does not hold makes the store unsaved, whatever the last write said
+  storage.revision++
+  assert.equal(storage.saved(), false)
+})
+
+test("storage: a value's toJSON that calls world.set again cannot unbalance the accounting", t => {
+  quiet(t)
+  const { file } = tempWorld(t)
+  const storage = new Storage(file, { intervalMs: 0, limits: { maxBytes: 300 } })
+  const world = scriptWorld(storage)
+  world.set('k', 'v'.repeat(100))
+  world.set('other', 'o'.repeat(50))
+  world.set('k', {
+    toJSON() {
+      world.set('k', undefined)
+      world.set('third', 't'.repeat(40))
+      return 1
+    },
+  })
+  assert.equal(storage.bytes, Buffer.byteLength(storage.serialize()), 'tracked size is the file size')
+  assert.equal(storage.bytes, storage.measure())
+  assert.deepEqual(JSON.parse(storage.serialize()), { other: 'o'.repeat(50), third: 't'.repeat(40), k: 1 })
+  // and the total limit still holds against what is really there
+  assert.throws(() => world.set('big', 'b'.repeat(200)), /storage would be \d+ bytes; the limit is 300/)
+})
+
+test('storage: a key stored before the key rule can be deleted and overwritten, but not made larger', async t => {
+  quiet(t)
+  const { file } = tempWorld(t)
+  const long = 'k'.repeat(129)
+  fs.writeFileSync(file, JSON.stringify({ [long]: 'x'.repeat(50), '': 'empty key' }))
+  const storage = new Storage(file, { intervalMs: 0, limits: { maxValueBytes: 20 } })
+  assert.equal(storage.get(long), 'x'.repeat(50))
+  storage.set(long, 'y'.repeat(50))
+  assert.throws(() => storage.set(long, 'z'.repeat(51)), /the value is 53 bytes/)
+  storage.set(long, 'short')
+  assert.equal(storage.get(long), 'short')
+  storage.set('', undefined)
+  assert.throws(() => storage.set('', 1), /key must be a string of 1 to 128 characters/, 'a new key follows the rule')
+  assert.throws(() => storage.set('n'.repeat(129), 1), /key must be a string/)
+  storage.set(long, undefined)
+  assert.ok(await storage.flush())
+  assert.deepEqual(onDisk(file), {})
 })
 
 test('storage: an unchanged value is not written again; deleting a key writes once', async t => {
@@ -317,8 +429,7 @@ test('storage: an unchanged value is not written again; deleting a key writes on
   }
   const storage = new Storage(file, { fs: counting, intervalMs: 0 })
   storage.set('score', { a: 1 })
-  await storage.flush()
-  storage.stopped = false
+  await storage.write()
   for (let i = 0; i < 5; i++) storage.set('score', { a: 1 })
   assert.equal(storage.dirty, false)
   storage.set('score', undefined)

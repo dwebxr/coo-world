@@ -1,7 +1,7 @@
 // scripts/check-models.mjs is what an operator runs before upgrading a world: it must accept the bundled files,
 // name a refused one with its reason, say so with its exit status, and never request what a file names.
 import assert from 'node:assert/strict'
-import { spawn, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -72,19 +72,43 @@ test('a wrong argument is an error and nothing is checked', () => {
 test('a long report reaches a slow reader whole, with its last line', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'check-models-many-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
-  // far more output than a pipe holds (64 KiB): 1,500 lines of about 150 characters
+  // far more output than a pipe and the reader's buffer hold (64 KiB each): 1,500 lines of about 150 characters
   const COUNT = 1500
+  const empty = '{"asset":{"version":"2.0"}}'
   for (let i = 0; i < COUNT; i++) {
-    fs.writeFileSync(path.join(dir, `file-${String(i).padStart(4, '0')}.gltf`), '{"asset":{"version":"2.0"}}')
+    fs.writeFileSync(path.join(dir, `file-${String(i).padStart(4, '0')}.gltf`), empty)
   }
-  const child = spawn(process.execPath, [path.join(ROOT, 'scripts', 'check-models.mjs'), dir], { cwd: ROOT })
+  // the last file is a named pipe: the script opens it only once every file before it has its line, and waits there
+  // until this test writes it. So "the report has been written" is something the test observes instead of a delay
+  // it hopes was long enough (Codex: a start slower than the delay passed with process.exit() back in the script)
+  const gate = fs.mkdtempSync(path.join(os.tmpdir(), 'check-models-gate-'))
+  t.after(() => fs.rmSync(gate, { recursive: true, force: true }))
+  const last = path.join(gate, 'last.gltf')
+  execFileSync('mkfifo', [last])
+  const child = spawn(process.execPath, [path.join(ROOT, 'scripts', 'check-models.mjs'), dir, last], { cwd: ROOT })
   t.after(() => child.kill('SIGKILL'))
   let out = ''
   child.stdout.setEncoding('utf8').on('data', text => (out += text))
   child.stderr.resume()
   // the reader is not there while the report is written
   child.stdout.pause()
-  await new Promise(resolve => setTimeout(resolve, 3000))
+  const deadline = Date.now() + 60_000
+  let writer
+  while (writer === undefined) {
+    try {
+      // refused (ENXIO) until the script has the pipe open for reading
+      writer = fs.openSync(last, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK)
+    } catch (err) {
+      assert.equal(err.code, 'ENXIO')
+      assert.ok(Date.now() < deadline && child.exitCode === null, 'the script did not reach its last file within 60 s')
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
+  }
+  assert.ok(Buffer.byteLength(out) < 150 * COUNT, 'the reader was behind while the report was written')
+  fs.writeSync(writer, empty)
+  fs.closeSync(writer)
+  // what is left to the script is that one small file and two lines; then the reader comes back
+  await new Promise(resolve => setTimeout(resolve, 1000))
   child.stdout.resume()
   const status = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('the script did not finish within 60 s')), 60_000)
@@ -95,8 +119,8 @@ test('a long report reaches a slow reader whole, with its last line', async t =>
   })
   assert.equal(status, 0)
   const lines = out.split('\n').filter(Boolean)
-  assert.equal(lines.filter(text => text.startsWith('ok ')).length, COUNT, 'every file has its line')
-  assert.equal(lines.at(-1), `${COUNT} files checked, 0 refused, 0 unreadable`)
+  assert.equal(lines.filter(text => text.startsWith('ok ')).length, COUNT + 1, 'every file has its line')
+  assert.equal(lines.at(-1), `${COUNT + 1} files checked, 0 refused, 0 unreadable`)
 })
 
 test('nothing a file names is requested: an external image is left out and the file is still judged', async t => {

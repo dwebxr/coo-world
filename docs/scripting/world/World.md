@@ -177,7 +177,9 @@ server script. On a client both do nothing (`get` returns `undefined`).
   not store secrets.
 - An asset is kept by the world's clean-up while a stored value (or your script's source) contains its file name,
   in any URL. A name your script assembles at run time (`'abc' + 'def.glb'`) or writes with JavaScript escapes
-  (`'\x61bc.glb'`) is not seen, and that asset is deleted at the next start-up: write asset names out in full.
+  (`'\x61bc.glb'`), or one named only by code your script fetches, is not seen, and that asset is removed at the
+  next start-up (with `ASSETS=local` it waits in the world's trash for `CLEAN_TRASH_DAYS`): write asset names out
+  in full.
 
 ### `.getQueryParam(key)`
 

@@ -229,9 +229,12 @@ test('only the reply with the request id answers it', async () => {
 
 test('a reply that comes after its request timed out is ignored, also by the next request', async () => {
   const child = fakeChild()
-  const started = Date.now()
+  const started = performance.now()
   await assert.rejects(child.read({ timeout: 100 }), MemoryProbeTimeout)
-  assert.ok(Date.now() - started >= 100 * TIMEOUT_SCALE, 'the request timeout is scaled like every harness wait')
+  // a timer may fire a millisecond before its time on the caller's clock, so the bound has a margin; an unscaled
+  // timeout (100 ms where the scale is 3) is still far below it
+  const waited = performance.now() - started
+  assert.ok(waited >= 100 * TIMEOUT_SCALE * 0.9, `the request timeout is scaled like every harness wait (${waited} ms)`)
   const late = child.lastId()
   const next = track(child.read())
   await tick()
@@ -246,9 +249,10 @@ test('a reply that comes after its request timed out is ignored, also by the nex
 
 test('a limit cuts the request timeout', async () => {
   const child = fakeChild()
-  const started = Date.now()
+  const started = performance.now()
   await assert.rejects(child.read({ timeout: 15000, limit: 50 }), MemoryProbeTimeout)
-  assert.ok(Date.now() - started < 1000)
+  // far below the 15 s it cuts, with room for a slow runner
+  assert.ok(performance.now() - started < 5000)
 })
 
 test('a malformed reply rejects its request with the reason, without throwing from the listener', async () => {
@@ -282,12 +286,13 @@ test('a malformed reply rejects its request with the reason, without throwing fr
 
 test('a request fails at once when the process exits or the channel closes, not as a timeout', async () => {
   const quick = async (child, act, reason) => {
-    const started = Date.now()
+    const started = performance.now()
     const read = child.read()
     await tick()
     act(child)
     await assert.rejects(read, err => !(err instanceof MemoryProbeTimeout) && reason.test(err.message))
-    assert.ok(Date.now() - started < 1000)
+    // far below the request's 15 s timeout, with room for a slow runner
+    assert.ok(performance.now() - started < 5000)
   }
   const exits = fakeChild()
   await quick(

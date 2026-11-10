@@ -21,6 +21,7 @@ import {
 import { createRelayDrop } from '../extras/playerRelayPolicy'
 import { sanitizeChatMessage } from '../extras/chatPolicy'
 import { sanitizeBlueprintAdd, sanitizeBlueprintModify, WORLD_BLUEPRINT_BYTES } from '../extras/blueprintPolicy'
+import { previewValue } from '../extras/assetURL'
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../extras/settingsPolicy'
 import { internalEvents } from '../extras/internalEvents'
 import { createInboundGate, createInboundScheduler, packetNodeLimit } from '../extras/inboundPolicy'
@@ -129,11 +130,23 @@ export class ServerNetwork extends System {
     const blueprints = await this.db('blueprints')
     for (const blueprint of blueprints) {
       try {
-        const result = sanitizeBlueprintAdd(JSON.parse(blueprint.data))
+        // persisted: a stored model/script is kept whatever it holds; the loader decides what it reads (below)
+        const result = sanitizeBlueprintAdd(JSON.parse(blueprint.data), { persisted: true })
         if (!result.ok || result.value.id !== blueprint.id) throw new Error('invalid blueprint')
         this.world.blueprints.add(result.value)
       } catch {
         skippedBlueprints.push(blueprint.id)
+      }
+    }
+    // a stored model/script the loader now refuses (a local path, asset:// traversal, another scheme) is reported
+    // once per blueprint and left as it is: the app shows the crash block on the server until a builder replaces it.
+    // (only test worlds lack the loader)
+    if (typeof this.world.loader?.refusedSources === 'function') {
+      for (const item of this.world.blueprints.items.values()) {
+        const refused = this.world.loader.refusedSources(item)
+        if (!refused.length) continue
+        const id = previewValue(item.id, 16)
+        console.warn(`[network] blueprint ${id} keeps a source the server no longer loads; ${refused.join('; ')}`)
       }
     }
     if (this.world.blueprints.bytes > WORLD_BLUEPRINT_BYTES) {
@@ -1567,6 +1580,8 @@ export class ServerNetwork extends System {
     if (!this.requireBuilder(socket, 'modify blueprint')) return
     const { ok, value: safe } = sanitizeBlueprintModify(data, {
       onUnknownKey: key => this.logOnce(socket, 'blueprint-unknown', `blueprint: unknown key ${key}`),
+      // a model/script the packet repeats unchanged is not checked again (only what it sets is)
+      current: typeof data?.id === 'string' ? this.world.blueprints.get(data.id) : undefined,
     })
     if (!ok) {
       this.logOnce(socket, 'blueprint-modify-invalid', 'onBlueprintModified: invalid blueprint')

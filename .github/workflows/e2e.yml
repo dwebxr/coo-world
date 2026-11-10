@@ -13,6 +13,12 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/e2e.yml'
+  # main itself is checked after every merge (a pull request can skip the suites through the paths filter), and
+  # weekly so drift in browsers, runners or dependencies shows up without a change
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 4 * * 1'
   workflow_dispatch:
 
 permissions:

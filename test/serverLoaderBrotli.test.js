@@ -51,7 +51,7 @@ function loader() {
     createNode: () => ({}),
     createEmoteFactory: () => ({ toClip: () => null }),
   })
-  return new ServerLoader({ resolveURL: url => url })
+  return new ServerLoader({ assetsDir: dir, resolveURL: url => url })
 }
 
 const settle = (promise, ms) =>
@@ -95,7 +95,7 @@ after(async () => {
 })
 
 test('server loader: a model whose external buffer is Brotli-encoded fails its load', async () => {
-  const result = await settle(loader().load('model', path.join(dir, 'br.gltf')), 5000)
+  const result = await settle(loader().load('model', 'asset://br.gltf'), 5000)
   assert.equal(result.status, 'rejected', 'the load settles instead of hanging')
   assert.deepEqual(requested, ['/buffer-br.bin'], 'the external buffer was requested')
   // the rejection is the refused buffer, not some earlier failure (GLTFLoader replaces the fetch error, so the

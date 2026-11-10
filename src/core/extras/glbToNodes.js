@@ -152,6 +152,12 @@ function addWind(mesh, world) {
   if (mesh.material.hasWind) return
   mesh.material.hasWind = true
   // console.log('added wind to', mesh.name)
+  // measured once, here: the loader leaves boundingBox null when the file gives no POSITION min/max, and a throw
+  // inside onBeforeCompile would repeat on every frame for every client that renders the model
+  const geometry = mesh.geometry
+  if (!geometry.boundingBox) geometry.computeBoundingBox()
+  const top = geometry.boundingBox?.max.y
+  const height = (Number.isFinite(top) ? top : 0) * mesh.scale.y
   mesh.material.onBeforeCompile = shader => {
     if (!shader.defines) shader.defines = {}
     shader.defines.USE_WIND = 1
@@ -162,8 +168,6 @@ function addWind(mesh, world) {
     shader.uniforms.noiseScale = uniforms.noiseScale
     shader.uniforms.ampScale = uniforms.ampScale
     shader.uniforms.freqMultiplier = uniforms.freqMultiplier
-
-    const height = mesh.geometry.boundingBox.max.y * mesh.scale.y
 
     shader.uniforms.height = { value: height } // prettier-ignore
     shader.uniforms.stiffness = { value: 0 }

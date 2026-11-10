@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 
 import { cls } from './cls'
+import { guardVector } from '../../core/nodes/Node'
 import { orderBy } from 'lodash-es'
 import { formatBytes } from '../../core/extras/formatBytes'
 import { toText } from '../../core/extras/scriptText'
@@ -106,6 +107,8 @@ export function AppsList({ world, query, perf, refresh, setRefresh }) {
     let closestDistance = null
     for (const [_, entity] of world.entities.items) {
       if (entity.blueprint === item.blueprint) {
+        // (the root's position is the app's own: read through the guard, Node.js)
+        guardVector(entity.root.position)
         const distance = playerPosition.distanceTo(entity.root.position)
         if (closestDistance === null || closestDistance > distance) {
           closestEntity = entity
@@ -123,6 +126,7 @@ export function AppsList({ world, query, perf, refresh, setRefresh }) {
     }
     const entity = getClosest(item)
     if (!entity) return
+    guardVector(entity.root.position)
     world.target.show(entity.root.position)
     setTarget(item)
   }

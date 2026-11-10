@@ -69,6 +69,7 @@ import { callScript } from '../../core/extras/callScript'
 import { TipForm } from './TipForm'
 import { toText } from '../../core/extras/scriptText'
 import { fieldValues } from '../../core/extras/appFields'
+import { guardTransform } from '../../core/nodes/Node'
 
 const e1 = new THREE.Euler(0, 0, 0, 'YXZ')
 const q1 = new THREE.Quaternion()
@@ -1253,6 +1254,8 @@ function App({ world, hidden }) {
 }
 
 function AppTransformFields({ app }) {
+  // (the root's transform is the app's own: its components are read through the guard, Node.js)
+  guardTransform(app.root)
   const [position, setPosition] = useState(app.root.position.toArray())
   const [rotation, setRotation] = useState(app.root.rotation.toArray().map(n => n * RAD2DEG))
   const [scale, setScale] = useState(app.root.scale.toArray())

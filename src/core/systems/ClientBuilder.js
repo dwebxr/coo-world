@@ -8,6 +8,7 @@ import { System } from './System'
 import { hashFile } from '../utils-client'
 import { uuid } from '../utils'
 import { ControlPriorities } from '../extras/ControlPriorities'
+import { guardTransform } from '../nodes/Node'
 import { importApp } from '../extras/appTools'
 import { DEG2RAD, RAD2DEG } from '../extras/general'
 import { createNode } from '../extras/createNode'
@@ -402,6 +403,8 @@ export class ClientBuilder extends System {
           if (!this.world.blueprints.add(blueprint, true)) return
           blueprintId = blueprint.id
         }
+        // (the root's transform is the app's own: its components are read through the guard, Node.js)
+        guardTransform(entity.root)
         const data = {
           id: uuid(),
           type: 'app',
@@ -571,6 +574,7 @@ export class ClientBuilder extends System {
       this.lastMoveSendTime += delta
       if (this.lastMoveSendTime > this.world.networkRate) {
         const app = this.selected
+        guardTransform(app.root)
         this.world.network.send('entityModified', {
           id: app.data.id,
           position: app.root.position.toArray(),
@@ -686,6 +690,7 @@ export class ClientBuilder extends System {
       if (!this.selected.dead && this.selected.data.mover === this.world.network.id) {
         const app = this.selected
         app.data.mover = null
+        guardTransform(app.root)
         app.data.position = app.root.position.toArray()
         app.data.quaternion = app.root.quaternion.toArray()
         app.data.scale = app.root.scale.toArray()

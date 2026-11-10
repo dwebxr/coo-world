@@ -189,3 +189,33 @@ for (const [type, spec] of Object.entries(TYPES)) {
     }
   }
 }
+
+// a screen-space UI places its canvas by its own position (UI.build): it reads it through the node's guard, so an
+// object a script planted in a component (past the setters) is not converted there
+test('a screen-space UI reads its position through the guard (a planted object is never converted)', async () => {
+  const env = sweep.makeWorld({ isServer: false, models: emptyModel })
+  const { world } = env
+  const app = sweep.addApp(
+    world,
+    `
+    const ui = app.create('ui', { space: 'screen', width: 100, height: 50 })
+    app.add(ui)
+    const calls = (app.state.calls = [])
+    app.state.rebuild = () => {
+      for (const key of ['_x', '_y', '_z']) {
+        ui.position[key] = { valueOf() { calls.push(key); return 0 }, toString() { calls.push(key); return '0' } }
+      }
+      ui.width = ui.width + 1
+    }
+  `
+  )
+  await sweep.tick()
+  assert.equal(app.crashed, false, `the script ran: ${app.scriptError?.message}`)
+  const { rebuild, calls } = app.data.state
+  assert.equal(world.pointer.ui.canvases.size, 1, 'the screen-space canvas is placed')
+  rebuild()
+  world.stage.clean()
+  assert.equal(world.pointer.ui.canvases.size, 1, 'the UI was rebuilt')
+  assert.deepEqual([...calls], [], 'no planted object was converted')
+  app.destroy()
+})

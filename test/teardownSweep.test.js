@@ -37,6 +37,8 @@ before(async () => {
     export { ClientControls } from './src/core/systems/ClientControls'
     export { ServerLiveKit } from './src/core/systems/ServerLiveKit'
     export { Stage } from './src/core/systems/Stage'
+    export { Animation } from './src/core/systems/Animation'
+    export { isScriptView } from './src/core/extras/sealMath'
     export { createNode } from './src/core/extras/createNode'
     export * as Nodes from './src/core/nodes'
     export * as THREE from './src/core/extras/three'
@@ -677,7 +679,7 @@ const MATH = ['isVector3', 'isQuaternion', 'isEuler', 'isMatrix3', 'isMatrix4', 
 const isMath = value => value !== null && typeof value === 'object' && MATH.some(flag => value[flag] === true)
 
 // every getter of a handle (and of the plain objects it returns, a level down) that returns the same math object on
-// every read hands out a live engine object: it must be sealed, and a matrix's elements a typed array it cannot replace
+// every read hands out a live engine object
 function liveMath(handle, label, out, depth = 0) {
   for (const key of Reflect.ownKeys(handle)) {
     const desc = Reflect.getOwnPropertyDescriptor(handle, key)
@@ -698,7 +700,11 @@ function liveMath(handle, label, out, depth = 0) {
   }
 }
 
-test('every engine math object a handle hands out by reference is sealed (and a matrix keeps typed elements)', async () => {
+// a node's own position, quaternion, rotation or scale (handed out as they are; read by the engine through
+// Node.guardTransform), as the walk names them
+const NODE_OWN = /^(?!bone\b|control\b)[^.]+(\.parent)?\.(position|quaternion|rotation|scale)$/
+
+test('every engine math object a handle hands out is a view, or a node transform object that is sealed and keeps its change callback', async () => {
   const env = sweep.makeWorld({ isServer: false })
   const { world } = env
   const types = Object.keys(m.Nodes)
@@ -756,23 +762,25 @@ test('every engine math object a handle hands out by reference is sealed (and a 
     assert.ok(names.includes(name), `the walk reaches ${name}`)
   }
   for (const name of ['player.position', 'player.quaternion']) assert.ok(!names.includes(name), `${name} is a copy`)
-  const unsealed = found.filter(([, value]) => !Object.isSealed(value)).map(([name]) => name)
-  assert.deepEqual(unsealed, [], 'sealed')
-  for (const [name, value] of found) {
-    if (!value.isMatrix4 && !value.isMatrix3) continue
-    assert.ok(ArrayBuffer.isView(value.elements), `${name}.elements is typed`)
-    assert.equal(Object.getOwnPropertyDescriptor(value, 'elements').writable, false, `${name}.elements is fixed`)
-  }
-  // sealing leaves data properties writable: a component behind the accessors and the change callback. What a handle
-  // hands out is a view that keeps only primitives in components and refuses a callback or a redefinition
   const open = []
   for (const [name, value] of found) {
-    if (value.isMatrix4 || value.isMatrix3) continue
-    const key = Object.hasOwn(value, '_x') ? '_x' : 'x'
-    const before = value[key]
+    if (!m.isScriptView(value)) {
+      // a node's own transform object: sealed, its change callback fixed (its components are read through the
+      // engine's guard: the next test)
+      if (!NODE_OWN.test(name)) open.push(`${name} is neither a view nor a node's own transform`)
+      if (!Object.isSealed(value)) open.push(`${name} is not sealed`)
+      const slot = Object.getOwnPropertyDescriptor(value, '_onChangeCallback')
+      if (!slot || slot.writable || slot.configurable) open.push(`${name}._onChangeCallback is not fixed`)
+      continue
+    }
+    // a view: components keep primitives, the callback and every property stay
+    const key = value.isMatrix4 || value.isMatrix3 ? null : Object.hasOwn(value, '_x') ? '_x' : 'x'
+    const target = key ? value : value.elements
+    const entry = key || '13'
+    const before = target[entry]
     let ran = false
     try {
-      value[key] = {
+      target[entry] = {
         valueOf() {
           ran = true
           return 1
@@ -781,23 +789,26 @@ test('every engine math object a handle hands out by reference is sealed (and a 
     } catch {
       // (refusing is fine too)
     }
-    if (!Number.isNaN(value[key]) && typeof value[key] !== 'number') open.push(`${name}.${key} keeps an object`)
-    value[key] = before
-    if (ran) open.push(`${name}.${key} converted an object`)
-    try {
-      value._onChangeCallback = () => {}
-      open.push(`${name}._onChangeCallback replaced`)
-    } catch {
-      // refused
-    }
-    try {
-      Object.defineProperty(value, key, { value: {} })
-      open.push(`${name}.${key} redefined`)
-    } catch {
-      // refused
+    if (typeof target[entry] !== 'number') open.push(`${name}.${entry} keeps an object`)
+    target[entry] = before
+    if (ran) open.push(`${name}.${entry} converted an object`)
+    for (const [what, attack] of [
+      ['_onChangeCallback replaced', () => (value._onChangeCallback = () => {})],
+      [`${entry} redefined`, () => Object.defineProperty(target, entry, { value: {} })],
+      ['elements replaced', () => (value.elements = [])],
+      ['elements resized', () => key || (value.elements.length = 0)],
+      ['a property added', () => (value.extra = 1)],
+    ]) {
+      if (what === 'elements resized' && key) continue
+      try {
+        attack()
+        open.push(`${name}: ${what}`)
+      } catch {
+        // refused
+      }
     }
   }
-  assert.deepEqual(open, [], 'components keep primitives, callbacks and properties stay')
+  assert.deepEqual(open, [], 'views refuse, node transform objects are sealed with a fixed callback')
   // what a script can no longer do to them (inside a compartment, strict mode)
   const result = scripts
     .evaluate(
@@ -820,9 +831,6 @@ test('every engine math object a handle hands out by reference is sealed (and a 
       out.push(Number.isNaN(node.position.x) ? 'stored NaN' : 'stored ' + typeof node.position.x)
       node.position.x = '2'
       out.push(typeof node.position.x)
-      node.quaternion._x = { valueOf() { out.push('valueOf ran') ; return 0 } }
-      out.push(Number.isNaN(node.quaternion._x) ? 'stored NaN' : 'stored ' + typeof node.quaternion._x)
-      node.quaternion.set(0, 0, 0, 1)
       node.position.set(0, 0, 0)
       return out`
     )
@@ -838,10 +846,70 @@ test('every engine math object a handle hands out by reference is sealed (and a 
     'TypeError',
     'stored NaN',
     'string',
-    'stored NaN',
   ])
   app.destroy()
 })
+
+// A script can still write anything into a component of its node's own position, quaternion, rotation or scale
+// directly (past the setters: `node.position._x = …`, `node.rotation._order = …`). The engine reads those components
+// only through Node.guardTransform: in a frame (the stage's clean pass, the matrix composition, the rotation and
+// quaternion change callbacks, the Animation system's distance) nothing planted there is converted.
+for (const isServer of ENVS) {
+  test(`a node's own transform objects are read by the engine only through the guard (planted objects are never converted); ${side(isServer)}`, async () => {
+    const env = sweep.makeWorld({ isServer })
+    const { world } = env
+    const app = sweep.addApp(
+      world,
+      `
+      const node = app.create('group')
+      app.add(node)
+      const calls = (app.state.calls = [])
+      const planted = label => ({
+        valueOf() { calls.push(label + ' valueOf'); return 1 },
+        toString() { calls.push(label + ' toString'); return 'XYZ' },
+        [Symbol.toPrimitive]() { calls.push(label + ' toPrimitive'); return 1 },
+      })
+      const objects = [
+        ['position', node.position, ['_x', '_y', '_z']],
+        ['quaternion', node.quaternion, ['_x', '_y', '_z', '_w']],
+        ['rotation', node.rotation, ['_x', '_y', '_z', '_order']],
+        ['scale', node.scale, ['_x', '_y', '_z']],
+      ]
+      const plant = () => {
+        for (const [name, object, keys] of objects) for (const key of keys) object[key] = planted(name + '.' + key)
+        // and the app's own root (what the Animation system measures)
+        for (const key of ['_x', '_y', '_z']) app.position[key] = planted('root.position.' + key)
+      }
+      app.state.steps = [
+        // a write through a setter marks the transform: the next clean composes the matrix
+        () => { plant(); node.position.y = 2 },
+        () => { plant(); node.scale.x = 2 },
+        // the rotation's change callback sets the quaternion from it, the quaternion's sets the rotation
+        () => { plant(); node.rotation.y = 0.5 },
+        () => { plant(); node.quaternion.x = 0 },
+      ]
+      app.state.read = () => [node.position._x, node.quaternion._w, node.rotation._order, node.scale._z]
+    `
+    )
+    await sweep.tick()
+    assert.equal(app.crashed, false, `the script ran: ${app.scriptError?.message}`)
+    const { steps, calls, read } = app.data.state
+    const animation = new m.Animation(world)
+    animation.apps.push(app)
+    for (const step of steps) {
+      step()
+      // a frame: the script's update has run (the step), then the engine's passes over the nodes
+      animation.update()
+      world.stage.clean()
+      for (const app of world.entities.items.values()) app.root?.clean?.()
+    }
+    assert.deepEqual([...calls], [], 'no planted object was converted by the engine')
+    const [x, w, order, z] = read()
+    assert.ok(typeof x === 'number' && typeof w === 'number' && typeof z === 'number', 'the guard left numbers (NaN)')
+    assert.equal(order, 'YXZ', 'a planted order is read as the default order')
+    app.destroy()
+  })
+}
 
 // every setter of every node type, given an object that only poses as a primitive (a boxed primitive, whose valueOf a
 // script can replace, or a Proxy whose Symbol.toStringTag says Number, String or Boolean): the node never keeps it (it

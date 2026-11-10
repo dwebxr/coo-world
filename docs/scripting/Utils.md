@@ -53,12 +53,17 @@ The engine's own math objects that a handle gives you by reference are sealed. T
 transform (`getBone()`), and a particles node's `force`, `velocityLinear` and `velocityOrbital`. You change their
 values as usual (`node.position.x = 1`, `.set(…)`, `.copy(…)`), but adding, redefining or deleting a property on
 one (`Object.defineProperty(node.position, 'x', …)`, `node.position.foo = 1`, replacing a method) throws a
-`TypeError`, and so does assigning a matrix's `elements` or redefining one of its entries: `elements` is a
-`Float64Array` the matrix keeps. A component given an object instead of a number (`node.position.x = { … }`) is stored
-as `NaN`, without calling the object's `valueOf`. A vector, quaternion or euler you get this way is a view of the
-engine's object: it reads, writes and calls methods like the object itself (and it is the same view on every read),
-but its internal fields (`_x`, `_y`, `_z`, `_w`, `_order`) also keep only primitives, and its change callback
-(`_onChangeCallback`) cannot be replaced (a `TypeError`). Getters that compute a value (a player's `position`,
+`TypeError`, and so does replacing its change callback (`_onChangeCallback`), assigning a matrix's `elements` or
+redefining one of its entries. A component given an object instead of a number (`node.position.x = { … }`) is stored
+as `NaN`, without calling the object's `valueOf`.
+
+A node's own `position`, `quaternion`, `rotation` and `scale` are the engine's objects themselves. An object written
+straight into one of their internal fields (`node.position._x = { … }`, past the setters) stays there for your own
+code, but the engine reads such a field as `NaN` (an Euler `_order` that is not a string as `'YXZ'`) and never calls
+its `valueOf`. Everything else listed above (a node's `matrixWorld` and its `elements`, a joint's offsets, a UI's
+`offset`, a control's vectors, a bone's transform, a particles node's vectors) is a view of the engine's object: it
+reads, writes and calls methods like the object itself (it is the same view on every read), and its internal fields
+keep only primitives as well. Getters that compute a value (a player's `position`,
 `getBoneTransform()`, `getWorldMatrix()`, a pointer's coordinates, a material's `color`) return a new object on each
 read, which is yours.
 

@@ -4,7 +4,7 @@ import { every, isArray } from 'lodash-es'
 import { isBoolean, isNumber, isPrimitive, isString } from '../extras/scriptPrimitives.js'
 import Yoga from 'yoga-layout'
 
-import { Node } from './Node'
+import { guardTransform, Node } from './Node'
 import { fillRoundRect } from '../extras/roundRect'
 import {
   AlignContent,
@@ -160,6 +160,7 @@ export class UI extends Node {
       this.ctx.world.setHot(this, true)
     } else {
       // screen-space
+      guardTransform(this)
       this.canvas.style.position = 'absolute'
       this.canvas.style.width = this._width + 'px'
       this.canvas.style.height = this._height + 'px'

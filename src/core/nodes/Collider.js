@@ -3,7 +3,7 @@ import * as THREE from '../extras/three'
 import { vec3ToPxPos, quatToPxRot, warnOnce } from '../extras/physxConvert.js'
 import { isBoolean } from '../extras/scriptPrimitives.js'
 
-import { getRef, Node, resolveValueRef, secureRef } from './Node'
+import { getRef, guardTransform, Node, resolveValueRef, secureRef } from './Node'
 
 import { Layers } from '../extras/Layers'
 import { geometryToPxMesh } from '../extras/geometryToPxMesh'
@@ -68,6 +68,8 @@ export class Collider extends Node {
     this.physicsSkipped = null
     // every length, scale, extent and the local pose are checked before PhysX sees them (physicsValidate.js)
     if (!this.parent) return this.skipPhysics('parent', 'has no parent')
+    guardTransform(this)
+    guardTransform(this.parent)
     const localPosition = _v4.copy(this.position).multiply(this.parent.scale)
     const localRotation = _q2.copy(this.quaternion)
     if (!positionOk(localPosition) || !normalizeQuat(localRotation)) {
@@ -200,6 +202,8 @@ export class Collider extends Node {
   // the decomposed world scale and the local pose the transform-dependent checks look at
   transformKey() {
     this.matrixWorld.decompose(_v1, _q1, _v2)
+    guardTransform(this)
+    if (this.parent) guardTransform(this.parent)
     const local = this.parent ? _v4.copy(this.position).multiply(this.parent.scale) : _v4.copy(this.position)
     const q = this.quaternion
     // exact values: any change can change what the checks decide, so none is rounded away

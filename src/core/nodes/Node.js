@@ -37,6 +37,40 @@ function nodeRunOwner(node) {
   return null
 }
 
+// A node's own position, quaternion, rotation and scale are handed to scripts as they are (sealed, their change
+// callbacks fixed: sealMath.js), and a script can write anything into a component directly (`node.position._x = …`),
+// past the setters. The engine reads those components only after these guards: a component that is not a number is
+// replaced by NaN (an Euler order that is not a string by the default order), without being converted, so an object
+// planted there has its valueOf called only by the script's own code. They run where the engine consumes the four
+// objects: Node.updateTransform (the matrix composition), the rotation and quaternion change callbacks (each sets the
+// other from it), Collider (its local pose), UI (a screen-space position), Animation (an app's distance) and
+// ClientBuilder (a moved app's transform).
+export function guardVector(v) {
+  if (typeof v._x !== 'number') v._x = NaN
+  if (typeof v._y !== 'number') v._y = NaN
+  if (typeof v._z !== 'number') v._z = NaN
+}
+
+export function guardQuaternion(q) {
+  if (typeof q._x !== 'number') q._x = NaN
+  if (typeof q._y !== 'number') q._y = NaN
+  if (typeof q._z !== 'number') q._z = NaN
+  if (typeof q._w !== 'number') q._w = NaN
+}
+
+export function guardEuler(e) {
+  guardVector(e)
+  // (a node's rotation is made with the order 'YXZ')
+  if (typeof e._order !== 'string') e._order = 'YXZ'
+}
+
+export function guardTransform(node) {
+  guardVector(node.position)
+  guardQuaternion(node.quaternion)
+  guardEuler(node.rotation)
+  guardVector(node.scale)
+}
+
 function assertNodeRunActive(node) {
   const owner = nodeRunOwner(node)
   const run = owner?.run
@@ -206,10 +240,14 @@ export class Node {
       this.setTransformed()
     })
     this.rotation._onChange(() => {
+      guardEuler(this.rotation)
       this.quaternion.setFromEuler(this.rotation, false)
       this.setTransformed()
     })
     this.quaternion._onChange(() => {
+      // (setting the rotation from the quaternion reads the rotation's order too)
+      guardQuaternion(this.quaternion)
+      guardEuler(this.rotation)
       this.rotation.setFromQuaternion(this.quaternion, undefined, false)
       this.setTransformed()
     })
@@ -221,7 +259,8 @@ export class Node {
       }
       this.setTransformed()
     })
-    // scripts hold these through the node's handle: sealed once wired (sealMath.js)
+    // scripts hold these through the node's handle: sealed once wired, their change callbacks fixed (sealMath.js);
+    // the engine reads their components only through guardTransform (the matrices go to scripts as views)
     sealAll(this.position, this.rotation, this.quaternion, this.scale, this.matrix, this.matrixWorld)
     this._onPointerEnter = data.onPointerEnter
     this._onPointerLeave = data.onPointerLeave
@@ -501,6 +540,7 @@ export class Node {
 
   updateTransform() {
     if (this.isTransformed) {
+      guardTransform(this)
       this.matrix.compose(this.position, this.quaternion, this.scale)
       this.isTransformed = false
     }
@@ -665,31 +705,31 @@ export class Node {
           return self.name
         },
         get position() {
-          return scriptView(self.position)
+          return self.position
         },
         set position(value) {
           throw new Error('Cannot replace node position')
         },
         get quaternion() {
-          return scriptView(self.quaternion)
+          return self.quaternion
         },
         set quaternion(value) {
           throw new Error('Cannot replace node quaternion')
         },
         get rotation() {
-          return scriptView(self.rotation)
+          return self.rotation
         },
         set rotation(value) {
           throw new Error('Cannot replace node position')
         },
         get scale() {
-          return scriptView(self.scale)
+          return self.scale
         },
         set scale(value) {
           throw new Error('Cannot replace node scale')
         },
         get matrixWorld() {
-          return self.matrixWorld
+          return scriptView(self.matrixWorld)
         },
         get active() {
           return self.active

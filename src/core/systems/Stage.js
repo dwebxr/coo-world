@@ -12,11 +12,11 @@ const vec2 = new THREE.Vector2()
 
 // A linked instance's matrix is its node's own matrixWorld, which scripts hold. InstancedMesh.setMatrixAt would call
 // that object's toArray (a script could define one) and hand it the shared instance buffer. Instead the values are
-// read with the class's own method into an array of the caller's own (node matrices are sealed, with typed elements,
-// so no script code runs while they are read: sealMath.js), kept only if they are numbers, and written into the buffer
-// by the host. Every read that is outstanding at once uses its own array (a read nested inside another, should one
-// ever run script code, cannot overwrite the values the outer one has), and callers still check their bookkeeping
-// after the read.
+// read with the class's own method into an array of the caller's own (scripts get node matrices only as views, whose
+// elements keep numbers, so no script code runs while they are read: sealMath.js), kept only if they are numbers, and
+// written into the buffer by the host. Every read that is outstanding at once uses its own array (a read nested inside
+// another, should one ever run script code, cannot overwrite the values the outer one has), and callers still check
+// their bookkeeping after the read.
 const toArray = THREE.Matrix4.prototype.toArray
 const copyMatrix = THREE.Matrix4.prototype.copy
 const matrixArrays = [] // one per nesting depth, made on first use

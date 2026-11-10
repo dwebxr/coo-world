@@ -7,9 +7,14 @@ const parentRestWorldRotation = new THREE.Quaternion()
 export function createEmoteFactory(glb, url) {
   // console.time('emote-init')
 
-  const clip = glb.animations[0]
+  // a file without an animation or a scene root is not an emote: say so here, where the loader turns it into a
+  // failed load, rather than throw a TypeError
+  const clip = glb?.animations?.[0]
+  if (!clip) throw new Error('[emote] no animation in the file')
+  const armature = glb.scene?.children?.[0]
+  if (!armature) throw new Error('[emote] no scene root in the file')
 
-  const scale = glb.scene.children[0].scale.x // armature should be here?
+  const scale = Number.isFinite(armature.scale.x) && armature.scale.x !== 0 ? armature.scale.x : 1 // armature should be here?
 
   // no matter what vrm/emote combo we use for some reason avatars
   // levitate roughly 5cm above ground. this is a hack but it works.
@@ -48,6 +53,8 @@ export function createEmoteFactory(glb, url) {
     const trackSplitted = track.name.split('.')
     const mixamoRigName = trackSplitted[0]
     const mixamoRigNode = glb.scene.getObjectByName(mixamoRigName)
+    // a track for a node the file does not have (or for the scene root, which has no parent) is left as it is
+    if (!mixamoRigNode?.parent) return
     mixamoRigNode.getWorldQuaternion(restRotationInverse).invert()
     mixamoRigNode.parent.getWorldQuaternion(parentRestWorldRotation)
     if (track instanceof THREE.QuaternionKeyframeTrack) {

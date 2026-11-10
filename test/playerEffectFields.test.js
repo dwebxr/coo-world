@@ -1,6 +1,5 @@
 import { after, before, mock, test } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
 import * as THREE from 'three'
 import { loadClient } from './lib/clientHarness.mjs'
 import { Modes } from '../src/core/extras/locomotionModes.js'
@@ -205,81 +204,4 @@ test('PlayerLocal: typed snare controls finite movement forces and jump inhibiti
   }
 })
 
-// Run both actual animation consumers with a loader/mixer adapter, as the network harness does for handlers.
-const source = fs.readFileSync(new URL('../src/core/extras/createVRMFactory.js', import.meta.url), 'utf8')
-const setEmoteSource = source.slice(source.indexOf('    const setEmote = url => {'), source.indexOf('    // IDEA:'))
-const addPoseSource = source.slice(
-  source.indexOf('    function addPose(key, url) {'),
-  source.indexOf("    addPose('idle'")
-)
-const querySource = source.slice(source.indexOf('let queryParams = {}'))
-const makeConsumers = new Function(
-  'THREE',
-  'hooks',
-  'mixer',
-  `
-  const emotes = {}
-  let currentEmote
-  const poses = {}
-  const rootToHips = 1
-  const version = '1'
-  const getBoneName = () => 'hips'
-  const clearLocomotion = () => {}
-  ${setEmoteSource}
-  ${addPoseSource}
-  ${querySource}
-  return { setEmote, addPose, emotes, poses }
-`
-)
-
-test('VRM emote and locomotion parsers: finite speed in [0.01, 100], otherwise 1; l/g stay string flags', async () => {
-  for (const [speed, expected] of [
-    [undefined, 1],
-    ['', 1],
-    ['NaN', 1],
-    ['Infinity', 1],
-    ['1e309', 1],
-    ['-Infinity', 1],
-    ['0', 1],
-    ['-1', 1],
-    ['0.009', 1],
-    ['100.001', 1],
-    ['0.01', 0.01],
-    ['100', 100],
-    ['2.5', 2.5],
-  ]) {
-    for (const [flags, loop, gaze] of [
-      ['', true, false],
-      ['&l=0&g=1', false, true],
-      ['&l=false&g=true', true, false],
-    ]) {
-      const actions = []
-      const consumers = makeConsumers(
-        THREE,
-        { loader: { load: async () => ({ toClip() {} }) } },
-        {
-          clipAction: () => {
-            const action = {
-              setLoop(value) {
-                this.loop = value
-              },
-              play() {},
-            }
-            actions.push(action)
-            return action
-          },
-        }
-      )
-      const url = `asset://wave.glb?${speed === undefined ? '' : `s=${speed}`}${flags}`
-      consumers.setEmote(url)
-      consumers.addPose('probe', url)
-      await Promise.resolve()
-      assert.equal(actions.length, 2)
-      assert.equal(actions[0].timeScale, expected)
-      assert.equal(actions[1].timeScale, expected)
-      assert.equal(actions[0].loop, loop ? THREE.LoopRepeat : THREE.LoopOnce)
-      assert.equal(actions[0].clampWhenFinished, !loop)
-      assert.equal(consumers.emotes[url].gaze, gaze)
-    }
-  }
-})
+// (The VRM emote and locomotion speed/flag parsing is tested through the real factory in avatarRobustness.test.js.)

@@ -42,7 +42,79 @@ const UpAxis = {
   NEG_Z: new THREE.Vector3(0, 0, -1),
 }
 
+// The humanoid bones the runtime below cannot do without. A VRM may leave others out (the neck is optional in
+// VRM 1.0); those are looked up where they are used and skipped when absent. Checked here, while the file is
+// still loading, so an avatar the engine cannot drive fails its load with a reason instead of throwing from the
+// frame loop of everyone who can see it. (What the player shows then is up to the player code: today it keeps
+// its previous avatar, or none.)
+const REQUIRED_BONES = ['hips', 'head', 'leftUpperArm', 'rightUpperArm']
+// the bones that must also be in the skeleton the runtime drives (findBone looks them up there)
+const SKELETON_BONES = ['hips', 'head']
+
+function assertUsableVRM(glb) {
+  const humanoid = glb?.userData?.vrm?.humanoid
+  if (!humanoid) throw new Error('[avatar] not a VRM: no humanoid')
+  const raw = humanoid._rawHumanBones?.humanBones
+  const normalized = humanoid._normalizedHumanBones?.humanBones
+  for (const name of REQUIRED_BONES) {
+    if (!raw?.[name]?.node || !normalized?.[name]?.node) throw new Error(`[avatar] unusable VRM: no ${name} bone`)
+  }
+}
+
+// The bone the runtime takes out of the scene and drives as the root of the skeleton: from the hips up, as long as
+// the parent is a bone of that skeleton. (The order of the joints says nothing about it: a file may list the head
+// first.) `hipsName` is the name the humanoid gives the hips bone.
+function skeletonRoot(skeleton, hipsName) {
+  const bones = new Set(skeleton.bones)
+  let root = skeleton.getBoneByName(hipsName)
+  while (root?.parent && bones.has(root.parent)) root = root.parent
+  return root
+}
+
+// The runtime drives one skeleton: the first skinned mesh's (in traversal order, as create() finds it again in each
+// clone). The mixer is bound to that mesh, findBone and the per-frame bone updates use that skeleton, and the root
+// above its hips (skeletonRoot) is taken out of the scene. The other skinned meshes of a VRM usually have Skeleton
+// objects of their own over the same bones; they are skinned as they are and not checked. What is assumed of the
+// first one: it has bones; every bone is in the scene (a clone maps bones through the scene graph, so one outside it
+// would come back missing and every frame would throw); the hips and head are found in it by the names the humanoid
+// gives; and the head is below the root, so the bones that are aimed and looked up move with the avatar. Other
+// bones of the skeleton may lie outside the root's tree (some files have stray bones): they stay in the scene and
+// are not refused.
+function assertUsableSkeleton(glb) {
+  let first = null
+  glb.scene.traverse(node => {
+    if (!first && node.isSkinnedMesh) first = node
+  })
+  if (!first) throw new Error('[avatar] unusable VRM: no skinned mesh')
+  const skeleton = first.skeleton
+  const bones = skeleton?.bones
+  if (!Array.isArray(bones) || bones.length === 0) {
+    throw new Error('[avatar] unusable VRM: the skinned mesh has no bones')
+  }
+  const inScene = bone => {
+    for (let node = bone; node; node = node.parent) if (node === glb.scene) return true
+    return false
+  }
+  if (!bones.every(bone => bone?.isObject3D && inScene(bone))) {
+    throw new Error('[avatar] unusable VRM: a bone of the skeleton is not in the scene')
+  }
+  const found = {}
+  for (const name of SKELETON_BONES) {
+    const boneName = glb.userData.vrm.humanoid.getRawBoneNode(name)?.name
+    found[name] = boneName ? skeleton.getBoneByName(boneName) : undefined
+    if (!found[name]) throw new Error(`[avatar] unusable VRM: the ${name} bone is not in the skeleton`)
+  }
+  const root = skeletonRoot(skeleton, found.hips.name)
+  let below = false
+  for (let node = found.head; node; node = node.parent) if (node === root) below = true
+  if (!below) throw new Error('[avatar] unusable VRM: the head bone is not below the root of the skeleton')
+}
+
+// emote clips one avatar instance keeps mixed and ready; the least recently started leaves first
+const EMOTE_LIMIT = 16
+
 export function createVRMFactory(glb, setupMaterial) {
+  assertUsableVRM(glb)
   // we'll update matrix ourselves
   glb.scene.matrixAutoUpdate = false
   glb.scene.matrixWorldAutoUpdate = false
@@ -55,6 +127,8 @@ export function createVRMFactory(glb, setupMaterial) {
   // remove secondary
   const secondaries = glb.scene.children.filter(n => n.name === 'secondary') // prettier-ignore
   for (const node of secondaries) node.removeFromParent()
+  // after the removals: the scene checked is the one every instance clones
+  assertUsableSkeleton(glb)
   // mouth binds by template traversal index; every instance resolves them against its own clone
   const mouthBinds = collectMouthBinds(glb.userData.vrm?.expressionManager, glb.scene)
   // enable shadows
@@ -152,7 +226,8 @@ export function createVRMFactory(glb, setupMaterial) {
     const tvrm = vrm.userData.vrm
     const skinnedMeshes = getSkinnedMeshes(vrm.scene)
     const skeleton = skinnedMeshes[0].skeleton // should be same across all skinnedMeshes
-    const rootBone = skeleton.bones[0] // should always be 0
+    // the root above the hips (checked at load), not the first joint: the joints may be listed in any order
+    const rootBone = skeletonRoot(skeleton, getBoneName('hips'))
     rootBone.parent.remove(rootBone)
     rootBone.updateMatrixWorld(true)
     vrm.scene.matrix = matrix // synced!
@@ -188,15 +263,17 @@ export function createVRMFactory(glb, setupMaterial) {
     // and if i set it to vrm.scene it no longer works with detached bind mode
     const mixer = new THREE.AnimationMixer(skinnedMeshes[0])
 
-    const bonesByName = {}
+    // a Map: the name can come from a script (getBoneTransform), and an object would answer 'constructor'.
+    // A bone the avatar does not have is remembered as null, so the per-frame lookups stay cheap
+    const bonesByName = new Map()
     const findBone = name => {
       // name is the official vrm bone name eg 'leftHand'
       // actualName is the actual bone name used in the skeleton which may different across vrms
-      if (!bonesByName[name]) {
-        const actualName = glb.userData.vrm.humanoid.getRawBoneNode(name)?.name
-        bonesByName[name] = skeleton.getBoneByName(actualName)
+      if (!bonesByName.has(name)) {
+        const actualName = typeof name === 'string' ? glb.userData.vrm.humanoid.getRawBoneNode(name)?.name : undefined
+        bonesByName.set(name, (actualName && skeleton.getBoneByName(actualName)) || null)
       }
-      return bonesByName[name]
+      return bonesByName.get(name)
     }
 
     const mt = new THREE.Matrix4()
@@ -219,15 +296,22 @@ export function createVRMFactory(glb, setupMaterial) {
     }
 
     // world.updater.add(update)
-    const emotes = {
-      // [url]: {
-      //   url: String
-      //   loading: Boolean
-      //   action: AnimationAction
-      // }
+    // url -> { url, loading, action, gaze }, most recently started last, at most EMOTE_LIMIT (a remote player
+    // chooses the urls: without a bound each new query string would add a clip and an action for good)
+    const emotes = new Map()
+    // stop() also hands back the fade's interpolant; uncacheAction() then releases the action and its bindings
+    const forgetEmote = emote => {
+      emotes.delete(emote.url)
+      if (emote.action) {
+        emote.action.stop()
+        mixer.uncacheAction(emote.action.getClip())
+      }
     }
+    // set by destroy(): a clip that finishes loading afterwards is not mixed or played
+    let destroyed = false
     let currentEmote
     const setEmote = url => {
+      if (destroyed) return
       if (currentEmote?.url === url) return
       if (currentEmote) {
         currentEmote.action?.fadeOut(0.15)
@@ -240,8 +324,10 @@ export function createVRMFactory(glb, setupMaterial) {
       if (!Number.isFinite(speed) || speed < 0.01 || speed > 100) speed = 1
       const gaze = opts.g == '1'
 
-      if (emotes[url]) {
-        currentEmote = emotes[url]
+      if (emotes.has(url)) {
+        currentEmote = emotes.get(url)
+        emotes.delete(url)
+        emotes.set(url, currentEmote)
         if (currentEmote.action) {
           currentEmote.action.clampWhenFinished = !loop
           currentEmote.action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce)
@@ -255,25 +341,42 @@ export function createVRMFactory(glb, setupMaterial) {
           action: null,
           gaze,
         }
-        emotes[url] = emote
+        emotes.set(url, emote)
+        for (const old of emotes.values()) {
+          if (emotes.size <= EMOTE_LIMIT) break
+          if (old !== emote) forgetEmote(old)
+        }
         currentEmote = emote
-        hooks.loader.load('emote', url).then(emo => {
-          const clip = emo.toClip({
-            rootToHips,
-            version,
-            getBoneName,
+        hooks.loader
+          .load('emote', url)
+          .then(emo => {
+            // dropped while it loaded (the limit), or the avatar is gone
+            if (destroyed || emotes.get(url) !== emote) return
+            const clip = emo.toClip({
+              rootToHips,
+              version,
+              getBoneName,
+            })
+            const action = mixer.clipAction(clip)
+            action.timeScale = speed
+            emote.loading = false
+            emote.action = action
+            // if its still this emote, play it!
+            if (currentEmote === emote) {
+              action.clampWhenFinished = !loop
+              action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce)
+              action.play()
+              clearLocomotion()
+            }
           })
-          const action = mixer.clipAction(clip)
-          action.timeScale = speed
-          emote.action = action
-          // if its still this emote, play it!
-          if (currentEmote === emote) {
-            action.clampWhenFinished = !loop
-            action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce)
-            action.play()
-            clearLocomotion()
-          }
-        })
+          .catch(err => {
+            // an emote that cannot be loaded or retargeted: the avatar keeps its locomotion, and the url is
+            // forgotten so a later request can try again
+            if (emotes.get(url) === emote) emotes.delete(url)
+            if (currentEmote === emote) currentEmote = null
+            if (destroyed) return
+            console.warn(`[avatar] emote failed: ${String(err?.message || err).slice(0, 120)}`)
+          })
       }
     }
 
@@ -361,10 +464,10 @@ export function createVRMFactory(glb, setupMaterial) {
           minAngle = -180,
           maxAngle = 180,
         } = options
+        // an avatar without this bone (the neck is optional) is simply not aimed there
         const bone = findBone(boneName)
-        const parentBone = glb.userData.vrm.humanoid.humanBones[boneName].node.parent
-        if (!bone) return console.warn(`aimBone: missing bone (${boneName})`)
-        if (!parentBone) return console.warn(`aimBone: no parent bone`)
+        const parentBone = glb.userData.vrm.humanoid.humanBones[boneName]?.node?.parent
+        if (!bone || !parentBone) return
         // get or create smoothed state for this bone
         const boneId = bone.uuid
         if (!smoothedRotations.has(boneId)) {
@@ -502,17 +605,25 @@ export function createVRMFactory(glb, setupMaterial) {
           pose.active = false
         },
       }
-      hooks.loader.load('emote', url).then(emo => {
-        const clip = emo.toClip({
-          rootToHips,
-          version,
-          getBoneName,
+      hooks.loader
+        .load('emote', url)
+        .then(emo => {
+          if (destroyed) return
+          const clip = emo.toClip({
+            rootToHips,
+            version,
+            getBoneName,
+          })
+          pose.action = mixer.clipAction(clip)
+          pose.action.timeScale = speed
+          pose.action.weight = pose.weight
+          pose.action.play()
         })
-        pose.action = mixer.clipAction(clip)
-        pose.action.timeScale = speed
-        pose.action.weight = pose.weight
-        pose.action.play()
-      })
+        .catch(err => {
+          // the pose stays without an action (setWeight and fadeOut cope with that)
+          if (destroyed) return
+          console.warn(`[avatar] locomotion clip failed (${key}): ${String(err?.message || err).slice(0, 120)}`)
+        })
       poses[key] = pose
     }
     addPose('idle', Emotes.IDLE)
@@ -607,8 +718,9 @@ export function createVRMFactory(glb, setupMaterial) {
     let firstPersonActive = false
     const setFirstPerson = active => {
       if (firstPersonActive === active) return
-      const head = findBone('neck')
-      head.scale.setScalar(active ? 0 : 1)
+      // hide from the neck up; an avatar without a neck bone hides its head
+      const head = findBone('neck') || findBone('head')
+      if (head) head.scale.setScalar(active ? 0 : 1)
       firstPersonActive = active
     }
 
@@ -639,6 +751,15 @@ export function createVRMFactory(glb, setupMaterial) {
         mouth.set(value)
       },
       destroy() {
+        if (destroyed) return
+        destroyed = true
+        // clips still loading are dropped when they arrive (see `destroyed`); the mixed ones are stopped and the
+        // mixer lets go of their actions, bindings and clips
+        for (const emote of [...emotes.values()]) forgetEmote(emote)
+        currentEmote = null
+        mixer.stopAllAction()
+        mixer.uncacheRoot(mixer.getRoot())
+        for (const key in poses) poses[key].action = null
         mouth.dispose()
         hooks.scene.remove(vrm.scene)
         // world.updater.remove(update)
@@ -671,15 +792,25 @@ function createCapsule(radius, height) {
   return geometry
 }
 
-let queryParams = {}
+// the playback options in an emote url's query (?s=1.5&l=0&g=1), remembered per url up to a bound. Keyed by the
+// url as given. It used to be an object keyed by the parsed URL (which a property name turns back into its
+// string: a hit for a url already in canonical form, a miss for any other spelling), and it grew with every url a
+// remote player sent. A url that does not parse has no options.
+const QUERY_PARAMS_LIMIT = 256
+const queryParams = new Map()
 function getQueryParams(url) {
-  if (!queryParams[url]) {
-    url = new URL(url)
-    const params = {}
-    for (const [key, value] of url.searchParams.entries()) {
-      params[key] = value
+  let params = queryParams.get(url)
+  if (!params) {
+    params = {}
+    try {
+      for (const [key, value] of new URL(url).searchParams.entries()) {
+        if (key === 's' || key === 'l' || key === 'g') params[key] = value
+      }
+    } catch {
+      // no options
     }
-    queryParams[url] = params
+    if (queryParams.size >= QUERY_PARAMS_LIMIT) queryParams.clear()
+    queryParams.set(url, params)
   }
-  return queryParams[url]
+  return params
 }

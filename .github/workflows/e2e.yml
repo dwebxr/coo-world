@@ -154,18 +154,35 @@ jobs:
           path: test/e2e/out/
           if-no-files-found: ignore
 
-  # One check that says whether the suites passed: green only when every leg's job succeeded (for Firefox that
-  # means it installed, built and ran; see the advisory note above). It also fails when a leg was cancelled or
-  # timed out, which a list of per-engine checks does not show at a glance.
+  # One check that says whether the suites passed: green only when every engine's job succeeded (for Firefox that
+  # means it installed, built and ran; see the advisory note above), so a cancelled or timed-out leg fails it.
+  # needs.e2e.result folds the matrix into one word, and GitHub has reported success there for a leg cancelled
+  # before it got a runner and after a partial re-run. So the job also asks for each engine's own job: its latest
+  # execution across attempts must have succeeded.
   result:
     name: e2e
     if: ${{ always() }}
     needs: e2e
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
     steps:
       - name: Result of the suites
         env:
+          GH_TOKEN: ${{ github.token }}
           RESULT: ${{ needs.e2e.result }}
         run: |
-          echo "suites: $RESULT"
-          test "$RESULT" = "success"
+          echo "matrix result: $RESULT"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100" \
+            --jq '.jobs[] | [.name, (.conclusion // "none")] | @tsv' > jobs.tsv
+          cat jobs.tsv
+          status=0
+          for name in 'e2e (chromium)' 'e2e (webkit)' 'e2e (firefox, advisory)'; do
+            conclusions=$(awk -F'\t' -v name="$name" '$1 == name { print $2 }' jobs.tsv | sort -u | tr '\n' ' ')
+            if [ "$conclusions" != "success " ]; then
+              echo "::error::$name: ${conclusions:-no job found}"
+              status=1
+            fi
+          done
+          [ "$RESULT" = "success" ] || status=1
+          exit $status

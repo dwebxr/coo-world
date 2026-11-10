@@ -217,6 +217,32 @@ test('teardown: a rebuild ends the old run; its handles stop working, the new ru
   assert.equal(player.data.health, 90)
 })
 
+test('teardown: a stage that throws (here a node whose unmount fails) does not skip the later stages', async () => {
+  const record = { fired: 0, entered: 0 }
+  const { world, app } = makeWorld(greedy(record))
+  await tick()
+  // a node of the app's tree whose unmount throws, as a node in a broken state can
+  const failing = mountedNodes(app).find(node => node !== app.root && node.parent === app.root)
+  failing.unmount = () => {
+    throw new Error('unmount boom')
+  }
+  const logs = quietly()
+  try {
+    app.destroy()
+  } finally {
+    logs.restore()
+  }
+  assert.equal(app.liveNodes, 0)
+  assert.equal(world.events.listenerCount('enter'), 0)
+  assert.equal(app.timers.size, 0)
+  assert.equal(world.ui.suppressors, 0)
+  assert.equal(app.worldNodes.size, 0)
+  assert.ok(logs.lines.some(line => /teardown \(root\) failed: unmount boom/.test(line)))
+  await tick(50)
+  assert.equal(record.fired, 0)
+  assert.throws(() => record.world.add(record.app.create('group')), /this app has stopped/)
+})
+
 test("teardown: the run's own destroy handler can still clean up and act, synchronously", async () => {
   const seen = []
   const { world, app, player } = makeWorld((world, app) => {

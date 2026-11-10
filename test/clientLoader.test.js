@@ -147,27 +147,29 @@ test('an error status is a failed load, not content; and a failed load can be tr
 
 test('the size limit: the upload limit (or the table, if larger) in the world’s own store, the table elsewhere, also for kept and inserted files', async t => {
   const three = new Uint8Array(3 * MiB)
-  const thirteen = new Uint8Array(13 * MiB)
+  const five = new Uint8Array(5 * MiB)
   const requests = fakeNetwork(t, {
     [`${ASSETS}/declared.js`]: { body: 'x', headers: { 'content-length': String(50 * MiB) } },
     [`${ASSETS}/large.js`]: { body: three },
-    [`${ASSETS}/huge.js`]: { body: thirteen },
-    [`${ASSETS}/older.glb`]: { body: thirteen },
+    [`${ASSETS}/huge.js`]: { body: five },
+    [`${ASSETS}/older.glb`]: { body: five },
     'https://elsewhere.example/large.js': { body: three },
     'https://elsewhere.example/model.glb': { body: three },
-    'https://elsewhere.example/endless.vrm': { stream: MiB },
+    'https://elsewhere.example/endless.js': { stream: MiB },
   })
-  const loader = makeLoader({ uploadMB: 12 })
-  // the world's store: a 3 MiB script that the 12 MB upload limit accepted loads (it used to fail after a reload)
+  // a 4 MB upload limit keeps the files of this test small; production's default is 12
+  const loader = makeLoader({ uploadMB: 4 })
+  // the world's store: a 3 MiB script that the 4 MB upload limit accepted loads (it used to fail after a reload)
   assert.equal((await loader.load('script', 'asset://large.js')).code.length, 3 * MiB)
-  await assert.rejects(loader.load('script', 'asset://declared.js'), /larger than 12582912 bytes/)
+  await assert.rejects(loader.load('script', 'asset://declared.js'), /larger than 4194304 bytes/)
   assert.equal(requests.signals.at(-1).aborted, true, 'a declared size over the limit aborts the transfer')
-  await assert.rejects(loader.load('script', 'asset://huge.js'), /larger than 12582912 bytes/)
+  await assert.rejects(loader.load('script', 'asset://huge.js'), /larger than 4194304 bytes/)
   // a model uploaded before the limit was lowered: the table's 64 MiB still applies to it
   assert.ok(await loader.load('model', 'asset://older.glb'))
   // elsewhere: the table (scripts 2 MiB, models and avatars 64 MiB), whether the size is real or endless
   await assert.rejects(loader.load('script', 'https://elsewhere.example/large.js'), /larger than 2097152 bytes/)
-  await assert.rejects(loader.load('avatar', 'https://elsewhere.example/endless.vrm'), /larger than 67108864 bytes/)
+  await assert.rejects(loader.load('script', 'https://elsewhere.example/endless.js'), /larger than 2097152 bytes/)
+  assert.equal(requests.signals.at(-1).aborted, true, 'an endless stream is aborted at the limit')
   // a file kept from a model load is checked again when the same url is loaded as a script, without a download
   assert.ok(await loader.load('model', 'https://elsewhere.example/model.glb'))
   const before = requests.length
@@ -177,7 +179,7 @@ test('the size limit: the upload limit (or the table, if larger) in the world’
   await assert.rejects(loader.load('script', 'https://elsewhere.example/set.js'), /larger than 2097152 bytes/)
   assert.equal(requests.length, before)
   // a picked file above the upload limit fails its insert and is not kept
-  await assert.rejects(loader.insert('script', 'asset://picked.js', new File([thirteen], 'p.js')), /larger than/)
+  await assert.rejects(loader.insert('script', 'asset://picked.js', new File([five], 'p.js')), /larger than/)
   assert.equal(loader.hasFile('asset://picked.js'), false)
   assert.equal(loader.has('script', 'asset://picked.js'), false)
   // with no upload limit known (the viewer, before the snapshot) the store's files may be up to 64 MiB
@@ -835,11 +837,12 @@ test('a download that finishes after a newer file was put for its url, or after 
     return { response: init => ((signals[name] = init.signal), bodies[name].response(init)) }
   })
   const loader = makeLoader()
-  // an old model download; the user picks a newer file of 17 MiB for that url (too large to keep), then the old
-  // download finishes: its bytes do not come back as the url's file
+  // an old model download; the user picks a newer file too large to keep (above 16 MiB; 1 KB here, to keep the
+  // test small), then the old download finishes: its bytes do not come back as the url's file
+  loader.remoteFileMaxBytes = 1024
   const old = loader.load('model', 'https://elsewhere.example/m.glb')
   while (bodies.m.pulls === 0) await tick()
-  await loader.insert('model', 'https://elsewhere.example/m.glb', new File([new Uint8Array(17 * MiB)], 'm.glb'))
+  await loader.insert('model', 'https://elsewhere.example/m.glb', new File([new Uint8Array(2048)], 'm.glb'))
   bodies.m.release()
   await old
   assert.equal(loader.getFile('https://elsewhere.example/m.glb'), null)

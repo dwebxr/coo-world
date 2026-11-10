@@ -277,6 +277,7 @@ export class ClientLoader extends System {
     this.remoteKeys = new Set() // load keys outside the world's store, least recently used first
     this.stallMs = STALL_MS
     this.downloadMs = DOWNLOAD_MS
+    this.remoteFileMaxBytes = REMOTE_FILE_MAX_BYTES
     // bounded transfers: slots per pool, bytes reserved by downloads from other hosts, requests for other hosts
     this.pools = createPools()
     this.remoteByteBudget = REMOTE_BYTE_BUDGET
@@ -422,7 +423,7 @@ export class ClientLoader extends System {
       return
     }
     // a newer file for the url replaces the kept one, also when it is too large to keep
-    if (file.size > REMOTE_FILE_MAX_BYTES) return this.forgetFile(resource)
+    if (file.size > this.remoteFileMaxBytes) return this.forgetFile(resource)
     this.remoteFiles.delete(resource)
     this.remoteFiles.add(resource)
     this.files.set(resource, file)

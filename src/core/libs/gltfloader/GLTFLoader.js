@@ -2414,14 +2414,36 @@ function serializedBytes( value ) {
 
 }
 
-// COO_BUDGET: three.js copies userData (as JSON) with every clone of an object, material or texture
+// COO_BUDGET: three.js copies userData (as JSON) with every clone of an object, material or texture: charged at what
+// the copy holds (two bytes a character were a tenth of it for a list of empty objects), and a step a character
 function chargeUserData( budget, object ) {
 
 	if ( budget && object.userData && Object.keys( object.userData ).length > 0 ) { // COO_EXEMPT: the keys of the userData being charged
 
-		const bytes = serializedBytes( object.userData );
-		budget.bytes( bytes, 'userData copy' );
-		budget.work( bytes / 2, 'userData copy' ); // COO_WORK: the copy goes through each character
+		budget.jsonCopy( object.userData, 'userData copy' );
+
+	}
+
+}
+
+// COO_BUDGET: what material.clone() copies: its userData and, for a ShaderMaterial (three-vrm's MToon), each texture
+// in its uniforms, cloned with its own copy of the texture's userData (three.js's cloneUniforms)
+function chargeMaterialClone( budget, material ) {
+
+	chargeUserData( budget, material );
+
+	if ( ! material.uniforms ) return;
+
+	for ( const name in material.uniforms ) { // COO_EXEMPT: the uniforms of one material, a fixed set of its class (MToon's: 10 texture slots)
+
+		const uniform = material.uniforms[ name ];
+
+		if ( uniform && uniform.value && uniform.value.isTexture ) {
+
+			budget.count( 'textures' );
+			chargeUserData( budget, uniform.value );
+
+		}
 
 	}
 
@@ -3525,7 +3547,10 @@ class GLTFParser {
 		const textureDef = json.textures[ textureIndex ];
 		const sourceDef = json.images[ sourceIndex ];
 
-		const cacheKey = ( sourceDef.uri || sourceDef.bufferView ) + ':' + textureDef.sampler;
+		// COO_BUDGET: a data: URI is the image's data, not its name: such a texture is cached by its image's index (a key
+		// of the whole URI was built and looked up for every texture). Any other URI is short (checkGLTF)
+		const dataURI = typeof sourceDef.uri === 'string' && sourceDef.uri.startsWith( 'data:' );
+		const cacheKey = ( dataURI ? 'image ' + sourceIndex : ( sourceDef.uri || sourceDef.bufferView ) ) + ':' + textureDef.sampler;
 
 		if ( this.textureCache[ cacheKey ] ) {
 
@@ -3871,11 +3896,11 @@ class GLTFParser {
 				if ( this.budget ) { // COO_BUDGET
 
 					this.budget.count( 'materials' );
-					chargeUserData( this.budget, material );
+					chargeMaterialClone( this.budget, material );
 
 				}
 
-				cachedMaterial = material.clone(); // COO_BUDGET: counted above (materials; once per variant, cached)
+				cachedMaterial = material.clone(); // COO_BUDGET: counted above (materials, and what the clone copies; once per variant, cached)
 
 				if ( useVertexColors ) cachedMaterial.vertexColors = true;
 				if ( useFlatShading ) cachedMaterial.flatShading = true;
@@ -4076,6 +4101,15 @@ class GLTFParser {
 	 * @return {String}
 	 */
 	createUniqueName( originalName ) {
+
+		// COO_BUDGET: a name of the document (at most 1024 characters: checkGLTF), for each object named: sanitised (a
+		// pass over it), kept as a key and given to the object. A step and two bytes a character
+		if ( this.budget && typeof originalName === 'string' ) {
+
+			this.budget.work( 1 + originalName.length, 'names' );
+			this.budget.bytes( 2 * originalName.length, 'names' );
+
+		}
 
 		const sanitizedName = PropertyBinding.sanitizeNodeName( originalName || '' ); // COO_EXEMPT: one name of the document, once per object named
 
@@ -5033,6 +5067,8 @@ class GLTFParser {
 				budget.count( 'tracks' );
 				// COO_WORK: its keyframes (shared, but each track is evaluated and copied on its own)
 				budget.work( inputAccessor.array.length + outputArray.length, 'track keyframes' );
+				// COO_BUDGET: its name, the node's and the path's (a string three.js parses and keeps for the track)
+				budget.bytes( 2 * ( targetNames[ j ].length + 16 ), 'track name' );
 				if ( ! ( inputAccessor.array instanceof Float32Array ) ) budget.bytes( inputAccessor.array.length * 4, 'track times copy' );
 				if ( ! ( outputArray instanceof Float32Array ) ) budget.bytes( outputArray.length * 4, 'track values copy' );
 

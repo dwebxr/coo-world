@@ -4,7 +4,10 @@
 // - checkGLTF(data): before parsing. The container and the document's structure: chunk lengths, the JSON's size and
 //   nesting, every index a non-negative integer in range, every list a real list within a length, the node
 //   hierarchy a tree of bounded depth, a scene's roots each once and in one scene, no glTF 1.0 leftovers the parser
-//   still honours, required extensions this client can load; the accessors what the parser and three.js assume of
+//   still honours, required extensions this client can load; every string and key the parser or three-vrm reads
+//   short, and a string where they treat it as one (what they copy, scan, concatenate or use as a key once per object
+//   is then small: a document-sized value is data, never a name), the extras and extensions copied into userData
+//   small, per object and in the parsed scene; the accessors what the parser and three.js assume of
 //   them (an animation's keyframe times and values per keyframe, not interleaved, a skin's matrices, a primitive's
 //   counts and indices, strides and lengths: a fractional value size made three's interpolants loop forever); and
 //   three-vrm's work counted in the units its plugins iterate (three-vrm is not vendored, so it is bounded before
@@ -19,7 +22,8 @@
 // work it and this check do, charged before it happens, and the time they take. The parser's charges are measured
 // at that moment: an allocation at its real size, an accessor's use at its declared size (elements x components),
 // a morph-target texture by three.js's own formula (for the renderer's texture size, or the largest any size would
-// take while that is not known). The three-vrm counts before parsing are bounds, each at least what it stands for
+// take while that is not known), a JSON copy of userData at what the copy holds (jsonCopyBytes, from the measured
+// heap of the worst shapes). The three-vrm counts before parsing are bounds, each at least what it stands for
 // (checkVRM says which are exact). Cost inside three.js and three-vrm that is proportional to the charges is
 // covered by them; cost there that multiplies in ways the charges do not capture is not proven absent. The time
 // limit refuses at the next charge after it, but cannot interrupt one long loop inside a library. The server
@@ -39,6 +43,22 @@ export const GLTF_LIMITS = Object.freeze({
   listLength: 1 << 20, // any list in the document
   targets: 1024, // morph targets of one primitive
   instancingAttributes: 16, // EXT_mesh_gpu_instancing attributes of one node (TRANSLATION, ROTATION, SCALE, a few more)
+  // strings, short by rule: every string and every key the parser or three-vrm reads (names, kinds, extension and
+  // attribute names, bone and expression names: kept, compared, concatenated, sanitised or used as a key, once per
+  // object), outside extras and the extensions nothing here reads (those are copied, and sized below). In the bundled
+  // files and VRoid's seven samples the longest is 59 characters (an animation's name), the longest key 31
+  nameLength: 1024,
+  uriLength: 2048, // a URI that is not a data: URI (the client fetches none: a data: URI is the data, charged as such)
+  // the asset's and the VRM meta's text (generator, copyright, licence, credits): read once, never per object. The
+  // longest in those files: 51 characters
+  textLength: 16384,
+  // extras, and extensions, which the parser puts in an object's userData (and three.js copies, as JSON, with every
+  // clone): each object's (node, mesh, primitive, material, image, scene, camera, light), in characters of JSON; and
+  // all the userData the parsed scene holds (a mesh's for each of its primitives and each node using it), which every
+  // clone of the scene copies. The most in those files: 1,957 for one object (a VRoid primitive's morph target
+  // names), 22,501 in a scene (VRM1_Constraint_Twist_Sample)
+  userDataLength: 64 * 1024,
+  sceneUserDataLength: 1024 * 1024,
   // the parser (createGLTFBudget): bytes it allocates, beyond twice the file's own size (the GLB's binary chunk and
   // the bufferViews are each a copy of the file's data). Most of it, for an avatar, is the morph-target textures
   // three.js builds: one per geometry, and a VRoid face is ten geometries sharing one set of vertices and targets.
@@ -49,9 +69,11 @@ export const GLTF_LIMITS = Object.freeze({
   // steps of work, beyond one per byte of the file: every use of an accessor at its size (elements x components),
   // each object placed under a parent at what three.js goes through to move it, each clone at what it copies, and
   // the loops and walks the document sizes (sparse entries, subtree walks, the entries of each list the parser goes
-  // through). The accessors of a VRoid avatar's face and hair are used by every primitive sharing them: VRoid's
-  // AvatarSample_B (15.4 MB) takes 19.9 million steps, a quarter of its limit; the bundled avatar 981,151, an
-  // emote 2,851 to 54,457 (with the VRM plugin registered, as the client parses every file)
+  // through), and checkGLTF's own steps (the client charges both to one budget). The accessors of a VRoid avatar's
+  // face and hair are used by every primitive sharing them: VRoid's AvatarSample_B (15.4 MB) takes 20.1 million
+  // steps, a quarter of its limit; the bundled avatar 1,035,591, an emote 58,170 to 122,087 (the check and the parse
+  // as the client runs them, with the VRM plugin registered as for every file; the check alone, 53,516 and 53,750 to
+  // 66,470 of those)
   work: 1 << 26,
   // the parse's wall time, checked at every charge (the backstop for what multiplies past the charges). It cannot
   // interrupt one long loop inside three.js or three-vrm, only refuse at the next charge after it. The bundled
@@ -99,8 +121,12 @@ export const GLTF_LIMITS = Object.freeze({
     constraints: 4096,
     outlineDraws: 131072, // draws outlines add: two per outlined mesh sharing a geometry, for each use of it
     // what the outline material three-vrm clones for each outlined primitive copies: the material's userData (its
-    // extras and the extensions the parser does not handle) and each texture's (its image's extras), as JSON text
+    // extras and the extensions the parser does not handle) and each texture's (its image's extras and mimeType), at
+    // what a JSON copy holds (jsonCopyBytes)
     outlineCopyBytes: 16 * MiB,
+    // what an expression's texture-transform binds copy: each clones every texture slot of each material it binds
+    // (the texture's userData, at what a JSON copy holds)
+    textureBindCopyBytes: 16 * MiB,
   }),
 })
 
@@ -142,6 +168,35 @@ function jsonDepth(text) {
     }
   }
   return deepest
+}
+
+// The bytes a JSON copy of a value holds, at most, from its JSON text. three.js copies userData as JSON (the parse of
+// its stringify) with every clone of an object, material or texture, and the copy holds more than its text: 2 bytes a
+// character (a string's characters, two bytes each once any is past Latin-1), 24 more per `,` or `:` (each value
+// after the first in a list, each property: its slot, a number's box) and 96 more per `{` or `[` (each object or
+// list: its header and its backing store), counted outside strings. On Node 24, copies of 64 KiB of JSON of twenty
+// shapes held at most 0.87 of this (many keys of one object), a list of empty objects 0.51 (it was 10.7 times the
+// two bytes a character charged before), and one long string of two-byte characters 1.01 (its characters are two
+// bytes each, its header and object on top): test/gltfBudget.test.js measures the worst of them through the parser
+export function jsonCopyBytes(text) {
+  let separators = 0
+  let containers = 0
+  let inString = false
+  for (let i = 0; i < text.length; i++) {
+    const char = text.charCodeAt(i)
+    if (inString) {
+      if (char === 92) {
+        i++ // backslash: skip the escaped character
+      } else if (char === 34) inString = false
+    } else if (char === 34) {
+      inString = true
+    } else if (char === 44 || char === 58) {
+      separators++
+    } else if (char === 123 || char === 91) {
+      containers++
+    }
+  }
+  return 2 * text.length + 24 * separators + 96 * containers
 }
 
 // the JSON of a .glb (its header and chunks, read as GLTFLoader reads them: the last JSON and BIN chunks win) or of
@@ -250,6 +305,35 @@ const LOADABLE_EXTENSIONS = new Set([
   'VRMC_materials_hdr_emissiveMultiplier',
   'VRMC_vrm_animation',
 ])
+// extensions whose content the parser or a plugin reads: the loadable ones, and those it reads to find their
+// fallback. Any other extension's content is read by nothing: on an object it is kept in the object's userData (and
+// sized, with the extras, as what clones copy), on the document in the document's userData, once
+const READ_EXTENSIONS = new Set([
+  ...LOADABLE_EXTENSIONS,
+  'KHR_draco_mesh_compression',
+  'EXT_meshopt_compression',
+  'KHR_texture_basisu',
+  'EXT_texture_avif',
+])
+// keys whose values the parser or three-vrm treat as strings (a list there was joined into one string each time
+// it was compared, concatenated or looked up: a material's name, for each outline cloned from it)
+const STRING_KEYS = new Set([
+  'name',
+  'type',
+  'uri',
+  'mimeType',
+  'path',
+  'interpolation',
+  'alphaMode',
+  'materialName',
+  'propertyName',
+  'presetName',
+  'bone',
+  'shader',
+  'specVersion',
+])
+// the images this client decodes; an image's mimeType is kept in its texture's userData, copied with each clone
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 
 // componentType: bytes of a component; type: components of an element
 const COMPONENT_BYTES = { 5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126: 4 }
@@ -266,6 +350,47 @@ const ANIMATION_OUTPUTS = {
   weights: { type: 'SCALAR', normalized: true },
 }
 
+const place = (top, at) => (at === undefined ? top : `${top} ${at}`)
+
+// The document's strings and keys, outside extras and the extensions nothing here reads: each one short (the names
+// and kinds the parser and three-vrm read, once per object: GLTF_LIMITS.nameLength), a URI short unless it is a data:
+// URI (its bytes are charged where they are decoded), the asset's and the VRM meta's text within textLength; and
+// the values the parser and three-vrm treat as strings, strings (STRING_KEYS). A step per value
+function checkText(json, limits, step) {
+  let values = 0
+  // `top`: the document's entry the value is in (a collection's, with `at`: its index), named only when refused
+  const visit = (value, key, top, at, cap, depth) => {
+    values++
+    if (STRING_KEYS.has(key) && typeof value !== 'string') refuse(`${place(top, at)} ${key} is not a string`)
+    if (typeof value === 'string') {
+      const max = key === 'uri' ? (value.startsWith('data:') ? Infinity : limits.uriLength) : cap
+      if (value.length > max) refuse(`${place(top, at)} ${key} is ${value.length} characters long, more than ${max}`)
+    } else if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i++) visit(value[i], key, top, depth === 1 ? i : at, cap, depth + 1)
+    } else if (isObject(value)) {
+      for (const name of Object.keys(value)) {
+        if (name.length > limits.nameLength) {
+          refuse(`${place(top, at)} has a key ${name.length} characters long, more than ${limits.nameLength}`)
+        }
+        // extras are not read, but copied: sized below, with the extensions nothing reads
+        if (name === 'extras' || (key === 'extensions' && !READ_EXTENSIONS.has(name))) continue
+        const text = (depth === 0 && name === 'asset') || (name === 'meta' && (key === 'VRM' || key === 'VRMC_vrm'))
+        const extension = depth === 1 && key === 'extensions'
+        visit(
+          value[name],
+          name,
+          depth === 0 ? name : extension ? `extension ${name}` : top,
+          depth === 0 || extension ? undefined : at,
+          text ? limits.textLength : cap,
+          depth + 1
+        )
+      }
+    }
+  }
+  visit(json, '', 'the document', undefined, limits.nameLength, 0)
+  step(values, 'strings and keys')
+}
+
 // `budget`: the file's budget (createGLTFBudget), made before the check: the check's own loops are charged to it as
 // work and look at its clock, so no part of loading a file runs unmetered. Every loop here is linear in the size of
 // the document (each entry visited a bounded number of times)
@@ -278,6 +403,7 @@ export function checkGLTF(data, limits = GLTF_LIMITS, budget = null) {
   if (!isObject(json.asset) || typeof json.asset.version !== 'string' || !/^2\./.test(json.asset.version)) {
     refuse('not a glTF 2.0 document')
   }
+  checkText(json, limits, step)
 
   // the structure: lists, objects, indices
   const list = (value, where, max = limits.listLength) => {
@@ -396,7 +522,12 @@ export function checkGLTF(data, limits = GLTF_LIMITS, budget = null) {
     if (accessor.count === 0) refuse(`accessor ${i} has no elements`)
     const componentBytes = COMPONENT_BYTES[accessor.componentType]
     const size = TYPE_SIZES[accessor.type]
-    if (!Object.hasOwn(COMPONENT_BYTES, accessor.componentType) || !Object.hasOwn(TYPE_SIZES, accessor.type)) {
+    // (a number and a string: a list was its one element as a key, wherever the parser looked it up)
+    if (
+      typeof accessor.componentType !== 'number' ||
+      !Object.hasOwn(COMPONENT_BYTES, accessor.componentType) ||
+      !Object.hasOwn(TYPE_SIZES, accessor.type)
+    ) {
       refuse(`accessor ${i} has an invalid componentType or type`)
     }
     if (accessor.normalized !== undefined && typeof accessor.normalized !== 'boolean') {
@@ -459,6 +590,15 @@ export function checkGLTF(data, limits = GLTF_LIMITS, budget = null) {
     if (typeof image.uri === 'string' && image.uri.trim().toLowerCase().startsWith('blob:')) {
       refuse(`image ${i} names a blob: URL`)
     }
+    // kept in its texture's userData, which three.js copies with every clone of the texture: one of the types this
+    // client decodes (a document's own string of any length was copied in every texture slot of every outline)
+    if (image.mimeType !== undefined && !IMAGE_TYPES.includes(image.mimeType)) {
+      refuse(`image ${i} mimeType is not image/png, image/jpeg or image/webp`)
+    }
+  })
+  // a sampler's filters and wrapping: numbers (the parser looks each up for every texture using the sampler)
+  collections.samplers.forEach((sampler, i) => {
+    for (const key of ['magFilter', 'minFilter', 'wrapS', 'wrapT']) whole(sampler[key], `sampler ${i} ${key}`)
   })
   collections.textures.forEach((texture, i) => {
     index(texture.source, 'images', `texture ${i} source`)
@@ -673,7 +813,49 @@ export function checkGLTF(data, limits = GLTF_LIMITS, budget = null) {
     }
   })
 
-  return checkVRM(json, collections, parents, order, limits, { list, object, items, index, step })
+  // the userData the parser fills from each object's extras and extensions (which of the extensions it copies depends
+  // on the plugins registered: all are counted), in characters of JSON: each object's; and all the scene holds (a
+  // mesh's for each of its primitives and each node using it, a camera's and a light's for each node using it; the
+  // materials and images once: the parser charges each clone of them), which every clone of the scene copies
+  const userDataOf = (def, where) => {
+    const length =
+      (def.extras === undefined ? 0 : JSON.stringify(def.extras).length) +
+      (def.extensions === undefined ? 0 : JSON.stringify(def.extensions).length)
+    step(length, 'extras and extensions')
+    if (length > limits.userDataLength) {
+      refuse(`${where} has ${length} characters of extras and extensions, more than ${limits.userDataLength}`)
+    }
+    return length
+  }
+  const meshUserData = collections.meshes.map((mesh, i) => {
+    const own = userDataOf(mesh, `mesh ${i}`)
+    return list(mesh.primitives, 'primitives').reduce(
+      (sum, primitive, k) => sum + own + userDataOf(primitive, `mesh ${i} primitive ${k}`),
+      0
+    )
+  })
+  const cameraUserData = collections.cameras.map((camera, i) => userDataOf(camera, `camera ${i}`))
+  const lightUserData = collections.lights.map((light, i) => userDataOf(light, `light ${i}`))
+  let sceneUserData = 0
+  for (const [name, label] of [
+    ['materials', 'material'],
+    ['images', 'image'],
+    ['scenes', 'scene'],
+  ]) {
+    collections[name].forEach((def, i) => (sceneUserData += userDataOf(def, `${label} ${i}`)))
+  }
+  nodes.forEach((node, i) => {
+    sceneUserData += userDataOf(node, `node ${i}`)
+    if (node.mesh !== undefined) sceneUserData += meshUserData[node.mesh]
+    if (node.camera !== undefined) sceneUserData += cameraUserData[node.camera]
+    const light = object(node.extensions, 'extensions').KHR_lights_punctual?.light
+    if (light !== undefined) sceneUserData += lightUserData[light]
+  })
+  if (sceneUserData > limits.sceneUserDataLength) {
+    refuse(`the scene's userData is ${sceneUserData} characters of JSON, more than ${limits.sceneUserDataLength}`)
+  }
+
+  return { ...checkVRM(json, collections, parents, order, limits, { list, object, items, index, step }), sceneUserData }
 }
 
 // three-vrm's work, counted before it runs, in the units its plugins (version 3.3.3) iterate: most of them walk the
@@ -686,7 +868,9 @@ export function checkGLTF(data, limits = GLTF_LIMITS, budget = null) {
 // names, and runs VRM 1 or VRM 0, not both); material binds (every mesh with the material, its outline copy too);
 // springSortWork (a product of the deepest object and the most joints on one); outlineDraws (every VRM 0 material,
 // and every VRM 1 material with an outline mode, counted as outlined); outlineCopyBytes (every texture slot at the
-// largest image extras, and 8 KiB more).
+// largest texture's userData, and 8 KiB more); textureBindCopyBytes (the most slots any material kind has, at the
+// largest texture's userData, for every material a VRM 0 material value names and every mesh a VRM 1 bind's
+// material is on).
 function checkVRM(json, collections, parents, order, limits, { list, object, items, index, step }) {
   const caps = limits.vrm
   const extensions = object(json.extensions, 'extensions')
@@ -706,7 +890,18 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
     constraints: 0,
     outlineDraws: 0,
     outlineCopyBytes: 0,
+    textureBindCopyBytes: 0,
   }
+  // what a clone of a texture copies: its userData, which is its image's extras and the image's mimeType (one of
+  // IMAGE_TYPES, ten characters at most), at what a JSON copy holds. Which image a texture three-vrm clones holds is
+  // not modelled (an extension's source, the parser's texture cache and VRM 0's slots may each resolve it to another
+  // than the one named): each is counted at the largest of any image
+  let largestTexture = 0
+  for (const image of collections.images) {
+    const extras = typeof image.extras === 'object' ? image.extras : undefined
+    largestTexture = Math.max(largestTexture, jsonCopyBytes(JSON.stringify({ ...extras, mimeType: 'image/jpeg' })))
+  }
+  step(collections.images.length, 'VRM image extras')
   const v0 = extensions.VRM === undefined ? null : object(extensions.VRM, 'VRM')
   const vrm1 = extensions.VRMC_vrm === undefined ? null : object(extensions.VRMC_vrm, 'VRMC_vrm')
   const springs =
@@ -852,6 +1047,10 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
             : 0
         counts.expressionWork += sceneObjects + named * named
         counts.expressionBinds += named
+        // a texture transform clones every texture slot of each material found
+        if (value.propertyName === '_MainTex_ST') {
+          counts.textureBindCopyBytes += named * TEXTURE_TRANSFORM_SLOTS * largestTexture
+        }
       }
     }
     // spring bones: a bone group makes a joint for every object below each bone it lists (the parser's and the
@@ -897,18 +1096,18 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
         counts.expressionBinds++
         counts.expressionPrimitives += primitivesOf(nodes[bind.node].mesh).length
       }
-      const materialBinds = [
-        ...items(def.materialColorBinds, `${where} materialColorBinds`),
-        ...items(def.textureTransformBinds, `${where} textureTransformBinds`),
-      ]
+      const colorBinds = items(def.materialColorBinds, `${where} materialColorBinds`)
+      const materialBinds = [...colorBinds, ...items(def.textureTransformBinds, `${where} textureTransformBinds`)]
       // the scene walked once for its materials; each bind filters all of them, and binds each mesh using its
-      // material (a shared material once per mesh)
-      if (materialBinds.length > 0) counts.expressionWork += sceneObjects
+      // material (a shared material once per mesh); a texture-transform bind clones every texture slot of each
       materialBinds.forEach((bind, b) => {
         index(bind.material, 'materials', `${where} material bind ${b} material`)
+        const found = meshesByMaterial.get(bind.material) || 0
         counts.expressionWork += sceneMaterials
-        counts.expressionBinds += meshesByMaterial.get(bind.material) || 0
+        counts.expressionBinds += found
+        if (b >= colorBinds.length) counts.textureBindCopyBytes += found * TEXTURE_TRANSFORM_SLOTS * largestTexture
       })
+      if (materialBinds.length > 0) counts.expressionWork += sceneObjects
     }
     const firstPerson = object(vrm1.firstPerson, 'VRMC_vrm firstPerson')
     const annotations = items(firstPerson.meshAnnotations, 'VRMC_vrm meshAnnotations')
@@ -1015,20 +1214,15 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
   }
   // and the outline material it clones for each such primitive of each mesh. MToon is a ShaderMaterial: the clone
   // copies the material's userData as JSON (its extras, and the extensions the parser does not handle, which include
-  // the MToon extension itself), and clones the texture in each of its texture uniforms with that texture's userData
-  // (an image's extras). Which image a slot holds is not modelled (an extension's source, the parser's texture cache
-  // and VRM 0's slots may each resolve it to another): every slot is counted at the largest extras of any image.
-  // As JSON text, two bytes a character, and 8 KiB for the uniforms, the material object and the MToon extension a
-  // VRM 0 material is converted to. A bound by construction (each term is at least what it stands for)
-  const text = value => (value === undefined ? 0 : 2 * (JSON.stringify(value) || '').length)
-  let largestImageExtras = 0
-  for (const image of collections.images) largestImageExtras = Math.max(largestImageExtras, text(image.extras))
-  step(collections.images.length, 'VRM image extras')
+  // the MToon extension itself), and clones the texture in each of its texture uniforms (each counted at the largest
+  // texture's userData, above). At what a JSON copy holds, and 8 KiB for the uniforms, the material object and the
+  // MToon extension a VRM 0 material is converted to. A bound by construction (each term at least what it stands for)
+  const copied = value => (value === undefined ? 0 : jsonCopyBytes(JSON.stringify(value) || ''))
   const copies = new Map()
   const copyBytes = m => {
     if (!copies.has(m)) {
       const material = materials[m]
-      copies.set(m, 8192 + text(material.extras) + text(material.extensions) + MTOON_TEXTURE_SLOTS * largestImageExtras)
+      copies.set(m, 8192 + copied(material.extras) + copied(material.extensions) + MTOON_TEXTURE_SLOTS * largestTexture)
     }
     return copies.get(m)
   }
@@ -1048,6 +1242,10 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
 // shadeMultiplyTexture, shadingShiftTexture, matcapTexture, rimMultiplyTexture, outlineWidthMultiplyTexture,
 // uvAnimationMaskTexture (test/gltfLimits.test.js reads them from the class)
 export const MTOON_TEXTURE_SLOTS = 10
+// the most texture slots three-vrm's VRMExpressionTextureTransformBind (3.3.3) clones on one material: a
+// MeshStandardMaterial's map, emissiveMap, bumpMap, normalMap, displacementMap, roughnessMap, metalnessMap and
+// alphaMap (MToon has 7, MeshBasicMaterial 3; test/gltfLimits.test.js reads them from the class)
+export const TEXTURE_TRANSFORM_SLOTS = 8
 
 // the parser's cache key for a primitive's geometry (its createPrimitiveKey, without Draco: this client has no
 // decoder): primitives with the same key share one geometry
@@ -1130,6 +1328,18 @@ export function createGLTFBudget({
       used.work += n
       onCharge?.('work', n, what, used.work)
       if (used.work > maxWork) fail(what, `the parser would take more than ${maxWork} steps (at ${what})`)
+    },
+    // a JSON copy of a value (three.js's clone of an object's, a material's or a texture's userData): the bytes the
+    // copy holds (jsonCopyBytes) and a step a character
+    jsonCopy(value, what) {
+      let text = ''
+      try {
+        text = JSON.stringify(value) ?? ''
+      } catch {
+        // what three.js cannot stringify, it cannot copy: the clone throws before it allocates
+      }
+      budget.bytes(jsonCopyBytes(text), what)
+      budget.work(text.length, what)
     },
     // a document the parser cannot use (a rule of the specification it would otherwise loop or write on through)
     refuse(reason, what) {

@@ -1,10 +1,18 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import v8 from 'node:v8'
+import vm from 'node:vm'
 import { GLTFLoader } from '../src/core/libs/gltfloader/GLTFLoader.js'
 import { VRMLoaderPlugin } from '@pixiv/three-vrm'
-import { Object3D, SkinnedMesh } from 'three'
-import { checkGLTF, createGLTFBudget, GLTF_LIMITS, GLTFLimitError } from '../src/core/extras/gltfLimits.js'
+import { Object3D, SkinnedMesh, Texture } from 'three'
+import {
+  checkGLTF,
+  createGLTFBudget,
+  GLTF_LIMITS,
+  GLTFLimitError,
+  jsonCopyBytes,
+} from '../src/core/extras/gltfLimits.js'
 import { png, jpeg } from './lib/imageBytes.mjs'
 import { glb } from './lib/glb.mjs'
 
@@ -41,13 +49,15 @@ after(() => {
 
 // parses with a budget that records each charge; resolves to { gltf, budget, charges } or rejects with the error
 // (which carries the charges)
-async function parse(file, { limits = GLTF_LIMITS, vrm = false } = {}) {
+async function parse(file, { limits = GLTF_LIMITS, vrm = false, check = false } = {}) {
   const charges = []
   const budget = createGLTFBudget({
     fileBytes: file.byteLength,
     limits,
     onCharge: (kind, n, what, total) => charges.push({ kind, n, what, total }),
   })
+  // `check`: as the client loads a file, the check first, charged to the same budget
+  if (check) checkGLTF(file, limits, budget)
   const loader = new GLTFLoader()
   if (vrm) loader.register(parser => new VRMLoaderPlugin(parser))
   try {
@@ -228,11 +238,17 @@ test('each instance of a mesh is counted: its clone, its morph influences and it
   const copies = await refusedAt(glb(base(200, extras), positions), 'userData copy', /would allocate more than/, {
     limits,
   })
-  assert.ok(copies.before.filter(c => c.what === 'userData copy' && c.kind === 'bytes').every(c => c.n >= 40000))
+  // at what a JSON copy of the userData holds (its text, a property, an object: jsonCopyBytes)
+  const userData = JSON.stringify(extras)
+  assert.ok(
+    copies.before
+      .filter(c => c.what === 'userData copy' && c.kind === 'bytes')
+      .every(c => c.n === jsonCopyBytes(userData) && c.n >= 40000)
+  )
   // each copy also goes through every character of it: a step each
   const copied = copies.before.filter(c => c.what === 'userData copy')
   for (let i = 0; i + 1 < copied.length; i += 2)
-    assert.deepEqual([copied[i + 1].kind, copied[i + 1].n], ['work', copied[i].n / 2])
+    assert.deepEqual([copied[i + 1].kind, copied[i + 1].n], ['work', userData.length])
 })
 
 test('scenes, cameras and other collections the parser creates eagerly are counted', async () => {
@@ -905,6 +921,199 @@ test('the placeholder for a refused texture is put in only once the parse has fa
   assert.equal(budget.refused, null)
 })
 
+test('a data: URI is the image, not its name: its textures are cached by the image, and names are charged', async () => {
+  // the reviewer's probe: an 8 MB data: URI named by 2000 textures built and looked up a key of the whole URI for
+  // each (2.4 s). The key is the image's index now (and an image shared by textures is still decoded once)
+  const uri = `data:image/png;base64,${Buffer.from(png(16, 16)).toString('base64')}`
+  const file = glb(
+    {
+      asset: { version: '2.0' },
+      ...scene,
+      nodes: [{ mesh: 0, name: 'n'.repeat(1000) }],
+      meshes: [
+        {
+          name: 'm'.repeat(1000),
+          primitives: Array.from({ length: 50 }, (_, i) => ({ attributes: { POSITION: 0 }, material: i % 2 })),
+        },
+      ],
+      materials: [0, 1].map(i => ({ pbrMetallicRoughness: { baseColorTexture: { index: i } } })),
+      textures: [{ source: 0 }, { source: 0, sampler: 0 }],
+      samplers: [{ magFilter: 9728 }],
+      images: [{ uri }],
+      animations: [
+        { samplers: [{ input: 1, output: 0 }], channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }] },
+      ],
+      accessors: [
+        vec3(3, { bufferView: 0, min: [0, 0, 0], max: [0, 0, 0] }),
+        { bufferView: 1, componentType: 5126, type: 'SCALAR', count: 3, min: [0], max: [0] },
+      ],
+      bufferViews: [
+        { buffer: 0, byteLength: 36 },
+        { buffer: 0, byteLength: 12 },
+      ],
+      buffers: [{ byteLength: 36 }],
+    },
+    new Uint8Array(36)
+  )
+  const before = decoded
+  const { gltf, charges } = await parse(file)
+  const keys = Object.keys(gltf.parser.textureCache)
+  assert.deepEqual(keys.sort(), ['image 0:0', 'image 0:undefined'])
+  assert.equal(decoded - before, 1, 'one decode for the image both textures use')
+  // each object named: its name sanitised and kept (a step and two bytes a character); the mesh's name for each of
+  // its 50 primitives (at most 1024 characters: checkGLTF)
+  const names = charges.filter(c => c.what === 'names')
+  assert.equal(names.filter(c => c.kind === 'work' && c.n === 1001).length, 51)
+  assert.equal(names.filter(c => c.kind === 'bytes' && c.n === 2000).length, 51)
+  // and a track's name, the node's with its path, for each track
+  assert.deepEqual(
+    charges.filter(c => c.what === 'track name').map(c => [c.kind, c.n]),
+    [['bytes', 2 * (1000 + 16)]]
+  )
+})
+
+test('a userData copy is charged at least what it holds: the heap of the worst shapes, through the parser', async () => {
+  // the reviewer's probe: a list of empty objects held 11.7 times the two bytes a character it was charged (68 clones
+  // within the work limit held 1.6 GB, 135 MB charged). Measured here, on this Node, with extras just under the 64 KiB
+  // an object may have, over eleven clones: the bytes charged for each copy are at least two thirds of what it holds
+  // (jsonCopyBytes holds 0.51 for this shape, 0.87 for many keys of one object, 1.01 for a long two-byte string)
+  v8.setFlagsFromString('--expose_gc')
+  const gc = vm.runInNewContext('gc')
+  const room = GLTF_LIMITS.userDataLength - 100
+  const shapes = {
+    'a list of empty objects': { l: Array(Math.floor(room / 3)).fill({}) },
+    'many keys of one object': Object.fromEntries(
+      Array.from({ length: Math.floor(room / 10) }, (_, i) => [`k${i}`, 0])
+    ),
+    'a string of two-byte characters': { s: 'あ'.repeat(room - 10) },
+  }
+  const file = (extras, uses) =>
+    glb(
+      {
+        asset: { version: '2.0' },
+        scene: 0,
+        scenes: [{ nodes: [...Array(uses).keys()] }],
+        nodes: Array(uses).fill({ mesh: 0 }),
+        meshes: [{ extras, primitives: [{ attributes: { POSITION: 0 } }] }],
+        accessors: [vec3(3, { bufferView: 0, min: [0, 0, 0], max: [0, 0, 0] })],
+        bufferViews: [{ buffer: 0, byteLength: 36 }],
+        buffers: [{ byteLength: 36 }],
+      },
+      new Uint8Array(36)
+    )
+  const held = async (extras, uses) => {
+    const data = file(extras, uses)
+    gc()
+    const base = process.memoryUsage().heapUsed
+    const parsed = await parse(data, { check: true })
+    gc()
+    const heap = process.memoryUsage().heapUsed - base
+    const charged = parsed.charges.filter(c => c.what === 'userData copy' && c.kind === 'bytes')
+    return { heap, charged: charged.reduce((sum, c) => sum + c.n, 0), copies: charged.length, parsed }
+  }
+  for (const [shape, extras] of Object.entries(shapes)) {
+    const one = await held(extras, 1)
+    const eleven = await held(extras, 11)
+    // (a mesh used by more than one node is cloned for each of them: eleven copies)
+    const copies = eleven.copies - one.copies
+    assert.equal(copies, 11, shape)
+    const heapPerCopy = (eleven.heap - one.heap) / copies
+    const chargedPerCopy = (eleven.charged - one.charged) / copies
+    assert.ok(chargedPerCopy >= heapPerCopy / 1.5, `${shape}: ${chargedPerCopy} charged, ${heapPerCopy} held`)
+    // (two bytes a character, the charge before, was far below it for the list of empty objects)
+    if (shape === 'a list of empty objects') {
+      const text = JSON.stringify(extras).length
+      assert.ok(2 * text < heapPerCopy / 5, `${2 * text} at two bytes a character, ${heapPerCopy} held`)
+    }
+  }
+})
+
+test('an expression’s texture-transform binds clone the textures checkGLTF counts, at most', async t => {
+  // three-vrm's VRMExpressionTextureTransformBind clones every texture slot of each material it binds (once per mesh
+  // using the material): each clone copies the texture's userData, which checkGLTF counts before the plugin runs
+  t.mock.method(console, 'warn', () => {})
+  const header = png(16, 16)
+  const bin = new Uint8Array(84 + header.length)
+  bin.set(header, 84)
+  const file = tangents =>
+    glb(
+      {
+        asset: { version: '2.0' },
+        extensionsUsed: ['VRMC_vrm', 'VRMC_materials_mtoon'],
+        ...scene,
+        scenes: [{ nodes: [0, 1, 2] }],
+        nodes: [{ mesh: 0 }, { mesh: 0 }, { mesh: 0 }],
+        meshes: [
+          {
+            primitives: [
+              {
+                // (normals and tangents: the parser makes no variant of the material, so every texture clone here
+                // is three-vrm's)
+                attributes: tangents ? { POSITION: 0, NORMAL: 0, TANGENT: 1 } : { POSITION: 0, NORMAL: 0 },
+                material: 0,
+              },
+            ],
+          },
+        ],
+        materials: [
+          {
+            pbrMetallicRoughness: { baseColorTexture: { index: 0 } },
+            extensions: {
+              VRMC_materials_mtoon: {
+                specVersion: '1.0',
+                shadeMultiplyTexture: { index: 0 },
+                rimMultiplyTexture: { index: 0 },
+              },
+            },
+          },
+        ],
+        textures: [{ source: 0 }],
+        images: [{ bufferView: 2, mimeType: 'image/png', extras: { list: Array(300).fill({}) } }],
+        accessors: [
+          vec3(3, { bufferView: 0, min: [0, 0, 0], max: [0, 0, 0] }),
+          { bufferView: 1, componentType: 5126, type: 'VEC4', count: 3 },
+        ],
+        bufferViews: [
+          { buffer: 0, byteLength: 36 },
+          { buffer: 0, byteOffset: 36, byteLength: 48 },
+          { buffer: 0, byteOffset: 84, byteLength: header.length },
+        ],
+        buffers: [{ byteLength: bin.length }],
+        extensions: {
+          VRMC_vrm: {
+            specVersion: '1.0',
+            expressions: {
+              custom: { a: { textureTransformBinds: [{ material: 0, scale: [2, 2] }, { material: 0 }] } },
+            },
+          },
+        },
+      },
+      bin
+    )
+  const { textureBindCopyBytes } = checkGLTF(file(true)).vrm
+  let copied = 0
+  let clones = 0
+  const clone = Texture.prototype.clone
+  t.mock.method(Texture.prototype, 'clone', function () {
+    clones++
+    copied += jsonCopyBytes(JSON.stringify(this.userData))
+    return clone.call(this)
+  })
+  await parse(file(true), { vrm: true })
+  // (two binds, the material on three meshes, three of its slots holding a texture)
+  assert.equal(clones, 2 * 3 * 3)
+  assert.ok(textureBindCopyBytes >= copied, `${textureBindCopyBytes} counted, ${copied} copied`)
+  // without tangents the parser makes a variant of the material (a clone): MToon's clone clones each texture in its
+  // uniforms too, each with its copy of the texture's userData, charged where it is made
+  clones = 0
+  const { charges } = await parse(file(false), { vrm: true })
+  assert.equal(clones, 3 + 2 * 3 * 3)
+  const textureCopy = jsonCopyBytes(JSON.stringify({ list: Array(300).fill({}), mimeType: 'image/png' }))
+  const variant = charges.filter(c => c.what === 'userData copy' && c.kind === 'bytes' && c.n === textureCopy)
+  assert.equal(variant.length, 3, 'each texture of the variant')
+  assert.equal(charges.filter(c => c.kind === 'count' && c.what === 'textures').length, 1 + 3)
+})
+
 test('a parse past its time limit is refused at the next charge (a monotonic clock, checked as it goes)', async () => {
   // a clock that moves 1 s per look: the bundled avatar's parse (a few milliseconds here) would pass 10 s
   let time = 0
@@ -1007,8 +1216,12 @@ test('three-vrm makes what checkGLTF counts: joints over the parsed objects, mor
   assert.equal(firstPersonWork, 51 + 51)
 
   // Codex's probe: outlined MToon primitives on one material whose extras hold many small objects; three-vrm clones
-  // the material for each, and each clone copies its userData. checkGLTF counts those copies (as JSON text, with 8 KiB
-  // for the uniforms) before the plugin runs: at least what the clones hold
+  // the material for each, and each clone copies its userData, and its textures' (an image's extras and its
+  // mimeType: the reviewer's probe, whose mimeType was a document's string of any length). checkGLTF counts those
+  // copies (at what a JSON copy holds, with 8 KiB for the uniforms) before the plugin runs: at least what they hold
+  const header = png(16, 16)
+  const bin = new Uint8Array(36 + header.length)
+  bin.set(header, 36)
   const outlined = glb(
     {
       asset: { version: '2.0' },
@@ -1019,26 +1232,46 @@ test('three-vrm makes what checkGLTF counts: joints over the parsed objects, mor
       materials: [
         {
           extras: { list: Array.from({ length: 200 }, (_, i) => ({ i })) },
+          pbrMetallicRoughness: { baseColorTexture: { index: 0 } },
           extensions: {
             VRMC_materials_mtoon: {
               specVersion: '1.0',
               outlineWidthMode: 'worldCoordinates',
               outlineWidthFactor: 0.01,
+              shadeMultiplyTexture: { index: 0 },
+              matcapTexture: { index: 0 },
             },
           },
         },
       ],
-      ...buffers,
+      textures: [{ source: 0 }],
+      images: [{ bufferView: 1, mimeType: 'image/png', extras: { list: Array(300).fill({}) } }],
+      accessors: buffers.accessors,
+      bufferViews: [
+        { buffer: 0, byteLength: 36 },
+        { buffer: 0, byteOffset: 36, byteLength: header.length },
+      ],
+      buffers: [{ byteLength: bin.length }],
     },
-    positions
+    bin
   )
   const { outlineCopyBytes } = checkGLTF(outlined).vrm
   const parsed = await parse(outlined, { vrm: true })
   const copies = new Set()
   parsed.gltf.scene.traverse(object => [object.material ?? []].flat().forEach(m => m.isOutline && copies.add(m)))
   let copied = 0
-  for (const material of copies) copied += 2 * JSON.stringify(material.userData).length
+  let textures = 0
+  for (const material of copies) {
+    copied += jsonCopyBytes(JSON.stringify(material.userData))
+    for (const uniform of Object.values(material.uniforms)) {
+      if (!uniform.value?.isTexture) continue
+      assert.equal(uniform.value.userData.mimeType, 'image/png')
+      copied += jsonCopyBytes(JSON.stringify(uniform.value.userData))
+      textures++
+    }
+  }
   assert.equal(copies.size, 20)
+  assert.equal(textures, 20 * 3, 'three texture slots of each outline')
   assert.ok(outlineCopyBytes >= copied, `${outlineCopyBytes} counted, ${copied} copied`)
 })
 
@@ -1170,15 +1403,16 @@ test('an avatar of VRoid’s shape loads within the limits, with three times its
 
 test('the bundled files parse within the budget, and what they are charged is the same every time', async t => {
   t.mock.method(console, 'warn', () => {})
-  // measured with this parser and three-vrm 3.3.3; a change in what is charged (a parser update that adds or
-  // bypasses a charged path) shows here
+  // measured with this parser and three-vrm 3.3.3, as the client loads a file (the check, then the parse, charged to
+  // one budget, with the VRM plugin registered); a change in what is charged (a parser update that adds or bypasses
+  // a charged path) shows here
   for (const [name, expected] of [
     [
       'world/assets/avatar.vrm',
       {
-        bytes: 17762942,
+        bytes: 17764666,
         pixels: 4194304,
-        work: 981151,
+        work: 1035591,
         counts: {
           scenes: 1,
           meshes: 1,
@@ -1197,18 +1431,18 @@ test('the bundled files parse within the budget, and what they are charged is th
     [
       'world/assets/mp-idle.glb',
       {
-        bytes: 165608,
+        bytes: 183188,
         pixels: 0,
-        work: 25994,
+        work: 93996,
         counts: { scenes: 1, animations: 1, channels: 198, nodes: 67, tracks: 198 },
       },
     ],
     [
       'world/assets/crash-block.glb',
       {
-        bytes: 9356,
+        bytes: 9392,
         pixels: 65536,
-        work: 245,
+        work: 1633,
         counts: {
           scenes: 1,
           meshes: 1,
@@ -1224,7 +1458,7 @@ test('the bundled files parse within the budget, and what they are charged is th
   ]) {
     const bytes = fs.readFileSync(new URL(`../src/${name}`, import.meta.url))
     const file = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-    const { budget } = await parse(file, { vrm: true }) // as the client parses every file
+    const { budget } = await parse(file, { vrm: true, check: true }) // as the client loads every file
     assert.equal(budget.used.bytes, expected.bytes, `${name} bytes`)
     assert.equal(budget.used.pixels, expected.pixels, `${name} pixels`)
     assert.equal(budget.used.work, expected.work, `${name} work`)

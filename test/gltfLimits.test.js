@@ -8,8 +8,10 @@ import {
   GLTF_LIMITS,
   GLTFLimitError,
   MTOON_TEXTURE_SLOTS,
+  TEXTURE_TRANSFORM_SLOTS,
+  jsonCopyBytes,
 } from '../src/core/extras/gltfLimits.js'
-import { MToonMaterial } from '@pixiv/three-vrm'
+import { MToonMaterial, VRMExpressionTextureTransformBind } from '@pixiv/three-vrm'
 import { png, jpeg, gif } from './lib/imageBytes.mjs'
 
 // Before parsing: the container and the document's structure, and three-vrm's work as its plugins expand it. (What
@@ -465,20 +467,22 @@ test('the check is metered too, and linear in the document: no part of loading a
   const big = doc({ nodes: Array.from({ length: 70000 }, () => ({})) })
   assert.throws(() => checkGLTF(text(big), GLTF_LIMITS, late), /the parse took more than 10 s/)
   // the reviewer's probe: 4000 textures naming one image whose extras are 1 MB stringified it 4000 times (3 s; with
-  // 300,000 textures, half an hour) before any budget existed. Each image's extras are measured once now
+  // 300,000 textures, half an hour) before any budget existed. Each image's extras are measured once now (sized as
+  // the image's userData, then as what a clone of its texture copies); extras are at most 64 KiB an object now
   const extras = doc({
-    images: [{ uri: 'data:image/png;base64,AA==', extras: { s: 'x'.repeat(100000) } }],
+    images: [{ uri: 'data:image/png;base64,AA==', extras: { s: 'x'.repeat(60000) } }],
     textures: Array.from({ length: 4000 }, () => ({ source: 0 })),
   })
+  const extrasFile = text(extras)
   let measured = 0
   const stringify = JSON.stringify
   t.mock.method(JSON, 'stringify', (...args) => {
     const out = stringify(...args)
-    if (out && out.length > 100000) measured++
+    if (out && out.length > 60000) measured++
     return out
   })
-  checkGLTF(text(extras))
-  assert.ok(measured <= 2, `the large extras were stringified ${measured} times`)
+  checkGLTF(extrasFile)
+  assert.equal(measured, 2, `the large extras were stringified ${measured} times`)
   t.mock.restoreAll()
   // nodes x primitives: 20,000 nodes using one mesh of 5,000 primitives were counted node by node, primitive by
   // primitive (100,000,000 steps, seconds)
@@ -632,6 +636,164 @@ test('three-vrm: expression binds, material binds and spring colliders are count
   refused(constraints, /constraints: 5, more than 4/, { ...GLTF_LIMITS, vrm: { ...GLTF_LIMITS.vrm, constraints: 4 } })
 })
 
+test('strings are short, and strings where they are used as one: names, keys, URIs, kinds', () => {
+  // what the parser and three-vrm keep, compare, concatenate, sanitise or use as a key once per object is a name of
+  // the document: at most 1024 characters (the reviewer's probe: a 1,000,000-character mesh name sanitised and kept
+  // for each of 1000 primitives, stopped only by the clock). The longest in the bundled files and VRoid's samples: 59
+  const long = n => 'x'.repeat(n)
+  const named = (where, n) => {
+    const json = doc({
+      nodes: [{ mesh: 0, name: 'n' }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }], name: 'm' }],
+      materials: [{ name: 'mat' }],
+      animations: [{ name: 'a', samplers: [], channels: [] }],
+      extensions: {
+        KHR_lights_punctual: { lights: [{ type: 'point', name: 'l' }] },
+        VRM: { blendShapeMaster: { blendShapeGroups: [{ name: 'g', presetName: 'joy' }] } },
+        VRMC_springBone: { springs: [{ name: 's', joints: [] }] },
+      },
+    })
+    where(json, long(n))
+    return json
+  }
+  for (const [label, where, pattern] of [
+    ['a node', (json, name) => (json.nodes[0].name = name), /nodes 0 name is 1025 characters long, more than 1024/],
+    ['a mesh', (json, name) => (json.meshes[0].name = name), /meshes 0 name is 1025 characters long/],
+    ['a material', (json, name) => (json.materials[0].name = name), /materials 0 name is 1025/],
+    ['an animation', (json, name) => (json.animations[0].name = name), /animations 0 name is 1025/],
+    [
+      'a light',
+      (json, name) => (json.extensions.KHR_lights_punctual.lights[0].name = name),
+      /extension KHR_lights_punctual name is 1025/,
+    ],
+    [
+      'a VRM 0 expression',
+      (json, name) => (json.extensions.VRM.blendShapeMaster.blendShapeGroups[0].name = name),
+      /extension VRM name is 1025/,
+    ],
+    [
+      'a VRM 1 spring',
+      (json, name) => (json.extensions.VRMC_springBone.springs[0].name = name),
+      /extension VRMC_springBone name is 1025/,
+    ],
+    ['an extension used', (json, name) => (json.extensionsUsed = [name]), /extensionsUsed 0 extensionsUsed is 1025/],
+  ]) {
+    assert.ok(checkGLTF(text(named(where, 1024))), `${label}: 1024 characters`)
+    refused(named(where, 1025), pattern)
+  }
+  // keys: an attribute's name (the primitive's key and three's attribute are made of it), an extension's, a VRM 1
+  // expression's
+  refused(
+    doc({ meshes: [{ primitives: [{ attributes: { POSITION: 0, [long(1025)]: 0 } }] }] }),
+    /meshes 0 has a key 1025 characters long, more than 1024/
+  )
+  refused(doc({ nodes: [{ extensions: { [long(1025)]: {} } }] }), /nodes 0 has a key 1025 characters long/)
+  refused(
+    doc({ extensions: { VRMC_vrm: { expressions: { custom: { [long(1025)]: {} } } } } }),
+    /extension VRMC_vrm has a key 1025 characters long/
+  )
+  // a URI that is not a data: URI names a file (never fetched: the client refuses them) and is short; a data: URI is
+  // the data itself, charged where it is decoded
+  refused(
+    doc({ images: [{ uri: `https://example.com/${long(2100)}.png` }] }),
+    /images 0 uri is 2124 characters long, more than 2048/
+  )
+  assert.ok(checkGLTF(text(doc({ images: [{ uri: `https://example.com/${long(2000)}.png` }] }))))
+  assert.ok(checkGLTF(text(doc({ buffers: [{ byteLength: 300000, uri: dataURI(300000) }] }))))
+  // the asset's and the VRM meta's text is read once (a licence, credits): up to 16,384 characters
+  assert.ok(checkGLTF(text(doc({ asset: { version: '2.0', copyright: long(16384) } }))))
+  refused(
+    doc({ asset: { version: '2.0', copyright: long(16385) } }),
+    /asset copyright is 16385 characters long, more than 16384/
+  )
+  assert.ok(checkGLTF(text(doc({ extensions: { VRMC_vrm: { meta: { thirdPartyLicenses: long(16384) } } } }))))
+  refused(
+    doc({ extensions: { VRM: { meta: { title: long(16385) } } } }),
+    /extension VRM title is 16385 characters long/
+  )
+  // (the VRM meta's room is the meta's: a name elsewhere in the extension is a name)
+  refused(doc({ extensions: { VRM: { exporterVersion: long(1025) } } }), /extension VRM exporterVersion is 1025/)
+  // extras, and extensions nothing here reads, are not read: their strings are not names (their size is what is
+  // capped, below)
+  assert.ok(
+    checkGLTF(text(doc({ nodes: [{ extras: { note: long(5000) }, extensions: { X_note: { s: long(5000) } } }] })))
+  )
+  // a value the parser or three-vrm uses as a string is one: a list was joined into a string each time (a material's
+  // name, for each outline three-vrm clones from it; a VRM 0 material value's name, for each material it compares)
+  refused(doc({ materials: [{ name: ['a', 'b'] }] }), /materials 0 name is not a string/)
+  refused(
+    doc({
+      extensions: { VRM: { blendShapeMaster: { blendShapeGroups: [{ materialValues: [{ materialName: [1] }] }] } } },
+    }),
+    /extension VRM materialName is not a string/
+  )
+  refused(
+    doc({
+      extensions: { VRMC_vrm: { expressions: { custom: { a: { materialColorBinds: [{ material: 0, type: [] }] } } } } },
+    }),
+    /extension VRMC_vrm type is not a string/
+  )
+  // and a number where the parser looks it up for every texture, or every use of an accessor
+  refused(doc({ samplers: [{ magFilter: [9729] }] }), /sampler 0 magFilter is not a whole number/)
+  refused(
+    doc({ accessors: [{ bufferView: 0, componentType: [5126], type: 'VEC3', count: 3 }] }),
+    /invalid componentType/
+  )
+})
+
+test('extras are small: each object’s, and all the parsed scene holds, as the userData every clone copies', () => {
+  // extras and extensions become an object's userData, copied (as JSON) with every clone: at most 64 KiB of JSON an
+  // object (the most in the bundled files and VRoid's samples: 1,957), counting every extension (which of them the
+  // parser copies depends on the plugins registered)
+  const fill = n => ({ s: 'x'.repeat(n - 8) }) // n characters of JSON
+  const at = (place, n) => {
+    const json = doc({
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0, camera: 0, extensions: { KHR_lights_punctual: { light: 0 } } }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      materials: [{}],
+      images: [{ uri: 'data:image/png;base64,AA==' }],
+      cameras: [{ type: 'perspective', perspective: { yfov: 1, znear: 0.1 } }],
+      extensions: { KHR_lights_punctual: { lights: [{ type: 'point' }] } },
+    })
+    place(json, fill(n))
+    return json
+  }
+  for (const [label, place, pattern] of [
+    [
+      'a node',
+      (json, extras) => (json.nodes[0].extras = extras),
+      /node 0 has 65572 characters of extras and extensions, more than 65536/,
+    ],
+    ['a mesh', (json, extras) => (json.meshes[0].extras = extras), /mesh 0 has 65537/],
+    ['a primitive', (json, extras) => (json.meshes[0].primitives[0].extras = extras), /mesh 0 primitive 0 has 65537/],
+    ['a material', (json, extras) => (json.materials[0].extras = extras), /material 0 has 65537/],
+    ['an image', (json, extras) => (json.images[0].extras = extras), /image 0 has 65537/],
+    ['a scene', (json, extras) => (json.scenes[0].extras = extras), /scene 0 has 65537/],
+    ['a camera', (json, extras) => (json.cameras[0].extras = extras), /camera 0 has 65537/],
+    ['a light', (json, extras) => (json.extensions.KHR_lights_punctual.lights[0].extras = extras), /light 0 has 65537/],
+    [
+      'an unknown extension',
+      (json, extras) => (json.materials[0].extensions = { X_data: extras }),
+      /material 0 has \d+/,
+    ],
+  ]) {
+    assert.ok(checkGLTF(text(at(place, 65536 - 100))), `${label}: under 64 KiB`)
+    // (the node's light extension, and the unknown extension's name around the data, count too)
+    refused(at(place, label === 'an unknown extension' ? 65537 - 11 : 65537), pattern)
+  }
+  // and all of it in the parsed scene, at most 1 MiB: a mesh's userData is on each of its primitives' meshes, for
+  // each node using it, and every clone of the scene (an avatar's, for each player) copies all of it. The most in the
+  // bundled files and VRoid's samples: 22,501
+  const used = nodes =>
+    doc({
+      nodes: Array.from({ length: nodes }, () => ({ mesh: 0 })),
+      meshes: [{ extras: fill(40000), primitives: [{ attributes: { POSITION: 0 } }, { attributes: { POSITION: 0 } }] }],
+    })
+  assert.equal(checkGLTF(text(used(13))).sceneUserData, 13 * 2 * 40000)
+  refused(used(14), /the scene's userData is 1120000 characters of JSON, more than 1048576/)
+})
+
 test('three-vrm walks are counted in objects of the scene graph, as the plugins walk them, not in nodes', () => {
   const vrmLimits = vrm => ({ ...GLTF_LIMITS, vrm: { ...GLTF_LIMITS.vrm, ...vrm } })
   // Codex's probe: one bone listed, on a node whose mesh has 21 primitives (a Group and 21 meshes), with one collider
@@ -700,17 +862,16 @@ test('three-vrm walks are counted in objects of the scene graph, as the plugins 
     json.materials[0].extras = { list: Array.from({ length: objects }, (_, i) => ({ i })) }
     return json
   }
-  const one =
-    8192 +
-    2 * JSON.stringify(heavy(1).materials[0].extras).length +
-    2 * JSON.stringify(heavy(1).materials[0].extensions).length
+  // (at what a JSON copy of them holds: jsonCopyBytes)
+  const copied = value => jsonCopyBytes(JSON.stringify(value))
+  const one = 8192 + copied(heavy(1).materials[0].extras) + copied(heavy(1).materials[0].extensions)
   assert.equal(checkGLTF(text(heavy(50))).vrm.outlineCopyBytes, 50 * one)
   // (200 on one geometry draw 80,000 groups, inside that cap; their copies are not)
   refused(heavy(200, 5000), /three-vrm outlineCopyBytes: \d+, more than 16777216/)
-  // and each texture slot of MToon copies a texture's userData (an image's extras). Which image a slot holds is not
-  // modelled: an extension's source, the parser's texture cache (keyed by uri or bufferView and sampler) and VRM 0's
-  // slots may each resolve it to another image than the one it names. So every slot counts the largest image extras
-  // in the file, whether the material names a texture or not
+  // and each texture slot of MToon copies a texture's userData (an image's extras and its mimeType). Which image a
+  // slot holds is not modelled: an extension's source, the parser's texture cache (keyed by uri or bufferView and
+  // sampler) and VRM 0's slots may each resolve it to another image than the one it names. So every slot counts the
+  // largest texture userData in the file, whether the material names a texture or not
   const textured = heavy(1)
   textured.textures = [{ source: 0 }, { source: 1 }]
   textured.images = [
@@ -718,14 +879,63 @@ test('three-vrm walks are counted in objects of the scene graph, as the plugins 
     { bufferView: 0, mimeType: 'image/png', extras: { note: 'x'.repeat(1000) } },
   ]
   textured.materials[0].extensions.VRMC_materials_mtoon.shadeMultiplyTexture = { index: 0 }
-  const largest = 2 * JSON.stringify(textured.images[1].extras).length
+  // (its mimeType counted at the longest of the types an image may have: ten characters)
+  const largest = copied({ note: 'x'.repeat(1000), mimeType: 'image/jpeg' })
   assert.equal(
     checkGLTF(text(textured)).vrm.outlineCopyBytes,
     8192 +
-      2 * JSON.stringify(textured.materials[0].extras).length +
-      2 * JSON.stringify(textured.materials[0].extensions).length +
+      copied(textured.materials[0].extras) +
+      copied(textured.materials[0].extensions) +
       MTOON_TEXTURE_SLOTS * largest
   )
+  // the reviewer's probe: a 100,000-character mimeType, copied in each of nine slots of 100 outline clones (180 MB
+  // from a 0.11 MB file, 0.88 MB counted). A mimeType is one of the three types this client decodes now
+  const mime = heavy(1)
+  mime.images = [{ bufferView: 0, mimeType: 'image/png' + 'x'.repeat(100) }]
+  refused(mime, /image 0 mimeType is not image\/png, image\/jpeg or image\/webp/)
+  mime.images[0].mimeType = 'image/gif'
+  refused(mime, /image 0 mimeType is not/)
+  // texture-transform binds: each clones every texture slot of each material it binds (once per mesh using the
+  // material, VRM 1; once per material found by name and its outline copy, VRM 0)
+  const transforms = (binds, meshes = 3) => {
+    const json = heavy(1)
+    json.nodes = Array.from({ length: meshes }, () => ({ mesh: 0 }))
+    json.textures = [{ source: 0 }]
+    json.images = [{ bufferView: 0, mimeType: 'image/png', extras: { note: 'x'.repeat(1000) } }]
+    json.extensions = {
+      VRMC_vrm: {
+        expressions: { custom: { a: { textureTransformBinds: Array(binds).fill({ material: 0, scale: [2, 2] }) } } },
+      },
+    }
+    return json
+  }
+  assert.equal(
+    checkGLTF(text(transforms(2))).vrm.textureBindCopyBytes,
+    2 * 3 * TEXTURE_TRANSFORM_SLOTS * largest,
+    'two binds, a material on three meshes, every slot'
+  )
+  refused(transforms(1000, 10), /three-vrm textureBindCopyBytes: \d+, more than 16777216/)
+  // VRM 0: a material value for _MainTex_ST, on the materials named (two meshes, and their outline copies)
+  const v0 = heavy(1)
+  v0.nodes = [{ mesh: 0 }, { mesh: 0 }]
+  v0.materials[0].name = 'skin'
+  v0.textures = transforms(1).textures
+  v0.images = transforms(1).images
+  v0.extensions = {
+    VRM: {
+      blendShapeMaster: {
+        blendShapeGroups: [{ materialValues: [{ materialName: 'skin', propertyName: '_MainTex_ST' }] }],
+      },
+    },
+  }
+  assert.equal(checkGLTF(text(v0)).vrm.textureBindCopyBytes, 2 * 2 * TEXTURE_TRANSFORM_SLOTS * largest)
+  v0.extensions.VRM.blendShapeMaster.blendShapeGroups[0].materialValues[0].propertyName = '_Color'
+  assert.equal(checkGLTF(text(v0)).vrm.textureBindCopyBytes, 0, 'a colour bind clones nothing')
+})
+
+test("the texture-transform copy bound counts the most texture slots three-vrm's bind clones on one material", () => {
+  const kinds = Object.values(VRMExpressionTextureTransformBind._propertyNamesMap)
+  assert.equal(Math.max(...kinds.map(slots => slots.length)), TEXTURE_TRANSFORM_SLOTS, JSON.stringify(kinds))
 })
 
 test("the outline copy bound counts every texture uniform three-vrm's MToon material has", () => {
@@ -786,7 +996,10 @@ test('the bundled avatar, emotes and models pass, with their three-vrm counts', 
     firstPersonWork: 62,
     constraints: 0,
     outlineDraws: 2,
-    outlineCopyBytes: 8192 + 4,
+    // 8 KiB, its material's extensions (`{}`: 100 bytes copied) and ten slots of a texture's userData (an image's
+    // mimeType, counted at ten characters: `{"mimeType":"image/jpeg"}`, 170)
+    outlineCopyBytes: 8192 + 100 + 10 * 170,
+    textureBindCopyBytes: 0,
   })
   for (const name of [
     'world/assets/mp-idle.glb',

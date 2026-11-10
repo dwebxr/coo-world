@@ -6,7 +6,7 @@ import { readVec3, isFiniteF32, warnOnce } from '../extras/physxConvert.js'
 
 import { System } from './System'
 import { getNodeRef, resolveValueRef } from '../nodes/Node'
-import { NODE_CLIMB_LIMIT } from '../extras/nodeLimits.js'
+import { NODE_CLIMB_LIMIT, placeWorldNode, unplaceWorldNode } from '../extras/nodeLimits.js'
 import { Layers } from '../extras/Layers'
 import { ControlPriorities } from '../extras/ControlPriorities'
 import { warn } from '../extras/warn'
@@ -98,7 +98,7 @@ export class Apps extends System {
           // mounted for another owner: it leaves there first, so this app is charged for it (Node.activate)
           node.deactivate()
         }
-        entity.worldNodes.add(node)
+        placeWorldNode(entity, node)
         node.activate({ world, entity, run: entity.deadHook })
       },
       remove(entity, pNode) {
@@ -108,8 +108,9 @@ export class Apps extends System {
           return
         }
         if (node.parent) return // its not in world
-        if (!entity.worldNodes.has(node)) return
-        entity.worldNodes.delete(node)
+        // only a node this app placed in world space (a node another app took over is not this app's to remove)
+        if (!entity.worldNodes.has(node) || node._worldOwner !== entity) return
+        unplaceWorldNode(node)
         node.deactivate()
       },
       attach(entity, pNode) {
@@ -132,7 +133,7 @@ export class Apps extends System {
         parent.remove(node)
         finalMatrix.decompose(node.position, node.quaternion, node.scale)
         // tracked before it mounts, so an activation that stops part-way (node limit) is still torn down
-        entity.worldNodes.add(node)
+        placeWorldNode(entity, node)
         node.activate({ world, entity, run: entity.deadHook })
       },
       on(entity, name, callback) {

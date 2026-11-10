@@ -11,3 +11,20 @@ export const NODE_CLIMB_LIMIT = 65536
 
 // thrown out of Node.activate() (and so out of the add/world.add/active write that mounted the node)
 export class NodeLimitError extends Error {}
+
+// World-space nodes: an app lists the nodes it placed in world space (worldNodes) and tears them down with it. A
+// node is listed by one app at a time: placing it again (for another app) or moving it under a node takes it off
+// the previous app's list, so that app's teardown or world.remove never touches it.
+export function placeWorldNode(entity, node) {
+  const previous = node._worldOwner
+  if (previous && previous !== entity) previous.worldNodes?.delete(node)
+  node._worldOwner = entity
+  entity.worldNodes.add(node)
+}
+
+export function unplaceWorldNode(node) {
+  const owner = node._worldOwner
+  if (!owner) return
+  owner.worldNodes?.delete(node)
+  node._worldOwner = null
+}

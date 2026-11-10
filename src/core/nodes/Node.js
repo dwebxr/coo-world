@@ -2,7 +2,13 @@ import { callForScript } from '../extras/scriptValues'
 import { isBoolean } from 'lodash-es'
 import * as THREE from '../extras/three'
 import { getNodeRef, isRefAllowed, registerNodeRefGetter } from './refs'
-import { NODE_CLIMB_LIMIT, NODE_DEPTH_LIMIT, NODE_LIMIT, NodeLimitError } from '../extras/nodeLimits.js'
+import {
+  NODE_CLIMB_LIMIT,
+  NODE_DEPTH_LIMIT,
+  NODE_LIMIT,
+  NodeLimitError,
+  unplaceWorldNode,
+} from '../extras/nodeLimits.js'
 
 export { getRef, getNodeRef, resolveValueRef, secureRef } from './refs'
 export { NODE_CLIMB_LIMIT, NODE_DEPTH_LIMIT, NODE_LIMIT, NodeLimitError } from '../extras/nodeLimits.js'
@@ -133,6 +139,8 @@ export class Node {
     // the app whose node budget this node holds while mounted, and its level below the mounted root
     this._nodeOwner = null
     this._nodeDepth = 0
+    // the app that placed this node in world space (nodeLimits.js placeWorldNode), while it is there
+    this._worldOwner = null
   }
 
   // Mounts this node and its active descendants into `ctx` (the world and the entity that owns them). A mounted
@@ -197,6 +205,8 @@ export class Node {
       // a mounted root (a world-space node, or another tree's root) leaves its place before it moves here
       node.deactivate()
     }
+    // a world-space node moved under a node is no longer its app's world-space node
+    unplaceWorldNode(node)
     node.parent = this
     this.children.push(node)
     if (this.mounted) {

@@ -27,7 +27,7 @@ import { callForScript, toScriptError } from '../../src/core/extras/scriptValues
 import { stoppedError } from '../../src/core/extras/physicsFailure.js'
 import { eventPayload } from '../../src/core/extras/eventPayload.js'
 import { Ranks } from '../../src/core/extras/ranks.js'
-import { NODE_CLIMB_LIMIT, NodeLimitError } from '../../src/core/extras/nodeLimits.js'
+import { NODE_CLIMB_LIMIT, NodeLimitError, placeWorldNode, unplaceWorldNode } from '../../src/core/extras/nodeLimits.js'
 import * as assetURL from '../../src/core/extras/assetURL.js'
 import { resolveAssetFile } from '../../src/core/extras/resolveAssetFile.js'
 
@@ -92,6 +92,8 @@ export function loadClient(file, name, context = {}) {
     Ranks,
     NODE_CLIMB_LIMIT,
     NodeLimitError,
+    placeWorldNode,
+    unplaceWorldNode,
     ...assetURL,
     resolveAssetFile,
     ...context,

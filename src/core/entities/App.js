@@ -1,9 +1,9 @@
-import { assertScriptActive, handlePhysicsFailure } from '../extras/physicsFailure.js'
+import { assertScriptActive, handlePhysicsFailure, stoppedError } from '../extras/physicsFailure.js'
 import { Entity } from './Entity'
 import { createNode } from '../extras/createNode'
 import { LerpVector3 } from '../extras/LerpVector3'
 import { LerpQuaternion } from '../extras/LerpQuaternion'
-import { cleanupPlayerProxy, createPlayerProxy } from '../extras/createPlayerProxy'
+import { cleanupPlayerProxy, createPlayerProxy, isPlayerProxyCurrent } from '../extras/createPlayerProxy'
 import { createEntityProxy } from '../extras/createEntityProxy'
 import { serializeError } from '../extras/serializeError'
 import { registerAppProxy } from '../nodes/refs'
@@ -63,7 +63,9 @@ export class App extends Entity {
     this.resetOnMove = false
     this.animateDelta = 0
     this.animateRate = 0.001
-    this.playerProxies = new Map()
+    // the player handles of the current run: { run, cache: id -> proxy, owned: every proxy made in the run }; the
+    // owned set (not the cache, which a lookup can replace) is what unbuild cleans up
+    this.players = null
     this.hitResultsPool = []
     this.hitResults = []
     this.deadHook = { dead: false }
@@ -182,7 +184,13 @@ export class App extends Entity {
       this.nativeFailure = false
       this.abortController = new AbortController()
       try {
-        this.script.exec(this.getWorldProxy(), this.getAppProxy(), this.fetch, this.props, this.setTimeout)
+        // the fetch and setTimeout this run gets are bound to it (and to its request controller): kept and called
+        // after a rebuild, they act for nobody
+        const run = this.deadHook
+        const controller = this.abortController
+        const runFetch = (url, options) => this.fetchFor(run, controller, url, options)
+        const runSetTimeout = (fn, ms) => this.setTimeoutFor(run, fn, ms)
+        this.script.exec(this.getWorldProxy(), this.getAppProxy(), runFetch, this.props, runSetTimeout)
         if (this.n !== n || this.crashed || this.world.fatalError) return
         this.scriptError = null
       } catch (err) {
@@ -250,14 +258,31 @@ export class App extends Entity {
     // cancel any control
     stage('control', () => this.control?.release())
     this.control = null
-    // cancel any effects; the cleanups are host-private (createPlayerProxy), and each runs on its own
-    const proxies = [...this.playerProxies.values()]
-    this.playerProxies.clear()
-    for (const proxy of proxies) stage('player', () => cleanupPlayerProxy(proxy))
+    // cancel any effects; the cleanups are host-private (createPlayerProxy) and each runs on its own. While they run
+    // the run's registry is closing: a cleanup callback (an effect's onEnd) that looks a player up gets the stopped
+    // error instead of a new handle, so nothing of this run reaches the next one and the drain ends
+    const players = this.players
+    if (players && players.run === this.deadHook) {
+      players.closing = true
+      players.cache.clear()
+      while (players.owned.size) {
+        const [proxy] = players.owned
+        players.owned.delete(proxy)
+        stage('player', () => cleanupPlayerProxy(proxy))
+      }
+    }
+    this.players = null
     // deactivate local node
     stage('root', () => this.root?.deactivate())
     // deactivate world nodes
-    for (const node of this.worldNodes) stage('world nodes', () => node.deactivate())
+    // (only nodes this app still owns: one another app took over left this list when it moved)
+    for (const node of [...this.worldNodes]) {
+      if (node._worldOwner !== this) continue
+      stage('world nodes', () => {
+        node._worldOwner = null
+        node.deactivate()
+      })
+    }
     this.worldNodes.clear()
     // clear script event listeners
     stage('listeners', () => this.clearEventListeners())
@@ -521,11 +546,10 @@ export class App extends Entity {
   // scripts get a whitelisted request init and a response of plain values (see scriptFetch.js). A failed request
   // rejects with a script-safe error, like the standard fetch. Once the run that made the request has ended
   // (rebuild, crash, removal: unbuild aborts the request) the promise stays pending, so nothing reaches a stopped
-  // script and the abort is not reported
-  fetch = (url, options = {}) => {
-    const run = this.deadHook
-    const signal = this.abortController?.signal
-    const isDead = () => run.dead || this.crashed || this.destroyed || !!this.world.fatalError
+  // script and the abort is not reported; a fetch called by a run that has ended starts nothing and stays pending too
+  fetchFor(run, controller, url, options = {}) {
+    const signal = controller?.signal
+    const isDead = () => run !== this.deadHook || run.dead || this.crashed || this.destroyed || !!this.world.fatalError
     return new Promise((resolve, reject) => {
       if (!signal || isDead()) return
       let init
@@ -553,15 +577,19 @@ export class App extends Entity {
     })
   }
 
-  // scripts get an opaque handle; the timer itself stays host-private
-  setTimeout = (fn, ms) => {
+  // scripts get an opaque handle; the timer itself stays host-private. A run that has ended gets the stopped error
+  setTimeoutFor(run, fn, ms) {
+    if (run !== this.deadHook) throw stoppedError(this)
     assertScriptActive(this)
-    const run = this.deadHook
     return this.timers.set(() => {
       if (this.crashed || this.world.fatalError || run.dead) return
       fn()
     }, ms)
   }
+
+  // the current run's (host code and tests; scripts get the run-bound ones from build)
+  fetch = (url, options) => this.fetchFor(this.deadHook, this.abortController, url, options)
+  setTimeout = (fn, ms) => this.setTimeoutFor(this.deadHook, fn, ms)
 
   getDeadHook = () => {
     return this.deadHook
@@ -580,12 +608,18 @@ export class App extends Entity {
   // player handles belong to the current run (the cache is emptied by unbuild)
   getPlayerProxy(playerId) {
     if (playerId === undefined) playerId = this.world.entities.player?.data.id
-    let proxy = this.playerProxies.get(playerId)
-    if (!proxy || proxy.destroyed) {
+    if (this.players?.run !== this.deadHook) this.players = { run: this.deadHook, cache: new Map(), owned: new Set() }
+    const players = this.players
+    if (players.closing) throw stoppedError(this)
+    let proxy = players.cache.get(playerId)
+    if (!proxy || !isPlayerProxyCurrent(proxy)) {
+      // a proxy whose player left is cleaned up now (it stays owned until then, whatever the cache holds)
+      if (proxy && players.owned.delete(proxy)) cleanupPlayerProxy(proxy)
       const player = this.world.entities.getPlayer(playerId)
       if (!player) return null
       proxy = createPlayerProxy(this, player)
-      this.playerProxies.set(playerId, proxy)
+      players.cache.set(playerId, proxy)
+      players.owned.add(proxy)
     }
     return proxy
   }

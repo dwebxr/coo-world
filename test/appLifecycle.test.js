@@ -13,7 +13,6 @@ import { callForScript } from '../src/core/extras/scriptValues.js'
 import { serializeError } from '../src/core/extras/serializeError.js'
 import { readVec3, warnOnce } from '../src/core/extras/physxConvert.js'
 import { sanitizePlayerSelfModify } from '../src/core/extras/entityModifyPolicy.js'
-import { NodeLimitError } from '../src/core/extras/nodeLimits.js'
 
 const root = () => ({
   position: { fromArray() {} },
@@ -324,30 +323,4 @@ test('player proxy: transforms and bone matrices are fresh copies, never the hos
   assert.equal(proxy.getBoneTransform('missing'), null)
 })
 
-test('App.build: a model over the node budget shows the crash block and runs no script', async () => {
-  for (const alreadyCrashed of [false, true]) {
-    let runs = 0
-    const { app, world } = makeApp(() => runs++)
-    assert.equal(runs, 1)
-    const crashRoot = root()
-    // what Node.activate does past the budget: crash the app (once), then throw
-    const overBudget = {
-      ...root(),
-      activate() {
-        if (!app.crashed) app.crash()
-        throw new NodeLimitError('[app] node limit reached: more than 20000 live nodes')
-      },
-    }
-    world.loader.get = (type, url) => {
-      if (type === 'script') return { exec: () => runs++ }
-      return { toNodes: () => (url === 'asset://crash-block.glb' ? crashRoot : overBudget) }
-    }
-    if (alreadyCrashed) app.crashed = true
-    world.blueprints.modify({ id: 'bp', version: 1, model: 'big.glb' })
-    await tick()
-    assert.equal(app.root, crashRoot, `crash block shown (already crashed: ${alreadyCrashed})`)
-    assert.equal(app.crashed, true)
-    assert.equal(runs, 1, 'the over-budget build ran no script')
-    assert.equal(app.building, false)
-  }
-})
+// (the node budget during App.build is tested with real nodes in appTeardown.test.js)

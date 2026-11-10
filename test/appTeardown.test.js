@@ -24,6 +24,7 @@ before(async () => {
     export { Blueprints } from './src/core/systems/Blueprints'
     export { ClientControls } from './src/core/systems/ClientControls'
     export { createNode } from './src/core/extras/createNode'
+    export { ServerLiveKit } from './src/core/systems/ServerLiveKit'
   `)
   m = await import(bundle.url)
 })
@@ -51,7 +52,7 @@ function quietly() {
 }
 
 // a world with one app running `script`, a remote player 'p1' and a client control system
-function makeWorld(script, { isServer = false } = {}) {
+function makeWorld(script, { isServer = false, livekit = false } = {}) {
   const world = Object.assign(new EventEmitter(), {
     network: { isServer, isClient: !isServer, id: 'me', send: () => true, asScript: fn => fn() },
     entities: { items: new Map(), remove: id => world.entities.items.delete(id) },
@@ -59,9 +60,13 @@ function makeWorld(script, { isServer = false } = {}) {
     stage: { dirtyNodes: new Set() },
     hot: new Set(),
     setHot: (item, hot) => (hot ? world.hot.add(item) : world.hot.delete(item)),
+    scripts: {},
+    models: {},
     loader: {
-      get: type =>
-        type === 'script' ? { exec: (...args) => script(...args) } : { toNodes: () => m.createNode('group') },
+      get: (type, url) =>
+        type === 'script'
+          ? { exec: (...args) => (world.scripts[url] || script)(...args) }
+          : { toNodes: () => (world.models[url] ? world.models[url]() : m.createNode('group')) },
     },
     ui: {
       suppressors: 0,
@@ -87,6 +92,7 @@ function makeWorld(script, { isServer = false } = {}) {
   world.apps = new m.Apps(world)
   world.blueprints = new m.Blueprints(world)
   world.controls = new m.ClientControls(world)
+  if (livekit) world.livekit = new m.ServerLiveKit(world)
   world.blueprints.add({ id: 'bp', version: 0, name: 'App', model: 'm.glb', script: 's.js', props: {} })
   const app = new m.App(world, {
     id: 'a',
@@ -98,6 +104,22 @@ function makeWorld(script, { isServer = false } = {}) {
   })
   world.entities.items.set('a', app)
   return { world, app, player }
+}
+
+// a second app with its own blueprint and script in the same world
+function addApp(world, id, script) {
+  world.scripts[`${id}.js`] = script
+  world.blueprints.add({ id: `bp-${id}`, version: 0, name: id, model: 'm.glb', script: `${id}.js`, props: {} })
+  const app = new m.App(world, {
+    id,
+    blueprint: `bp-${id}`,
+    position: [0, 0, 0],
+    quaternion: [0, 0, 0, 1],
+    scale: [1, 1, 1],
+    state: {},
+  })
+  world.entities.items.set(id, app)
+  return app
 }
 
 // a script that leaves as much behind as it can, and tries to break the teardown on the way out
@@ -275,4 +297,153 @@ test("teardown: the run's own destroy handler can still clean up and act, synchr
   // the released control answers without creating a suppressor
   assert.deepEqual(seen, [true, '[app] this app has stopped', 'hideReticle returned'])
   assert.equal(world.ui.suppressors, 0)
+})
+
+test('player handles: a script cannot evict its handle to skip the cleanup (voice modifiers do not outlive the app)', async () => {
+  const { world, app } = makeWorld(
+    (world, app) => {
+      const p = world.getPlayer('p1')
+      p.setVoiceLevel('global')
+      Object.defineProperty(p, 'destroyed', { value: true })
+      const again = world.getPlayer('p1')
+      again.setVoiceLevel('disabled')
+      app.state.same = again === p
+    },
+    { isServer: true, livekit: true }
+  )
+  await tick()
+  assert.equal(app.data.state.same, true, 'the spoofed flag does not replace the cached handle')
+  assert.equal(world.livekit.modifiers.p1.size, 1)
+  app.destroy()
+  assert.equal(world.livekit.modifiers.p1?.size ?? 0, 0, 'every modifier the app set is removed')
+})
+
+test('player handles: a lookup from an effect callback during teardown does not reach the next run', async () => {
+  const seen = []
+  const { world } = makeWorld((world, app) => {
+    const p = world.getPlayer('p1')
+    seen.push(p)
+    p.applyEffect({
+      freeze: true,
+      duration: 60,
+      onEnd: () => {
+        try {
+          world.getPlayer('p1')
+          seen.push('looked up')
+        } catch (err) {
+          seen.push(err.message)
+        }
+      },
+    })
+  })
+  await tick()
+  world.blueprints.modify({ id: 'bp', version: 1 })
+  await tick()
+  assert.equal(seen.length, 3)
+  assert.equal(seen[1], '[app] this app has stopped', 'the retiring run gets no new handle')
+  assert.notEqual(seen[2], seen[0], 'the new run has its own handle')
+  // and it works in the new run
+  assert.doesNotThrow(() => seen[2].hasEffect())
+})
+
+test('world nodes: a node another app took over is not torn down (or removed) by its former owner', async () => {
+  const shared = {}
+  const { world, app: a } = makeWorld((world, app) => {
+    shared.node = app.create('group')
+    world.add(shared.node)
+    shared.removeFromA = () => world.remove(shared.node)
+  })
+  await tick()
+  const b = addApp(world, 'b', world => {
+    world.add(shared.node)
+  })
+  await tick()
+  assert.equal(a.liveNodes, 1, 'only its root')
+  assert.equal(b.liveNodes, 2)
+  assert.equal(a.worldNodes.size, 0)
+  shared.removeFromA()
+  assert.equal(b.liveNodes, 2, "the former owner's world.remove does nothing")
+  // even a stale registration (forced here) is not the former owner's to tear down
+  const hostNode = [...b.worldNodes][0]
+  a.worldNodes.add(hostNode)
+  a.destroy()
+  assert.equal(b.liveNodes, 2, "the former owner's teardown does not unmount it")
+  b.destroy()
+  assert.equal(b.liveNodes, 0)
+})
+
+test('world nodes: a world-space node moved under a node leaves its app world-node list', async () => {
+  const shared = {}
+  const { app } = makeWorld((world, app) => {
+    shared.node = app.create('group')
+    world.add(shared.node)
+    app.add(shared.node)
+  })
+  await tick()
+  assert.equal(app.worldNodes.size, 0)
+  assert.equal(app.liveNodes, 2)
+  app.destroy()
+  assert.equal(app.liveNodes, 0)
+})
+
+test('fetch and setTimeout kept from an old run act for nobody after a rebuild', async () => {
+  const kept = []
+  let calls = 0
+  const original = globalThis.fetch
+  const { world } = makeWorld((_world, _app, fetch, _props, setTimeout) => kept.push({ fetch, setTimeout }))
+  await tick()
+  world.blueprints.modify({ id: 'bp', version: 1 })
+  await tick()
+  assert.equal(kept.length, 2)
+  globalThis.fetch = (...args) => {
+    calls++
+    return original(...args)
+  }
+  try {
+    const old = kept[0]
+    assert.throws(() => old.setTimeout(() => assert.fail('old timer ran'), 0), /this app has stopped/)
+    let settled = false
+    old.fetch('https://example.invalid/').then(
+      () => (settled = true),
+      () => (settled = true)
+    )
+    await tick(20)
+    assert.equal(settled, false, 'stays pending, like any request of a stopped run')
+    assert.equal(calls, 0, 'and never reaches the network')
+    // the current run's functions work
+    let fired = false
+    kept[1].setTimeout(() => (fired = true), 0)
+    await tick(10)
+    assert.equal(fired, true)
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('node budget: a model over the budget mounts nothing more and shows the crash block (real nodes)', async () => {
+  const runs = []
+  const { world, app } = makeWorld(() => runs.push('ran'))
+  await tick()
+  // a model 300 levels deep: the real mount refuses level 256
+  world.models['deep.glb'] = () => {
+    const root = m.createNode('group')
+    let parent = root
+    for (let i = 0; i < 300; i++) {
+      const child = m.createNode('group')
+      parent.add(child)
+      parent = child
+    }
+    return root
+  }
+  const logs = quietly()
+  try {
+    world.blueprints.modify({ id: 'bp', version: 1, model: 'deep.glb' })
+    await tick()
+  } finally {
+    logs.restore()
+  }
+  assert.deepEqual(runs, ['ran'], 'the over-budget build ran no script')
+  assert.equal(app.crashed, true)
+  assert.match(app.scriptError.message, /more than 256 levels of nodes/)
+  assert.equal(app.liveNodes, 1, 'only the crash block is mounted')
 })

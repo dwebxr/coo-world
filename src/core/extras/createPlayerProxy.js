@@ -32,16 +32,29 @@ function readHoldingSpec(spec) {
 // the engine's teardown for each proxy, kept out of the object scripts hold (a script could replace or break a
 // method on it); App.unbuild runs it through cleanupPlayerProxy
 const cleanups = new WeakMap()
+// what the engine knows about each proxy (never read from the proxy itself, which a script can change)
+const handles = new WeakMap()
 
+// runs once per proxy
 export function cleanupPlayerProxy(proxy) {
-  cleanups.get(proxy)?.()
+  const cleanup = cleanups.get(proxy)
+  if (!cleanup) return
+  cleanups.delete(proxy)
+  cleanup()
 }
 
-// a script callback run by the host: no receiver, and a throw is reported instead of escaping into host code
+// whether a cached proxy may still be handed out: its player is still there and its app run has not ended
+export function isPlayerProxyCurrent(proxy) {
+  const handle = handles.get(proxy)
+  return !!handle && !handle.player.destroyed && handle.run === handle.entity.deadHook
+}
+
+// a script callback run by the host: no receiver, invoked without looking anything up on the function (a script
+// can put its own `call` on it), and a throw is reported instead of escaping into host code
 function callBack(fn) {
   if (typeof fn !== 'function') return
   try {
-    fn.call(undefined)
+    Reflect.apply(fn, undefined, [])
   } catch (err) {
     console.error(err)
   }
@@ -320,6 +333,7 @@ export function createPlayerProxy(entity, player) {
       }
     },
   }
+  handles.set(proxy, { player, run, entity })
   cleanups.set(proxy, () => {
     try {
       activeEffectConfig?.onEnd()

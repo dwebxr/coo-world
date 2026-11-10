@@ -326,7 +326,7 @@ function createEmitter(world, system, node) {
     }
     if (msg.op === 'end') {
       try {
-        node._onEnd?.call(undefined) // script callbacks run without a receiver
+        if (typeof node._onEnd === 'function') Reflect.apply(node._onEnd, undefined, []) // no receiver
       } catch (err) {
         console.error(err)
       }

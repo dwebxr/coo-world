@@ -105,7 +105,7 @@ export function createPointerEvent(type) {
 function dispatch(callback, type) {
   const { event, stopped } = createPointerEvent(type)
   try {
-    callback.call(undefined, event)
+    Reflect.apply(callback, undefined, [event])
   } catch (err) {
     console.error(err)
   }

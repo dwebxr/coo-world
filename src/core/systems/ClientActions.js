@@ -209,7 +209,7 @@ function createAction(world) {
         if (node.progress === 0) {
           cancelled = false
           try {
-            if (!node.ctx?.entity?.crashed && !world.fatalError) node._onStart.call(undefined) // script callbacks run without a receiver
+            if (!node.ctx?.entity?.crashed && !world.fatalError) Reflect.apply(node._onStart, undefined, []) // script callbacks run without a receiver
           } catch (err) {
             console.error('action.onStart:', err)
           }
@@ -221,7 +221,7 @@ function createAction(world) {
           node.progress = 0
           try {
             if (!node.ctx?.entity?.crashed && !world.fatalError)
-              node._onTrigger.call(undefined, { playerId: world.entities.player.data.id })
+              Reflect.apply(node._onTrigger, undefined, [{ playerId: world.entities.player.data.id }])
           } catch (err) {
             console.error('action.onTrigger:', err)
           }
@@ -229,7 +229,7 @@ function createAction(world) {
       } else if (node.progress > 0) {
         if (!cancelled) {
           try {
-            if (!node.ctx?.entity?.crashed && !world.fatalError) node._onCancel.call(undefined)
+            if (!node.ctx?.entity?.crashed && !world.fatalError) Reflect.apply(node._onCancel, undefined, [])
           } catch (err) {
             console.error('action.onCancel:', err)
           }

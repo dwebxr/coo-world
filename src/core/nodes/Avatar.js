@@ -47,7 +47,7 @@ export class Avatar extends Node {
       }
       this.ctx.world?.setHot(this.instance, true)
       this.ctx.world?.avatars.add(this.instance)
-      this.onLoad?.call(undefined) // script callbacks run without a receiver
+      if (typeof this.onLoad === 'function') Reflect.apply(this.onLoad, undefined, []) // no receiver
     }
   }
 

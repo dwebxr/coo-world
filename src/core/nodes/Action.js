@@ -7,9 +7,11 @@ const defaults = {
   label: 'Interact',
   distance: 3,
   duration: 0.5,
-  onStart: () => {},
-  onTrigger: () => {},
-  onCancel: () => {},
+  // one function per default, shared by every action node of every app: frozen, so a script cannot hang a property
+  // (eg its own `call`) on it for another app's action
+  onStart: Object.freeze(() => {}),
+  onTrigger: Object.freeze(() => {}),
+  onCancel: Object.freeze(() => {}),
 }
 
 export class Action extends Node {

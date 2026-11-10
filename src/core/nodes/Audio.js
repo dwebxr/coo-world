@@ -46,6 +46,7 @@ export class Audio extends Node {
 
     this.n = 0
     this.source = null
+    this.sourceStarted = false // (a source waits for the audio unlock before it starts)
     this.gainNode = null
     this.pannerNode = null
 
@@ -282,7 +283,7 @@ export class Audio extends Node {
     if (!audio) {
       return 0
     }
-    if (this.source) {
+    if (this.source && this.sourceStarted) {
       return audio.ctx.currentTime - this.startTime
     }
     return this.offset
@@ -357,6 +358,7 @@ export class Audio extends Node {
       if (n !== this.n || !this.mounted || !this.canMount()) return
       this.startTime = audio.ctx.currentTime - this.offset
       this.source.start(0, this.offset)
+      this.sourceStarted = true
       if (!this._loop) {
         this.source.onended = () => this.stop()
       }
@@ -368,14 +370,9 @@ export class Audio extends Node {
     if (!audio) return
     if (this.source) {
       this.n++
-      this.offset = audio.ctx.currentTime - this.startTime
-      this.source.onended = null
-      this.source.stop()
-      this.source = null
-      this.gainNode?.disconnect()
-      this.gainNode = null
-      this.pannerNode?.disconnect()
-      this.pannerNode = null
+      // (a source still waiting for the audio unlock has played nothing: the offset stays)
+      if (this.sourceStarted) this.offset = audio.ctx.currentTime - this.startTime
+      this.releaseSource()
     }
   }
 
@@ -384,10 +381,21 @@ export class Audio extends Node {
     if (!audio) return
     this.n++
     this.offset = 0
-    if (this.source) {
-      this.source.onended = null
-      this.source?.stop()
-      this.source = null
+    if (this.source) this.releaseSource()
+  }
+
+  // Lets the source and its gain and panner go. A source that has not started (it waits for the audio unlock) cannot
+  // be stopped (stop() throws): it is only disconnected, so a node unmounted before the unlock (its app removed on a
+  // page nobody has clicked yet) leaves nothing connected to the output and can play again.
+  releaseSource() {
+    const source = this.source
+    const started = this.sourceStarted
+    this.source = null
+    this.sourceStarted = false
+    source.onended = null
+    try {
+      if (started) source.stop()
+    } finally {
       this.gainNode?.disconnect()
       this.gainNode = null
       this.pannerNode?.disconnect()

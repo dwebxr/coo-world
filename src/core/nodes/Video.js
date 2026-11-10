@@ -408,6 +408,9 @@ export class Video extends Node {
       } else {
         this.instance.audio?.disconnect(this.gain)
       }
+      // (the gain feeds the music output: it is taken off it, or every mount would leave one connected there)
+      this.panner?.disconnect()
+      this.gain?.disconnect()
       this.panner = null
       this.gain = null
       this.instance.release()

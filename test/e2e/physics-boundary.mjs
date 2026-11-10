@@ -18,6 +18,8 @@ const EXPECT_VIOLATIONS = arg('expect-violations', false) === true
 if (EXPECT_VIOLATIONS && !SUBSET) throw new Error('--expect-violations requires --sentinel-only')
 const PREFIX = path.join(ensureOut(), `physics-boundary-${ENGINE}${SUBSET ? '-sentinel-only' : ''}`)
 const SENTINEL = 'native-sentinel'
+// host-side instrumentation both realms load before the engine freezes the math classes
+const SENTINEL_HOOK = fileURLToPath(new URL('./lib/script-class-hook.js', import.meta.url))
 const PROBE = 'physics-probe'
 const AVAILABILITY = 'physics-availability'
 const SUITE_SECONDS = SUBSET ? 360 : 600
@@ -319,7 +321,16 @@ async function runSuite() {
     })
   }
   try {
-    server = await bounded(startServer({ port: PORT, logPath: `${PREFIX}-server.log` }), 'server startup', 125000)
+    server = await bounded(
+      startServer({
+        port: PORT,
+        logPath: `${PREFIX}-server.log`,
+        preload: SENTINEL_HOOK,
+        env: { E2E_NATIVE_SENTINEL: '1' },
+      }),
+      'server startup',
+      125000
+    )
     process.send({ type: 'world', worldDir: server.worldDir })
     wire = new WireClient(PORT, 'physics-admin')
     await bounded(wire.connect(), 'wire connect', 25000)
@@ -328,6 +339,7 @@ async function runSuite() {
     await bounded(
       openWorld(browser, server.url, {
         settle: 500,
+        initScript: SENTINEL_HOOK,
         onPage: handles => {
           page = handles.page
           consoleLines = handles.consoleLines

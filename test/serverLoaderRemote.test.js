@@ -15,7 +15,7 @@ const requests = { assets: [], other: [] }
 const emptyGltf = JSON.stringify({ asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [] }] })
 let failNext = false
 
-const ServerLoader = loadClient('core/systems/ServerLoader.js', 'ServerLoader', {
+const context = {
   fs,
   path,
   RGBELoader: class {},
@@ -29,7 +29,8 @@ const ServerLoader = loadClient('core/systems/ServerLoader.js', 'ServerLoader', 
   glbToNodes: () => ({ clone: () => ({ cloned: true }) }),
   createNode: () => ({ add() {}, clone: () => ({ stub: true }) }),
   createEmoteFactory: () => ({ toClip: () => null }),
-})
+}
+const ServerLoader = loadClient('core/systems/ServerLoader.js', 'ServerLoader', context)
 
 // the server with ASSETS=s3, or the node agent: no assets directory, assets come over HTTP
 function makeLoader() {
@@ -43,6 +44,27 @@ function makeLoader() {
   return loader
 }
 
+// the server with ASSETS=local: an assets directory, read through `readFile` (so a test decides when a read ends)
+function makeLocalLoader(readFile) {
+  const LocalLoader = loadClient('core/systems/ServerLoader.js', 'ServerLoader', { ...context, fs: { readFile } })
+  const world = {
+    assetsDir: path.join(path.sep, 'world', 'assets'),
+    resolveURL: url => url,
+    scripts: { evaluate: code => ({ code }) },
+  }
+  return new LocalLoader(world)
+}
+
+// reads that end when the test says so: `reads` lists { name, resolve, reject } in the order they started
+function deferredReads() {
+  const reads = []
+  const readFile = file => new Promise((resolve, reject) => reads.push({ name: path.basename(file), resolve, reject }))
+  return { reads, readFile }
+}
+
+const tick = () => new Promise(resolve => setImmediate(resolve))
+const cached = loader => [...loader.results.keys()].every(key => loader.promises.has(key))
+
 const listen = handler =>
   new Promise(resolve => {
     const server = http.createServer(handler)
@@ -50,9 +72,11 @@ const listen = handler =>
   })
 
 let servers = []
+const held = [] // responses to /assets/hold-*, answered when a test says so
 before(async () => {
   const a = await listen((req, res) => {
     requests.assets.push(req.url)
+    if (req.url.startsWith('/assets/hold-')) return held.push(res)
     if (failNext) {
       failNext = false
       res.writeHead(503)
@@ -136,22 +160,130 @@ test('avatars share one entry whatever URL a player names', async () => {
   assert.deepEqual(first.toNodes(), { stub: true })
 })
 
-test('the cache is bounded: the least recently used entries leave first', async () => {
-  const loader = makeLoader()
-  await loader.load('script', 'asset://script.js')
+test('the cache is bounded through load(): the least recently used entries leave first', async () => {
+  const loader = makeLocalLoader(file => Promise.resolve(`// ${path.basename(file)}`))
+  await loader.load('script', 'asset://keep.js')
   for (let i = 0; i < 600; i++) {
-    // refused loads never stay, successful ones do: mix both
-    await loader.load('avatar', `https://example.invalid/${i}.vrm`)
-    loader.promises.set(`script/fake-${i}`, Promise.resolve())
-    loader.results.set(`script/fake-${i}`, {})
-    if (i % 50 === 0) loader.get('script', 'asset://script.js') // keeps it recent
-    loader.trim()
+    assert.equal((await loader.load('script', `asset://s${i}.js`)).code, `// s${i}.js`)
+    if (i % 50 === 0) assert.ok(loader.get('script', 'asset://keep.js'), 'keeps it recent')
   }
-  assert.ok(loader.promises.size <= 512, `promises ${loader.promises.size}`)
+  assert.equal(loader.promises.size, 512)
+  assert.equal(loader.results.size, 512)
+  assert.equal(loader.has('script', 'asset://keep.js'), true, 'the entry in use stayed')
+  assert.equal(loader.has('script', 'asset://s0.js'), false, 'the oldest left')
+  assert.equal(loader.has('script', 'asset://s599.js'), true)
+})
+
+test('loads in progress are never dropped, and refused loads leave nothing behind', async () => {
+  // 16 remote loads take every outbound slot; the next 600 are refused while those are in progress
+  const loader = makeLoader()
+  const admitted = Array.from({ length: 16 }, (_, i) => loader.load('script', `asset://hold-${i}.js`))
+  while (held.length < 16) await tick()
+  const refused = await Promise.allSettled(
+    Array.from({ length: 600 }, (_, i) => loader.load('script', `asset://refused-${i}.js`))
+  )
+  assert.ok(refused.every(result => result.status === 'rejected' && result.reason.code === 'busy'))
+  await tick()
+  assert.equal(loader.promises.size, 16, 'the loads in progress are all still registered')
+  assert.equal(loader.results.size, 0)
+  held.forEach((res, i) => res.end(`// held ${i}`))
+  held.length = 0
+  assert.deepEqual(
+    (await Promise.all(admitted)).map(script => script.code),
+    Array.from({ length: 16 }, (_, i) => `// held ${i}`)
+  )
+  assert.equal(loader.promises.size, 16)
+  assert.equal(loader.results.size, 16)
+  assert.ok(cached(loader), 'every result belongs to an entry')
+})
+
+test('600 loads finishing together leave at most 512 entries, with results for kept entries only', async () => {
+  const { reads, readFile } = deferredReads()
+  const loader = makeLocalLoader(readFile)
+  const loads = Array.from({ length: 600 }, (_, i) => loader.load('script', `asset://s${i}.js`))
+  await tick()
+  assert.equal(reads.length, 600)
+  assert.equal(loader.promises.size, 600, 'none was dropped while in progress')
+  for (const read of reads) read.resolve(`// ${read.name}`)
+  const scripts = await Promise.all(loads)
+  assert.deepEqual(
+    scripts.map(script => script.code),
+    reads.map(read => `// ${read.name}`)
+  )
+  assert.equal(loader.promises.size, 512)
   assert.ok(loader.results.size <= 512, `results ${loader.results.size}`)
-  assert.equal(loader.has('script', 'asset://script.js'), true, 'the entry in use stayed')
-  assert.equal(loader.has('script', 'fake-0'), false, 'the oldest left')
-  assert.equal(loader.has('script', 'fake-599'), true)
+  assert.ok(cached(loader), 'every result belongs to an entry')
+  // a dropped load's result went to its caller only: asking again loads again
+  assert.equal(loader.has('script', 'asset://s0.js'), false)
+  assert.equal(loader.get('script', 'asset://s0.js'), undefined)
+})
+
+test('a load that finishes after destroy() writes nothing, and an older load never replaces a newer one', async () => {
+  const { reads, readFile } = deferredReads()
+  const loader = makeLocalLoader(readFile)
+  const late = loader.load('script', 'asset://late.js')
+  await tick()
+  loader.destroy()
+  reads[0].resolve('// late')
+  assert.equal((await late).code, '// late', 'its caller still gets it')
+  assert.equal(loader.promises.size, 0)
+  assert.equal(loader.results.size, 0)
+
+  // the same key loaded before and after destroy(): the newer load finishes first
+  const older = loader.load('script', 'asset://same.js')
+  await tick()
+  loader.destroy()
+  const newer = loader.load('script', 'asset://same.js')
+  await tick()
+  assert.notEqual(newer, older)
+  reads[2].resolve('// newer')
+  await newer
+  reads[1].resolve('// older')
+  await older
+  assert.equal(loader.get('script', 'asset://same.js').code, '// newer')
+  assert.equal(loader.load('script', 'asset://same.js'), newer)
+
+  // an older load that fails does not drop the newer one either
+  const failing = loader.load('script', 'asset://other.js')
+  await tick()
+  loader.destroy()
+  const kept = loader.load('script', 'asset://other.js')
+  await tick()
+  reads[3].reject(new Error('gone'))
+  await assert.rejects(failing, /gone/)
+  assert.equal(loader.load('script', 'asset://other.js'), kept, 'still registered')
+  reads[4].resolve('// kept')
+  assert.equal((await kept).code, '// kept')
+  assert.equal(loader.get('script', 'asset://other.js').code, '// kept')
+})
+
+test('one resource has one cache entry whatever its spelling; a query names another one', async () => {
+  const loader = makeLoader()
+  const first = loader.load('script', 'asset://script.js')
+  await first
+  const count = requests.assets.length
+  // the asset:// name and the assets URL it maps to, with spaces, a fragment and a default port
+  for (const spelling of [
+    '  asset://script.js  ',
+    `${assets}/assets/script.js`,
+    `  ${assets}/assets/script.js#top `,
+    `${assets}/assets/./script.js`,
+  ]) {
+    assert.equal(loader.load('script', spelling), first, spelling)
+    assert.equal(loader.get('script', spelling), await first, spelling)
+  }
+  assert.equal(requests.assets.length, count, 'nothing was requested again')
+  assert.equal(loader.key('script', 'http://Example.COM:80/a.js#x'), loader.key('script', 'http://example.com/a.js'))
+  assert.equal(loader.key('model', 'https://example.com:443/m.glb'), loader.key('model', 'https://example.com/m.glb'))
+  assert.notEqual(
+    loader.key('script', 'https://example.com/a.js?v=2'),
+    loader.key('script', 'https://example.com/a.js')
+  )
+  assert.notEqual(loader.key('script', 'asset://script.js'), loader.key('model', 'asset://script.js'))
+  // in the world's store (an assets directory), the name is the location
+  const local = makeLocalLoader(() => Promise.resolve(''))
+  assert.equal(local.key('script', ' asset://a.js '), local.key('script', 'asset://a.js'))
+  assert.equal(local.key('script', 'asset://../a.js'), 'script/asset://../a.js', 'a refused value keys as itself')
 })
 
 test('OUTBOUND_TRUSTED_ORIGINS lets the operator name further origins', async t => {

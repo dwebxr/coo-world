@@ -19,14 +19,20 @@ const isRemote = url => typeof url === 'string' && (url.startsWith('http://') ||
 
 // a remote model or script: larger and slower than a script's own request may be (outboundFetch.js defaults)
 const REMOTE_LOAD = { maxBytes: 32 * 1024 * 1024, timeoutMs: 30_000 }
-// loaded models, emotes and scripts kept for reuse. Apps hold what they use; this only bounds what a world
-// that keeps loading new URLs (world.load in a script) can pin in memory
+// Loads kept for reuse, of every kind and from every location (the world's store and remote URLs alike): at most
+// this many entries, the least recently used leaving first. Only finished loads leave; one in progress stays, so
+// the same location is never loaded twice at once. Apps hold what they use: this bounds what a world that keeps
+// loading new locations (world.load in a script) can pin in memory, not what a loaded model takes
 const CACHE_LIMIT = 512
-// every avatar is the same stub on the server, so they share one entry whatever URL a player names
+// every avatar is the same stub on the server (nothing is fetched), so they share one entry whatever URL a player
+// names
 const AVATAR_KEY = 'avatar/*'
 
-// A model's own files may only come from inside it (data: and blob: URLs). A .glb can name external buffers
-// and images by URL; the parser would fetch them from wherever the file says, outside the outbound policy.
+// A model's own files may only come from inside it (data: and blob: URLs). A .glb or .gltf can name external
+// buffers and images by URL, and the parser would fetch them from wherever the file says, outside the outbound
+// policy; here nothing outside the file is ever requested. An external buffer fails the load (the model cannot be
+// built without it). An external image is not fetched either, and the model loads without it: GLTFLoader turns a
+// texture that fails into no texture (the server draws nothing, so it never needed one).
 function createEmbeddedOnlyManager() {
   const manager = new LoadingManager()
   manager.setURLModifier(url => {
@@ -46,8 +52,12 @@ function createEmbeddedOnlyManager() {
 export class ServerLoader extends System {
   constructor(world) {
     super(world)
+    // key -> the load's promise, least recently used first; `results` holds what finished loads produced, for
+    // keys that are in `promises` only
     this.promises = new Map()
     this.results = new Map()
+    this.settled = new WeakSet() // promises of loads that have finished
+    this.generation = 0 // destroy() starts a new one: a load from before it publishes nothing
     this.rgbeLoader = new RGBELoader()
     this.gltfLoader = new GLTFLoader(createEmbeddedOnlyManager())
     this.outbound = null
@@ -66,8 +76,26 @@ export class ServerLoader extends System {
     // ...
   }
 
+  // A cache key names what a load reads, so one resource has one entry whatever its spelling: surrounding spaces,
+  // a fragment, a default port or letter case in the host, and an asset:// name or the assets URL it maps to are
+  // the same location. A query is kept: outside the store it can name another resource. A value locate() refuses
+  // keys as itself, trimmed (its load fails, and a failed load is not kept)
   key(type, url) {
-    return type === 'avatar' ? AVATAR_KEY : `${type}/${url}`
+    if (type === 'avatar') return AVATAR_KEY
+    return `${type}/${this.location(url)}`
+  }
+
+  location(url) {
+    const value = typeof url === 'string' ? url.trim() : String(url)
+    try {
+      const { file, remote } = this.locate(value)
+      if (file) return `${ASSET_PROTOCOL}${assetName(value)}`
+      const parsed = new URL(remote)
+      parsed.hash = ''
+      return parsed.href
+    } catch {
+      return value
+    }
   }
 
   has(type, url) {
@@ -81,27 +109,30 @@ export class ServerLoader extends System {
     return result
   }
 
-  // most recently used last; the oldest entries leave once there are more than CACHE_LIMIT
+  // most recently used last
   touch(key) {
-    for (const map of [this.promises, this.results]) {
-      if (!map.has(key)) continue
-      const value = map.get(key)
-      map.delete(key)
-      map.set(key, value)
-    }
+    const promise = this.promises.get(key)
+    this.promises.delete(key)
+    this.promises.set(key, promise)
   }
 
+  // Down to CACHE_LIMIT entries, the least recently used finished ones first. A load in progress is never dropped
+  // (it would be started again by the next request for it), so while more than CACHE_LIMIT are in progress the
+  // cache holds them and nothing else. `results` only holds keys that are in `promises`, so it is bounded too
   trim() {
-    for (const key of this.promises.keys()) {
+    if (this.promises.size <= CACHE_LIMIT) return
+    for (const [key, promise] of this.promises) {
       if (this.promises.size <= CACHE_LIMIT) break
+      if (!this.settled.has(promise)) continue
       this.promises.delete(key)
       this.results.delete(key)
     }
   }
 
-  // The world's one fetch for URLs it did not choose (remote models and scripts here, app scripts' fetch through
-  // App.fetch): public addresses only, bounded in time, size and number (outboundFetch.js). The world's own
-  // assets origin is trusted, and so are the origins the operator lists in OUTBOUND_TRUSTED_ORIGINS.
+  // The world's one fetch for URLs it did not choose: remote models, emotes and scripts a blueprint names go
+  // through it, and app scripts' fetch (App.fetch) will too. Public addresses only, bounded in time, size and
+  // number (outboundFetch.js). The world's own assets origin is trusted, and so are the origins the operator lists
+  // in OUTBOUND_TRUSTED_ORIGINS.
   get outboundFetch() {
     if (!this.outbound) {
       const listed = String(globalThis.process?.env?.OUTBOUND_TRUSTED_ORIGINS || '')
@@ -189,140 +220,110 @@ export class ServerLoader extends System {
     }
   }
 
+  // parse settles asynchronously, so its errors need their own path
+  parseGLB(arrayBuffer) {
+    return new Promise((resolve, reject) => {
+      try {
+        this.gltfLoader.parse(arrayBuffer, '', resolve, reject)
+      } catch (err) {
+        reject(err)
+      }
+    })
+  }
+
+  // what a load of `type` does: a function producing its result (or a promise of it), or null for a type the
+  // server does not load. The url stays as given: fetchArrayBuffer/fetchText locate() it when they read
+  task(type, url) {
+    if (type === 'model') {
+      return async () => {
+        const node = glbToNodes(await this.parseGLB(await this.fetchArrayBuffer(url)), this.world)
+        return {
+          toNodes() {
+            return node.clone(true)
+          },
+        }
+      }
+    }
+    if (type === 'emote') {
+      return async () => {
+        const factory = createEmoteFactory(await this.parseGLB(await this.fetchArrayBuffer(url)), url)
+        return {
+          toClip(options) {
+            return factory.toClip(options)
+          },
+        }
+      }
+    }
+    if (type === 'avatar') {
+      // NOTE: we can't load vrms on the server yet but we don't need 'em anyway
+      return () => {
+        let node
+        return {
+          toNodes: () => {
+            if (!node) {
+              node = createNode('group')
+              const node2 = createNode('avatar', { id: 'avatar', factory: null })
+              node.add(node2)
+            }
+            return node.clone(true)
+          },
+        }
+      }
+    }
+    if (type === 'script') {
+      return async () => this.world.scripts.evaluate(await this.fetchText(url))
+    }
+    if (type === 'audio') {
+      return () => Promise.reject(null)
+    }
+    // hdr, image, texture, video: nothing to load on the server
+    return null
+  }
+
   load(type, url) {
     const key = this.key(type, url)
     if (this.promises.has(key)) {
       this.touch(key)
       return this.promises.get(key)
     }
-    // the url stays as given: fetchArrayBuffer/fetchText locate() it when they read
-
-    let promise
-    if (type === 'hdr') {
-      // promise = this.rgbeLoader.loadAsync(url).then(texture => {
-      //   return texture
-      // })
-    }
-    if (type === 'image') {
-      // ...
-    }
-    if (type === 'texture') {
-      // ...
-    }
-    if (type === 'model') {
-      promise = new Promise((resolve, reject) => {
-        ;(async () => {
-          try {
-            const arrayBuffer = await this.fetchArrayBuffer(url)
-            // parse settles asynchronously (external buffers are fetched), so its errors need their own path
-            this.gltfLoader.parse(
-              arrayBuffer,
-              '',
-              glb => {
-                try {
-                  const node = glbToNodes(glb, this.world)
-                  const model = {
-                    toNodes() {
-                      return node.clone(true)
-                    },
-                  }
-                  this.results.set(key, model)
-                  resolve(model)
-                } catch (err) {
-                  reject(err)
-                }
-              },
-              reject
-            )
-          } catch (err) {
-            reject(err)
-          }
-        })()
-      })
-    }
-    if (type === 'emote') {
-      promise = new Promise((resolve, reject) => {
-        ;(async () => {
-          try {
-            const arrayBuffer = await this.fetchArrayBuffer(url)
-            this.gltfLoader.parse(
-              arrayBuffer,
-              '',
-              glb => {
-                try {
-                  const factory = createEmoteFactory(glb, url)
-                  const emote = {
-                    toClip(options) {
-                      return factory.toClip(options)
-                    },
-                  }
-                  this.results.set(key, emote)
-                  resolve(emote)
-                } catch (err) {
-                  reject(err)
-                }
-              },
-              reject
-            )
-          } catch (err) {
-            reject(err)
-          }
-        })()
-      })
-    }
-    if (type === 'avatar') {
-      promise = new Promise((resolve, reject) => {
-        ;(async () => {
-          try {
-            // NOTE: we can't load vrms on the server yet but we don't need 'em anyway
-            let node
-            const glb = {
-              toNodes: () => {
-                if (!node) {
-                  node = createNode('group')
-                  const node2 = createNode('avatar', { id: 'avatar', factory: null })
-                  node.add(node2)
-                }
-                return node.clone(true)
-              },
-            }
-            this.results.set(key, glb)
-            resolve(glb)
-          } catch (err) {
-            reject(err)
-          }
-        })()
-      })
-    }
-    if (type === 'script') {
-      promise = new Promise((resolve, reject) => {
-        ;(async () => {
-          try {
-            const code = await this.fetchText(url)
-            const script = this.world.scripts.evaluate(code)
-            this.results.set(key, script)
-            resolve(script)
-          } catch (err) {
-            reject(err)
-          }
-        })()
-      })
-    }
-    if (type === 'audio') {
-      promise = new Promise((resolve, reject) => {
-        reject(null)
-      })
-    }
+    const task = this.task(type, url)
+    if (!task) return undefined
+    let settle
+    const promise = new Promise((resolve, reject) => (settle = { resolve, reject }))
     this.promises.set(key, promise)
-    // a failed load is not kept: the next request tries again (the asset may have been uploaded since)
-    promise?.catch?.(() => {
-      if (this.promises.get(key) === promise) this.promises.delete(key)
-    })
+    // A load writes to the cache only while it is the one registered for its key, in the loader's current life:
+    // not after it was dropped, replaced by a newer load of the same key, or the loader was destroyed
+    const generation = this.generation
+    const current = () => this.generation === generation && this.promises.get(key) === promise
+    const finish = (ok, value) => {
+      this.settled.add(promise)
+      if (current()) {
+        if (ok) this.results.set(key, value)
+        // a failed load is not kept: the next request tries again (the asset may have been uploaded since)
+        else this.promises.delete(key)
+        this.trim()
+      }
+      if (ok) settle.resolve(value)
+      else settle.reject(value)
+    }
+    let work
+    try {
+      work = Promise.resolve(task())
+    } catch (err) {
+      work = Promise.reject(err)
+    }
+    work.then(
+      value => finish(true, value),
+      err => finish(false, err)
+    )
+    // whoever awaits the load sees its failure; the cache's own reference is not an unhandled rejection
+    promise.catch(() => {})
     this.trim()
     return promise
   }
 
   destroy() {
+    this.generation++
     this.promises.clear()
     this.results.clear()
     this.preloadItems = []

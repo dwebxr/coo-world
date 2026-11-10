@@ -1,47 +1,78 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { splitLines, unmarkedSites } from './lib/gltfAnnotations.mjs'
+import { unmarkedOperations } from './lib/gltfAnnotations.mjs'
 
-// The vendored GLTFLoader is metered by hand: each place it allocates, copies or loops as far as the document says
-// charges the per-file budget (gltfLimits.js createGLTFBudget). The budget tests record what is charged, so an
-// allocation nobody charges passes them. This test reads the file instead: every line shaped like an allocation, a
-// copy or a loop must carry a marker on it, or on one of the three lines above it:
-//   COO_BUDGET / COO_WORK: charged here; COO_ITERATE: iterates a real array; COO_OPTIONAL_DRACO, COO_SPARSE,
-//   COO_REVOKE: one of this client's other changes; COO_EXEMPT: <why no charge is needed>
-// A change to the parser (an update of three, a new path) that adds such a line fails here until it is charged or
-// exempted with a reason.
+// The vendored GLTFLoader is metered by hand: where it allocates, copies, loops or moves objects as far as the
+// document says, it charges the per-file budget (gltfLimits.js createGLTFBudget). The budget tests record what is
+// charged, so an allocation nobody charges passes them. This test reads the file's syntax tree instead: every `new`,
+// spread, loop statement and call of an allocating, copying, iterating or scene-graph method needs a marker of its
+// own in a comment on its statement (COO_BUDGET, COO_WORK, COO_ITERATE, COO_OPTIONAL_DRACO, COO_SPARSE, COO_REVOKE,
+// or `COO_EXEMPT: <reason>`): one marker covers one operation. A change to the parser (an update of three, a new
+// path) that adds such an operation fails here until it is charged or exempted with a reason.
+//
+// It checks the syntax of the vendored file only. Cost inside the functions it calls (three.js, three-vrm) is not
+// visible to it, except for the few calls listed in test/lib/gltfAnnotations.mjs.
 const FILE = new URL('../src/core/libs/gltfloader/GLTFLoader.js', import.meta.url)
+const source = fs.readFileSync(FILE, 'utf8')
 
-test('every allocation, copy and loop of the vendored GLTFLoader is charged, or exempt with a reason', () => {
-  const source = fs.readFileSync(FILE, 'utf8')
-  const sites = unmarkedSites(source)
+test('every allocation, copy, loop and move of the vendored GLTFLoader has its own marker', () => {
+  const sites = unmarkedOperations(source)
   assert.deepEqual(sites, [], `${sites.length} unmarked:\n${sites.join('\n')}`)
-  // an exemption says why
-  const bare = splitLines(source).flatMap(({ comment }, i) =>
-    /\bCOO_EXEMPT\b(?!:\s*\S)/.test(comment) ? [`line ${i + 1}`] : []
-  )
-  assert.deepEqual(bare, [], 'COO_EXEMPT without a reason')
 })
 
-test('the check finds what it is for: an allocation, a copy or a loop added away from the markers', () => {
-  const source = fs.readFileSync(FILE, 'utf8')
+test('the check finds what it is for, in the forms Codex found the line check missed', () => {
+  // inserted into a method of the file, away from its markers
   const at = source.indexOf('\tloadAccessor( accessorIndex ) {\n')
   assert.ok(at > 0)
-  const insert = text => source.slice(0, at) + `\tunmetered() {\n\n\n\n\n${text}\n\n\t}\n\n` + source.slice(at)
-  for (const [text, shape] of [
-    ['\t\tconst scratch = new Float32Array( this.json.accessors.length * 1e6 );', 'a typed array'],
-    ['\t\tconst copy = this.json.buffers.slice();', 'a copy'],
-    ['\t\tfor ( const node of this.json.nodes ) node.traverse( visit );', 'a loop'],
-    ['\t\tthis.json.nodes.forEach( visit );', 'an iteration'],
-    ["\t\tconst url = URL.createObjectURL( new Blob( [ 'x' ] ) ); // a COO_EXEMPT with no reason", 'a Blob'],
+  const insert = text => source.slice(0, at) + `\tunmetered( n ) {\n\n${text}\n\n\t}\n\n` + source.slice(at)
+  const charged = '\t\tconst first = new Float32Array( n ); // COO_BUDGET: a probe\n'
+  for (const [name, text] of [
+    ['a second allocation next to a charged one', `${charged}\t\tconst second = new Float32Array( n );`],
+    [
+      'two in one statement, one marker',
+      '\t\tconst a = new Float32Array( n ), b = new Float32Array( n ); // COO_BUDGET: a probe',
+    ],
+    ['a multi-line constructor', '\t\tconst scratch = new Float32Array(\n\t\t\tn\n\t\t);'],
+    ['new globalThis.Float32Array', '\t\tconst scratch = new globalThis.Float32Array( n );'],
+    ['an allocation inside a template expression', '\t\tconst label = `${ new Float32Array( n ).length }`;'],
+    ['a renamed constructor', '\t\tconst Typed = Float32Array;\n\t\tconst scratch = new Typed( n );'],
+    ['a copy', '\t\tconst copy = this.json.buffers.slice();'],
+    ['a spread', '\t\tconst copy = [ ... this.json.buffers ];'],
+    ['a loop', '\t\tfor ( const node of this.json.nodes ) n ++;'],
+    ['an iteration', '\t\tthis.json.nodes.forEach( visit );'],
+    ['a walk', '\t\tthis.scene.traverse( visit );'],
+    ['a move in the scene graph', '\t\tthis.scene.add( this.node );'],
+    ['a method borrowed with call', '\t\tObject3D.prototype.copy.call( this.a, this.b );'],
+    ['a marker in a string', "\t\tconst note = 'COO_BUDGET';\n\t\tconst scratch = new Float32Array( n );"],
   ]) {
-    const sites = unmarkedSites(insert(text))
-    assert.equal(sites.length, 1, `${shape}: ${sites.join('; ')}`)
-    assert.ok(sites[0].includes(shape), sites[0])
+    const sites = unmarkedOperations(insert(text))
+    assert.equal(sites.length, 1, `${name}: ${sites.join('; ')}`)
   }
-  // and a marker on it, or just above, covers it
-  assert.deepEqual(unmarkedSites(insert('\t\t// COO_EXEMPT: a test\n\t\tconst scratch = new Float32Array( 4 );')), [])
-  // text in strings and comments is not code
-  assert.deepEqual(unmarkedSites("const a = 'for ( x ) new Float32Array( 1 )'; // new ArrayBuffer( 1 )\n"), [])
+  // an exemption without a reason is reported, and answers for nothing
+  const bare = unmarkedOperations(insert('\t\tconst scratch = new Float32Array( n ); // COO_EXEMPT'))
+  assert.equal(bare.length, 2, bare.join('; '))
+  assert.match(bare[0], /COO_EXEMPT without a reason/)
+  // a marker of its own, after the statement or on the lines just above it, covers one operation
+  assert.deepEqual(
+    unmarkedOperations(insert(`${charged}\t\tconst second = new Float32Array( n ); // COO_EXEMPT: a probe`)),
+    []
+  )
+  assert.deepEqual(
+    unmarkedOperations(insert('\t\t// COO_EXEMPT: a probe\n\t\tconst scratch = new Float32Array( n );')),
+    []
+  )
+  assert.deepEqual(
+    unmarkedOperations(
+      insert('\t\tconst a = new Float32Array( n ), b = new Float32Array( n ); // COO_BUDGET: a; COO_BUDGET: b')
+    ),
+    []
+  )
+  // a marker far above (past a blank stretch) is no statement's
+  assert.equal(
+    unmarkedOperations(insert('\t\t// COO_EXEMPT: far above\n\n\n\n\t\tconst scratch = new Float32Array( n );')).length,
+    1
+  )
+  // a thrown error is not an operation
+  assert.deepEqual(unmarkedOperations(insert("\t\tthrow new Error( 'x' );")), [])
 })

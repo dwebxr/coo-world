@@ -108,11 +108,74 @@ test('local assets: while an upload is being written its final name does not exi
   for (let i = 0; !writing && i < 10000; i++) await new Promise(resolve => setImmediate(resolve))
   assert.ok(writing, 'the upload went through the injected fs')
   assert.equal(fs.existsSync(path.join(dir, name)), false, 'no final name while the bytes are being written')
-  assert.equal(await assets.exists(name), false)
   assert.ok(writing.startsWith('~tmp-') && writing.endsWith(name))
+  // an upload-check for it waits for the write instead of answering in the middle of it
+  let answer = null
+  const check = assets.exists(name).then(value => (answer = value))
+  for (let i = 0; i < 50; i++) await new Promise(resolve => setImmediate(resolve))
+  assert.equal(answer, null, 'no answer while the write is in flight')
+  assert.equal(await assets.exists(writing), false, 'a temp file is never reported')
   release()
   assert.equal(await upload, true)
+  assert.equal(await check, true)
   assert.deepEqual(fs.readFileSync(path.join(dir, name)), bytes)
+})
+
+test('local assets: an upload-check never says "stored" for a file whose directory sync failed; it syncs it first', async t => {
+  let dirSyncs = 0
+  let failing = 2
+  let gate = null
+  let held = false
+  const flaky = {
+    ...fs.promises,
+    open: async (target, flags) => {
+      const handle = await fs.promises.open(target, flags)
+      if (flags !== 'r') return handle
+      handle.sync = async () => {
+        if (gate) {
+          held = true
+          await gate
+        }
+        dirSyncs++
+        if (failing-- > 0) throw Object.assign(new Error('directory fsync'), { code: 'EIO' })
+      }
+      return handle
+    },
+  }
+  const { assets, init, dir } = await localAssets(t, { fs: flaky })
+  await init()
+  const bytes = glb('checked')
+  const name = `${sha(bytes)}.glb`
+  // Codex's probe: the rename landed, the directory sync failed
+  await assert.rejects(assets.upload({ name: 'a.glb', buffer: bytes }), { code: 'EIO' })
+  assert.ok(fs.existsSync(path.join(dir, name)))
+  assert.equal(dirSyncs, 1)
+  // the check tries the sync again; it fails again, so the client is told to upload
+  assert.equal(await assets.exists(name), false)
+  assert.equal(dirSyncs, 2)
+  // the next check syncs it, and only then says "stored"; after that nothing is synced again
+  assert.equal(await assets.exists(name), true)
+  assert.equal(dirSyncs, 3)
+  assert.equal(await assets.exists(name), true)
+  assert.equal(await assets.upload({ name: 'a.glb', buffer: bytes }), false)
+  assert.equal(dirSyncs, 3)
+  // a check that arrives while an upload of the name is on its directory sync (renamed, not yet synced) waits for
+  // it; that sync fails, so the check repairs it before it answers
+  const other = glb('raced')
+  const otherName = `${sha(other)}.glb`
+  failing = 1
+  let release
+  gate = new Promise(resolve => (release = resolve))
+  const upload = assets.upload({ name: 'b.glb', buffer: other })
+  for (let i = 0; !held && i < 10000; i++) await new Promise(resolve => setImmediate(resolve))
+  assert.ok(held, 'the upload reached its directory sync')
+  assert.ok(fs.existsSync(path.join(dir, otherName)), 'renamed into place already')
+  const check = assets.exists(otherName)
+  gate = null
+  release()
+  await assert.rejects(upload, { code: 'EIO' })
+  assert.equal(await check, true)
+  assert.equal(dirSyncs, 5)
 })
 
 test('local assets: an upload whose directory sync failed syncs again on the next upload before it says "stored"', async t => {

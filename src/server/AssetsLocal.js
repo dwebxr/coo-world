@@ -39,17 +39,14 @@ export class AssetsLocal {
   async upload(file) {
     const { filename, buffer } = await computeAssetFilename(file)
     const assetPath = path.join(this.dir, filename)
-    const options = this.fsp ? { fs: this.fsp } : undefined
+    const options = this.fsOptions()
     return createOnce(this.writes, filename, async () => {
       const stored = await fs.stat(assetPath).catch(err => {
         if (err.code === 'ENOENT') return null
         throw err
       })
       if (stored?.isFile() && stored.size === buffer.length) {
-        if (this.unsynced.has(filename)) {
-          await syncDirectoryOf(assetPath, options)
-          this.unsynced.delete(filename)
-        }
+        await this.repairSync(filename, assetPath)
         return false
       }
       if (stored) {
@@ -64,6 +61,17 @@ export class AssetsLocal {
       this.unsynced.delete(filename)
       return true
     })
+  }
+
+  fsOptions() {
+    return this.fsp ? { fs: this.fsp } : undefined
+  }
+
+  // a name whose own write could not sync the directory: the sync is tried again (throws when it fails again)
+  async repairSync(filename, assetPath) {
+    if (!this.unsynced.has(filename)) return
+    await syncDirectoryOf(assetPath, this.fsOptions())
+    this.unsynced.delete(filename)
   }
 
   // the text of a stored asset://<name>, or null when there is no such file (cleaner: scripts' asset literals)
@@ -83,12 +91,29 @@ export class AssetsLocal {
     return { free: s.bavail * s.bsize, total: s.blocks * s.bsize }
   }
 
+  // Whether a client may skip uploading `filename` (/api/upload-check): true only for a stored file known to be
+  // durable. A write of that name in flight is waited for, and a name whose directory sync failed is synced again
+  // first (with the uploads of that name, one at a time); when that fails again the answer is false, as for a
+  // failed write, so the client uploads and its upload tries the sync once more.
   async exists(filename) {
     // an upload still being written is not there yet
     if (isTempName(filename)) return false
     const filePath = path.join(this.dir, filename)
-    const exists = await fs.exists(filePath)
-    return exists
+    try {
+      await this.writes.get(filename)
+    } catch {
+      // that write failed: what it left (if anything) is judged below
+    }
+    if (this.unsynced.has(filename)) {
+      try {
+        await createOnce(this.writes, filename, () => this.repairSync(filename, filePath))
+      } catch {
+        return false
+      }
+      // a write of the name that ran instead of the repair may have failed its sync too
+      if (this.unsynced.has(filename)) return false
+    }
+    return fs.exists(filePath)
   }
 
   async list() {

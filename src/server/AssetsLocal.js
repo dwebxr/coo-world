@@ -74,15 +74,11 @@ export class AssetsLocal {
     this.unsynced.delete(filename)
   }
 
-  // the text of a stored asset://<name>, or null when there is no such file (cleaner: scripts' asset literals)
-  async readText(name) {
+  // the text of a stored asset://<name>, or null when there is no such file (cleaner: scripts' asset literals).
+  // `limit`: a larger file throws TOO_LARGE before it is read
+  async readText(name, { limit = Infinity } = {}) {
     if (assetName(`asset://${name}`) === null) throw new Error('invalid asset name')
-    try {
-      return await fs.readFile(path.join(this.dir, name), 'utf8')
-    } catch (err) {
-      if (err.code === 'ENOENT') return null
-      throw err
-    }
+    return readTextFile(path.join(this.dir, name), limit)
   }
 
   // free and total bytes of the volume holding the assets dir
@@ -170,14 +166,11 @@ export class AssetsLocal {
   }
 
   // the text of the newest trashed copy of `name` (`days`: from trashed()), or null when there is none
-  async readTrashedText(name, days = []) {
+  async readTrashedText(name, days = [], { limit = Infinity } = {}) {
     if (assetName(`asset://${name}`) === null) throw new Error('invalid asset name')
     for (const day of days) {
-      try {
-        return await fs.readFile(path.join(this.trashDir, day, name), 'utf8')
-      } catch (err) {
-        if (err.code !== 'ENOENT') throw err
-      }
+      const text = await readTextFile(path.join(this.trashDir, day, name), limit)
+      if (text !== null) return text
     }
     return null
   }
@@ -200,29 +193,39 @@ export class AssetsLocal {
     return { moved, failed, dir }
   }
 
-  // Puts the newest trashed copy of each of `names` back (`trashed`: from trashed()). A name the store holds again
-  // stays as it is: its trashed copy goes with its folder; a copy gone from the trash meanwhile has nothing to bring
-  // back. Resolves { restored, failed: [{ name, code }] }.
+  // Puts a trashed copy of each of `names` back (`trashed`: from trashed()), trying every copy it indexed, newest
+  // first, so a copy gone meanwhile leaves the next one to try. A name the store holds again stays as it is: its
+  // trashed copies go with their folders. Resolves { restored, failed: [{ name, code }], lost: [name] }: `lost` are
+  // the names none of whose copies was there any more.
   async restoreFromTrash(names, trashed) {
     const restored = []
     const failed = []
+    const lost = []
     for (const name of names) {
       const target = path.join(this.dir, name)
       if (await fs.pathExists(target)) continue
-      const day = trashed.get(name)?.[0]
-      if (!day) continue
-      try {
-        await fs.rename(path.join(this.trashDir, day, name), target)
-        restored.push(name)
-      } catch (err) {
-        if (err.code !== 'ENOENT') failed.push({ name, code: err.code })
+      let done = false
+      for (const day of trashed.get(name) ?? []) {
+        try {
+          await fs.rename(path.join(this.trashDir, day, name), target)
+          restored.push(name)
+          done = true
+          break
+        } catch (err) {
+          if (err.code === 'ENOENT') continue
+          failed.push({ name, code: err.code })
+          done = true
+          break
+        }
       }
+      if (!done) lost.push(name)
     }
-    return { restored, failed }
+    return { restored, failed, lost }
   }
 
-  // The trash folders whose UTC date is at least `days` days before `now`, removed unless `dryrun` (0: all of them).
-  // Resolves { days: [<date>], files }.
+  // The trash folders whose UTC date is at least `days` days before `now`, removed unless `dryrun`; 0 means every
+  // folder, one dated after `now` (a clock that ran ahead) included. Retention counts folder dates, so a file can go
+  // up to a day sooner than `days` after it was moved. Resolves { days: [<date>], files }.
   async purgeTrash(days, now, { dryrun = false } = {}) {
     const result = { days: [], files: 0 }
     let folders
@@ -233,13 +236,27 @@ export class AssetsLocal {
       throw err
     }
     for (const day of folders.filter(isTrashDay).sort()) {
-      if (now - Date.parse(`${day}T00:00:00Z`) < days * DAY_MS) continue
+      if (days > 0 && now - Date.parse(`${day}T00:00:00Z`) < days * DAY_MS) continue
       const dir = path.join(this.trashDir, day)
       result.days.push(day)
       result.files += (await fs.readdir(dir)).length
       if (!dryrun) await fs.remove(dir)
     }
     return result
+  }
+}
+
+// a file's text, or null when it does not exist; one larger than `limit` bytes throws TOO_LARGE before it is read
+async function readTextFile(file, limit) {
+  try {
+    if (Number.isFinite(limit)) {
+      const { size } = await fs.stat(file)
+      if (size > limit) throw Object.assign(new Error(`larger than ${limit} bytes`), { code: 'TOO_LARGE' })
+    }
+    return await fs.readFile(file, 'utf8')
+  } catch (err) {
+    if (err.code === 'ENOENT') return null
+    throw err
   }
 }
 

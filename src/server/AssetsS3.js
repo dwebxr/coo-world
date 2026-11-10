@@ -17,24 +17,60 @@ import { assetHeaders, extensionOf } from './uploadPolicy'
 // DeleteObjects takes at most 1000 keys per request
 const DELETE_BATCH = 1000
 
+// at most this many stacked content codings are undone (gzip over deflate is two)
+const MAX_CODINGS = 2
+
+const tooLarge = limit => Object.assign(new Error(`larger than ${limit} bytes`), { code: 'TOO_LARGE' })
+
+// the object's bytes, at most `limit` of them (a larger one throws TOO_LARGE before more is read)
+async function readBody(response, limit) {
+  const body = response.Body
+  if (Number(response.ContentLength) > limit) {
+    body?.destroy?.()
+    throw tooLarge(limit)
+  }
+  if (body && typeof body[Symbol.asyncIterator] === 'function') {
+    const chunks = []
+    let size = 0
+    for await (const chunk of body) {
+      size += chunk.length
+      if (size > limit) {
+        body.destroy?.()
+        throw tooLarge(limit)
+      }
+      chunks.push(chunk)
+    }
+    return Buffer.concat(chunks)
+  }
+  const bytes = await body.transformToByteArray()
+  if (bytes.length > limit) throw tooLarge(limit)
+  return Buffer.from(bytes)
+}
+
 // An object's text as an HTTP client receives it (readText, for the clean-up): a stored Content-Encoding is undone
-// the way the server's fetch undoes it, gzip and deflate, in the reverse of the order they were applied. Any other
-// coding (br, which the server's fetch never decodes, compress, zstd) or one that does not decode cannot be read
-// for certain: it throws, and the clean-up deletes nothing.
-function decodeObject(bytes, encoding) {
+// the way the server's fetch undoes it, gzip and deflate, in the reverse of the order they were applied, each stage
+// held to `limit` bytes of output. Any other coding (br, which the server's fetch never decodes, compress, zstd),
+// more than MAX_CODINGS of them, one that does not decode or one that grows past `limit` cannot be read for certain:
+// it throws, and the clean-up deletes nothing.
+function decodeObject(bytes, encoding, limit) {
   let buffer = Buffer.from(bytes)
   const codings = String(encoding ?? '')
     .split(',')
     .map(coding => coding.trim().toLowerCase())
     .filter(coding => coding && coding !== 'identity')
+  if (codings.length > MAX_CODINGS) {
+    throw Object.assign(new Error(`more than ${MAX_CODINGS} content codings`), { code: 'ENCODING' })
+  }
+  const options = Number.isFinite(limit) ? { maxOutputLength: Math.max(1, limit) } : {}
   for (const coding of codings.reverse()) {
-    if (coding === 'gzip' || coding === 'x-gzip') buffer = zlib.gunzipSync(buffer)
+    if (coding === 'gzip' || coding === 'x-gzip') buffer = zlib.gunzipSync(buffer, options)
     else if (coding === 'deflate') {
       // the zlib format HTTP means by deflate, or the raw one some servers send
       try {
-        buffer = zlib.inflateSync(buffer)
-      } catch {
-        buffer = zlib.inflateRawSync(buffer)
+        buffer = zlib.inflateSync(buffer, options)
+      } catch (err) {
+        if (err?.code === 'ERR_BUFFER_TOO_LARGE') throw err
+        buffer = zlib.inflateRawSync(buffer, options)
       }
     } else throw Object.assign(new Error(`content encoding ${coding} is not read`), { code: 'ENCODING' })
   }
@@ -277,12 +313,13 @@ export class AssetsS3 {
 
   // the text of a stored asset://<name>, or null when there is no such object (cleaner: scripts' asset literals).
   // Only S3's definite answer for a missing key (NoSuchKey) is "no such object"; any other error, a 404 for a
-  // missing bucket (NoSuchBucket) or a refused read (AccessDenied, 403) included, is thrown
-  async readText(name) {
+  // missing bucket (NoSuchBucket) or a refused read (AccessDenied, 403) included, is thrown. `limit`: the most bytes
+  // read, and the most each content-coding stage may produce (the clean-up's largest script); more throws TOO_LARGE
+  async readText(name, { limit = Infinity } = {}) {
     if (assetName(`asset://${name}`) === null) throw new Error('invalid asset name')
     try {
       const response = await this.client.send(new GetObjectCommand({ Bucket: this.bucketName, Key: this.getKey(name) }))
-      return decodeObject(await response.Body.transformToByteArray(), response.ContentEncoding)
+      return decodeObject(await readBody(response, limit), response.ContentEncoding, limit)
     } catch (error) {
       if (error?.name === 'NoSuchKey' || error?.Code === 'NoSuchKey') return null
       throw error

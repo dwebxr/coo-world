@@ -209,7 +209,10 @@ test('cleaner: a script that cannot be read deletes nothing', async t => {
   f.scripts.set('app.js', Object.assign(new Error('denied'), { code: 'EACCES' }))
   await f.run()
   assert.deepEqual(f.deleted, [])
-  assert.deepEqual(f.warnings, ['[clean] skipped all deletion: could not read ["script app.js (EACCES)"]'])
+  // the blueprint is named here too, as for a missing script
+  assert.deepEqual(f.warnings, [
+    '[clean] skipped all deletion: could not read ["script app.js named by blueprint \\"bp\\" (EACCES)"]',
+  ])
 })
 
 test('cleaner: props holding a non-string url (or an empty asset://) are skipped, not a reason to stop cleaning', async t => {
@@ -264,6 +267,14 @@ test('cleaner: a kept script that is not a store file for certain stops all dele
     'https://world.example/assets/sub/../x.js',
     'https://world.example/assets\\sub\\..\\x.js',
     'https://world.example/other/x.js',
+    // Codex: the runtime rewrites these (https:/… and a tab in the scheme become https://https/… and https://ht…,
+    // HTTPS:// is refused by the server's loader), so the store copy is not what runs
+    'https:/world.example/assets/x.js',
+    'ht\ttps://world.example/assets/x.js',
+    'https:\t//world.example/assets/x.js',
+    'HTTPS://world.example/assets/x.js',
+    // credentials in a URL: fetch refuses it
+    'https://user:pw@world.example/assets/x.js',
     // Codex: these parse as blob: but the runtime fetches them (https://Blob:443/app.js is a host named blob)
     'Blob:443/app.js',
     'BLOB:https://world.example/1234',
@@ -306,10 +317,11 @@ test('cleaner: a kept script that is not a store file for certain stops all dele
 test('cleaner: a script that is a store file for certain is read: canonical asset://, or directly under the assets URL', async t => {
   const f = fixture(t)
   for (const name of ['s1.js', 's2.js', 's3.js', 'm1.glb', 'm2.glb', 'm3.glb']) f.files.add(name)
-  // trimmed as the loaders trim it; the URL parser takes the case of a scheme and host and a default port away
+  // trimmed as the loaders trim it; the URL parser takes the case of a host and a default port away (the scheme must
+  // be the lower-case prefix the loaders take as remote)
   f.tables.blueprints[0] = row({ id: 'bp', version: 0, model: 'asset://used.glb', script: ' asset://s1.js ' })
   f.collections.blueprints.add({ id: 'c2', version: 0, script: 'https://world.example/assets/s2.js' })
-  f.collections.blueprints.add({ id: 'c3', version: 0, script: 'HTTPS://WORLD.EXAMPLE:443/assets/s3.js' })
+  f.collections.blueprints.add({ id: 'c3', version: 0, script: 'https://WORLD.EXAMPLE:443/assets/s3.js' })
   f.scripts.set('s1.js', "world.load('model', 'asset://m1.glb')")
   f.scripts.set('s2.js', "world.load('model', 'asset://m2.glb')")
   f.scripts.set('s3.js', "world.load('model', 'asset://m3.glb')")
@@ -565,6 +577,108 @@ test('cleaner: a dry run names at most 50 of the assets it would remove, and say
     logs.includes(`[clean] 61 assets can be deleted: ${JSON.stringify(all.slice(0, 50))} and 11 more`),
     logs.join('\n')
   )
+})
+
+// Codex: nested percent-encoding ('%' + '25'.repeat(depth) + '61.glb') was decoded one layer per pass over the whole
+// run, 7.7 s for 256 KB. A run with `%` longer than 4,096 characters, or still encoded after 8 decodings, is not
+// decoded: nothing is deleted, in milliseconds
+test('cleaner: a percent-encoded run too long or too deep to decode stops deletion, at once', async t => {
+  for (const size of [64007, 128007, 256007]) {
+    const f = fixture(t)
+    f.tables.entities[0] = row({ ...appData(), props: { note: `%${'25'.repeat((size - 7) / 2)}61.glb` } })
+    const started = performance.now()
+    await f.run()
+    const ms = performance.now() - started
+    assert.ok(ms < 200, `${size}: ${ms} ms`)
+    assert.deepEqual(f.deleted, [], String(size))
+    assert.equal(f.warnings.length, 1)
+    assert.match(
+      f.warnings[0],
+      /^\[clean\] skipped all deletion: \["entity \\"app\\""\] hold a percent-encoded run the clean-up cannot read with certainty \(longer than 4096 characters, or still encoded after 8 decodings\)$/
+    )
+  }
+  // a name encoded nine times fits the length but is still encoded after eight decodings
+  const deep = fixture(t)
+  deep.tables.entities[0] = row({ ...appData(), props: { note: `asset://%${'25'.repeat(8)}74.glb` } })
+  await deep.run()
+  assert.deepEqual(deep.deleted, [])
+  assert.match(deep.warnings[0], /cannot read with certainty/)
+})
+
+test('cleaner: a store URL percent-encoded as a whole just under the cap is still read; one over it stops', async t => {
+  // a store URL passed in a query parameter: the whole URL encoded once is one run
+  const url = path => encodeURIComponent(`https://world.example/${path}/long.glb`)
+  const fits = `?from=${url('p'.repeat(4096 - url('').length))}`
+  const f = fixture(t)
+  f.files.add('long.glb')
+  f.tables.entities[0] = row({ ...appData(), props: { link: fits } })
+  assert.equal(fits.length - '?from='.length, 4096)
+  await f.run()
+  assert.deepEqual(f.warnings, [])
+  assert.deepEqual(f.deleted.at(-1), ['assets', ['unused.glb']])
+  // eight encodings settle within the passes
+  const eight = fixture(t)
+  eight.files.add('t8.glb')
+  eight.tables.entities[0] = row({ ...appData(), props: { note: `asset://%${'25'.repeat(7)}748.glb` } })
+  await eight.run()
+  assert.deepEqual(eight.warnings, [])
+  assert.deepEqual(eight.deleted.at(-1), ['assets', ['unused.glb']])
+  // one character more and the run is not decoded
+  const over = fixture(t)
+  over.tables.entities[0] = row({ ...appData(), props: { link: `?from=${url('p'.repeat(4097 - url('').length))}` } })
+  await over.run()
+  assert.deepEqual(over.deleted, [])
+  assert.match(over.warnings[0], /cannot read with certainty/)
+})
+
+test('cleaner: a storage.json or set-aside copy larger than the read limit is not read: nothing is deleted', async t => {
+  const f = fixture(t)
+  fs.writeFileSync(f.storageFile, JSON.stringify({ note: 'x'.repeat(2000) }))
+  await f.run({ ...f.store, readLimit: 1000 })
+  assert.deepEqual(f.deleted, [])
+  assert.deepEqual(f.warnings, ['[clean] skipped all deletion: could not read ["storage.json (TOO_LARGE)"]'])
+  const g = fixture(t)
+  fs.writeFileSync(`${g.storageFile}.corrupt-2026-11-10T00-00-00-000Z`, 'y'.repeat(2000))
+  await g.run({ ...g.store, readLimit: 1000 })
+  assert.deepEqual(g.deleted, [])
+  assert.match(g.warnings[0], /could not read \["storage\.json\.corrupt-2026-11-10T00-00-00-000Z \(TOO_LARGE\)"\]/)
+})
+
+test('cleaner: the read limit is passed to the store for every script it reads', async t => {
+  const f = fixture(t)
+  const limits = []
+  f.tables.blueprints[0] = row({ id: 'bp', version: 0, model: 'asset://used.glb', script: 'asset://app.js' })
+  f.scripts.set('app.js', 'ok')
+  const assets = {
+    list: async () => f.files,
+    delete: async () => ({ failed: [] }),
+    readText: async (name, options) => {
+      limits.push(options?.limit)
+      return 'ok'
+    },
+  }
+  const Cleaner = load('server/cleaner.js', 'Cleaner', { assets, collections: f.collections, fs: fs.promises, path })
+  await new Cleaner().init({ db: f.db, storageFile: f.storageFile, ...f.store, readLimit: 1234 })
+  assert.deepEqual(limits, [1234])
+  const defaults = []
+  assets.readText = async (name, options) => defaults.push(options?.limit) && 'ok'
+  await new Cleaner().init({ db: f.db, storageFile: f.storageFile, ...f.store })
+  assert.deepEqual(defaults, [16 * 1024 * 1024])
+})
+
+// Codex: removing the sanitised scan of collection blueprints alone left every test passing
+test('cleaner: a collection blueprint is scanned as hydration loads it too, and its sanitised script is the one read', async t => {
+  const f = fixture(t)
+  for (const name of ['ccut.glb', 'ccut.js', 'ccutdep.glb']) f.files.add(name)
+  const base = 'https://cdn.example/'
+  const model = `${base}${'x'.repeat(2048 - base.length - '/../ccut.glb'.length)}/../ccut.glb`
+  const script = `${' '.repeat(2048 - 'asset://ccut.js'.length)}asset://ccut.js`
+  f.collections.blueprints.add({ id: 'col', version: 0, model: `${model}extra`, script: `${script}extra` })
+  f.scripts.set('ccut.js', "world.load('model', 'asset://ccutdep.glb')")
+  await f.run()
+  assert.deepEqual(f.warnings, [])
+  assert.deepEqual(f.scriptReads, ['ccut.js'])
+  assert.deepEqual(f.deleted.at(-1), ['assets', ['unused.glb']])
 })
 
 test('cleaner: assets the store could not delete are reported, not counted as deleted', async t => {

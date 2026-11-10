@@ -408,6 +408,65 @@ test('s3 assets: readText undoes a stored gzip or deflate encoding; any other, o
   await assert.rejects(assets.readText('bad.js'), { code: 'Z_DATA_ERROR' })
 })
 
+// Codex: a 32,636-byte gzip object expanded to 33,554,432 bytes with nothing to stop it
+test('s3 assets: readText holds the object and every decoding stage to its limit; more than two codings throw', async t => {
+  const { assets, objects, client } = s3(t)
+  const bomb = zlib.gzipSync(Buffer.alloc(32 * 1024 * 1024))
+  assert.ok(bomb.length < 64 * 1024)
+  objects.set('world/bomb.js', { body: bomb, encoding: 'gzip' })
+  await assert.rejects(assets.readText('bomb.js', { limit: 16 * 1024 * 1024 }), { code: 'ERR_BUFFER_TOO_LARGE' })
+  // the same through deflate, and as the inner stage of two
+  objects.set('world/dbomb.js', { body: zlib.deflateSync(Buffer.alloc(4096)), encoding: 'deflate' })
+  await assert.rejects(assets.readText('dbomb.js', { limit: 1024 }), { code: 'ERR_BUFFER_TOO_LARGE' })
+  objects.set('world/two.js', { body: zlib.gzipSync(zlib.deflateSync(Buffer.alloc(4096))), encoding: 'deflate, gzip' })
+  await assert.rejects(assets.readText('two.js', { limit: 1024 }), { code: 'ERR_BUFFER_TOO_LARGE' })
+  objects.set('world/three.js', {
+    body: zlib.gzipSync(zlib.gzipSync(zlib.gzipSync('x'))),
+    encoding: 'gzip, gzip, gzip',
+  })
+  await assert.rejects(assets.readText('three.js'), { code: 'ENCODING' })
+  // the object itself: refused by its declared length before it is read, or while it is read
+  objects.set('world/big.js', 'y'.repeat(2048))
+  await assert.rejects(assets.readText('big.js', { limit: 1024 }), { code: 'TOO_LARGE' })
+  let destroyed = 0
+  const send = client.send
+  client.send = async command =>
+    command.constructor.name === 'GetObjectCommand'
+      ? {
+          ContentLength: 4096,
+          Body: { destroy: () => destroyed++, transformToByteArray: async () => assert.fail('read whole') },
+        }
+      : send(command)
+  await assert.rejects(assets.readText('big.js', { limit: 1024 }), { code: 'TOO_LARGE' })
+  assert.equal(destroyed, 1)
+  client.send = async () => ({
+    Body: {
+      destroy: () => destroyed++,
+      async *[Symbol.asyncIterator]() {
+        for (let i = 0; i < 100; i++) yield Buffer.alloc(512)
+      },
+    },
+  })
+  await assert.rejects(assets.readText('big.js', { limit: 1024 }), { code: 'TOO_LARGE' })
+  assert.equal(destroyed, 2)
+  client.send = send
+  // under the limit, as before
+  objects.set('world/ok.js', { body: zlib.gzipSync('fine'), encoding: 'gzip' })
+  assert.equal(await assets.readText('ok.js', { limit: 1024 }), 'fine')
+})
+
+test('local assets: readText and readTrashedText refuse a file larger than the limit before reading it', async t => {
+  const { assets, init, dir } = await localAssets(t)
+  await init()
+  fs.writeFileSync(path.join(dir, 'big.js'), 'z'.repeat(2048))
+  await assert.rejects(assets.readText('big.js', { limit: 1024 }), { code: 'TOO_LARGE' })
+  assert.equal(await assets.readText('big.js', { limit: 4096 }), 'z'.repeat(2048))
+  assert.equal(await assets.readText('none.js', { limit: 1024 }), null)
+  fs.mkdirSync(path.join(assets.trashDir, '2026-11-10'), { recursive: true })
+  fs.writeFileSync(path.join(assets.trashDir, '2026-11-10', 'big.js'), 'z'.repeat(2048))
+  await assert.rejects(assets.readTrashedText('big.js', ['2026-11-10'], { limit: 1024 }), { code: 'TOO_LARGE' })
+})
+
 test('s3 assets: only a definite missing key is "no such script"; any other failure is thrown to the cleaner', async t => {
   const { assets, client } = s3(t)
   const failures = [

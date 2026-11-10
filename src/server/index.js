@@ -128,6 +128,9 @@ await cleaner.init({
   assetsUrl: assets.url,
   localStore: Boolean(assets.dir),
   trashDays: cleanTrashDays,
+  // the largest file it reads: a script came through an upload (PUBLIC_MAX_UPLOAD_SIZE), storage.json is held to
+  // STORAGE_MAX_BYTES; a larger one (an older limit, a hand-made file) stops the clean-up
+  readLimit: Math.max(maxUploadSize * 1024 * 1024, storageLimits.maxBytes || 0),
 })
 
 // init storage

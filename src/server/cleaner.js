@@ -10,10 +10,13 @@ import { isAbsoluteHttpURL, previewValue, scriptSource } from '../core/extras/as
 //
 // THE CONTRACT. It keeps every store file whose name appears as a literal in the persisted world data or in the
 // source of a store script reachable from that data, and it deletes nothing when it cannot read something it must
-// read. It cannot see, so such a file IS deleted:
+// read. The code it follows is exactly: (i) the store file a blueprint's script names, whatever its extension, and
+// (ii) any .js store file named as a literal in the corpus. It cannot see, so such a file IS deleted:
 // - a name computed at run time (`'abc' + 'def.glb'`, a template, a hash) or written with JavaScript escapes in a
 //   script's source (`'\x61bc.glb'`);
-// - code a script loads from outside the store or builds at run time (fetch + Function), and whatever that code names;
+// - code built at run time: code a script fetches or assembles and evaluates itself (fetch + Function), wherever it
+//   is hosted, the store included, and whatever that code names (no engine API runs another script: world.load
+//   takes models and avatars only, and an app's script is its blueprint's);
 // - references inside binary assets (a model's external image or buffer URI): the loaders give models, avatars and
 //   emotes their embedded data only, so such a reference is not loaded either.
 // A world that relies on any of these must run with CLEAN=false.
@@ -21,30 +24,33 @@ import { isAbsoluteHttpURL, previewValue, scriptSource } from '../core/extras/as
 // What keeps a file is its name, not a URL: no reference is resolved to decide it. The corpus (every persisted
 // entity; every kept blueprint and collection blueprint, both as stored and as hydration sanitises it; settings; user
 // avatars; script storage, parsed so JSON escapes are decoded, and its unreadable copies as text; the source of every
-// store script reached) is cut into tokens at each character a store name cannot hold, and every store file whose
-// name equals a token, ignoring case, is kept: also percent-decoded (until it no longer changes), without dots, `_` or
-// `-` at its ends, and in a second reading of the text without tabs, CR and LF (which the URL parser drops from a
-// URL). Keeping is the safe direction, so case is ignored on purpose (a case-insensitive file system loads
-// asset://<NAME> from <name>), and a file named like a common word is kept whenever that word appears. It runs to a
-// fixed point: a kept .js file (the only script extension uploads accept), and a store file a blueprint's script
-// names whatever its extension, is read and its source joins the corpus. A store file a blueprint's script names is
-// kept as well.
+// store script followed) is cut into tokens at each character a store name cannot hold, and every store file whose
+// name equals a token, ignoring case, is kept: also percent-decoded (a run of up to PERCENT_RUN_MAX characters, at
+// most PERCENT_PASSES times), without dots, `_` or `-` at its ends, and with tabs, CR and LF inside it dropped (which
+// the URL parser drops from a URL). Keeping is the safe direction, so case is ignored on purpose (a case-insensitive
+// file system loads asset://<NAME> from <name>), and a file named like a common word is kept whenever that word
+// appears. The code followed (above) is read to a fixed point, each file at most `readLimit` bytes.
 //
 // Nothing is deleted, the reason logged once, when discovery cannot be complete. In these configurations cleaning
 // never runs, at the cost of disk that keeps growing:
 // - a persisted row or storage.json does not parse as JSON, or a row has the wrong shape;
-// - storage.json, a storage.json.corrupt-* copy or a script that must be read cannot be read (a store script that is
-//   missing included, in every configuration: a CDN or cache in front of the store may still serve it; the log names
-//   the blueprint), or a script object with a content encoding other than gzip or deflate (S3);
+// - storage.json, a storage.json.corrupt-* copy or a script that must be read cannot be read: a store script that is
+//   missing (in every configuration: a CDN or cache in front of the store may still serve it), one that cannot be
+//   opened or is larger than `readLimit`, and an S3 object with a content encoding other than gzip or deflate or one
+//   that expands past `readLimit` (the log names the blueprint);
+// - a text holds a percent-encoded run longer than PERCENT_RUN_MAX characters, or one still encoded after
+//   PERCENT_PASSES decodings (it cannot be read with certainty, and decoding it further would cost too much);
 // - ASSETS_BASE_URL is not an absolute http(s) URL (a relative or protocol-relative base);
 // - a kept blueprint or collection blueprint's script is not a store file for certain (assetURL.js scriptSource):
-//   one hosted outside ASSETS_BASE_URL, a page path (/assets/x.js, blob/../assets/x.js), a URL with a query, a
-//   fragment, `%` or a dot segment, or anything else the server cannot read as the code that runs;
+//   one hosted outside ASSETS_BASE_URL, a page path (/assets/x.js, blob/../assets/x.js), a URL the runtime rewrites or
+//   with a query, fragment, `%`, backslash or dot segment, or anything else the server cannot read as the code that
+//   runs;
 // - a listed .js file has a name no store name has.
 //
 // With ASSETS=local the files are not unlinked but moved to <world>/assets-trash/<UTC date>/ (AssetsLocal) and
-// removed for good after CLEAN_TRASH_DAYS (0: deleted at once). A trashed file named again on a later start is put
-// back. With ASSETS=s3 they are deleted: keep bucket versioning on to be able to recover one.
+// removed for good after CLEAN_TRASH_DAYS (0: deleted at once), counted by folder date. A trashed file named again on
+// a later start is put back (not when ASSETS_BASE_URL is not absolute: then nothing is scanned). With ASSETS=s3 they
+// are deleted: keep bucket versioning on to be able to recover one.
 
 // 0-9 A-Z a-z . _ -: the characters of a store name (assetURL.js ASSET_NAME)
 const isNameCode = c =>
@@ -55,9 +61,21 @@ const isEdgeCode = c => c === 46 || c === 95 || c === 45
 const isControlCode = c => c === 9 || c === 10 || c === 13
 const STORE_NAME = /^[A-Za-z0-9._-]+$/
 const PERCENT_BYTE = /%([0-9A-Fa-f]{2})/g
+const PERCENT_ENCODED = /%[0-9A-Fa-f]{2}/
 const URL_CONTROL = /[\t\r\n]/
 const URL_CONTROLS = /[\t\r\n]/g
 const SCRIPT = /\.js$/i
+// The longest run with `%` that is decoded, and the most decodings. A store URL written out is at most 1,153
+// characters (ASSETS_BASE_URL is at most 1,024, index.js; a name at most 128), so even percent-encoded once as a
+// whole (every character at most 3: a URL passed in a query parameter) it is at most 3,459, under the cap. Longer
+// runs, or ones still changing after the last pass (a name encoded more than PERCENT_PASSES times), are not decoded
+// further, which would cost time that grows with the square of their length: the text cannot be read with certainty
+// and nothing is deleted.
+const PERCENT_RUN_MAX = 4096
+const PERCENT_PASSES = 8
+// the largest file the clean-up reads (a script, storage.json) when index.js gives no limit: 16 MiB, above the
+// default upload limit (PUBLIC_MAX_UPLOAD_SIZE=12) and the default storage limit (4 MiB)
+const DEFAULT_READ_LIMIT = 16 * 1024 * 1024
 // how many assets a dry run names
 const DRY_RUN_LISTED = 50
 const say = line => console.log(line)
@@ -88,16 +106,29 @@ function createNameScan(files, onKeep) {
   const look = (text, from, to) => {
     if (lengths.has(to - from)) keepKey(text.slice(from, to).toLowerCase())
   }
+  // where the text being scanned comes from (for the log), and the places that held a run it could not decide
+  let source = ''
+  const undecidable = []
+  const cannotDecide = () => {
+    if (!undecidable.includes(source)) undecidable.push(source)
+  }
   const run = (text, from, to, percent) => {
     if (percent) {
-      // ASCII bytes only (store names are ASCII), until nothing changes, so a name encoded more than once is found;
-      // what is left of `%` then cannot be part of a name, so the decoded text is scanned with `%` as a separator
+      // ASCII bytes only (store names are ASCII), up to PERCENT_PASSES times, so a name encoded more than once is
+      // found; what is left of `%` then cannot be part of a name, so the decoded text is scanned with `%` as a
+      // separator. A run too long to decode, or still changing after the last pass, cannot be decided.
+      if (to - from > PERCENT_RUN_MAX) return cannotDecide()
       let decoded = text.slice(from, to)
-      for (;;) {
+      let settled = false
+      for (let pass = 0; pass < PERCENT_PASSES; pass++) {
         const next = decoded.replace(PERCENT_BYTE, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-        if (next === decoded) break
+        if (next === decoded) {
+          settled = true
+          break
+        }
         decoded = next
       }
+      if (!settled && PERCENT_ENCODED.test(decoded)) return cannotDecide()
       runs(decoded, false)
       return
     }
@@ -139,7 +170,14 @@ function createNameScan(files, onKeep) {
     runs(text, true)
     if (URL_CONTROL.test(text)) runs(text, true, true)
   }
-  return { kept, scan, keep: name => keepKey(name.toLowerCase()) }
+  return {
+    kept,
+    scan,
+    undecidable,
+    from: label => {
+      source = label
+    },
+  }
 }
 
 // every string of a parsed value, keys too
@@ -164,8 +202,17 @@ class Cleaner {
   // storageFile: the script storage file (storage.json), read here without changing it; Storage opens it later.
   // assetsUrl: where clients read the asset store (ASSETS_BASE_URL). localStore: the store is the assets directory
   // (ASSETS=local), so unreferenced files go to its trash, kept for trashDays (CLEAN_TRASH_DAYS; 0: deleted at once).
-  // now: the clock, for the trash.
-  async init({ db, storageFile, assetsUrl, localStore = false, trashDays = 0, now = Date.now }) {
+  // now: the clock, for the trash. readLimit: the largest file read (a script, storage.json), and the most an S3
+  // object may expand to (index.js: the larger of the upload and storage limits)
+  async init({
+    db,
+    storageFile,
+    assetsUrl,
+    localStore = false,
+    trashDays = 0,
+    now = Date.now,
+    readLimit = DEFAULT_READ_LIMIT,
+  }) {
     const clean = process.env.CLEAN === 'true' || process.env.CLEAN === 'dryrun'
     if (!clean) return say('[clean] skipped')
     const dryrun = process.env.CLEAN === 'dryrun'
@@ -205,9 +252,15 @@ class Cleaner {
         if (SCRIPT.test(file)) unreadable.push(`script ${previewValue(file, 80)} (a name the clean-up cannot read)`)
       }
     }
-    const { kept, scan, keep } = createNameScan(named, file => {
+    const { kept, scan, undecidable, from } = createNameScan(named, file => {
       if (SCRIPT.test(file)) readScript(file)
     })
+    // a file's text, held to readLimit (storage.json and its copies; the stores hold scripts to it themselves)
+    const readLimited = async file => {
+      const { size } = await fs.stat(file)
+      if (size > readLimit) throw Object.assign(new Error(`larger than ${readLimit} bytes`), { code: 'TOO_LARGE' })
+      return fs.readFile(file, 'utf8')
+    }
     const inspect = (table, id, fn) => {
       try {
         fn()
@@ -215,12 +268,11 @@ class Cleaner {
         malformed.push({ table, id })
       }
     }
-    // the script that runs (hydration's sanitised value): a store file for certain is kept and read whatever its
-    // extension; anything else that is a script stops all deletion
+    // the script that runs (hydration's sanitised value): a store file for certain is read whatever its extension
+    // (its name is in the text scanned, so it is kept as well); anything else that is a script stops all deletion
     const keepScript = (id, value) => {
       const script = scriptSource(value, assetsUrl)
       if (script.source === 'store') {
-        keep(script.name)
         if (!namedBy.has(script.name)) namedBy.set(script.name, String(id).slice(0, 24))
         readScript(script.name)
       } else if (script.source === 'unknown') {
@@ -242,6 +294,7 @@ class Cleaner {
         )
           throw new Error('invalid entity')
         blueprintIds.add(data.blueprint)
+        from(`entity ${previewValue(row.id)}`)
         scanValue(data, scan)
       })
     }
@@ -256,6 +309,7 @@ class Cleaner {
         if (!result.ok || result.value.id !== row.id) throw new Error('invalid blueprint')
         // an orphan is deleted with what only it names; a kept one joins the corpus as stored and as loaded
         if (blueprintIds.has(row.id)) {
+          from(`blueprint ${previewValue(row.id)}`)
           scanValue(data, scan)
           scanValue(result.value, scan)
           keepScript(row.id, result.value.script)
@@ -268,6 +322,7 @@ class Cleaner {
       inspect('collections', blueprint?.id, () => {
         const result = sanitizeBlueprintAdd(blueprint, { persisted: true })
         if (!result.ok) throw new Error('invalid blueprint')
+        from(`collection blueprint ${previewValue(blueprint.id)}`)
         scanValue(blueprint, scan)
         scanValue(result.value, scan)
         keepScript(blueprint.id, result.value.script)
@@ -283,21 +338,26 @@ class Cleaner {
           throw new Error('invalid settings asset')
         }
       }
+      from('settings')
       scanValue(settings, scan)
     })
     const userRows = await db('users').select('id', 'avatar')
     for (const user of userRows) {
       inspect('users', user.id, () => {
         if (user.avatar != null && typeof user.avatar !== 'string') throw new Error('invalid user avatar')
+        from(`user ${previewValue(user.id)}`)
         scan(user.avatar)
       })
     }
     // script storage (world.set), parsed; a copy set aside as unreadable (storage.json.corrupt-*) as text, so an
-    // operator who restores it finds its assets still there
+    // operator who restores it finds its assets still there. A file larger than readLimit is not read: before, a
+    // multi-GB one was read whole (the read then failed only past Node's string or file-size limits, after the
+    // memory was taken)
     if (storageFile) {
       try {
-        const text = await fs.readFile(storageFile, 'utf8')
+        const text = await readLimited(storageFile)
         try {
+          from('storage.json')
           scanValue(JSON.parse(text), scan)
         } catch {
           unreadable.push('storage.json does not parse as JSON')
@@ -311,7 +371,9 @@ class Cleaner {
         for (const name of await fs.readdir(dir)) {
           if (!name.startsWith(`${base}.corrupt-`)) continue
           try {
-            scan(await fs.readFile(path.join(dir, name), 'utf8'))
+            const text = await readLimited(path.join(dir, name))
+            from(name)
+            scan(text)
           } catch (err) {
             unreadable.push(`${name} (${err?.code || 'read failed'})`)
           }
@@ -325,28 +387,40 @@ class Cleaner {
     // in front of it may still serve it, and stopping is the safe direction.
     for (let i = 0; i < scripts.length; i++) {
       const name = scripts[i]
+      const owner = namedBy.has(name) ? ` named by blueprint ${JSON.stringify(namedBy.get(name))}` : ''
       try {
-        let text = await assets.readText(name)
-        if (text === null && trashed.has(name)) text = await assets.readTrashedText(name, trashed.get(name))
+        let text = await assets.readText(name, { limit: readLimit })
+        if (text === null && trashed.has(name)) {
+          text = await assets.readTrashedText(name, trashed.get(name), { limit: readLimit })
+        }
         if (text === null) {
-          const owner = namedBy.has(name) ? ` named by blueprint ${JSON.stringify(namedBy.get(name))}` : ''
           unreadable.push(`script ${name}${owner} is missing (a CDN or cache may still serve it; remove or replace it)`)
           continue
         }
+        from(`script ${name}`)
         scan(text)
       } catch (err) {
-        unreadable.push(`script ${name} (${err?.code || err?.message || 'read failed'})`)
+        unreadable.push(`script ${name}${owner} (${err?.code || err?.message || 'read failed'})`)
       }
     }
     // a trashed file named again comes back, whatever else happens below (bringing a file back is always safe)
     const restore = [...kept].filter(name => trashOnly.has(name)).sort()
+    // a named file none of whose trashed copies could come back: the trash is not purged this run, so whatever copy
+    // of it is left stays
+    let keepTrash = false
     if (restore.length) {
       if (dryrun) {
         console.warn(`[clean] dry run: ${restore.length} assets would come back from the trash: ${listed(restore)}`)
       } else {
-        const { restored, failed } = await assets.restoreFromTrash(restore, trashed)
+        const { restored, failed, lost } = await assets.restoreFromTrash(restore, trashed)
         if (restored.length) {
           console.warn(`[clean] ${restored.length} assets named again came back from the trash: ${listed(restored)}`)
+        }
+        if (lost.length) {
+          keepTrash = true
+          console.warn(
+            `[clean] ${lost.length} assets named again could not come back: their trashed copies were gone (${listed(lost)}); the trash is not purged this run`
+          )
         }
         if (failed.length) {
           unreadable.push(
@@ -363,6 +437,13 @@ class Cleaner {
       console.warn(`[clean] skipped all deletion: could not read ${JSON.stringify(unreadable)}`)
       return
     }
+    // a percent-encoded run too long or too deep to decide: the scan cannot be read with certainty
+    if (undecidable.length) {
+      console.warn(
+        `[clean] skipped all deletion: ${listed(undecidable)} hold a percent-encoded run the clean-up cannot read with certainty (longer than ${PERCENT_RUN_MAX} characters, or still encoded after ${PERCENT_PASSES} decodings)`
+      )
+      return
+    }
     // a script from elsewhere may world.load assets no record names, and the clean-up does not fetch code at
     // start-up: discovery is incomplete, so nothing is deleted
     if (uncertain.length) {
@@ -373,7 +454,7 @@ class Cleaner {
     }
     // Discovery is complete, within the contract (above). The trash folders past their days go first (after what
     // was named again came back).
-    if (trashing && typeof assets.purgeTrash === 'function') {
+    if (trashing && !keepTrash && typeof assets.purgeTrash === 'function') {
       const purge = await assets.purgeTrash(trashDays, now(), { dryrun })
       if (purge.days.length) {
         say(

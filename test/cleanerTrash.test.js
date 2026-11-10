@@ -193,12 +193,61 @@ test('clean-up trash: a name both in the store and the trash (an interrupted or 
   assert.equal(fs.readFileSync(path.join(w.assets.dir, KEPT), 'utf8'), 'store copy')
   assert.equal(w.inTrash('2026-11-05', KEPT), true, 'left for its folder to be purged')
   assert.deepEqual(w.warnings, [], 'nothing came back')
-  // a copy that left the trash before it could come back has nothing to restore, and stops nothing
+  // a copy that left the trash before it could come back has nothing to restore: it is reported as lost
   const vanished = name('vanished')
   w.trash('2026-11-06', vanished)
   const trashed = await w.assets.trashed()
   fs.rmSync(path.join(w.trashDir, '2026-11-06', vanished))
-  assert.deepEqual(await w.assets.restoreFromTrash([vanished], trashed), { restored: [], failed: [] })
+  assert.deepEqual(await w.assets.restoreFromTrash([vanished], trashed), { restored: [], failed: [], lost: [vanished] })
+})
+
+// Codex: a referenced name with copies in two folders; the newest vanished after the trash was indexed, the restore
+// tried only it, reported nothing, and the purge then deleted the older copy
+test('clean-up trash: every indexed copy is tried, newest first; if none is there, the trash is not purged', async t => {
+  const w = await world(t)
+  const model = name('model')
+  w.trash('2026-09-01', model, 'september')
+  w.trash('2026-11-01', model, 'november')
+  w.tables.entities[0] = row({ ...appData(), props: { model: `asset://${model}` } })
+  const realTrashed = w.assets.trashed.bind(w.assets)
+  // the newest copy goes after it was indexed: the older one comes back
+  w.assets.trashed = async () => {
+    const index = await realTrashed()
+    fs.rmSync(path.join(w.trashDir, '2026-11-01', model))
+    return index
+  }
+  await w.run()
+  assert.equal(fs.readFileSync(path.join(w.assets.dir, model), 'utf8'), 'september')
+  assert.ok(w.warnings.some(line => line.includes('1 assets named again came back from the trash')))
+  // every copy goes after it was indexed: reported, and nothing is purged (an old folder stays)
+  const v = await world(t)
+  const gone = name('gone-everywhere')
+  v.trash('2026-09-01', gone)
+  v.trash('2026-09-02', name('old-unrelated'))
+  v.tables.entities[0] = row({ ...appData(), props: { model: `asset://${gone}` } })
+  const indexed = v.assets.trashed.bind(v.assets)
+  v.assets.trashed = async () => {
+    const index = await indexed()
+    fs.rmSync(path.join(v.trashDir, '2026-09-01', gone))
+    return index
+  }
+  await v.run()
+  assert.ok(
+    v.warnings.includes(
+      `[clean] 1 assets named again could not come back: their trashed copies were gone (${JSON.stringify([gone])}); the trash is not purged this run`
+    ),
+    v.warnings.join('\n')
+  )
+  assert.equal(v.inTrash('2026-09-02', name('old-unrelated')), true, 'not purged')
+})
+
+test('clean-up trash: CLEAN_TRASH_DAYS=0 removes every folder, one dated in the future included', async t => {
+  const w = await world(t)
+  w.trash('2026-12-31', name('future')) // a clock that ran ahead when it was moved
+  w.trash('2026-11-10', name('today'))
+  await w.run({ trashDays: 0 })
+  assert.equal(fs.existsSync(path.join(w.trashDir, '2026-12-31')), false)
+  assert.equal(fs.existsSync(path.join(w.trashDir, '2026-11-10')), false)
 })
 
 test('clean-up trash: a dry run says what would move, be purged and come back, and changes nothing', async t => {

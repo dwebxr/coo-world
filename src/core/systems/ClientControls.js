@@ -26,11 +26,10 @@ const q1 = new THREE.Quaternion()
 const q2 = new THREE.Quaternion()
 const s1 = new THREE.Vector3()
 
-// XR tremor smoothing state per ray pose entry: the engine's own vectors, never on the entry a script holds (a
-// script could replace a method there and be handed the engine's shared temporaries)
-const raySmoothing = new WeakMap()
-
 const captured = new Set()
+
+// what bind() returned -> its control, for the host only (Apps.control hands a pointer lock to an app's new control)
+const controlsByProxy = new WeakMap()
 
 let actionIds = 0
 
@@ -52,34 +51,39 @@ function controlFailed(control, phase, err) {
 
 // A touch as an app's control sees it: one frozen object per control and touch, the same at onTouch and onTouchEnd
 // (so it can be kept and compared), whose getters read the host's live record and return new vectors made from
-// its numbers. The live record itself stays with the host and the player's stick.
-const touchFacades = new WeakMap() // host touch record -> Map(control -> facade)
-
-function touchFacade(control, info) {
-  let facades = touchFacades.get(info)
-  if (!facades) touchFacades.set(info, (facades = new Map()))
-  let facade = facades.get(control)
-  if (!facade) {
-    facade = Object.freeze({
-      get id() {
-        return info.id
-      },
-      get position() {
-        return new THREE.Vector3(info.position.x, info.position.y, 0)
-      },
-      get prevPosition() {
-        return new THREE.Vector3(info.prevPosition.x, info.prevPosition.y, 0)
-      },
-      get delta() {
-        return new THREE.Vector3(info.delta.x, info.delta.y, 0)
-      },
-      get pointerType() {
-        return info.pointerType
-      },
-    })
-    facades.set(control, facade)
+// its numbers. The live record itself stays with the host and the player's stick. The host lists the facades per
+// touch (ClientControls.touchFacades) and drops them when the touch ends or their control is released; a facade kept
+// after that answers with the touch's last values and holds nothing of the host's (no record, control or app).
+function createTouchFacade(info) {
+  let source = info
+  const facade = Object.freeze({
+    get id() {
+      return source.id
+    },
+    get position() {
+      return new THREE.Vector3(source.position.x, source.position.y, 0)
+    },
+    get prevPosition() {
+      return new THREE.Vector3(source.prevPosition.x, source.prevPosition.y, 0)
+    },
+    get delta() {
+      return new THREE.Vector3(source.delta.x, source.delta.y, 0)
+    },
+    get pointerType() {
+      return source.pointerType
+    },
+  })
+  const detach = () => {
+    const { id, position, prevPosition, delta, pointerType } = source
+    source = {
+      id,
+      position: { x: position.x, y: position.y },
+      prevPosition: { x: prevPosition.x, y: prevPosition.y },
+      delta: { x: delta.x, y: delta.y },
+      pointerType,
+    }
   }
-  return facade
+  return { facade, detach }
 }
 
 // the action hints a control shows in the HUD (CoreUI Actions): host objects built from the given list, reading
@@ -160,6 +164,13 @@ export class ClientControls extends System {
       delta: new THREE.Vector3(), // position delta (pixels)
     }
     this.touches = new Map() // id -> { id, position, delta, prevPosition }
+    // host touch record -> Map(control -> { facade, detach }): the touch facades handed to app controls (above)
+    this.touchFacades = new Map()
+    // XR tremor smoothing state per ray pose entry: the engine's own vectors, never on the entry a script holds (a
+    // script could replace a method there and be handed the engine's shared temporaries); removed with its control
+    this.raySmoothing = new Map()
+    // the control that locked the pointer: its release (by its script, or when its app run ends) unlocks it
+    this.pointerOwner = null
     this.screen = {
       width: 0,
       height: 0,
@@ -188,7 +199,7 @@ export class ClientControls extends System {
   // the ray poses in world space: computed in the engine's own objects, written to the script's pose as numbers
   applyXRRigTo(control, xrRig) {
     for (const pose of [control.entries.xrLeftRayPose, control.entries.xrRightRayPose]) {
-      const smooth = pose && raySmoothing.get(pose)
+      const smooth = pose && this.raySmoothing.get(pose)
       if (!smooth) continue
       const scale = v1.set(1, 1, 1)
       m1.compose(smooth.position, smooth.quaternion, scale)
@@ -315,6 +326,8 @@ export class ClientControls extends System {
       get active() {
         return !released && !self.world.fatalError && !options.object?.crashed
       },
+      // true while its onRelease callback runs
+      releasing: false,
       entries,
       actions: null,
       api: {
@@ -347,10 +360,22 @@ export class ClientControls extends System {
           const idx = this.controls.indexOf(control)
           if (idx === -1) return
           this.controls.splice(idx, 1)
+          // nothing the host keeps for it (touch facades, XR smoothing) outlives it
+          self.dropControlState(control)
           // its hints leave the HUD with it
           if (control.actions) self.buildActions()
-          // the options object is host-owned, so its callbacks run without a receiver
-          if (wasActive) callScript(options.onRelease)
+          // the options object is host-owned, so its callbacks run without a receiver. The control's own callback
+          // may still unlock the pointer (control.releasing)
+          if (wasActive) {
+            control.releasing = true
+            try {
+              callScript(options.onRelease)
+            } finally {
+              control.releasing = false
+            }
+          }
+          // a pointer lock it took (and its callback did not end) ends with it
+          if (self.pointerOwner === control) self.unlockPointer()
         },
       },
     }
@@ -365,7 +390,7 @@ export class ClientControls extends System {
       this.controls.splice(idx, 0, control)
     }
     // return proxy api (over an empty target so the control itself stays unreachable)
-    return createControlProxy(prop => {
+    const proxy = createControlProxy(prop => {
       // internal property
       if (prop in control.api) {
         return control.api[prop]
@@ -387,6 +412,44 @@ export class ClientControls extends System {
       }
       return undefined
     })
+    controlsByProxy.set(proxy, control)
+    return proxy
+  }
+
+  // an app that replaces its control (app.control() again) keeps the pointer lock its previous control took: the new
+  // control holds it from now on, so releasing the previous one does not unlock the pointer
+  handOverPointer(fromProxy, toProxy) {
+    const from = controlsByProxy.get(fromProxy)
+    const to = controlsByProxy.get(toProxy)
+    if (from && to && this.pointerOwner === from) this.pointerOwner = to
+  }
+
+  dropControlState(control) {
+    for (const facades of this.touchFacades.values()) {
+      facades.get(control)?.detach()
+      facades.delete(control)
+    }
+    for (const prop of ['xrLeftRayPose', 'xrRightRayPose']) {
+      const pose = control.entries[prop]
+      if (pose) this.raySmoothing.delete(pose)
+    }
+  }
+
+  // the stable facade of a touch for an app's control (createTouchFacade)
+  touchFacade(control, info) {
+    let facades = this.touchFacades.get(info)
+    if (!facades) this.touchFacades.set(info, (facades = new Map()))
+    let entry = facades.get(control)
+    if (!entry) facades.set(control, (entry = createTouchFacade(info)))
+    return entry.facade
+  }
+
+  // a touch that ended: its facades keep its last values and the host lets go of them
+  dropTouchFacades(info) {
+    const facades = this.touchFacades.get(info)
+    if (!facades) return
+    this.touchFacades.delete(info)
+    for (const entry of facades.values()) entry.detach()
   }
 
   releaseAllButtons() {
@@ -543,7 +606,7 @@ export class ClientControls extends System {
       this.touches.set(e.pointerId, info)
       for (const control of this.controls) {
         if (!control.active) continue
-        const touch = control.options.object?.isApp ? touchFacade(control, info) : info
+        const touch = control.options.object?.isApp ? this.touchFacade(control, info) : info
         const consume = control.active && callScript(control.options.onTouch, touch)
         if (consume) break
       }
@@ -583,11 +646,12 @@ export class ClientControls extends System {
       if (info) {
         for (const control of this.controls) {
           if (!control.active) continue
-          const touch = control.options.object?.isApp ? touchFacade(control, info) : info
+          const touch = control.options.object?.isApp ? this.touchFacade(control, info) : info
           const consume = control.active && callScript(control.options.onTouchEnd, touch)
           if (consume) break
         }
         this.touches.delete(e.pointerId)
+        this.dropTouchFacades(info)
       }
     }
     this.checkPointerChanges(e)
@@ -669,6 +733,7 @@ export class ClientControls extends System {
   }
 
   unlockPointer() {
+    this.pointerOwner = null
     this.pointer.shouldLock = false
     if (!this.pointer.locked) return
     document.exitPointerLock()
@@ -695,6 +760,8 @@ export class ClientControls extends System {
   onPointerLockEnd() {
     if (!this.pointer.locked) return
     this.pointer.locked = false
+    // (ended by the user, eg Escape): no control holds it now
+    this.pointerOwner = null
     this.world.emit('pointer-lock', false)
   }
 
@@ -776,13 +843,13 @@ function updateXRHand(controls, src, frame, referenceSpace, side) {
           if (ray) {
             const pose = control.entries[rayPoseProp]
             // apply tremor smoothing to local change
-            let smooth = raySmoothing.get(pose)
+            let smooth = controls.raySmoothing.get(pose)
             if (!smooth) {
               smooth = {
                 position: setVectorFromPoint(new THREE.Vector3(), ray.transform.position),
                 quaternion: setQuaternionFromPoint(new THREE.Quaternion(), ray.transform.orientation),
               }
-              raySmoothing.set(pose, smooth)
+              controls.raySmoothing.set(pose, smooth)
             }
             // the browser's pose objects never reach a method of an object a script may hold (xrPose.js)
             setVectorFromPoint(v1, ray.transform.position)
@@ -938,13 +1005,14 @@ function createPointer(controls, control, prop) {
     get locked() {
       return controls.pointer.locked
     },
-    // a released control (or one of a stopped app) changes nothing
+    // a released control (or one of a stopped app) changes nothing; its own onRelease callback may still unlock
     lock() {
       if (!control.active) return
+      controls.pointerOwner = control
       controls.lockPointer()
     },
     unlock() {
-      if (!control.active) return
+      if (!control.active && !control.releasing) return
       controls.unlockPointer()
     },
   }

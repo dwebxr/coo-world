@@ -75,7 +75,10 @@ app.on('update', () => {
 *   `pointer.unlock()`: Releases the pointer lock.
 
 `coords`, `position` and `delta` are new vectors on every read (changing one changes nothing else). `lock()`
-and `unlock()` do nothing once the control is released.
+and `unlock()` do nothing once the control is released, except that the control's own `onRelease` callback can
+still call `unlock()`. A pointer lock a control took ends with it: releasing the control (or the app stopping or
+being rebuilt) unlocks the pointer if that control locked it last, and leaves a lock another control took alone.
+Calling `app.control()` again keeps the lock: the app's new control holds it from then on.
 
 ### Scroll
 
@@ -111,9 +114,11 @@ number leaves the camera where it is for that frame.
 
 ### Releasing
 
-`control.release()` ends the control. Its action hints leave the screen and a hidden reticle comes back. After
-that (also when the app stops or is rebuilt, which releases its control) the control still answers, but changes
-nothing: `setActions` and `hideReticle` do nothing, and its buttons no longer fire.
+`control.release()` ends the control. Its action hints leave the screen and a hidden reticle comes back, and a
+pointer lock it took ends. After that (also when the app stops or is rebuilt, which releases its control) the
+control still answers, but changes nothing: `setActions` and `hideReticle` do nothing, and its buttons no longer
+fire. A touch object kept from `onTouch`/`onTouchEnd` answers with the touch's last values once the touch has
+ended or the control was released.
 
 If a control's per-frame values make the engine fail (for example an accessor that throws on `camera.position`),
 the app crashes like any other script error and the frame goes on for everyone else.

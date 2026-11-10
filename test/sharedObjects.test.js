@@ -135,21 +135,118 @@ test("control.onTouch: an app's control gets one stable touch facade; the host k
   assert.equal(seen.end, seen.start, 'the same object at the end, so it can be compared')
   assert.equal(seen.hostEnd, record)
   assert.equal(seen.start.id, 7)
+  assert.equal(world.controls.touchFacades.size, 0, 'an ended touch leaves nothing in the host cache')
 })
 
-test('control.pointer.lock/unlock do nothing once the control is released', () => {
+test('control.onTouch: a kept touch facade keeps no released control (or app) in the host cache', () => {
   const world = controls()
-  const calls = []
-  world.controls.lockPointer = () => calls.push('lock')
-  world.controls.unlockPointer = () => calls.push('unlock')
-  const control = world.controls.bind({ priority: 1, object: { isApp: true, data: { id: 'a' } } })
-  const pointer = control.pointer
-  pointer.lock()
-  pointer.unlock()
-  control.release()
-  pointer.lock()
-  pointer.unlock()
-  assert.deepEqual(calls, ['lock', 'unlock'])
+  const kept = {}
+  const bind = (id, priority) =>
+    world.controls.bind({
+      priority,
+      object: { isApp: true, data: { id } },
+      onTouch: touch => {
+        kept[id] = touch // (returns nothing: the touch is not consumed, so both controls get it)
+      },
+    })
+  const a = bind('a', 2)
+  const b = bind('b', 1)
+  world.controls.checkPointerChanges = () => {}
+  world.controls.viewport = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }) }
+  const event = x => ({
+    pointerType: 'touch',
+    pointerId: 3,
+    clientX: x,
+    clientY: 4,
+    pageX: x,
+    pageY: 4,
+    movementX: 0,
+    movementY: 0,
+    preventDefault() {},
+  })
+  world.controls.onPointerDown(event(5))
+  const record = world.controls.touches.get(3)
+  assert.equal(world.controls.touchFacades.get(record).size, 2)
+  world.controls.onPointerMove(event(9))
+  a.release()
+  assert.equal(world.controls.touchFacades.get(record).size, 1, "a released control's entry goes")
+  b.release()
+  assert.equal(world.controls.touchFacades.get(record).size, 0)
+  // the touch goes on, then ends: the facade A kept answers with the values it had when its control was released
+  world.controls.onPointerMove(event(30))
+  world.controls.onPointerUp(event(30))
+  assert.equal(world.controls.touchFacades.size, 0, 'nothing is cached for the touch')
+  assert.equal(world.controls.touches.size, 0)
+  assert.equal(kept.a.position.x, 9)
+  assert.equal(kept.a.delta.x, 4)
+  assert.equal(kept.a.id, 3)
+  assert.equal(kept.a.pointerType, 'touch')
+  assert.equal(kept.b.position.x, 9)
+})
+
+// the real lock path, with the browser's pointer lock simulated: a request, then the lock-change event it fires
+function pointerLock(world) {
+  const calls = { request: 0, exit: 0 }
+  world.controls.viewport = { requestPointerLock: async () => calls.request++ }
+  const original = globalThis.document
+  globalThis.document = { exitPointerLock: () => calls.exit++ }
+  return { calls, granted: () => world.controls.onPointerLockStart(), restore: () => (globalThis.document = original) }
+}
+
+test("control.pointer: a control's pointer lock ends with it, whether or not its onRelease unlocks", () => {
+  for (const unlockInCallback of [true, false]) {
+    const world = controls()
+    const lock = pointerLock(world)
+    try {
+      // the review's sequence: the callback unlocks (and sees it done)
+      let lockedAfterCallbackUnlock
+      const c = world.controls.bind({
+        priority: 1,
+        object: { isApp: true, data: { id: 'a' } },
+        onRelease: unlockInCallback
+          ? () => {
+              c.pointer.unlock()
+              lockedAfterCallbackUnlock = c.pointer.locked
+            }
+          : undefined,
+      })
+      c.pointer.lock()
+      lock.granted()
+      assert.equal(c.pointer.locked, true)
+      c.release()
+      const label = `unlock in onRelease: ${unlockInCallback}`
+      if (unlockInCallback) assert.equal(lockedAfterCallbackUnlock, false, 'the callback itself unlocked')
+      assert.equal(world.controls.pointer.locked, false, label)
+      assert.equal(world.controls.pointer.shouldLock, false, label)
+      assert.equal(lock.calls.exit, 1, `exactly one browser unlock (${label})`)
+    } finally {
+      lock.restore()
+    }
+  }
+})
+
+test("control.pointer: releasing one control leaves another control's pointer lock alone", () => {
+  const world = controls()
+  const lock = pointerLock(world)
+  try {
+    const a = world.controls.bind({ priority: 2, object: { isApp: true, data: { id: 'a' } } })
+    const b = world.controls.bind({ priority: 1, object: { isApp: true, data: { id: 'b' } } })
+    a.pointer.lock()
+    lock.granted()
+    b.release()
+    assert.equal(world.controls.pointer.locked, true)
+    assert.equal(lock.calls.exit, 0)
+    // a released control's pointer changes nothing (it neither locks nor unlocks)
+    b.pointer.lock()
+    b.pointer.unlock()
+    assert.equal(lock.calls.request, 1)
+    assert.equal(world.controls.pointer.locked, true)
+    a.release()
+    assert.equal(world.controls.pointer.locked, false)
+    assert.equal(lock.calls.exit, 1)
+  } finally {
+    lock.restore()
+  }
 })
 
 test('XR ray smoothing: same pose values as before, with the smoothing state kept from the script', () => {
@@ -233,6 +330,10 @@ test('XR ray smoothing: same pose values as before, with the smoothing state kep
     received.every(value => typeof value === 'number'),
     'only numbers reached script-held methods'
   )
+  // the smoothing state is the host's and leaves with its control (the script keeps its poses)
+  assert.equal(world.controls.raySmoothing.size, 2)
+  control.release()
+  assert.equal(world.controls.raySmoothing.size, 0)
 })
 
 test('control.camera: a script-held camera that throws or lies is contained per control', () => {

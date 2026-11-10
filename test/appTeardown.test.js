@@ -301,6 +301,35 @@ test("teardown: the run's own destroy handler can still clean up and act, synchr
   assert.equal(world.ui.suppressors, 0)
 })
 
+test("teardown: the pointer lock an app's control took ends with its run (and survives app.control() again)", async () => {
+  const shared = {}
+  const { world, app } = makeWorld((world, app) => {
+    const control = app.control()
+    shared.lock = () => control.pointer.lock()
+    shared.again = () => app.control()
+  })
+  // the browser's pointer lock, simulated: the request, then the lock-change event it fires
+  const calls = { request: 0, exit: 0 }
+  world.controls.viewport = { requestPointerLock: async () => calls.request++ }
+  const original = globalThis.document
+  globalThis.document = { exitPointerLock: () => calls.exit++ }
+  try {
+    await tick()
+    shared.lock()
+    assert.equal(calls.request, 1)
+    world.controls.onPointerLockStart()
+    // replacing the control keeps the lock (the new control holds it)
+    shared.again()
+    assert.equal(world.controls.pointer.locked, true)
+    assert.equal(calls.exit, 0)
+    app.destroy()
+    assert.equal(world.controls.pointer.locked, false, 'the run ended, so did its lock')
+    assert.equal(calls.exit, 1)
+  } finally {
+    globalThis.document = original
+  }
+})
+
 test('player handles: a script cannot evict its handle to skip the cleanup (voice modifiers do not outlive the app)', async () => {
   const { world, app } = makeWorld(
     (world, app) => {

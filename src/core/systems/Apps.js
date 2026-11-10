@@ -416,14 +416,23 @@ export class Apps extends System {
         return proxy
       },
       control(entity, options) {
-        entity.control?.release()
+        const previous = entity.control
         // TODO: only allow on user interaction
         // TODO: show UI with a button to release()
-        entity.control = world.controls.bind({
+        const control = world.controls.bind({
           ...options,
           priority: ControlPriorities.APP,
           object: entity,
         })
+        try {
+          if (previous) {
+            // a pointer lock the previous control took stays with the app (ClientControls.handOverPointer)
+            world.controls.handOverPointer?.(previous, control)
+            previous.release()
+          }
+        } finally {
+          entity.control = control
+        }
         return entity.control
       },
       configure(entity, fnOrArray) {

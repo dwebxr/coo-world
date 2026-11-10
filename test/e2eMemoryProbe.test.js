@@ -1,14 +1,15 @@
 // The e2e memory probe (test/e2e/lib/memory-probe.js) is what the full-stack suite's flood step trusts to
 // tell "the server kept the flood" from "the flood is garbage not yet collected". This checks the probe
-// itself against a process that holds heap and buffer memory, drops it, and makes garbage, and checks that
-// the harness's reader (memoryReader in test/e2e/lib/server.mjs) gives each request its own report.
+// itself against a process that holds heap and buffer memory, drops it, and makes garbage; the harness side
+// (test/e2e/lib/memory.mjs) against a stand-in process: each request gets the reply with its own id, checked;
+// and the flood step's deadline against a controlled clock.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { test } from 'node:test'
 
 import { TIMEOUT_SCALE } from './e2e/lib/common.mjs'
-import { MemoryProbeTimeout, memoryReader } from './e2e/lib/server.mjs'
+import { MemoryProbeTimeout, memoryReader, waitForMemoryToSettle } from './e2e/lib/memory.mjs'
 
 const PROBE = new URL('./e2e/lib/memory-probe.js', import.meta.url).href
 const MiB = 1024 * 1024
@@ -39,15 +40,15 @@ const CHILD = `
   process.stdout.write('done start\\n')
 `
 
-function start(args) {
-  const child = spawn(process.execPath, [...args, '-e', CHILD], { stdio: ['pipe', 'pipe', 'pipe'] })
+function start(args, code = CHILD) {
+  const child = spawn(process.execPath, [...args, '-e', code], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] })
   const closed = new Promise(resolve => child.on('close', (code, signal) => resolve({ code, signal })))
   let out = ''
   let err = ''
   child.stdout.setEncoding('utf8').on('data', text => (out += text))
   child.stderr.setEncoding('utf8').on('data', text => (err += text))
   const exited = () => child.exitCode ?? child.signalCode
-  const readMemory = memoryReader(child, { exited })
+  const read = memoryReader(child)
   const lines = () => out.split('\n').slice(0, -1)
   const until = async find => {
     const deadline = Date.now() + 20_000
@@ -60,8 +61,9 @@ function start(args) {
     }
   }
   const count = (all, prefix) => all.filter(line => line.startsWith(prefix)).length
-  let requests = 0
   return {
+    child,
+    read,
     stderr: () => err,
     async step(word) {
       const seen = count(lines(), `done ${word}`)
@@ -71,9 +73,8 @@ function start(args) {
     ready: () => until(all => (all.includes('done start') ? true : undefined)),
     // the two numbers server.retainedMiB() adds up, in MiB
     async memory() {
-      const report = await readMemory()
-      assert.equal(report.n, ++requests, 'the report answers this request')
-      return { heap: report.heapUsed / MiB, external: report.external / MiB }
+      const { heapUsed, external } = await read()
+      return { heap: heapUsed / MiB, external: external / MiB }
     },
     // resolves with { code, signal } once the child has exited and its output is drained
     async closed(timeout) {
@@ -132,6 +133,32 @@ test('the probe reports what a process holds in and outside the heap, not what i
   unchanged(await probe.memory(), 'dropped')
 })
 
+test('a process that missed requests while stopped answers the next ones once it runs again', async t => {
+  const probe = start(['--expose-gc', '--import', PROBE])
+  t.after(() => probe.stop())
+  await probe.ready()
+  probe.child.kill('SIGSTOP')
+  try {
+    await assert.rejects(probe.read({ timeout: 200 }), MemoryProbeTimeout)
+    await assert.rejects(probe.read({ timeout: 200 }), MemoryProbeTimeout)
+  } finally {
+    probe.child.kill('SIGCONT')
+  }
+  // the process now answers the two old requests too; their replies must not get in the way
+  for (let i = 0; i < 2; i++) {
+    const { heapUsed, external, rss } = await probe.read()
+    assert.ok(heapUsed > 0 && external > 0 && rss > 0)
+  }
+})
+
+test('the probe does not keep a process alive that has nothing left to do', async t => {
+  const probe = start(['--expose-gc', '--import', PROBE], '')
+  t.after(() => probe.stop())
+  // the server exits on its own at shutdown; an open IPC channel must not hold it
+  const { code } = await probe.closed(20_000)
+  assert.equal(code, 0)
+})
+
 test('the probe refuses to load without --expose-gc instead of reporting uncollected memory', async t => {
   const probe = start(['--import', PROBE])
   t.after(() => probe.stop())
@@ -141,18 +168,21 @@ test('the probe refuses to load without --expose-gc instead of reporting uncolle
   assert.match(probe.stderr(), /memory-probe\.js needs node --expose-gc/)
 })
 
-// a stand-in for the server process: the test writes its output and counts the signals it is sent. Like the probe,
-// the tests write a report only after the signal it answers
+// a stand-in for the server process: the test sees what is sent to it and replies for it
 function fakeChild() {
-  const child = { stdout: new EventEmitter(), stderr: new EventEmitter(), signals: 0, exitCode: null }
-  child.kill = () => child.signals++
-  child.write = (stream, text) => child[stream].emit('data', Buffer.from(text))
-  child.report = n => child.write('stdout', `E2E_MEMORY ${JSON.stringify({ n, heapUsed: n, external: 0, rss: 0 })}\n`)
-  child.read = memoryReader(child, { exited: () => child.exitCode })
+  const child = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null, connected: true, sent: [] })
+  child.send = (message, callback) => {
+    child.sent.push(message)
+    callback(null)
+  }
+  child.lastId = () => child.sent.at(-1).id
+  child.reply = (fields = {}, id = child.lastId()) =>
+    child.emit('message', { type: 'e2e-memory', id, heapUsed: 1, external: 2, rss: 3, ...fields })
+  child.read = memoryReader(child)
   return child
 }
-// longer than the reader's 50 ms poll
-const settle = () => new Promise(resolve => setTimeout(resolve, 150))
+// lets the reader's promise callbacks run
+const tick = () => new Promise(resolve => setTimeout(resolve, 10))
 const track = promise => {
   const state = { done: false }
   promise.then(
@@ -162,58 +192,202 @@ const track = promise => {
   return state
 }
 
-test('memory requests run one at a time, each answered by the report with its number', async () => {
+test('memory requests run one at a time', async () => {
   const child = fakeChild()
   const first = track(child.read())
   const second = track(child.read())
-  await settle()
-  assert.equal(child.signals, 1, 'the second request waits for the first')
-  child.report(1)
-  await settle()
-  assert.equal(first.value?.n, 1)
-  assert.equal(second.done, false, 'report 1 answers the first request only')
-  assert.equal(child.signals, 2)
-  child.report(2)
-  await settle()
-  assert.equal(second.value?.n, 2)
+  await tick()
+  assert.equal(child.sent.length, 1, 'the second request waits for the first')
+  child.reply({ heapUsed: 10 })
+  await tick()
+  assert.equal(first.value?.heapUsed, 10)
+  assert.equal(second.done, false)
+  assert.equal(child.sent.length, 2)
+  assert.notEqual(child.sent[1].id, child.sent[0].id, 'each request has a fresh id')
+  child.reply({ heapUsed: 20 })
+  await tick()
+  assert.equal(second.value?.heapUsed, 20)
 })
 
-test('a report that arrives after its request timed out is not taken for the next request', async () => {
+test('only the reply with the request id answers it', async () => {
+  const child = fakeChild()
+  const read = track(child.read())
+  await tick()
+  const id = child.lastId()
+  child.reply({}, id + 1)
+  child.reply({}, String(id))
+  const fields = { heapUsed: 1, external: 2, rss: 3 }
+  for (const other of [{ type: 'e2e-memory', ...fields }, { type: 'other', id, ...fields }, null, 'text', 42, []]) {
+    child.emit('message', other)
+  }
+  await tick()
+  assert.equal(read.done, false, 'nothing above answers the request')
+  child.reply({ heapUsed: 5, external: 7, rss: 9 })
+  await tick()
+  assert.deepEqual(read.value, { heapUsed: 5, external: 7, rss: 9 })
+})
+
+test('a reply that comes after its request timed out is ignored, also by the next request', async () => {
   const child = fakeChild()
   const started = Date.now()
   await assert.rejects(child.read({ timeout: 100 }), MemoryProbeTimeout)
   assert.ok(Date.now() - started >= 100 * TIMEOUT_SCALE, 'the request timeout is scaled like every harness wait')
+  const late = child.lastId()
   const next = track(child.read())
-  await settle()
-  assert.equal(child.signals, 2)
-  // the late answer to signal 1 arrives while the request for signal 2 waits
-  child.report(1)
-  await settle()
-  assert.equal(next.done, false, 'the late report 1 does not answer signal 2')
-  child.report(2)
-  await settle()
-  assert.equal(next.value?.n, 2)
+  await tick()
+  assert.equal(child.sent.length, 2)
+  child.reply({ heapUsed: 666 }, late)
+  await tick()
+  assert.equal(next.done, false, 'the late reply does not answer the next request')
+  child.reply({ heapUsed: 20 })
+  await tick()
+  assert.equal(next.value?.heapUsed, 20)
 })
 
-test('a report split across chunks is read from stdout alone, whatever stderr gets in between', async () => {
-  const child = fakeChild()
-  const read = track(child.read())
-  await settle()
-  assert.equal(child.signals, 1)
-  const line = `E2E_MEMORY ${JSON.stringify({ n: 1, heapUsed: 5, external: 7, rss: 9 })}\n`
-  child.write('stdout', line.slice(0, 24))
-  child.write('stderr', 'a warning\n')
-  child.write('stdout', line.slice(24))
-  await settle()
-  assert.equal(read.error, undefined)
-  assert.deepEqual(read.value, { n: 1, heapUsed: 5, external: 7, rss: 9 })
-})
-
-test('a request to a process that exits fails at once with that reason, not as a timeout', async () => {
+test('a limit cuts the request timeout', async () => {
   const child = fakeChild()
   const started = Date.now()
-  const read = child.read()
-  child.exitCode = 1
-  await assert.rejects(read, err => !(err instanceof MemoryProbeTimeout) && /server exited \(1\)/.test(err.message))
+  await assert.rejects(child.read({ timeout: 15000, limit: 50 }), MemoryProbeTimeout)
   assert.ok(Date.now() - started < 1000)
+})
+
+test('a malformed reply rejects its request with the reason, without throwing from the listener', async () => {
+  const child = fakeChild()
+  const shapes = [
+    [{ heapUsed: '5' }, /heapUsed is "5"/],
+    [{ heapUsed: -1 }, /heapUsed is -1/],
+    [{ external: undefined }, /external is undefined/],
+    [{ external: null }, /external is null/],
+    [{ rss: NaN }, /rss is NaN/],
+    [{ rss: Infinity }, /rss is Infinity/],
+    [{ heapUsed: { bytes: 1 } }, /heapUsed is \{"bytes":1\}/],
+  ]
+  for (const [fields, reason] of shapes) {
+    const read = child.read()
+    await tick()
+    child.reply(fields)
+    await assert.rejects(read, err => !(err instanceof MemoryProbeTimeout) && reason.test(err.message))
+  }
+  const read = child.read()
+  await tick()
+  const hostile = { type: 'e2e-memory', id: child.lastId() }
+  Object.defineProperty(hostile, 'heapUsed', {
+    get() {
+      throw new Error('boom')
+    },
+  })
+  child.emit('message', hostile)
+  await assert.rejects(read, /unreadable memory reply: boom/)
+})
+
+test('a request fails at once when the process exits or the channel closes, not as a timeout', async () => {
+  const quick = async (child, act, reason) => {
+    const started = Date.now()
+    const read = child.read()
+    await tick()
+    act(child)
+    await assert.rejects(read, err => !(err instanceof MemoryProbeTimeout) && reason.test(err.message))
+    assert.ok(Date.now() - started < 1000)
+  }
+  const exits = fakeChild()
+  await quick(
+    exits,
+    child => {
+      child.exitCode = 1
+      child.emit('exit', 1, null)
+    },
+    /server exited \(1\) before reporting its memory/
+  )
+  // and a request to a process that has exited is not sent at all
+  await assert.rejects(exits.read(), /server exited \(1\)/)
+  assert.equal(exits.sent.length, 1)
+  await quick(
+    fakeChild(),
+    child => {
+      child.connected = false
+      child.emit('disconnect')
+    },
+    /IPC channel to the server closed/
+  )
+  const refuses = fakeChild()
+  refuses.send = (message, callback) => callback(new Error('channel closed'))
+  await assert.rejects(memoryReader(refuses)(), /could not ask the server for its memory: channel closed/)
+})
+
+// A12's deadline against a controlled clock: `steps` script what each request does, how long it takes and
+// what it returns: { ms, value }, { ms, timeout: true } (cut to the request's limit, like memoryReader) or
+// { ms, error }
+function scripted(steps) {
+  const clock = { t: 0, now: () => clock.t, sleep: async ms => (clock.t += ms) }
+  const calls = []
+  const read = async ({ limit }) => {
+    const step = steps[calls.length]
+    calls.push({ at: clock.t, limit })
+    if (!step) {
+      // and past every deadline, so that a wait that swallowed this error still ends
+      clock.t = Infinity
+      throw new Error('read more often than scripted')
+    }
+    if (step.timeout) {
+      const ms = Math.min(step.ms, limit ?? Infinity)
+      clock.t += ms
+      throw new MemoryProbeTimeout(`no memory reply within ${ms} ms`)
+    }
+    clock.t += step.ms
+    if (step.error) throw step.error
+    return step.value
+  }
+  return { clock, calls, read }
+}
+const DEADLINE = 60000 * TIMEOUT_SCALE
+const settle = ({ clock, read }) => waitForMemoryToSettle(read, { baseline: 100, bound: 48, timeout: 60000, clock })
+
+test('the flood step settles on the first reading under the bound, through timed-out requests', async () => {
+  const run = scripted([
+    { ms: 100, value: 300 },
+    { ms: 15000, timeout: true },
+    { ms: 100, value: 200 },
+    { ms: 100, value: 140 },
+  ])
+  assert.equal(await settle(run), 140)
+  assert.equal(run.calls.length, 4)
+})
+
+test('the flood step fails on a reading that comes after its deadline, however low', async () => {
+  const run = scripted([
+    { ms: 100, value: 300 },
+    { ms: DEADLINE, value: 100 },
+  ])
+  await assert.rejects(settle(run), /a reading of 100 MiB came after the deadline \(last reading: 300 MiB;/)
+})
+
+test('the flood step starts no request after its deadline and gives each one the time left', async () => {
+  const run = scripted(Array.from({ length: 20 }, () => ({ ms: 25000 * TIMEOUT_SCALE, timeout: true })))
+  await assert.rejects(settle(run), /out of time/)
+  assert.equal(run.calls.length, 3)
+  for (const { at, limit } of run.calls) {
+    assert.ok(at < DEADLINE, `a request started at ${at} ms`)
+    assert.equal(limit, DEADLINE - at)
+  }
+})
+
+test('the flood step reports the last reading and the last request error apart', async () => {
+  const run = scripted([
+    { ms: 100, value: 300 },
+    ...Array.from({ length: 10 }, () => ({ ms: 20000 * TIMEOUT_SCALE, timeout: true })),
+  ])
+  await assert.rejects(
+    settle(run),
+    /out of time \(last reading: 300 MiB; last request error: no memory reply within \d+ ms\)/
+  )
+})
+
+test('the flood step ends at once on an error other than a timeout', async () => {
+  const exited = new Error('server exited (1) before reporting its memory')
+  const run = scripted([
+    { ms: 100, value: 300 },
+    { ms: 10, error: exited },
+  ])
+  await assert.rejects(settle(run), error => error === exited)
+  assert.equal(run.calls.length, 2)
 })

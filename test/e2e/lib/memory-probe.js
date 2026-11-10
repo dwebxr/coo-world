@@ -8,23 +8,27 @@
 // and ArrayBuffers. They do not see native allocations that V8 is not told about, pages the allocator keeps, or
 // kernel socket buffers, so a check built on them bounds the JS-visible part only.
 //
-// startServer({ memoryProbe: true }) preloads this file (node --import) and starts node with --expose-gc. On
-// SIGUSR2 the process collects twice, with a turn of the event loop in between so that what the first pass
-// released through finalizers is freed by the second, and prints one line on stdout:
-//   E2E_MEMORY {"n":1,"heapUsed":…,"external":…,"rss":…}
-// in bytes (`external` includes ArrayBuffers), where n counts the signals. server.retainedMiB() sends the signal
-// and waits for the line with its number.
+// startServer({ memoryProbe: true }) preloads this file (node --import), starts node with --expose-gc and opens an
+// IPC channel. On a message { type: 'e2e-memory', id } the process collects twice, with a turn of the event loop in
+// between so that what the first pass released through finalizers is freed by the second, and replies with
+//   { type: 'e2e-memory', id, heapUsed, external, rss }
+// in bytes (`external` includes ArrayBuffers). Other messages are ignored. memoryReader() in memory.mjs sends the
+// requests and matches the replies by id.
 ;(() => {
   // taken now: the engine locks the globals down when it starts
   const collect = globalThis.gc
   if (typeof collect !== 'function') throw new Error('memory-probe.js needs node --expose-gc')
-  let n = 0
-  process.on('SIGUSR2', () => {
+  process.on('message', message => {
+    if (message === null || typeof message !== 'object' || message.type !== 'e2e-memory') return
+    const { id } = message
     collect()
     setImmediate(() => {
       collect()
       const { heapUsed, external, rss } = process.memoryUsage()
-      process.stdout.write(`E2E_MEMORY ${JSON.stringify({ n: ++n, heapUsed, external, rss })}\n`)
+      // the callback keeps a closed channel (the harness has gone) from becoming an 'error' event
+      if (process.connected) process.send({ type: 'e2e-memory', id, heapUsed, external, rss }, () => {})
     })
   })
+  // the channel must not keep the server alive when it shuts down
+  process.channel?.unref()
 })()

@@ -14,7 +14,8 @@ import { Packr } from 'msgpackr'
 import WebSocket from 'ws'
 
 import { APPS_DIR, REPO_ROOT, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
-import { MemoryProbeTimeout, installAsset, startServer } from './lib/server.mjs'
+import { waitForMemoryToSettle } from './lib/memory.mjs'
+import { installAsset, startServer } from './lib/server.mjs'
 import { WireClient, snapshot } from './lib/ws.mjs'
 import { appState, becomeAdmin, installApp, launchBrowser, saveArtifacts } from './lib/browser.mjs'
 
@@ -624,29 +625,12 @@ async function probes(admin, watcher) {
       // 114 MiB). heapUsed + external after a full collection, since how much garbage is still resident depends on
       // the Node version and on how busy the machine is. The bound allows smaller leftovers (all of (a) and (b) are
       // 9 MiB) and cannot see native memory that V8 is not told about; the assertions above carry the rest. The wait
-      // covers a server that is still working through the flood.
-      let retained
-      let last = 'none'
-      await waitUntil(
-        async () => {
-          try {
-            retained = await server.retainedMiB()
-          } catch (err) {
-            // a server busy with the flood can answer late: not settled yet. One that exited fails here
-            if (!(err instanceof MemoryProbeTimeout)) throw err
-            last = err.message
-            return false
-          }
-          last = `${retained} MiB`
-          return retained - baseline < 48
-        },
-        {
-          timeout: 60000,
-          interval: 1000,
-          message: `retained memory to return within 48 MiB of the ${baseline} MiB baseline`,
-        }
-      ).catch(err => {
-        throw new Error(`${err.message} (last reading: ${last})`)
+      // covers a server that is still working through the flood; it ends at a fixed deadline, and a request that
+      // times out counts as not settled yet (lib/memory.mjs)
+      const retained = await waitForMemoryToSettle(options => server.retainedMiB(options), {
+        baseline,
+        bound: 48,
+        timeout: 60000,
       })
       const status = await fetch(`${base}/status`)
       eq(status.status, 200, 'server still responsive')

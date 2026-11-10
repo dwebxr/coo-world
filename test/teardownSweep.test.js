@@ -525,9 +525,14 @@ for (const point of Object.keys(UNMOUNT_CALLOUTS)) {
 
 // every handle method that takes arguments, given arguments whose reads retire the app (a getter, a toString, a
 // valueOf, a Proxy trap); the call finishes (or refuses), and nothing of the run may remain. A row marked NOT_READ is a
-// call that refuses or stores such an argument without running its code (here: the network stand-in does not encode
-// what app.send is given), so the app is not retired at all
+// call that refuses or stores such an argument without running its code, so the app is not retired at all (a row can
+// say so for one side only: `isServer => …`). What a call that reads such an argument does is checked after the read:
+// nothing it would publish lands for a run that ended meanwhile (the effects test below)
 const NOT_READ = 'not read'
+const READ = undefined
+const clientOnlyNotRead = isServer => (isServer ? READ : NOT_READ)
+// a script's own vector whose x is a getter (the player's methods take real vectors only)
+const getterVector = `(() => { const v = new Vector3(0, 0, 0); Object.defineProperty(v, 'x', { get() { retire(); return 1 } }); return v })()`
 const ARGUMENTS = [
   ['app.control: an options getter', `app.control({ get onRelease() { retire(); return undefined } }).hideReticle()`],
   [
@@ -622,7 +627,34 @@ const ARGUMENTS = [
     `kept.control.setActions([{ type: 'keyE', get label() { retire(); return 'x' } }])`,
   ],
   ['world.chat: a message with a toString', `world.chat({ toString() { retire(); return 'hi' } }, true)`, NOT_READ],
-  ['app.send: data with a getter', `app.send('sweep-ping', { get x() { retire(); return 1 } })`, NOT_READ],
+  ['app.send: data with a getter', `app.send('sweep-ping', { get x() { retire(); return 1 } })`],
+  [
+    'app.sendTo: data with a getter (server scripts only)',
+    `app.sendTo('p1', 'sweep-ping', { get x() { retire(); return 1 } })`,
+    clientOnlyNotRead,
+  ],
+  [
+    'world.set: a value with a getter (read once, as JSON; a client has no store)',
+    `world.set('sweep-key', { get v() { retire(); return 1 } })`,
+    clientOnlyNotRead,
+  ],
+  ['player.damage: an amount with a valueOf', `kept.player.damage({ valueOf() { retire(); return 10 } })`, NOT_READ],
+  ['player.heal: an amount with a valueOf', `kept.player.heal({ valueOf() { retire(); return 10 } })`, NOT_READ],
+  [
+    "player.teleport: a position whose x is a getter (a client moves only its own player)",
+    `kept.player.teleport(${getterVector})`,
+    clientOnlyNotRead,
+  ],
+  [
+    "player.push: a force whose x is a getter (a client pushes only its own player)",
+    `kept.player.push(${getterVector})`,
+    clientOnlyNotRead,
+  ],
+  [
+    'player.setSessionAvatar: a url with a toString',
+    `kept.player.setSessionAvatar({ toString() { retire(); return 'asset://a.vrm' } })`,
+    NOT_READ,
+  ],
   [
     'node.position.set: components with a valueOf',
     `kept.holder.position.set({ valueOf() { retire(); return 1 } }, 0, 0); kept.holder.clean()`,
@@ -635,9 +667,10 @@ const ARGUMENTS = [
   ],
 ]
 
-for (const [label, code, reads] of ARGUMENTS) {
+for (const [label, code, readsOn] of ARGUMENTS) {
   for (const ending of ENDINGS) {
     for (const isServer of ENVS) {
+      const reads = typeof readsOn === 'function' ? readsOn(isServer) : readsOn
       test(`teardown sweep: arguments that retire the app: ${label}; ${ending}; ${side(isServer)}`, async () => {
         requests.length = 0
         const env = sweep.makeWorld({ isServer })
@@ -671,6 +704,70 @@ for (const [label, code, reads] of ARGUMENTS) {
       })
     }
   }
+}
+
+// the calls that act at once (publish to the network or the store, change a player): an argument whose read retires
+// the app makes the call refuse with the stopped error, and nothing lands; the same call with plain arguments lands
+// (so the stand-ins below do see what the calls publish)
+const EFFECTS = [
+  ['world.set', `world.set('k', { get v() { retire(); return 1 } })`, `world.set('k', { v: 1 })`],
+  ['app.send', `app.send('ping', { get v() { retire(); return 1 } })`, `app.send('ping', { v: 1 })`],
+  ['app.sendTo', `app.sendTo('p1', 'ping', { get v() { retire(); return 1 } })`, `app.sendTo('p1', 'ping', { v: 1 })`],
+  ['player.teleport', `kept.player.teleport(${getterVector})`, `kept.player.teleport(new Vector3(1, 0, 0))`],
+  ['player.push', `kept.player.push(${getterVector})`, `kept.player.push(new Vector3(1, 0, 0))`],
+  // (the amount is not converted at all: an object changes nothing, and nothing can end the run in the call)
+  ['player.damage', `kept.player.damage({ valueOf() { retire(); return 10 } })`, `kept.player.damage(10)`],
+  ['player.heal', `kept.player.heal({ valueOf() { retire(); return 10 } })`, `kept.player.damage(20); kept.player.heal(10)`],
+]
+
+for (const [label, retiring, plain] of EFFECTS) {
+  test(`an effect whose arguments end the run lands nothing: ${label}`, async () => {
+    for (const [code, retires] of [
+      [retiring, !label.includes('damage') && !label.includes('heal')],
+      [plain, false],
+    ]) {
+      const env = sweep.makeWorld({ isServer: true })
+      const { world } = env
+      const landed = []
+      // (whether the run that made the call is still the app's when something lands)
+      const made = {}
+      const alive = () => made.run === made.app.deadHook && !made.app.destroyed
+      world.storage = { get() {}, set: (key, value) => landed.push(['storage', key, JSON.stringify(value), alive()]) }
+      world.network.send = (name, data) => (landed.push(['send', name, JSON.stringify(data), alive()]), true)
+      world.network.sendTo = (id, name, data) => (landed.push(['sendTo', id, name, JSON.stringify(data), alive()]), true)
+      const app = sweep.addApp(world, `${PRELUDE}\napp.state.go = () => { ${code} }`)
+      made.app = app
+      await sweep.tick()
+      assert.equal(app.crashed, false, `the script ran: ${app.scriptError?.message}`)
+      made.run = app.deadHook
+      landed.length = 0
+      const player = world.entities.players.get('p1')
+      const health = player.data.health
+      const retired = sweep.onRetire(world, app, 'removed')
+      let error = null
+      try {
+        app.data.state.go()
+      } catch (err) {
+        error = err
+      }
+      retired.stop()
+      if (retires) {
+        assert.equal(retired.retired, true, 'reading the argument ended the run')
+        assert.equal(error?.message, STOPPED)
+        assert.deepEqual(landed, [], 'nothing was published for the ended run')
+      } else if (code === retiring) {
+        assert.equal(retired.retired, false, 'the amount is not converted')
+        assert.equal(error, null)
+        assert.deepEqual(landed, [])
+        assert.equal(player.data.health, health, 'an amount that is not a number changes nothing')
+      } else {
+        assert.equal(error, null, error?.stack)
+        assert.ok(landed.length > 0 || player.data.health !== health, 'the plain call lands')
+        assert.ok(landed.every(entry => entry.at(-1) === true), 'while the run is alive')
+      }
+      app.destroy()
+    }
+  })
 }
 
 // ---- axis 4: sealed engine math objects -----------------------------------------------------------------------------
@@ -773,7 +870,7 @@ test('every engine math object a handle hands out is a view, or a node transform
       if (!slot || slot.writable || slot.configurable) open.push(`${name}._onChangeCallback is not fixed`)
       continue
     }
-    // a view: components keep primitives, the callback and every property stay
+    // a view: components keep numbers, the callback and every property stay
     const key = value.isMatrix4 || value.isMatrix3 ? null : Object.hasOwn(value, '_x') ? '_x' : 'x'
     const target = key ? value : value.elements
     const entry = key || '13'
@@ -830,7 +927,7 @@ test('every engine math object a handle hands out is a view, or a node transform
       node.position.x = { valueOf() { out.push('valueOf ran') ; return 5 } }
       out.push(Number.isNaN(node.position.x) ? 'stored NaN' : 'stored ' + typeof node.position.x)
       node.position.x = '2'
-      out.push(typeof node.position.x)
+      out.push(typeof node.position.x + ' ' + node.position.x)
       node.position.set(0, 0, 0)
       return out`
     )
@@ -845,7 +942,7 @@ test('every engine math object a handle hands out is a view, or a node transform
     'TypeError',
     'TypeError',
     'stored NaN',
-    'string',
+    'number 2',
   ])
   app.destroy()
 })
@@ -1032,8 +1129,17 @@ test("queued transitions: a failing older build does not clear a newer one's sta
   app.destroy()
 })
 
-for (const settle of ['rejects', 'never settles']) {
-  test(`a crash retires the run at once, whatever the crash block does (it ${settle}) (review finding 5)`, async () => {
+// (and when a blueprint change asks for a build in the same task as the crash: that build tears the current run down
+// only once its own model has loaded, so the crash tears its run down itself, whatever the new model and the crash
+// block do)
+for (const [settle, superseded] of [
+  ['rejects', false],
+  ['never settles', false],
+  ['rejects', true],
+  ['never settles', true],
+]) {
+  const when = superseded ? 'superseded by a blueprint build whose model and crash block' : 'the crash block'
+  test(`a crash retires the run at once, whatever ${when} does (it ${settle}) (review finding 5)`, async () => {
     requests.length = 0
     const env = sweep.makeWorld({ isServer: true })
     const { world } = env
@@ -1053,12 +1159,14 @@ for (const settle of ['rejects', 'never settles']) {
     await sweep.tick()
     app.data.state.mint()
     const urls = app.data.state.urls
-    world.loaderOverride = { model: url => (String(url).includes('crash-block') ? null : undefined) }
-    world.loaderLoad = () =>
-      settle === 'rejects' ? Promise.reject(new Error('no crash block')) : new Promise(() => {})
+    world.loaderOverride = {
+      model: url => (String(url).includes('crash-block') || String(url).includes('broken') ? null : undefined),
+    }
+    world.loaderLoad = () => (settle === 'rejects' ? Promise.reject(new Error('no such model')) : new Promise(() => {}))
     const run = app.deadHook
     const quiet = console.error
     app.crash()
+    if (superseded) world.blueprints.modify({ id: app.data.blueprint, version: 1, model: 'broken.glb' })
     await sweep.tick(20)
     assert.equal(run.dead, true)
     assert.deepEqual(sweep.footprint(env, app, { urls }), sweep.CLEAN, 'nothing of the crashed run remains')

@@ -7,7 +7,8 @@ import { isEqual, cloneDeep, isArray, isBoolean, isFunction, isNumber } from 'lo
 import moment from 'moment'
 import { uuid, createDispatchQueue } from '../../src/core/utils.js'
 import { createUploadQueue } from '../../src/core/extras/uploadQueue.js'
-import { writeClientPacket, writePacket } from '../../src/core/packets.js'
+import { scriptPacketData, writeClientPacket, writePacket } from '../../src/core/packets.js'
+import { toEngineNumber, toEngineOrder } from '../../src/core/extras/engineNumber.js'
 import { BUILDER_ONLY_PACKETS, packetByteLimit, packetNodeLimit } from '../../src/core/extras/inboundPolicy.js'
 import { strictDecode } from '../../src/core/extras/strictDecode.js'
 import { CHANGE_TOO_LARGE, preflightPacket } from '../../src/core/extras/clientPreflight.js'
@@ -76,6 +77,11 @@ export function loadClient(file, name, context = {}) {
     createTokenBalanceClient,
     writeClientPacket,
     writePacket,
+    scriptPacketData,
+    toEngineNumber,
+    toEngineOrder,
+    // (the classes run here hold stand-in nodes; the transform guard is Node.js's, run through the sweep's bundle)
+    guardTransform() {},
     WORLD_BLUEPRINT_BYTES,
     BUILDER_ONLY_PACKETS,
     packetByteLimit,

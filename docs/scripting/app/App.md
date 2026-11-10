@@ -61,6 +61,8 @@ An event sent from a client must fit in 64 KiB on the wire, including the event 
 
 Client-to-server events use plain MessagePack. Prefer numbers, strings, booleans, null, arrays, plain objects and `Uint8Array`; other values behave as follows. Server-to-client events retain the existing structured-clone encoding.
 
+The data is read once, when `app.send` (or `app.sendTo`) is called, and what goes out is the engine's copy of it. If reading it ends the app's run (a getter that removes or rebuilds the app), nothing is sent and the call throws `[app] this app has stopped`; if reading it packs another message (a getter that calls `app.send`), that other message goes out and this call throws `the data cannot be packed: reading it packed another message`.
+
 | Data passed to client `app.send` | What the server receives |
 | --- | --- |
 | `Map` with string keys | A plain object |

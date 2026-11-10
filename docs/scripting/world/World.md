@@ -188,7 +188,9 @@ Returns an array of all players.
 A small key-value store for the whole world, kept in the world folder (`storage.json`) and shared by every app's
 server script. On a client both do nothing (`get` returns `undefined`).
 
-- `set(key, value)` stores a JSON value. `set(key, undefined)` deletes the key.
+- `set(key, value)` stores a JSON value. `set(key, undefined)` deletes the key. The value is read once, as JSON,
+  when `set` is called (its `toJSON` and getters run then); if reading it ends the app's run, nothing is stored and
+  the call throws `[app] this app has stopped`.
 - `get(key)` returns a copy of the stored value, so changing what you got does not change the store: call `set`
   again to save a change.
 - Limits: a key is a string of 1 to 128 characters; a value is at most 64 KiB as JSON; at most 1,024 keys; and

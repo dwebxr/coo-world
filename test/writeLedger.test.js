@@ -25,7 +25,8 @@ import {
   WRITE_OVERHEAD,
 } from '../src/core/extras/writeLedger.js'
 import { fakeWs, makeNetwork, Socket, connectionMethod } from './lib/networkHarness.mjs'
-import { readPacket } from '../src/core/packets.js'
+import { readPacket, scriptPacketData } from '../src/core/packets.js'
+import { toEngineNumber } from '../src/core/extras/engineNumber.js'
 
 const bytes = n => new Uint8Array(n)
 const addSocket = (network, id = 'player') => {
@@ -268,6 +269,7 @@ const loadClass = (file, name, context = {}) => {
     placeWorldNode,
     unplaceWorldNode,
     eventPayload,
+    scriptPacketData,
     ...context,
   })
 }
@@ -302,6 +304,7 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
       stoppedError,
       ...runTeardown,
       isPrimitive,
+      toEngineNumber,
       console,
       clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v)),
       sanitizePlayerSelfModify: (data, id) => sanitizePlayerSelfModify({ ef: { ...data.ef } }, id),

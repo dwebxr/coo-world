@@ -76,15 +76,20 @@ one the first app kept, works again for as long as that run lasts and stops with
 what the node holds.
 
 A node keeps plain values. A setter that takes a number, a string or a boolean refuses an object that only stands
-for one (a boxed `new Number(1)` or `new String('red')`, a Proxy); `active`, a joint's limits and `collide`, and an
-LOD's `insert(node, maxDistance)` refuse objects too. An array a node gives back (a UI's `padding`, `margin` and
+for one (a boxed `new Number(1)` or `new String('red')`, a Proxy): `audio.volume = new Number(0.5)`,
+`mesh.castShadow = new Boolean(false)` and a material's `color = new String('red')` throw. `active`, a joint's
+limits and `collide`, and an LOD's `insert(node, maxDistance)` refuse objects too. (A node's transform is not a
+setter of the node: its components follow the number rule of [the math classes](/docs/scripting/Utils.md), where a
+boxed value is `NaN` and a numeric string a number.) An array a node gives back (a UI's `padding`, `margin` and
 `scaler`, a particles node's `shape`, `bursts` and `spritesheet`) is the node's own frozen copy of what was set:
 changing it throws a `TypeError`; set the property again instead.
 
-A node handle's setters and methods act on the handle they are read from. An object that inherits from the handle
-(`Object.create(node)`) works like the handle; a setter copied onto another object
-(`Object.defineProperties({}, Object.getOwnPropertyDescriptors(node))`) or called without a receiver throws
-`[node] not a node`. A method can be taken off the handle and called on its own, and keeps its `name` and `length`.
+A node handle's setters act on the handle they are called on (their receiver), which must be a node handle or an
+object that inherits from one (`Object.create(node)` works like the handle). Any other receiver is refused: a setter
+copied onto another object (`Object.defineProperties({}, Object.getOwnPropertyDescriptors(node))`) or called without a
+receiver throws `[node] not a node`, and one called on the handle of a node that has no such property (a mesh's
+`castShadow` setter called on a group's handle) throws `[node] a group node has no castShadow to set`. A method acts on
+the node it was read from: it can be taken off the handle and called on its own, and keeps its `name` and `length`.
 
 An app's root (what its `app` stands for) stays where its app placed it: adding another app's root throws
 `[node.add] cannot add another app's root node`, and so does adding an app's own root under a node that is not

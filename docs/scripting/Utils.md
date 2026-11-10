@@ -54,16 +54,29 @@ transform (`getBone()`), and a particles node's `force`, `velocityLinear` and `v
 values as usual (`node.position.x = 1`, `.set(…)`, `.copy(…)`), but adding, redefining or deleting a property on
 one (`Object.defineProperty(node.position, 'x', …)`, `node.position.foo = 1`, replacing a method) throws a
 `TypeError`, and so does replacing its change callback (`_onChangeCallback`), assigning a matrix's `elements` or
-redefining one of its entries. A component given an object instead of a number (`node.position.x = { … }`) is stored
-as `NaN`, without calling the object's `valueOf`.
+redefining one of its entries.
 
-A node's own `position`, `quaternion`, `rotation` and `scale` are the engine's objects themselves. An object written
-straight into one of their internal fields (`node.position._x = { … }`, past the setters) stays there for your own
-code, but the engine reads such a field as `NaN` (an Euler `_order` that is not a string as `'YXZ'`) and never calls
-its `valueOf`. Everything else listed above (a node's `matrixWorld` and its `elements`, a joint's offsets, a UI's
-`offset`, a control's vectors, a bone's transform, a particles node's vectors) is a view of the engine's object: it
-reads, writes and calls methods like the object itself (it is the same view on every read), and its internal fields
-keep only primitives as well. Getters that compute a value (a player's `position`,
+A component of a `Vector3`, `Quaternion` or `Euler`, and an entry of a matrix the engine gives you, is always a
+number. What you give one (through `x`/`y`/`z`/`w`, `set`, `setScalar`, `copy`, `fromArray`, `new Vector3(…)`, an
+entry of `matrixWorld.elements`) is kept by one rule:
+
+- a number is kept as it is;
+- a string, a boolean or `null` is converted: `node.position.x = '2'`, `.set('1', '2', '3')`,
+  `.fromArray(text.split(','))` and `rotation.y = '1.57'` work as the numbers do, `true` is `1`, `null` is `0`, and a
+  string that is not a number (`'abc'`) is `NaN`;
+- anything else is `NaN`, without being converted: `undefined`, a `Symbol`, a BigInt, and any object, a boxed value
+  (`new Number(2)`) included, whose `valueOf` is never called.
+
+An Euler `order` is a string: any other value (`rotation.set(0, 1, 0, new String('XYZ'))`, `rotation.order = 5`)
+leaves the order as it was.
+
+A node's own `position`, `quaternion`, `rotation` and `scale` are the engine's objects themselves. A value written
+straight into one of their internal fields (`node.position._x = …`, past the setters) stays there for your own code,
+but the engine reads such a field by the same rule (an object as `NaN`, never calling its `valueOf`; an Euler `_order`
+that is not a string as `'YXZ'`, a node's order). Everything else listed above (a node's `matrixWorld` and its
+`elements`, a joint's offsets, a UI's `offset`, a control's vectors, a bone's transform, a particles node's vectors)
+is a view of the engine's object: it reads, writes and calls methods like the object itself (it is the same view on
+every read), and what is written into its internal fields follows the same rule. Getters that compute a value (a player's `position`,
 `getBoneTransform()`, `getWorldMatrix()`, a pointer's coordinates, a material's `color`) return a new object on each
 read, which is yours.
 

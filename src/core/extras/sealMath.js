@@ -1,4 +1,4 @@
-import { storable } from './storable.js'
+import { toEngineNumber, toEngineOrder } from './engineNumber.js'
 
 // Engine math objects a script can reach by reference (a node's transform and matrices, a joint's offsets, a UI's
 // offset, a control's camera, poses and stick values, a skinned mesh's bones) are sealed where they are made, after
@@ -30,12 +30,14 @@ export function sealAll(...objects) {
 }
 
 // Script views of engine math objects: reads and method calls reach the engine object as before (a method called on
-// the view writes through the view), a component written through the view keeps only a primitive (an object becomes
-// NaN without being converted, storable.js), the change callback cannot be replaced, and no property can be
-// redefined or deleted; a matrix's `elements` is a view of the same kind. The engine keeps using the object itself, so
+// the view writes through the view), a component or matrix entry written through the view is kept by the engine's
+// number rule (engineNumber.js: a string, a boolean or null is converted, anything else that is not a number is NaN,
+// without being converted; an order that is not a string leaves the order), the change callback cannot be replaced,
+// and no property can be redefined or deleted; a matrix's `elements` is a view of the same kind. The engine keeps using the object itself, so
 // its own math pays nothing; the view is made once per object (the same view on every read). Per-instance accessors
 // on the components instead made the engine's matrix composition about 75 times slower.
-const components = new Set(['x', 'y', 'z', 'w', '_x', '_y', '_z', '_w', 'order', '_order'])
+const components = new Set(['x', 'y', 'z', 'w', '_x', '_y', '_z', '_w'])
+const orders = new Set(['order', '_order'])
 const views = new WeakMap()
 const viewSet = new WeakSet()
 const refuse = message => () => {
@@ -51,7 +53,9 @@ const viewHandler = {
       throw new TypeError("[math] an engine object's change callback cannot be replaced")
     }
     if (key === 'elements') throw new TypeError("[math] an engine matrix's elements cannot be replaced")
-    return Reflect.set(target, key, components.has(key) ? storable(value) : value)
+    if (components.has(key)) return Reflect.set(target, key, toEngineNumber(value))
+    if (orders.has(key)) return Reflect.set(target, key, toEngineOrder(value, target._order))
+    return Reflect.set(target, key, value)
   },
   defineProperty: refuse('[math] a property of an engine object cannot be redefined'),
   deleteProperty: refuse('[math] a property of an engine object cannot be deleted'),
@@ -62,7 +66,7 @@ const viewHandler = {
 const elementsHandler = {
   set(target, key, value) {
     if (key === 'length') throw new TypeError("[math] an engine matrix's elements cannot be resized")
-    return Reflect.set(target, key, storable(value))
+    return Reflect.set(target, key, toEngineNumber(value))
   },
   defineProperty: refuse("[math] an entry of an engine matrix's elements cannot be redefined"),
   deleteProperty: refuse("[math] an entry of an engine matrix's elements cannot be deleted"),

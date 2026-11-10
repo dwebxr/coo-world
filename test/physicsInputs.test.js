@@ -170,7 +170,9 @@ const vectorGetters = [
   'getLocalVelocityAtLocalPos',
 ]
 const getterArgs = (name, target) => (name.includes('At') ? [new Vector3(1, 2, 3), target] : [target])
-const invalidComponents = () => [NaN, Infinity, -Infinity, 1e39, '1', { valueOf: () => assert.fail('coercion') }]
+// (a numeric string given to an engine vector is a number there, by the engine's number rule: engineNumber.js; a
+// BigInt and an object are NaN, the object without being converted)
+const invalidComponents = () => [NaN, Infinity, -Infinity, 1e39, 1n, { valueOf: () => assert.fail('coercion') }]
 
 for (const name of Object.keys(mutators)) {
   test(`RigidBody.${name}: real brands, shadows, spoof rejection and non-finite no-op`, () => {
@@ -218,8 +220,13 @@ for (const name of vectorGetters) {
         assert.equal(proxy[name](...getterArgs(name, target)), target)
         assert.deepEqual(xyz(target), mounted && name !== 'getPosition' ? [4, 5, 6] : [0, 0, 0])
       }
+      // without a target: a new vector on every call, the script's own (no object of the body's is handed out)
       for (const target of [undefined, null, false, 0]) {
-        assert.equal(proxy[name](...getterArgs(name, target)), node.tempVec3)
+        const first = proxy[name](...getterArgs(name, target))
+        const second = proxy[name](...getterArgs(name, target))
+        assert.ok(first instanceof Vector3 && second instanceof Vector3)
+        assert.notEqual(first, second)
+        assert.deepEqual(xyz(first), mounted && name !== 'getPosition' ? [4, 5, 6] : [0, 0, 0])
       }
       for (const target of [spoof(), {}, new Quaternion(), true]) {
         assert.throws(() => proxy[name](...getterArgs(name, target)), {
@@ -235,7 +242,8 @@ for (const name of vectorGetters) {
           calls.length = 0
           for (const target of [undefined, new Vector3(7, 8, 9), new StockVector3(7, 8, 9)]) {
             const result = proxy[name](new Vector3(0, bad, 0), target)
-            assert.equal(result, target || node.tempVec3)
+            if (target) assert.equal(result, target)
+            else assert.ok(result instanceof Vector3)
             assert.deepEqual(xyz(result), [0, 0, 0])
           }
           assert.equal(calls.length, 0)
@@ -516,7 +524,7 @@ test('Apps queries: both brands, host copies, no shadow dispatch, scalar rules a
     assert.throws(() => proxy.raycast(v, v, 1, mask), { message: '[raycast] layerMask must be number' })
     assert.throws(() => proxy.overlapSphere(1, v, mask), { message: '[overlapSphere] layerMask must be number' })
   }
-  for (const radius of [0, -1, 1e-50, ...invalidComponents()]) {
+  for (const radius of [0, -1, 1e-50, '1', ...invalidComponents()]) {
     assert.throws(() => proxy.overlapSphere(radius, v), { message: '[overlapSphere] radius must be a positive number' })
   }
   for (const radius of [1e-45, 1, 3e38]) assert.ok(proxy.overlapSphere(radius, v))

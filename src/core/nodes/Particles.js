@@ -5,10 +5,11 @@ import { isBoolean, isNumber, isPrimitive, isString } from '../extras/scriptPrim
 import { Node } from './Node'
 import { scriptView, sealMath } from '../extras/sealMath.js'
 
-// a vector the node owns: a script's values read once, as numbers, into a sealed engine vector (null stays null)
+// a vector the node owns: a script's values read once into a sealed engine vector, by the engine's number rule (the
+// vector's constructor applies it, engineNumber.js; null stays null)
 function ownVector(value) {
   if (!value) return null
-  return sealMath(new THREE.Vector3(+value.x, +value.y, +value.z))
+  return sealMath(new THREE.Vector3(value.x, value.y, value.z))
 }
 
 const shapeTypes = ['point', 'sphere', 'hemisphere', 'cone', 'box', 'circle', 'rectangle']

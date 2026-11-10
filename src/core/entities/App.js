@@ -7,6 +7,7 @@ import { cleanupPlayerProxy, createPlayerProxy, isPlayerProxyCurrent } from '../
 import { createEntityProxy } from '../extras/createEntityProxy'
 import { serializeError } from '../extras/serializeError'
 import { registerAppProxy } from '../nodes/refs'
+import { guardTransform } from '../nodes/Node'
 import { createScriptTimers } from '../extras/scriptTimers'
 import { createScriptResponse, toHostFetchOptions } from '../extras/scriptFetch'
 import { revokeRunObjectURLs } from '../extras/scriptBlob'
@@ -152,7 +153,18 @@ export class App extends Entity {
     // if script crashed (or failed to load model), show crash-block
     if (crashed) {
       let glb = this.world.loader.get('model', 'asset://crash-block.glb')
-      if (!glb) glb = await this.world.loader.load('model', 'asset://crash-block.glb')
+      if (!glb) {
+        try {
+          glb = await this.world.loader.load('model', 'asset://crash-block.glb')
+        } catch (err) {
+          // nothing to show: the build ends here, reported, instead of rejecting where nobody waits on it (a blueprint
+          // or app change starts a build without waiting). A run it would have replaced keeps running; a crashed run
+          // was torn down by crash()
+          console.error(`[app] crash block unavailable (entity ${String(this.data.id).slice(0, 64)})`)
+          if (this.n === n) this.building = false
+          return
+        }
+      }
       root = glb.toNodes()
     }
     // if a new build happened while we were fetching, stop here
@@ -235,7 +247,10 @@ export class App extends Entity {
         }
       })
     }
-    // if remote is moving, set up to receive network updates
+    // if remote is moving, set up to receive network updates (the root's transform is the app's own, which its script
+    // has just run with: its components are read through the guard, Node.js, and the interpolators copy them by the
+    // engine's number rule)
+    guardTransform(root)
     this.networkPos = new LerpVector3(root.position, this.world.networkRate)
     this.networkQuat = new LerpQuaternion(root.quaternion, this.world.networkRate)
     this.networkSca = new LerpVector3(root.scale, this.world.networkRate)
@@ -517,18 +532,22 @@ export class App extends Entity {
   crash() {
     if (this.crashed || this.destroyed) return
     this.crashed = true
-    this.deadHook.dead = true
+    const run = this.deadHook
+    run.dead = true
     this.timers.clear()
     this.world.setHot(this, false)
     const n = ++this.n // invalidate builds already waiting on assets
     queueMicrotask(() => {
       // (once the apps are stopped for good, App.halted, no destroy handler runs again: the server is shutting down)
-      if (this.n !== n || this.destroyed || this.world.fatalError || this.halted()) return
+      if (this.destroyed || this.world.fatalError || this.halted()) return
       // the crashed run is torn down now, through the same teardown as a removal, whether or not the crash block can
-      // be loaded (it is shown by the build below, which can fail on its own). As soon as the current task's own code
-      // has returned: a crash can be reported from inside a host loop (a physics step, the stage's clean pass) that
-      // must not see its nodes and actors released under it
-      this.unbuild()
+      // be loaded (it is shown by the build below, which can fail on its own), and also when a build was asked for
+      // since (a blueprint change in the same task): that build tears the current run down only once its assets have
+      // loaded, so not at all while they are pending or if they fail. As soon as the current task's own code has
+      // returned: a crash can be reported from inside a host loop (a physics step, the stage's clean pass) that must
+      // not see its nodes and actors released under it. A run that is no longer the app's (a build that finished
+      // first replaced it) has been torn down already.
+      if (this.deadHook === run) this.unbuild()
       if (this.n !== n || this.destroyed || this.world.fatalError) return
       const promise = this.build(true)
       const build = this.n

@@ -19,6 +19,7 @@ import { toScriptError } from '../extras/scriptValues'
 import { createEventLedger } from '../extras/appEventQueue'
 import { applyInitials, copyFields } from '../extras/appFields'
 import { jsonCopy } from '../extras/scriptText'
+import { scriptPacketData } from '../packets'
 import { scriptChatMessage } from '../extras/chatPolicy'
 import { createLogOnce } from '../extras/logOnce'
 
@@ -74,6 +75,20 @@ function eventName(name) {
 // arguments are read and before anything is published.
 function assertRun(entity, run, stage) {
   if (run !== entity.deadHook || (stage && tornDown(run, stage))) throw stoppedError(entity)
+}
+
+// the data of an app.send or app.sendTo, read once into a host copy (scriptPacketData); the run is checked after the
+// read, whether it succeeded or threw (the code that ended the run may also have made the read fail)
+function readEventData(entity, run, data, client) {
+  let copy
+  try {
+    copy = scriptPacketData(data, client)
+  } catch (err) {
+    assertRun(entity, run)
+    throw err
+  }
+  assertRun(entity, run)
+  return copy
 }
 
 // after an activation, which can run script code: if the run that placed the node ended meanwhile, the node is taken
@@ -289,7 +304,23 @@ export class Apps extends System {
         return jsonCopy(world.storage?.get(key))
       },
       set(entity, key, value) {
-        world.storage?.set(key, value)
+        const run = entity.deadHook
+        if (!world.storage) return
+        // the value is read once, here, as JSON (its toJSON and getters are script code, which can end the run): the
+        // store gets the host's copy, and nothing is stored for a run that ended meanwhile
+        let copy
+        if (value !== undefined) {
+          let json
+          try {
+            json = JSON.stringify(value)
+          } catch {
+            json = undefined
+          }
+          if (typeof json !== 'string') throw new TypeError('world.set: the value cannot be stored as JSON')
+          copy = JSON.parse(json)
+        }
+        assertRun(entity, run)
+        world.storage.set(key, copy)
       },
       open(entity, url, newWindow = false) {
         if (!url) {
@@ -361,15 +392,21 @@ export class Apps extends System {
         return urlParams.get(key)
       },
       setQueryParam(entity, key, value) {
+        const run = entity.deadHook
         if (!isBrowser) {
           console.error('getQueryParam() must be called in the browser')
           return null
         }
+        // the key and the value are read once, into strings (an object's toString is script code, which can end the
+        // run), before the address changes
+        const name = typeof key === 'string' ? key : String(key)
+        const text = !value ? null : typeof value === 'string' ? value : String(value)
+        assertRun(entity, run)
         const urlParams = new URLSearchParams(window.location.search)
-        if (value) {
-          urlParams.set(key, value)
+        if (text !== null) {
+          urlParams.set(name, text)
         } else {
-          urlParams.delete(key)
+          urlParams.delete(name)
         }
         const newUrl = window.location.pathname + '?' + urlParams.toString()
         window.history.replaceState({}, '', newUrl)
@@ -427,6 +464,7 @@ export class Apps extends System {
         entity.off(eventName(name), callback)
       },
       send(entity, name, data, ignoreSocketId) {
+        const run = entity.deadHook
         if (typeof name !== 'string') {
           console.error('apps cannot send events with non-string names')
           return false
@@ -435,14 +473,18 @@ export class Apps extends System {
           console.error(`apps cannot send internal events (${name})`)
           return false
         }
+        // the data is read once, now (scriptPacketData: packing it runs its getters), and nothing is sent for a run
+        // that ended meanwhile (also when reading it failed)
+        const copy = readEventData(entity, run, data, !world.network.isServer)
         // NOTE: on the client ignoreSocketId is a no-op because it can only send events to the server
-        const event = [entity.data.id, entity.blueprint.version, name, data]
+        const event = [entity.data.id, entity.blueprint.version, name, copy]
         if (world.network.isServer) {
           return world.network.asScript(() => world.network.send('entityEvent', event, ignoreSocketId), entity, name)
         }
         return world.network.send('entityEvent', event, ignoreSocketId)
       },
       sendTo(entity, playerId, name, data) {
+        const run = entity.deadHook
         if (typeof name !== 'string') {
           console.error('apps cannot send events with non-string names')
           return false
@@ -456,7 +498,9 @@ export class Apps extends System {
         }
         const player = world.entities.get(playerId)
         if (!player) return false
-        const event = [entity.data.id, entity.blueprint.version, name, data]
+        // (read once, as app.send reads it)
+        const copy = readEventData(entity, run, data, false)
+        const event = [entity.data.id, entity.blueprint.version, name, copy]
         return world.network.asScript(() => world.network.sendTo(playerId, 'entityEvent', event), entity, name)
       },
       emit(entity, name, data) {

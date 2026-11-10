@@ -399,7 +399,7 @@ test('pointer callbacks of an app run that has ended are not delivered (a leave 
   }
 })
 
-test('control.camera: a script-held camera that throws or lies is contained per control', () => {
+test('control.camera: a script-held camera can neither throw nor lie (its entry is sealed); values that are not finite never reach the rig', () => {
   const world = controls()
   const app = {
     isApp: true,
@@ -415,21 +415,31 @@ test('control.camera: a script-held camera that throws or lies is contained per 
   camera.position.x = NaN
   world.controls.postLateUpdate()
   assert.deepEqual(world.rig.position.toArray(), [1, 2, 3], 'a non-finite camera never reaches the rig')
-  // its vectors are sealed (no accessor can be put on them), but the camera entry itself is the script's
+  // its vectors are sealed (no accessor can be put on them), and so is the camera entry: no getter on its fields, no
+  // other vector in place of the engine's
   assert.throws(() => Object.defineProperty(camera.position, 'x', { get: () => 0 }), TypeError)
-  Object.defineProperty(camera, 'zoom', {
-    get() {
+  for (const key of ['zoom', 'write']) {
+    assert.throws(
+      () =>
+        Object.defineProperty(camera, key, {
+          get() {
+            throw new Error('poison')
+          },
+        }),
+      TypeError
+    )
+  }
+  assert.throws(() => (camera.position = new m.THREE.Vector3(9, 9, 9)), TypeError)
+  // a zoom that is not a number is not converted: the camera stays for that frame, and the app runs on
+  camera.position.x = 1
+  camera.zoom = {
+    valueOf() {
       throw new Error('poison')
     },
-  })
-  const original = console.error
-  console.error = () => {}
-  try {
-    for (let i = 0; i < 3; i++) world.controls.postLateUpdate()
-  } finally {
-    console.error = original
   }
-  assert.equal(app.crashed, true, 'the app crashes; the frame goes on')
+  for (let i = 0; i < 3; i++) world.controls.postLateUpdate()
+  assert.equal(app.crashed, false)
+  assert.deepEqual(world.rig.position.toArray(), [1, 2, 3], 'a zoom that is not a number never moves the camera')
   // a read-only camera gets numbers, and no method of its vectors can be replaced
   const other = world.controls.bind({ priority: 1, object: { isApp: true, data: { id: 'b' } } })
   const view = other.camera

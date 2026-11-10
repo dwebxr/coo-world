@@ -125,8 +125,16 @@ The engine releases every control an app run made when the run ends, whatever wa
 the app's teardown has started (its `destroy` handlers, and the callbacks the teardown runs, such as `onRelease` or
 an effect's `onEnd`), `app.control()` throws `[app] this app has stopped`.
 
-If a control's per-frame values make the engine fail (for example an accessor that throws on `camera.position`),
-the app crashes like any other script error and the frame goes on for everyone else.
+A control's entries (`camera`, the buttons, `scrollDelta`, the poses and sticks, `pointer`, `screen`) are sealed. You
+write their fields as above (`camera.write`, `camera.zoom`, a button's `capture`, `onPress` and `onRelease`), but
+adding, deleting or redefining a property throws a `TypeError` (no field can become a getter), and so does replacing
+one of the engine's parts: the camera's `position`, `quaternion` and `rotation`, a pose's vectors, a stick's `value`,
+the pointer's and the screen's properties. Change their values instead (`control.camera.position.set(…)`). The engine
+reads a field you wrote without converting it: a `zoom` that is not a number leaves the camera where it is for that
+frame, and `write` and `capture` count as on when they are truthy.
+
+If a control's per-frame values still make the engine fail, the app crashes like any other script error and the
+frame goes on for everyone else.
 
 
 ### Screen

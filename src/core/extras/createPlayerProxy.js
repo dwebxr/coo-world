@@ -6,6 +6,7 @@ import { clamp, uuid } from '../utils'
 import * as THREE from './three'
 import { sanitizePlayerSelfModify } from './entityModifyPolicy'
 import { isPrimitive } from './scriptPrimitives.js'
+import { toEngineNumber } from './engineNumber.js'
 
 import { readVec3, warnOnce } from './physxConvert.js'
 
@@ -78,6 +79,11 @@ export function createPlayerProxy(entity, player) {
   let activeEffectConfig = null
   let voiceMod
   let retired = false
+  // after a method has read its arguments (a getter, a toString or a Proxy trap is script code, which can end the
+  // run): nothing lands for a run that ended meanwhile
+  const assertRunAfterRead = () => {
+    if (run !== entity.deadHook) throw stoppedError(entity)
+  }
   // what a retired handle answers for a call that would start something
   const assertCanStart = () => {
     if (run !== entity.deadHook || tornDown(run, Teardown.PLAYERS)) throw stoppedError(entity)
@@ -213,6 +219,7 @@ export function createPlayerProxy(entity, player) {
       }
       const payload = { position: [_v.x, _v.y, _v.z] }
       if (Number.isFinite(rotationY)) payload.rotationY = rotationY
+      assertRunAfterRead()
       if (player.data.owner === world.network.id) {
         // if player is local we can set directly
         world.network.enqueue('onPlayerTeleport', payload)
@@ -227,6 +234,9 @@ export function createPlayerProxy(entity, player) {
       return matrix ? new THREE.Matrix4().copy(matrix) : matrix
     },
     setSessionAvatar(url) {
+      // a url is a string (or nothing, which clears it); anything else is reported and changes nothing: it is not
+      // converted (an object's toString is script code) and not sent (packing an object runs its getters)
+      if (url != null && typeof url !== 'string') return console.error('[player] setSessionAvatar url must be a string')
       const avatar = url
       if (player.data.owner === world.network.id) {
         // if player is local we can set directly
@@ -238,8 +248,13 @@ export function createPlayerProxy(entity, player) {
         world.network.sendTo(player.data.owner, 'playerSessionAvatar', { avatar })
       }
     },
+    // an amount is a number, kept by the engine's number rule (engineNumber.js: a numeric string is converted, an
+    // object is not, so reading it runs no script code); one that is not finite changes nothing
     damage(amount) {
-      const health = clamp(player.data.health - amount, 0, HEALTH_MAX)
+      const value = toEngineNumber(amount)
+      if (!Number.isFinite(value)) return
+      assertRunAfterRead()
+      const health = clamp(player.data.health - value, 0, HEALTH_MAX)
       if (player.data.health === health) return
       if (world.network.isServer) {
         world.network.send('entityModified', { id: player.data.id, health })
@@ -247,7 +262,10 @@ export function createPlayerProxy(entity, player) {
       player.modify({ health })
     },
     heal(amount = HEALTH_MAX) {
-      const health = clamp(player.data.health + amount, 0, HEALTH_MAX)
+      const value = toEngineNumber(amount)
+      if (!Number.isFinite(value)) return
+      assertRunAfterRead()
+      const health = clamp(player.data.health + value, 0, HEALTH_MAX)
       if (player.data.health === health) return
       if (world.network.isServer) {
         world.network.send('entityModified', { id: player.data.id, health })
@@ -346,6 +364,7 @@ export function createPlayerProxy(entity, player) {
         return
       }
       const values = [_v.x, _v.y, _v.z]
+      assertRunAfterRead()
       if (player.data.owner === world.network.id) {
         // if player is local we can set directly
         player.push(values)
@@ -355,8 +374,9 @@ export function createPlayerProxy(entity, player) {
       }
     },
     screenshare(targetId) {
-      if (!targetId) {
-        return console.error(`screenshare has invalid targetId: ${targetId}`)
+      // (an id is a string: anything else is not converted, an object's toString is script code)
+      if (!targetId || typeof targetId !== 'string') {
+        return console.error('screenshare has invalid targetId')
       }
       if (player.data.owner !== world.network.id) {
         return console.error('screenshare can only be called on local player')

@@ -91,18 +91,41 @@ export function packetMethodById(id) {
   return byId[id]?.method
 }
 
+// Packing reads the value it is given, and a value from a script runs the script's code while it is read (a getter, a
+// toJSON, a Proxy trap). That code can pack another message (an app.send, an app teardown that announces a change),
+// and msgpackr's packers share one buffer and one write position: the packet whose packing was interrupted would come
+// out with the other one's bytes in it. Every pack here is counted, and a packet another pack interrupted is refused
+// (it throws) instead of being returned.
+export const PACK_INTERRUPTED = 'the data cannot be packed: reading it packed another message'
+let packs = 0
+
+function packOnce(packer, value) {
+  const mark = ++packs
+  const packet = packer.pack(value)
+  if (packs !== mark) throw new Error(PACK_INTERRUPTED)
+  return packet
+}
+
 export function writePacket(name, data) {
   const info = byName[name]
   if (!info) throw new Error(`writePacket failed: ${name} (name not found)`)
-  const packet = packr.pack([info.id, data])
-  return packet
+  return packOnce(packr, [info.id, data])
 }
 
 export function writeClientPacket(name, data) {
   const info = byName[name]
   if (!info) throw new Error(`writeClientPacket failed: ${name} (name not found)`)
-  const packet = clientPackr.pack([info.id, data])
-  return packet
+  return packOnce(clientPackr, [info.id, data])
+}
+
+// A host copy of data a script hands the network (app.send, app.sendTo). Packing reads the script's object, and its
+// code can end the script's run: the data is packed here, once, before the host decides whether to send it, and what
+// goes out is the copy, plain host data whose packing runs no script code. The copy is packed and read back by this
+// side's packer, so packing it again writes the message the data itself would have. A primitive needs no copy.
+export function scriptPacketData(data, client) {
+  if (data === null || (typeof data !== 'object' && typeof data !== 'function')) return data
+  const packer = client ? clientPackr : packr
+  return packer.unpack(packOnce(packer, data))
 }
 
 export function readPacket(packet) {

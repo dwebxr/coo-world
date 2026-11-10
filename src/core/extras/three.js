@@ -1,17 +1,21 @@
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh'
 
 import * as THREE from 'three'
-import { storable } from './storable.js'
+import { toEngineNumber, toEngineOrder } from './engineNumber.js'
 
 export * from 'three'
 
 // override THREE.Vector3 with ours to support _onChange
 export { Vector3Enhanced as Vector3 } from './Vector3Enhanced'
 
-// Quaternion and Euler (a node's quaternion and rotation): a component is never an object, as for our Vector3 (an
-// object, or a function, is stored as NaN without being converted, so no valueOf or toString a script defined runs in
-// the engine's arithmetic later). Installed once on the prototypes (x/y/z/w, set, copy, fromArray), before they are
-// frozen for scripts.
+// Quaternion and Euler (a node's quaternion and rotation, and every Object3D's): a component is always a number, as
+// for our Vector3 (the engine's number rule, engineNumber.js: a string, a boolean or null is converted, anything else
+// that is not a number is NaN, without being converted, so no valueOf or toString a script defined runs in the
+// engine's arithmetic later), and an order is always a string (anything else leaves the order as it was). The
+// methods that store what they are given or read from another object (x/y/z/w and order, set, copy, fromArray)
+// apply the rule to each value before they store it, so the change callback (an Object3D sets its rotation from its
+// quaternion there, a node its matrix inputs) only ever sees numbers. Installed once on the prototypes, before they
+// are frozen for scripts.
 function storeComponents(proto, keys) {
   for (const key of keys) {
     const desc = Object.getOwnPropertyDescriptor(proto, key)
@@ -20,43 +24,62 @@ function storeComponents(proto, keys) {
     Object.defineProperty(proto, key, {
       ...desc,
       set(value) {
-        set.call(this, storable(value))
+        set.call(this, toEngineNumber(value))
       },
     })
   }
 }
-function storedFields(target, keys) {
-  for (const key of keys) target[key] = storable(target[key])
-  return target
-}
 if (!Object.prototype.hasOwnProperty.call(THREE.Quaternion.prototype, '__componentsStored')) {
   storeComponents(THREE.Quaternion.prototype, ['x', 'y', 'z', 'w'])
   storeComponents(THREE.Euler.prototype, ['x', 'y', 'z'])
-  const quaternion = ['_x', '_y', '_z', '_w']
-  const euler = ['_x', '_y', '_z']
+  const orderDesc = Object.getOwnPropertyDescriptor(THREE.Euler.prototype, 'order')
+  const setOrder = orderDesc.set
+  Object.defineProperty(THREE.Euler.prototype, 'order', {
+    ...orderDesc,
+    set(value) {
+      setOrder.call(this, toEngineOrder(value, this._order))
+    },
+  })
   const qSet = THREE.Quaternion.prototype.set
   THREE.Quaternion.prototype.set = function (x, y, z, w) {
-    return qSet.call(this, storable(x), storable(y), storable(z), storable(w))
+    return qSet.call(this, toEngineNumber(x), toEngineNumber(y), toEngineNumber(z), toEngineNumber(w))
   }
-  const qCopy = THREE.Quaternion.prototype.copy
-  THREE.Quaternion.prototype.copy = function (value) {
-    return storedFields(qCopy.call(this, value), quaternion)
+  THREE.Quaternion.prototype.copy = function (quaternion) {
+    this._x = toEngineNumber(quaternion.x)
+    this._y = toEngineNumber(quaternion.y)
+    this._z = toEngineNumber(quaternion.z)
+    this._w = toEngineNumber(quaternion.w)
+    this._onChangeCallback()
+    return this
   }
-  const qFromArray = THREE.Quaternion.prototype.fromArray
   THREE.Quaternion.prototype.fromArray = function (array, offset = 0) {
-    return storedFields(qFromArray.call(this, array, offset), quaternion)
+    this._x = toEngineNumber(array[offset])
+    this._y = toEngineNumber(array[offset + 1])
+    this._z = toEngineNumber(array[offset + 2])
+    this._w = toEngineNumber(array[offset + 3])
+    this._onChangeCallback()
+    return this
   }
   const eSet = THREE.Euler.prototype.set
   THREE.Euler.prototype.set = function (x, y, z, order) {
-    return eSet.call(this, storable(x), storable(y), storable(z), order)
+    const value = toEngineOrder(order, this._order)
+    return eSet.call(this, toEngineNumber(x), toEngineNumber(y), toEngineNumber(z), value)
   }
-  const eCopy = THREE.Euler.prototype.copy
-  THREE.Euler.prototype.copy = function (value) {
-    return storedFields(eCopy.call(this, value), euler)
+  THREE.Euler.prototype.copy = function (euler) {
+    this._x = toEngineNumber(euler._x)
+    this._y = toEngineNumber(euler._y)
+    this._z = toEngineNumber(euler._z)
+    this._order = toEngineOrder(euler._order, this._order)
+    this._onChangeCallback()
+    return this
   }
-  const eFromArray = THREE.Euler.prototype.fromArray
   THREE.Euler.prototype.fromArray = function (array) {
-    return storedFields(eFromArray.call(this, array), euler)
+    this._x = toEngineNumber(array[0])
+    this._y = toEngineNumber(array[1])
+    this._z = toEngineNumber(array[2])
+    if (array[3] !== undefined) this._order = toEngineOrder(array[3], this._order)
+    this._onChangeCallback()
+    return this
   }
   Object.defineProperty(THREE.Quaternion.prototype, '__componentsStored', { value: true })
 }

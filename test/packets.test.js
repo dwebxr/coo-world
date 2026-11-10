@@ -3,10 +3,12 @@ import assert from 'node:assert/strict'
 import { Packr, Unpackr } from 'msgpackr'
 
 import {
+  PACK_INTERRUPTED,
   packetMethodById,
   packetNameById,
   peekPacketId,
   readPacket,
+  scriptPacketData,
   writeClientPacket,
   writePacket,
 } from '../src/core/packets.js'
@@ -170,4 +172,59 @@ test('peekPacketId: anything that is not a 2-element fixarray with a known fixin
   assert.equal(peekPacketId(undefined), -1)
   assert.equal(packetNameById(-1), undefined)
   assert.equal(packetMethodById(999), undefined)
+})
+
+// a script's data is read while it is packed (a getter, a toJSON): code there that packs another message would leave
+// that message's bytes inside the packet being packed (msgpackr's packers share one buffer and write position)
+test('a packet whose packing another pack interrupted is refused, never returned with the other message in it', () => {
+  for (const [label, write, read] of [
+    ['writePacket', data => writePacket('entityEvent', ['app', 0, 'probe', data]), packet => readPacket(packet)],
+    ['writeClientPacket', data => writeClientPacket('entityEvent', ['app', 0, 'probe', data]), packet => readPacket(packet)],
+    ['scriptPacketData (server)', data => scriptPacketData(data, false), copy => copy],
+    ['scriptPacketData (client)', data => scriptPacketData(data, true), copy => copy],
+  ]) {
+    let inner
+    const data = {
+      before: 'x'.repeat(40),
+      get nested() {
+        inner = writePacket('chatAdded', { body: 'inner' })
+        return 1
+      },
+      after: 'y'.repeat(40),
+    }
+    assert.throws(() => write(data), { message: PACK_INTERRUPTED }, label)
+    assert.deepEqual(readPacket(inner), ['onChatAdded', { body: 'inner' }], `${label}: the inner packet is whole`)
+    // without the interruption the same data packs, and reads back whole
+    const plain = { before: 'x'.repeat(40), nested: 1, after: 'y'.repeat(40) }
+    const result = read(write(plain))
+    const back = label.startsWith('write') ? result[1][3] : result
+    // (a client packet is read by the server's packer here: its objects come back as maps)
+    assert.deepEqual(back instanceof Map ? Object.fromEntries(back) : back, plain, label)
+  }
+})
+
+test('scriptPacketData: a host copy of the data, read once; primitives as they are', () => {
+  let reads = 0
+  const data = {
+    get v() {
+      reads++
+      return [1, { w: 'two' }]
+    },
+    bytes: new Uint8Array([1, 2, 3]),
+    fn() {},
+  }
+  for (const client of [false, true]) {
+    reads = 0
+    const copy = scriptPacketData(data, client)
+    assert.equal(reads, 1)
+    assert.deepEqual(copy.v, [1, { w: 'two' }])
+    assert.deepEqual([...copy.bytes], [1, 2, 3])
+    assert.equal(copy.fn, undefined)
+    assert.equal(Object.getOwnPropertyDescriptor(copy, 'v').get, undefined, 'a plain value, not the getter')
+    // the copy goes out as the data itself would have
+    const write = client ? writeClientPacket : writePacket
+    const plain = { v: [1, { w: 'two' }], bytes: new Uint8Array([1, 2, 3]), fn() {} }
+    assert.deepEqual([...write('entityEvent', ['app', 0, 'probe', copy])], [...write('entityEvent', ['app', 0, 'probe', plain])])
+  }
+  for (const value of [undefined, null, 1, 'a', true]) assert.equal(scriptPacketData(value, false), value)
 })

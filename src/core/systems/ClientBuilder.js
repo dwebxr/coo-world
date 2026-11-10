@@ -668,6 +668,9 @@ export class ClientBuilder extends System {
         const app = this.selected
         this.control.keyC.capture = true
         this.control.scrollDelta.capture = true
+        // (the root's transform is the app's own: its components are read through the guard, Node.js; the target's
+        // position and scale are three's own vectors, whose copy keeps what it reads)
+        guardTransform(app.root)
         this.target.position.copy(app.root.position)
         this.target.quaternion.copy(app.root.quaternion)
         this.target.scale.copy(app.root.scale)
@@ -732,6 +735,9 @@ export class ClientBuilder extends System {
       if (this.mode === 'grab') {
         this.control.keyC.capture = true
         this.control.scrollDelta.capture = true
+        // (the root's transform is the app's own: its components are read through the guard, Node.js; the target's
+        // position and scale are three's own vectors, whose copy keeps what it reads)
+        guardTransform(app.root)
         this.target.position.copy(app.root.position)
         this.target.quaternion.copy(app.root.quaternion)
         this.target.scale.copy(app.root.scale)
@@ -913,7 +919,8 @@ export class ClientBuilder extends System {
     })
     this.gizmoTarget = new THREE.Object3D()
     this.gizmoHelper = this.gizmo.getHelper()
-    // initialize it
+    // initialize it (from the root's transform, read through the guard as above)
+    guardTransform(app.root)
     this.gizmoTarget.position.copy(app.root.position)
     this.gizmoTarget.quaternion.copy(app.root.quaternion)
     this.gizmoTarget.scale.copy(app.root.scale)

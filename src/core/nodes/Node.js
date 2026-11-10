@@ -2,6 +2,7 @@ import { callForScript } from '../extras/scriptValues'
 import { stoppedError } from '../extras/physicsFailure.js'
 import { Teardown, tornDown } from '../extras/runTeardown.js'
 import { scriptView, sealAll } from '../extras/sealMath.js'
+import { toEngineNumber } from '../extras/engineNumber.js'
 import { isBoolean, isPrimitive } from '../extras/scriptPrimitives.js'
 import * as THREE from '../extras/three'
 import { getNodeRef, isRefAllowed, registerNodeRefGetter } from './refs'
@@ -39,23 +40,24 @@ function nodeRunOwner(node) {
 
 // A node's own position, quaternion, rotation and scale are handed to scripts as they are (sealed, their change
 // callbacks fixed: sealMath.js), and a script can write anything into a component directly (`node.position._x = …`),
-// past the setters. The engine reads those components only after these guards: a component that is not a number is
-// replaced by NaN (an Euler order that is not a string by the default order), without being converted, so an object
-// planted there has its valueOf called only by the script's own code. They run where the engine consumes the four
-// objects: Node.updateTransform (the matrix composition), the rotation and quaternion change callbacks (each sets the
-// other from it), Collider (its local pose), UI (a screen-space position), Animation (an app's distance) and
-// ClientBuilder (a moved app's transform).
+// past the setters. The engine reads those components only after these guards, which apply the engine's number rule
+// (engineNumber.js) to each component that is not a number: a string, a boolean or null is converted, anything else
+// is NaN, without being converted (an Euler order that is not a string is read as 'YXZ', a node's order), so an
+// object planted there has its valueOf called only by the script's own code. They run where the engine consumes the
+// four objects: Node.updateTransform (the matrix composition), the rotation and quaternion change callbacks (each
+// sets the other from it), Collider (its local pose), UI (a screen-space position), Animation (an app's distance),
+// App (its network interpolation) and ClientBuilder (a moved app's transform, the grab and gizmo targets).
 export function guardVector(v) {
-  if (typeof v._x !== 'number') v._x = NaN
-  if (typeof v._y !== 'number') v._y = NaN
-  if (typeof v._z !== 'number') v._z = NaN
+  if (typeof v._x !== 'number') v._x = toEngineNumber(v._x)
+  if (typeof v._y !== 'number') v._y = toEngineNumber(v._y)
+  if (typeof v._z !== 'number') v._z = toEngineNumber(v._z)
 }
 
 export function guardQuaternion(q) {
-  if (typeof q._x !== 'number') q._x = NaN
-  if (typeof q._y !== 'number') q._y = NaN
-  if (typeof q._z !== 'number') q._z = NaN
-  if (typeof q._w !== 'number') q._w = NaN
+  if (typeof q._x !== 'number') q._x = toEngineNumber(q._x)
+  if (typeof q._y !== 'number') q._y = toEngineNumber(q._y)
+  if (typeof q._z !== 'number') q._z = toEngineNumber(q._z)
+  if (typeof q._w !== 'number') q._w = toEngineNumber(q._w)
 }
 
 export function guardEuler(e) {
@@ -89,7 +91,8 @@ const nodeSetters = new WeakMap() // node -> Map(name -> the setter a node class
 const sharedSetters = new Map() // name -> the shared wrapper
 
 // the node of the handle a setter is called on: the handle itself, or one it inherits from (Object.create(handle));
-// a setter copied onto another object, or called without one, has no node and is refused
+// a setter copied onto another object, or called without one, has no node and is refused, and so is a setter called
+// on the handle of a node whose class has no such property (a mesh's castShadow setter called on a group's handle)
 function receiverNode(receiver) {
   let current = receiver
   for (let steps = 0; current !== null && current !== undefined && steps < 64; steps++) {
@@ -107,8 +110,10 @@ function sharedSetter(key) {
     set = function (value) {
       const node = receiverNode(this)
       if (!node) throw new TypeError('[node] not a node')
+      const setter = nodeSetters.get(node)?.get(key)
+      if (!setter) throw new TypeError(`[node] a ${node.name} node has no ${key} to set`)
       assertNodeRunActive(node)
-      Reflect.apply(nodeSetters.get(node).get(key), this, [value])
+      Reflect.apply(setter, this, [value])
     }
     runBound.add(set)
     sharedSetters.set(key, set)

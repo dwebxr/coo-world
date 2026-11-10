@@ -962,11 +962,22 @@ function updateXRHand(controls, src, frame, referenceSpace, side) {
   }
 }
 
+// A control's entries are handed to its script as they are: the script writes some of their fields (a button's
+// capture, onPress and onRelease, a camera's zoom and write), the engine reads and writes them every frame. Each entry
+// is sealed where it is made, so no field can be added, deleted or turned into an accessor (a getter the engine would
+// run), and the engine's own parts (the kind marker, the vectors, quaternions and eulers, a pointer's and a screen's
+// getters and methods) cannot be replaced either: what the engine reads from an entry is always its own object, and a
+// field a script writes is read without being converted (a truthiness test, Number.isFinite, a typeof check).
+function fixEntry(entry, ...fixed) {
+  for (const key of fixed) Object.defineProperty(entry, key, { writable: false })
+  return Object.seal(entry)
+}
+
 function createButton(controls, control, prop) {
   const down = controls.buttonsDown.has(prop)
   const pressed = down
   const released = false
-  return {
+  const entry = {
     $button: true,
     value: 0, // eg xr triggers
     down,
@@ -976,34 +987,37 @@ function createButton(controls, control, prop) {
     onPress: null,
     onRelease: null,
   }
+  return fixEntry(entry, '$button')
 }
 
 // (the vectors, quaternions and eulers of a control's entries are the engine's, written every frame: scripts get their
 // views, sealMath.js)
 function createVector(controls, control, prop) {
-  return {
+  const entry = {
     $vector: true,
     value: scriptView(new THREE.Vector3()),
     capture: false,
   }
+  return fixEntry(entry, '$vector', 'value')
 }
 
 function createPose(controls, control, prop) {
-  return {
+  return Object.freeze({
     $pose: true,
     position: scriptView(new THREE.Vector3()),
     quaternion: scriptView(new THREE.Quaternion()),
     // matrix: new THREE.Matrix4(),
     // capture: false,
-  }
+  })
 }
 
 function createValue(controls, control, prop) {
-  return {
+  const entry = {
     $value: true,
     value: null,
     capture: false,
   }
+  return fixEntry(entry, '$value')
 }
 
 // a new vector per read, made from the host's numbers: no host vector reaches an object a script holds
@@ -1012,7 +1026,7 @@ function snapshot(vector) {
 }
 
 function createPointer(controls, control, prop) {
-  return {
+  return Object.freeze({
     get coords() {
       return snapshot(controls.pointer.coords) // [0,0] to [1,1]
     },
@@ -1036,11 +1050,11 @@ function createPointer(controls, control, prop) {
       if (!control.active && !(control.releasing && controls.pointerOwner === control)) return
       controls.unlockPointer()
     },
-  }
+  })
 }
 
 function createScreen(controls, control) {
-  return {
+  return Object.freeze({
     $screen: true,
     get width() {
       return controls.screen.width
@@ -1048,7 +1062,7 @@ function createScreen(controls, control) {
     get height() {
       return controls.screen.height
     },
-  }
+  })
 }
 
 function createCamera(controls, control) {
@@ -1059,7 +1073,7 @@ function createCamera(controls, control) {
   bindRotations(quaternion, rotation)
   sealAll(position, quaternion, rotation)
   const zoom = world.camera.position.z
-  return {
+  const entry = {
     $camera: true,
     position: scriptView(position),
     quaternion: scriptView(quaternion),
@@ -1067,4 +1081,5 @@ function createCamera(controls, control) {
     zoom,
     write: false,
   }
+  return fixEntry(entry, '$camera', 'position', 'quaternion', 'rotation')
 }

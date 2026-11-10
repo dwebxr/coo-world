@@ -3,7 +3,7 @@ import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js'
 import { Node } from './Node'
 import * as THREE from '../extras/three'
 import { scriptView, sealAll } from '../extras/sealMath.js'
-import { storable } from '../extras/storable.js'
+import { toEngineNumber } from '../extras/engineNumber.js'
 import { isBoolean } from '../extras/scriptPrimitives.js'
 
 const defaults = {
@@ -220,11 +220,11 @@ export class SkinnedMesh extends Node {
           return scriptView(bone.matrixWorld)
         },
         set matrixWorld(mat) {
-          // the entries are read once, as primitives (an object becomes NaN, storable.js), before the bone takes
-          // them: the bone's matrix is the engine's, read by its skinning every frame
+          // the entries are read once, by the engine's number rule (engineNumber.js), before the bone takes them:
+          // the bone's matrix is the engine's, read by its skinning every frame
           const entries = []
           const source = mat?.elements
-          for (let i = 0; i < 16; i++) entries.push(storable(source?.[i]))
+          for (let i = 0; i < 16; i++) entries.push(toEngineNumber(source?.[i]))
           const bone = self.readBone(name)
           if (!bone) return
           bone.matrixAutoUpdate = false

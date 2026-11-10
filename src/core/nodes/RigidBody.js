@@ -85,9 +85,6 @@ export class RigidBody extends Node {
     // joints attached to this body, and joints waiting for it to have an actor (see Joint.mount)
     this.joints = new Set()
     this.pendingJoints = new Set()
-
-    this.tempVec3 = new THREE.Vector3()
-    this.tempQuat = new THREE.Quaternion()
   }
 
   mount() {
@@ -506,8 +503,10 @@ export class RigidBody extends Node {
     this.actor.addTorque(px, mode, true)
   }
 
+  // (a getter called without a target returns a new vector or quaternion, the script's own: no object of the body's
+  // is handed out to be kept and changed)
   getPosition(vec3) {
-    if (!vec3) vec3 = this.tempVec3
+    if (!vec3) vec3 = new THREE.Vector3()
     if (!isVector3(vec3)) throw new Error('[rigidbody] getPosition target must be Vector3')
     if (!this.actor) return writeVec3(vec3, 0, 0, 0)
     const pose = this.actor.getGlobalPose()
@@ -531,7 +530,7 @@ export class RigidBody extends Node {
   }
 
   getQuaternion(quat) {
-    if (!quat) quat = this.tempQuat
+    if (!quat) quat = new THREE.Quaternion()
     if (!isQuaternion(quat)) throw new Error('[rigidbody] getQuaternion target must be Quaternion')
     if (!this.actor) return writeQuat(quat, 0, 0, 0, 1)
     const pose = this.actor.getGlobalPose()
@@ -555,7 +554,7 @@ export class RigidBody extends Node {
   }
 
   getLinearVelocity(vec3) {
-    if (!vec3) vec3 = this.tempVec3
+    if (!vec3) vec3 = new THREE.Vector3()
     if (!isVector3(vec3)) throw new Error('[rigidbody] getLinearVelocity target must be Vector3')
     if (!this.actor) return writeVec3(vec3, 0, 0, 0)
     return pxToVec3(vec3, this.actor.getLinearVelocity())
@@ -573,7 +572,7 @@ export class RigidBody extends Node {
   }
 
   getAngularVelocity(vec3) {
-    if (!vec3) vec3 = this.tempVec3
+    if (!vec3) vec3 = new THREE.Vector3()
     if (!isVector3(vec3)) throw new Error('[rigidbody] getAngularVelocity target must be Vector3')
     if (!this.actor) return writeVec3(vec3, 0, 0, 0)
     return pxToVec3(vec3, this.actor.getAngularVelocity())
@@ -592,7 +591,7 @@ export class RigidBody extends Node {
 
   getVelocityAtPos(pos, vec3) {
     const valid = readVec3(pos, _v1, '[rigidbody] getVelocityAtPos pos must be Vector3')
-    if (!vec3) vec3 = this.tempVec3
+    if (!vec3) vec3 = new THREE.Vector3()
     if (!isVector3(vec3)) throw new Error('[rigidbody] getVelocityAtPos target must be Vector3')
     if (!valid) {
       warnOnce('[rigidbody] getVelocityAtPos ignored a non-finite pos')
@@ -606,7 +605,7 @@ export class RigidBody extends Node {
 
   getLocalVelocityAtLocalPos(pos, vec3) {
     const valid = readVec3(pos, _v1, '[rigidbody] getLocalVelocityAtLocalPos pos must be Vector3')
-    if (!vec3) vec3 = this.tempVec3
+    if (!vec3) vec3 = new THREE.Vector3()
     if (!isVector3(vec3)) throw new Error('[rigidbody] getLocalVelocityAtLocalPos target must be Vector3')
     if (!valid) {
       warnOnce('[rigidbody] getLocalVelocityAtLocalPos ignored a non-finite pos')

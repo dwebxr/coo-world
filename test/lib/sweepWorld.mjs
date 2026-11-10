@@ -167,9 +167,12 @@ export function createSweep({ m, scripts, requests }) {
     const lock = { request: 0 }
     const model = models || defaultModel
     const world = Object.assign(new EventEmitter(), {
-      network: { isServer, isClient: !isServer, id: 'me', send: () => true, asScript: fn => fn() },
+      network: { isServer, isClient: !isServer, id: 'me', send: () => true, sendTo: () => true, asScript: fn => fn() },
+      // (the server's world store; a client world has none)
+      storage: isServer ? { get() {}, set() {} } : undefined,
       entities: {
         items: new Map(),
+        get: id => world.entities.items.get(id) ?? world.entities.players.get(id),
         remove: id => world.entities.items.delete(id),
         // (the join budget's record of a rebuilt app's emptied state, Entities.stateEmptied)
         stateEmptied() {},

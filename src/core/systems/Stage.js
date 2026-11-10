@@ -11,13 +11,14 @@ import { hardenForScripts } from '../extras/scriptHardening'
 const vec2 = new THREE.Vector2()
 
 // A linked instance's matrix is its node's own matrixWorld, which scripts hold. InstancedMesh.setMatrixAt would call
-// that object's toArray (a script could define one) and hand it the shared instance buffer. Instead the values are
-// read with the class's own method into an array of the caller's own (scripts get node matrices only as views, whose
-// elements keep numbers, so no script code runs while they are read: sealMath.js), kept only if they are numbers, and
-// written into the buffer by the host. Every read that is outstanding at once uses its own array (a read nested inside
-// another, should one ever run script code, cannot overwrite the values the outer one has), and callers still check
-// their bookkeeping after the read.
-const toArray = THREE.Matrix4.prototype.toArray
+// that object's toArray (a script could define one) and hand it the shared instance buffer. Instead the host reads
+// the sixteen entries of the matrix's own elements array itself into an array of its own (scripts get node matrices
+// only as views, which neither replace that array nor put an accessor on an entry, and keep numbers in it:
+// sealMath.js), keeps each entry that is a number and reads any other as NaN, without converting it (a Symbol or a
+// BigInt would throw in the Float64Array, an object would run script code there), and writes them into the buffer:
+// a read neither runs script code nor throws for what an entry holds. Every read that is outstanding at once still
+// uses its own array (a read nested inside another, should one ever run code, cannot overwrite the values the outer
+// one has), and callers still check their bookkeeping after the read.
 const copyMatrix = THREE.Matrix4.prototype.copy
 const matrixArrays = [] // one per nesting depth, made on first use
 let matrixDepth = 0
@@ -26,7 +27,11 @@ function readMatrix(matrix) {
   const values = (matrixArrays[matrixDepth] ??= new Float64Array(16))
   matrixDepth++
   try {
-    toArray.call(matrix, values, 0)
+    const elements = matrix.elements
+    for (let i = 0; i < 16; i++) {
+      const value = elements[i]
+      values[i] = typeof value === 'number' ? value : NaN
+    }
   } finally {
     matrixDepth--
   }

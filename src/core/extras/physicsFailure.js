@@ -23,10 +23,15 @@ export function assertScriptActive(entity, world = entity?.world, allowDestroy =
     (entity?.destroyed && !entity.destroying) ||
     world?.fatalError
   ) {
-    throw new Error(
-      entity?.nativeFailure ? '[physics] disabled for this app after a native failure' : '[app] this app has stopped'
-    )
+    throw stoppedError(entity)
   }
+}
+
+// what a call into a stopped app (or into a run of it that has ended) throws
+export function stoppedError(entity) {
+  return new Error(
+    entity?.nativeFailure ? '[physics] disabled for this app after a native failure' : '[app] this app has stopped'
+  )
 }
 
 export function handlePhysicsFailure(err, { entity, world = entity?.world, phase, count = 1 } = {}) {

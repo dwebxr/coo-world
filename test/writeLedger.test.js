@@ -1,4 +1,5 @@
 import { callForScript } from '../src/core/extras/scriptValues.js'
+import { stoppedError } from '../src/core/extras/physicsFailure.js'
 import { chatEnvelope, scriptChatMessage } from '../src/core/extras/chatPolicy.js'
 import { applyInitials, copyFields } from '../src/core/extras/appFields.js'
 import { createLogOnce } from '../src/core/extras/logOnce.js'
@@ -284,13 +285,14 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
   const apps = new Apps(world)
   const entity = { data: { id: 'app' }, blueprint: { version: 0 } }
   const proxySource = fs.readFileSync(new URL('../src/core/extras/createPlayerProxy.js', import.meta.url), 'utf8')
-  const createProxy = vm.runInNewContext(
-    `${proxySource.replace(/^import .*\n/gm, '').replace('export function', 'function')}\ncreatePlayerProxy`,
+  const { createPlayerProxy: createProxy, cleanupPlayerProxy } = vm.runInNewContext(
+    `${proxySource.replace(/^import .*\n/gm, '').replace(/^export function/gm, 'function')}\n({ createPlayerProxy, cleanupPlayerProxy })`,
     {
       THREE,
       readVec3,
       warnOnce,
       callForScript,
+      stoppedError,
       console,
       clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v)),
       sanitizePlayerSelfModify: (data, id) => sanitizePlayerSelfModify({ ef: { ...data.ef } }, id),
@@ -317,7 +319,7 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
   assert.equal(socket.ws.packets.length, 0)
   // Engine teardown must undo voice overrides even when scripts exhausted their tick budget.
   proxy.setVoiceLevel('global')
-  proxy.$cleanup()
+  cleanupPlayerProxy(proxy)
   assert.equal(socket.ws.packets.length, 1)
   assert.equal(network.writer.state(socket.ws).queued > 0, true)
   assert.equal(network.send('chatAdded', { body: 'system' }), true)

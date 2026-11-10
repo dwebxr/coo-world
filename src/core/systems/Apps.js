@@ -87,7 +87,7 @@ export class Apps extends System {
           node.deactivate()
         }
         entity.worldNodes.add(node)
-        node.activate({ world, entity })
+        node.activate({ world, entity, run: entity.deadHook })
       },
       remove(entity, pNode) {
         const node = getNodeRef(pNode)
@@ -121,7 +121,7 @@ export class Apps extends System {
         finalMatrix.decompose(node.position, node.quaternion, node.scale)
         // tracked before it mounts, so an activation that stops part-way (node limit) is still torn down
         entity.worldNodes.add(node)
-        node.activate({ world, entity })
+        node.activate({ world, entity, run: entity.deadHook })
       },
       on(entity, name, callback) {
         entity.onWorldEvent(name, callback)

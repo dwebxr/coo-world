@@ -23,7 +23,8 @@ import { createEventLedger } from '../../src/core/extras/appEventQueue.js'
 import { applyInitials, copyFields, copyProps } from '../../src/core/extras/appFields.js'
 import { scriptChatMessage } from '../../src/core/extras/chatPolicy.js'
 import { createLogOnce } from '../../src/core/extras/logOnce.js'
-import { toScriptError } from '../../src/core/extras/scriptValues.js'
+import { callForScript, toScriptError } from '../../src/core/extras/scriptValues.js'
+import { stoppedError } from '../../src/core/extras/physicsFailure.js'
 import { NODE_CLIMB_LIMIT, NodeLimitError } from '../../src/core/extras/nodeLimits.js'
 import * as assetURL from '../../src/core/extras/assetURL.js'
 import { resolveAssetFile } from '../../src/core/extras/resolveAssetFile.js'
@@ -83,6 +84,8 @@ export function loadClient(file, name, context = {}) {
     scriptChatMessage,
     createLogOnce,
     toScriptError,
+    callForScript,
+    stoppedError,
     NODE_CLIMB_LIMIT,
     NodeLimitError,
     ...assetURL,

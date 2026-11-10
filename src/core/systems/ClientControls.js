@@ -6,6 +6,7 @@ import { System } from './System'
 import { createControlProxy } from './controlProxy'
 import { callEntry, callScript } from '../extras/callScript'
 import { readOnce, toText } from '../extras/scriptText'
+import { briefError, createLogOnce } from '../extras/logOnce'
 import { setQuaternionFromPoint, setVectorFromPoint } from '../extras/xrPose'
 
 const LMB = 1 // bitmask
@@ -27,6 +28,34 @@ const q2 = new THREE.Quaternion()
 const captured = new Set()
 
 let actionIds = 0
+
+// a control whose script-held entries make per-frame work throw is reported once per control and phase
+const logControlFailure = createLogOnce(message => console.error(message))
+
+// Per-frame work writes into and reads from entries a script holds (accessors and own methods are possible).
+// A control that throws there must not stop the frame: an app's control crashes its app (and is skipped from
+// then on, see `active`); any other control is reported.
+function controlFailed(control, phase, err) {
+  const owner = control.options.object
+  const label = owner?.isApp ? `app ${String(owner.data?.id).slice(0, 64)}` : 'host'
+  logControlFailure(control, phase, `[controls] ${phase} failed (${label}): ${briefError(err)}`)
+  if (owner?.isApp && !owner.crashed) {
+    owner.scriptError = { name: 'Error', message: `[controls] ${phase} failed` }
+    owner.crash?.()
+  }
+}
+
+// a touch as an app's control sees it: a copy made from numbers (the live record stays with the host and the
+// player's stick, which compare it by identity)
+function touchSnapshot(info) {
+  return {
+    id: info.id,
+    position: new THREE.Vector3(info.position.x, info.position.y, 0),
+    prevPosition: new THREE.Vector3(info.prevPosition.x, info.prevPosition.y, 0),
+    delta: new THREE.Vector3(info.delta.x, info.delta.y, 0),
+    pointerType: info.pointerType,
+  }
+}
 
 // the action hints a control shows in the HUD (CoreUI Actions): host objects built from the given list, reading
 // each property once and keeping only strings (a script's objects, getters or forged React elements never reach
@@ -123,22 +152,30 @@ export class ClientControls extends System {
   applyXRRig(xrRig) {
     for (const control of this.controls) {
       if (!control.active) continue
-      if (control.entries.xrLeftRayPose) {
-        const pose = control.entries.xrLeftRayPose
-        const scale = v1.set(1, 1, 1)
-        m1.compose(pose.lPosition, pose.lQuaternion, scale)
-        m2.compose(xrRig.position, xrRig.quaternion, scale)
-        m1.premultiply(m2)
-        m1.decompose(pose.position, pose.quaternion, scale)
+      try {
+        this.applyXRRigTo(control, xrRig)
+      } catch (err) {
+        controlFailed(control, 'xr rig', err)
       }
-      if (control.entries.xrRightRayPose) {
-        const pose = control.entries.xrRightRayPose
-        const scale = v1.set(1, 1, 1)
-        m1.compose(pose.lPosition, pose.lQuaternion, scale)
-        m2.compose(xrRig.position, xrRig.quaternion, scale)
-        m1.premultiply(m2)
-        m1.decompose(pose.position, pose.quaternion, scale)
-      }
+    }
+  }
+
+  applyXRRigTo(control, xrRig) {
+    if (control.entries.xrLeftRayPose) {
+      const pose = control.entries.xrLeftRayPose
+      const scale = v1.set(1, 1, 1)
+      m1.compose(pose.lPosition, pose.lQuaternion, scale)
+      m2.compose(xrRig.position, xrRig.quaternion, scale)
+      m1.premultiply(m2)
+      m1.decompose(pose.position, pose.quaternion, scale)
+    }
+    if (control.entries.xrRightRayPose) {
+      const pose = control.entries.xrRightRayPose
+      const scale = v1.set(1, 1, 1)
+      m1.compose(pose.lPosition, pose.lQuaternion, scale)
+      m2.compose(xrRig.position, xrRig.quaternion, scale)
+      m1.premultiply(m2)
+      m1.decompose(pose.position, pose.quaternion, scale)
     }
   }
 
@@ -146,10 +183,16 @@ export class ClientControls extends System {
     // mouse wheel delta
     for (const control of this.controls) {
       if (!control.active) continue
-      if (control.entries.scrollDelta) {
-        control.entries.scrollDelta.value = this.scroll.delta
-        if (control.entries.scrollDelta.capture) break
+      let captured = false
+      try {
+        if (control.entries.scrollDelta) {
+          control.entries.scrollDelta.value = this.scroll.delta
+          captured = !!control.entries.scrollDelta.capture
+        }
+      } catch (err) {
+        controlFailed(control, 'scroll', err)
       }
+      if (captured) break
     }
     // xr
     if (this.xrSession) {
@@ -175,28 +218,43 @@ export class ClientControls extends System {
     // clear buttons
     for (const control of this.controls) {
       if (!control.active) continue
-      for (const key in control.entries) {
-        const value = control.entries[key]
-        if (value.$button) {
-          value.pressed = false
-          value.released = false
+      try {
+        for (const key in control.entries) {
+          const value = control.entries[key]
+          if (value.$button) {
+            value.pressed = false
+            value.released = false
+          }
         }
+      } catch (err) {
+        controlFailed(control, 'buttons', err)
       }
     }
-    // update camera
+    // update camera: only numbers move between the rig and a control's camera, so no host object reaches a method
+    // of an object a script holds, and a value that is not a finite number never reaches the rig
     let written
+    const rig = this.world.rig
     for (const control of this.controls) {
       if (!control.active) continue
-      const camera = control.entries.camera
-      if (camera?.write && !written) {
-        this.world.rig.position.copy(camera.position)
-        this.world.rig.quaternion.copy(camera.quaternion)
-        this.world.camera.position.z = camera.zoom
-        written = true
-      } else if (camera) {
-        camera.position.copy(this.world.rig.position)
-        camera.quaternion.copy(this.world.rig.quaternion)
-        camera.zoom = this.world.camera.position.z
+      try {
+        const camera = control.entries.camera
+        if (camera?.write && !written) {
+          written = true
+          const p = camera.position
+          const q = camera.quaternion
+          const values = [p.x, p.y, p.z, q.x, q.y, q.z, q.w, camera.zoom]
+          if (values.every(Number.isFinite)) {
+            rig.position.set(values[0], values[1], values[2])
+            rig.quaternion.set(values[3], values[4], values[5], values[6])
+            this.world.camera.position.z = values[7]
+          }
+        } else if (camera) {
+          camera.position.set(rig.position.x, rig.position.y, rig.position.z)
+          camera.quaternion.set(rig.quaternion.x, rig.quaternion.y, rig.quaternion.z, rig.quaternion.w)
+          camera.zoom = this.world.camera.position.z
+        }
+      } catch (err) {
+        controlFailed(control, 'camera', err)
       }
     }
     // clear touch deltas
@@ -229,15 +287,18 @@ export class ClientControls extends System {
     const self = this
     const entries = {}
     let reticleSupressor
+    // a released control (by its script, or when its app run ended) keeps answering, but changes nothing
+    let released = false
     const control = {
       options,
       get active() {
-        return !self.world.fatalError && !options.object?.crashed
+        return !released && !self.world.fatalError && !options.object?.crashed
       },
       entries,
       actions: null,
       api: {
         hideReticle(value = true) {
+          if (released) return
           if (reticleSupressor && value) return
           if (!reticleSupressor && !value) return
           if (reticleSupressor) {
@@ -251,16 +312,24 @@ export class ClientControls extends System {
           if (value !== null && !Array.isArray(value)) {
             throw new Error('[control] actions must be null or array')
           }
+          if (released) return
           control.actions = value ? copyActions(value) : null
           self.buildActions()
         },
         release: () => {
+          if (released) return
+          // the onRelease callback runs as before: only for a control whose app did not crash
+          const wasActive = control.active
+          released = true
           reticleSupressor?.()
+          reticleSupressor = null
           const idx = this.controls.indexOf(control)
           if (idx === -1) return
           this.controls.splice(idx, 1)
+          // its hints leave the HUD with it
+          if (control.actions) self.buildActions()
           // the options object is host-owned, so its callbacks run without a receiver
-          if (control.active) callScript(options.onRelease)
+          if (wasActive) callScript(options.onRelease)
         },
       },
     }
@@ -453,7 +522,8 @@ export class ClientControls extends System {
       this.touches.set(e.pointerId, info)
       for (const control of this.controls) {
         if (!control.active) continue
-        const consume = control.active && callScript(control.options.onTouch, info)
+        const touch = control.options.object?.isApp ? touchSnapshot(info) : info
+        const consume = control.active && callScript(control.options.onTouch, touch)
         if (consume) break
       }
     }
@@ -492,7 +562,8 @@ export class ClientControls extends System {
       if (info) {
         for (const control of this.controls) {
           if (!control.active) continue
-          const consume = control.active && callScript(control.options.onTouchEnd, info)
+          const touch = control.options.object?.isApp ? touchSnapshot(info) : info
+          const consume = control.active && callScript(control.options.onTouchEnd, touch)
           if (consume) break
         }
         this.touches.delete(e.pointerId)
@@ -677,102 +748,106 @@ function updateXRHand(controls, src, frame, referenceSpace, side) {
   captured.clear()
   for (const control of controls.controls) {
     if (!control.active) continue
-    if (control.entries[rayPoseProp]) {
-      if (src.targetRaySpace) {
-        const ray = frame.getPose(src.targetRaySpace, referenceSpace)
-        if (ray) {
-          const pose = control.entries[rayPoseProp]
-          // apply tremor smoothing to local change
-          if (!pose.lPosition) {
-            pose.lPosition = setVectorFromPoint(new THREE.Vector3(), ray.transform.position)
-            pose.lQuaternion = setQuaternionFromPoint(new THREE.Quaternion(), ray.transform.orientation)
+    try {
+      if (control.entries[rayPoseProp]) {
+        if (src.targetRaySpace) {
+          const ray = frame.getPose(src.targetRaySpace, referenceSpace)
+          if (ray) {
+            const pose = control.entries[rayPoseProp]
+            // apply tremor smoothing to local change
+            if (!pose.lPosition) {
+              pose.lPosition = setVectorFromPoint(new THREE.Vector3(), ray.transform.position)
+              pose.lQuaternion = setQuaternionFromPoint(new THREE.Quaternion(), ray.transform.orientation)
+            }
+            // the browser's pose objects never reach a method of an object a script may hold (xrPose.js)
+            setVectorFromPoint(v1, ray.transform.position)
+            setQuaternionFromPoint(q1, ray.transform.orientation)
+            pose.lPosition.lerp(v1, 1 - XR_TREMOR_SMOOTHING_FACTOR)
+            pose.lQuaternion.slerp(q1, 1 - XR_TREMOR_SMOOTHING_FACTOR)
+            // world transform is applied above in this.applyXRRig()
           }
-          // the browser's pose objects never reach a method of an object a script may hold (xrPose.js)
-          setVectorFromPoint(v1, ray.transform.position)
-          setQuaternionFromPoint(q1, ray.transform.orientation)
-          pose.lPosition.lerp(v1, 1 - XR_TREMOR_SMOOTHING_FACTOR)
-          pose.lQuaternion.slerp(q1, 1 - XR_TREMOR_SMOOTHING_FACTOR)
-          // world transform is applied above in this.applyXRRig()
         }
       }
-    }
-    if (control.entries[gripPoseProp]) {
-      if (src.gripSpace) {
-        const grip = frame.getPose(src.gripSpace, referenceSpace)
-        if (grip) {
-          const pose = control.entries[gripPoseProp]
-          // todo: tremor smoothing?
-          setVectorFromPoint(pose.position, grip.transform.position)
-          setQuaternionFromPoint(pose.quaternion, grip.transform.orientation)
-          // pose.matrix.fromArray(grip.transform.matrix)
+      if (control.entries[gripPoseProp]) {
+        if (src.gripSpace) {
+          const grip = frame.getPose(src.gripSpace, referenceSpace)
+          if (grip) {
+            const pose = control.entries[gripPoseProp]
+            // todo: tremor smoothing?
+            setVectorFromPoint(pose.position, grip.transform.position)
+            setQuaternionFromPoint(pose.quaternion, grip.transform.orientation)
+            // pose.matrix.fromArray(grip.transform.matrix)
+          }
         }
       }
-    }
-    if (control.entries[stickProp]) {
-      if (captured.has(stickProp)) {
-        control.entries[stickProp].value.x = 0
-        control.entries[stickProp].value.z = 0
-      } else {
-        control.entries[stickProp].value.x = src.gamepad.axes[2]
-        control.entries[stickProp].value.z = src.gamepad.axes[3]
-        if (control.entries[stickProp].capture) {
-          captured.add(stickProp)
+      if (control.entries[stickProp]) {
+        if (captured.has(stickProp)) {
+          control.entries[stickProp].value.x = 0
+          control.entries[stickProp].value.z = 0
+        } else {
+          control.entries[stickProp].value.x = src.gamepad.axes[2]
+          control.entries[stickProp].value.z = src.gamepad.axes[3]
+          if (control.entries[stickProp].capture) {
+            captured.add(stickProp)
+          }
         }
       }
-    }
-    if (control.entries[triggerProp]) {
-      const button = control.entries[triggerProp]
-      const down = src.gamepad.buttons[0].value > 0.9
-      if (down && !button.down) {
-        button.pressed = true
-        callControlEntry(control, button, 'onPress')
+      if (control.entries[triggerProp]) {
+        const button = control.entries[triggerProp]
+        const down = src.gamepad.buttons[0].value > 0.9
+        if (down && !button.down) {
+          button.pressed = true
+          callControlEntry(control, button, 'onPress')
+        }
+        if (!down && button.down) {
+          button.released = true
+          callControlEntry(control, button, 'onRelease')
+        }
+        button.down = down
+        button.value = src.gamepad.buttons[0].value
       }
-      if (!down && button.down) {
-        button.released = true
-        callControlEntry(control, button, 'onRelease')
+      if (control.entries[gripProp]) {
+        const button = control.entries[gripProp]
+        const down = src.gamepad.buttons[1].pressed
+        if (down && !button.down) {
+          button.pressed = true
+          callControlEntry(control, button, 'onPress')
+        }
+        if (!down && button.down) {
+          button.released = true
+          callControlEntry(control, button, 'onRelease')
+        }
+        button.down = down
+        button.value = src.gamepad.buttons[1].value
       }
-      button.down = down
-      button.value = src.gamepad.buttons[0].value
-    }
-    if (control.entries[gripProp]) {
-      const button = control.entries[gripProp]
-      const down = src.gamepad.buttons[1].pressed
-      if (down && !button.down) {
-        button.pressed = true
-        callControlEntry(control, button, 'onPress')
+      if (control.entries[btn1Prop]) {
+        const button = control.entries[btn1Prop]
+        const down = src.gamepad.buttons[4].pressed
+        if (down && !button.down) {
+          button.pressed = true
+          callControlEntry(control, button, 'onPress')
+        }
+        if (!down && button.down) {
+          button.released = true
+          callControlEntry(control, button, 'onRelease')
+        }
+        button.down = down
       }
-      if (!down && button.down) {
-        button.released = true
-        callControlEntry(control, button, 'onRelease')
+      if (control.entries[btn2Prop]) {
+        const button = control.entries[btn2Prop]
+        const down = src.gamepad.buttons[5].pressed
+        if (down && !button.down) {
+          button.pressed = true
+          callControlEntry(control, button, 'onPress')
+        }
+        if (!down && button.down) {
+          button.released = true
+          callControlEntry(control, button, 'onRelease')
+        }
+        button.down = down
       }
-      button.down = down
-      button.value = src.gamepad.buttons[1].value
-    }
-    if (control.entries[btn1Prop]) {
-      const button = control.entries[btn1Prop]
-      const down = src.gamepad.buttons[4].pressed
-      if (down && !button.down) {
-        button.pressed = true
-        callControlEntry(control, button, 'onPress')
-      }
-      if (!down && button.down) {
-        button.released = true
-        callControlEntry(control, button, 'onRelease')
-      }
-      button.down = down
-    }
-    if (control.entries[btn2Prop]) {
-      const button = control.entries[btn2Prop]
-      const down = src.gamepad.buttons[5].pressed
-      if (down && !button.down) {
-        button.pressed = true
-        callControlEntry(control, button, 'onPress')
-      }
-      if (!down && button.down) {
-        button.released = true
-        callControlEntry(control, button, 'onRelease')
-      }
-      button.down = down
+    } catch (err) {
+      controlFailed(control, 'xr input', err)
     }
   }
 }
@@ -819,19 +894,21 @@ function createValue(controls, control, prop) {
   }
 }
 
+// a new vector per read, made from the host's numbers: no host vector reaches an object a script holds
+function snapshot(vector) {
+  return new THREE.Vector3(vector.x, vector.y, vector.z)
+}
+
 function createPointer(controls, control, prop) {
-  const coords = new THREE.Vector3() // [0,0] to [1,1]
-  const position = new THREE.Vector3() // [0,0] to [viewportWidth,viewportHeight]
-  const delta = new THREE.Vector3() // position delta (pixels)
   return {
     get coords() {
-      return coords.copy(controls.pointer.coords)
+      return snapshot(controls.pointer.coords) // [0,0] to [1,1]
     },
     get position() {
-      return position.copy(controls.pointer.position)
+      return snapshot(controls.pointer.position) // [0,0] to [viewportWidth,viewportHeight]
     },
     get delta() {
-      return delta.copy(controls.pointer.delta)
+      return snapshot(controls.pointer.delta) // position delta (pixels)
     },
     get locked() {
       return controls.pointer.locked

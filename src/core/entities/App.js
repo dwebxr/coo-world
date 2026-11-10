@@ -3,7 +3,7 @@ import { Entity } from './Entity'
 import { createNode } from '../extras/createNode'
 import { LerpVector3 } from '../extras/LerpVector3'
 import { LerpQuaternion } from '../extras/LerpQuaternion'
-import { createPlayerProxy } from '../extras/createPlayerProxy'
+import { cleanupPlayerProxy, createPlayerProxy } from '../extras/createPlayerProxy'
 import { createEntityProxy } from '../extras/createEntityProxy'
 import { serializeError } from '../extras/serializeError'
 import { registerAppProxy } from '../nodes/refs'
@@ -19,6 +19,8 @@ const hotEventNames = ['fixedUpdate', 'update', 'animate', 'lateUpdate']
 
 // an app says once per reason that it is dropping events; the count is kept on the app
 const logDroppedEvent = createLogOnce()
+// a teardown stage that throws is reported once per app and stage
+const logTeardown = createLogOnce(message => console.error(message))
 
 const Modes = {
   ACTIVE: 'active',
@@ -149,7 +151,7 @@ export class App extends Entity {
     }
     // activate
     try {
-      this.root.activate({ world: this.world, entity: this, moving: !!this.data.mover })
+      this.root.activate({ world: this.world, entity: this, moving: !!this.data.mover, run: this.deadHook })
     } catch (err) {
       if (!(err instanceof NodeLimitError)) throw err
       // the model alone is over the node budget: this run shows the crash block instead (crash() below queues it,
@@ -220,7 +222,21 @@ export class App extends Entity {
     this.building = false
   }
 
+  // Every stage runs even when an earlier one throws (a script's destroy listener, a script callback reached
+  // from a cleanup, a node's unmount), so the nodes are unmounted and release their budget, listeners, timers
+  // and requests are gone, and the run is latched dead whatever the script did.
   unbuild() {
+    const stage = (name, fn) => {
+      try {
+        fn()
+      } catch (err) {
+        logTeardown(
+          this,
+          name,
+          `[app] ${String(this.data.id).slice(0, 64)}: teardown (${name}) failed: ${briefError(err)}`
+        )
+      }
+    }
     // notify any running script; a throwing listener must not skip the teardown below
     this.destroying = true
     try {
@@ -232,34 +248,32 @@ export class App extends Entity {
       this.destroying = false
     }
     // cancel any control
-    this.control?.release()
+    stage('control', () => this.control?.release())
     this.control = null
-    // cancel any effects
-    this.playerProxies.forEach(player => {
-      player.$cleanup()
-    })
+    // cancel any effects; the cleanups are host-private (createPlayerProxy), and each runs on its own
+    const proxies = [...this.playerProxies.values()]
+    this.playerProxies.clear()
+    for (const proxy of proxies) stage('player', () => cleanupPlayerProxy(proxy))
     // deactivate local node
-    this.root?.deactivate()
+    stage('root', () => this.root?.deactivate())
     // deactivate world nodes
-    for (const node of this.worldNodes) {
-      node.deactivate()
-    }
+    for (const node of this.worldNodes) stage('world nodes', () => node.deactivate())
     this.worldNodes.clear()
     // clear script event listeners
-    this.clearEventListeners()
+    stage('listeners', () => this.clearEventListeners())
     this.hotEvents = 0
     // cancel update tracking
-    this.world.setHot(this, false)
+    stage('hot', () => this.world.setHot(this, false))
     // abort fetch's etc
-    this.abortController?.abort()
+    stage('requests', () => this.abortController?.abort())
     this.abortController = null
     // cancel script timers
-    this.timers.clear()
-    // mark dead and re-create hook (async etc)
+    stage('timers', () => this.timers.clear())
+    // mark dead and re-create hook (async etc): proxies, nodes and player handles of this run stop working
     this.deadHook.dead = true
     this.deadHook = { dead: false }
     // clear fields
-    this.onFields?.([])
+    stage('fields', () => this.onFields?.([]))
   }
 
   fixedUpdate(delta) {
@@ -563,6 +577,7 @@ export class App extends Entity {
     return glb.toNodes()
   }
 
+  // player handles belong to the current run (the cache is emptied by unbuild)
   getPlayerProxy(playerId) {
     if (playerId === undefined) playerId = this.world.entities.player?.data.id
     let proxy = this.playerProxies.get(playerId)
@@ -575,23 +590,29 @@ export class App extends Entity {
     return proxy
   }
 
+  // the world and app proxies are made per run (see createEntityProxy): an old run's proxy stops working
   getWorldProxy() {
-    if (!this.worldProxy) {
+    if (!this.worldProxy || this.worldProxyRun !== this.deadHook) {
       const entity = this
+      this.worldProxyRun = this.deadHook
       this.worldProxy = createEntityProxy(entity, {
         getters: this.world.apps.worldGetters,
         setters: this.world.apps.worldSetters,
         methods: this.world.apps.worldMethods,
         destroyMethods: ['off', 'remove'],
+        run: this.deadHook,
       })
     }
     return this.worldProxy
   }
 
   getAppProxy() {
-    if (!this.appProxy) {
+    if (!this.appProxy || this.appProxyRun !== this.deadHook) {
       const entity = this
+      const run = this.deadHook
+      this.appProxyRun = run
       this.appProxy = createEntityProxy(entity, {
+        run,
         getters: this.world.apps.appGetters,
         setters: this.world.apps.appSetters,
         methods: this.world.apps.appMethods,
@@ -606,8 +627,8 @@ export class App extends Entity {
           return true
         },
       })
-      // lets world.add(app) etc resolve to the app's root node
-      registerAppProxy(this.appProxy, () => entity.root.getProxy())
+      // lets world.add(app) etc resolve to the app's root node, for as long as its run lasts
+      registerAppProxy(this.appProxy, () => (run === entity.deadHook ? entity.root.getProxy() : null))
     }
     return this.appProxy
   }

@@ -142,6 +142,8 @@ export class Node {
     if (this.mounted) return
     if (ctx) this.ctx = ctx
     if (!this._active || !this.ctx) return
+    // a context from an app run that has ended (the app was rebuilt or removed) mounts nothing
+    if (this.ctx.run && this.ctx.run !== this.ctx.entity?.deadHook) return
     // top down mount
     this.updateTransform()
     const entity = this.ctx.entity

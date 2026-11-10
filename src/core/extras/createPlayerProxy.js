@@ -1,4 +1,5 @@
 import { callForScript } from './scriptValues.js'
+import { stoppedError } from './physicsFailure.js'
 import { getRef } from '../nodes/Node'
 import { clamp, uuid } from '../utils'
 import * as THREE from './three'
@@ -28,8 +29,28 @@ function readHoldingSpec(spec) {
   return { chainId, contract, standard, tokenId: tokenId ?? undefined, minBalance: minBalance ?? 1 }
 }
 
+// the engine's teardown for each proxy, kept out of the object scripts hold (a script could replace or break a
+// method on it); App.unbuild runs it through cleanupPlayerProxy
+const cleanups = new WeakMap()
+
+export function cleanupPlayerProxy(proxy) {
+  cleanups.get(proxy)?.()
+}
+
+// a script callback run by the host: no receiver, and a throw is reported instead of escaping into host code
+function callBack(fn) {
+  if (typeof fn !== 'function') return
+  try {
+    fn.call(undefined)
+  } catch (err) {
+    console.error(err)
+  }
+}
+
+// a player handle belongs to the app run that asked for it (App.getPlayerProxy); after that run, its methods throw
 export function createPlayerProxy(entity, player) {
   const world = player.world
+  const run = entity.deadHook
   let activeEffectConfig = null
   let voiceMod
   // a client script changes another player only through a server script: on a remote player these calls
@@ -222,13 +243,15 @@ export function createPlayerProxy(entity, player) {
       }
       const safe = sanitizePlayerSelfModify({ ef: effect }, player.data.id)
       if (!safe || !Object.prototype.hasOwnProperty.call(safe, 'ef')) return
+      // read once; called by the host when the effect ends, which may be during teardown
+      const onEnd = opts.onEnd
       const config = {
         effect: safe.ef,
         onEnd: () => {
           if (activeEffectConfig !== config) return
           activeEffectConfig = null
           player.setEffect(null)
-          if (!entity.crashed && !world.fatalError) opts.onEnd?.call(undefined)
+          if (!entity.crashed && !world.fatalError && run === entity.deadHook && !run?.dead) callBack(onEnd)
         },
       }
       activeEffectConfig = config
@@ -241,6 +264,7 @@ export function createPlayerProxy(entity, player) {
           return activeEffectConfig === config
         },
         cancel: () => {
+          if (run !== entity.deadHook) throw stoppedError(entity)
           config.onEnd()
         },
       }
@@ -295,13 +319,16 @@ export function createPlayerProxy(entity, player) {
         return
       }
     },
-    $cleanup() {
+  }
+  cleanups.set(proxy, () => {
+    try {
       activeEffectConfig?.onEnd()
+    } finally {
       if (voiceMod) {
         voiceMod = world.livekit.removeModifier(voiceMod)
       }
-    },
-  }
+    }
+  })
   if (world.network.isServer) {
     for (const name of [
       'teleport',
@@ -317,9 +344,25 @@ export function createPlayerProxy(entity, player) {
       proxy[name] = (...args) => world.network.asScript(() => method(...args), entity, name)
     }
   }
-  for (const name of ['push', 'teleport', 'getTokenBalance', 'getEvmHolding']) {
+  // every call that acts or asks: refused once the app has stopped (crashed, removed) or its run has ended
+  for (const name of [
+    'push',
+    'teleport',
+    'getTokenBalance',
+    'getEvmHolding',
+    'setSessionAvatar',
+    'damage',
+    'heal',
+    'applyEffect',
+    'cancelEffect',
+    'screenshare',
+    'setVoiceLevel',
+  ]) {
     const method = proxy[name]
-    proxy[name] = (...args) => callForScript(method, entity, args)
+    proxy[name] = (...args) => {
+      if (run !== entity.deadHook) throw stoppedError(entity)
+      return callForScript(method, entity, args)
+    }
   }
   return proxy
 }

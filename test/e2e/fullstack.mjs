@@ -14,7 +14,7 @@ import { Packr } from 'msgpackr'
 import WebSocket from 'ws'
 
 import { APPS_DIR, REPO_ROOT, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
-import { installAsset, startServer } from './lib/server.mjs'
+import { MemoryProbeTimeout, installAsset, startServer } from './lib/server.mjs'
 import { WireClient, snapshot } from './lib/ws.mjs'
 import { appState, becomeAdmin, installApp, launchBrowser, saveArtifacts } from './lib/browser.mjs'
 
@@ -573,7 +573,7 @@ async function probes(admin, watcher) {
     async () => {
       admin.installApp({ id: 's-event', script: 'asset://event-probe.js', model: 'asset://ai.glb' })
       await sleep(500)
-      const baseline = await server.retainedMB()
+      const baseline = await server.retainedMiB()
       // (a) 20 connections each send one message above the 64 KiB ceiling: each is closed with 1009, the server stays up
       const giant = 'x'.repeat(70 * 1024)
       const giants = await Promise.all(
@@ -620,26 +620,39 @@ async function probes(admin, watcher) {
       eq(ping.data.n, 1, 'a current-version event is delivered after the flood')
       eq(ping.from, flood.id, 'from the flooding socket')
       // (d) what the floods left behind. The frames above are garbage: the server must not keep them once it has
-      // worked through them (the unfixed server kept the events themselves, 160 MB and more, for ever). Measured
-      // after a full collection, since how much garbage is still resident depends on the Node version and on how
-      // busy the machine is. The wait covers a server that is still working through the flood.
+      // worked through them (the unfixed server kept the decoded events for ever; the 2000 of (c) alone are
+      // 114 MiB). heapUsed + external after a full collection, since how much garbage is still resident depends on
+      // the Node version and on how busy the machine is. The bound allows smaller leftovers (all of (a) and (b) are
+      // 9 MiB) and cannot see native memory that V8 is not told about; the assertions above carry the rest. The wait
+      // covers a server that is still working through the flood.
       let retained
+      let last = 'none'
       await waitUntil(
         async () => {
-          retained = await server.retainedMB()
+          try {
+            retained = await server.retainedMiB()
+          } catch (err) {
+            // a server busy with the flood can answer late: not settled yet. One that exited fails here
+            if (!(err instanceof MemoryProbeTimeout)) throw err
+            last = err.message
+            return false
+          }
+          last = `${retained} MiB`
           return retained - baseline < 48
         },
         {
           timeout: 60000,
           interval: 1000,
-          message: `retained memory to return within 48 MB of the ${baseline} MB baseline`,
+          message: `retained memory to return within 48 MiB of the ${baseline} MiB baseline`,
         }
-      )
+      ).catch(err => {
+        throw new Error(`${err.message} (last reading: ${last})`)
+      })
       const status = await fetch(`${base}/status`)
       eq(status.status, 200, 'server still responsive')
       dropper.close()
       flood.close()
-      return `retained ${baseline} -> ${retained} MB, rss ${(await admin.serverStats()).rss} MB`
+      return `retained ${baseline} -> ${retained} MiB, rss ${(await admin.serverStats()).rss} MiB`
     }
   )
 

@@ -115,19 +115,28 @@ Configures custom UI for your app. See [Props](/docs/scripting/app/Props.md) for
 
 When an app is removed or rebuilt (its blueprint changed, it crashed), the engine tears its run down in this order:
 the run's `destroy` listeners, then its controls (their `onRelease`), its player handles (their effects end: `onEnd`),
-its nodes (its own and those it placed in world space), its listeners, its update registration, its requests and its
-timers. Your script can still run during that, from those callbacks and from any method it defined on an object the
-engine reads while unmounting (such as a node's `matrixWorld`). Once a stage has started, what it releases cannot be
-made again by that run:
+its nodes (its own and those it placed in world space), its listeners, its update registration, its requests, its
+object URLs and its timers. Your script can still run during that: from those callbacks, from a world listener an
+event it emits reaches, and from anything it defined on an object the engine reads while unmounting (for example an
+accessor on a node's `matrixWorld`). Two kinds of things behave differently:
 
-- from the start: `app.control()` throws `[app] this app has stopped` (in a `destroy` listener too);
-- from the player stage on: `world.getPlayer()` throws `[app] this app has stopped`, and no handle of the run starts an
-  effect or a voice level (`applyEffect`, `setVoiceLevel(level)` throw); ending them (`cancelEffect`,
-  `setVoiceLevel(null)`) still works;
-- from the node stage on: `world.add`, `world.attach` and adding a node to a mounted node of the app throw
-  `[app] this app has stopped`; anything else that would mount a node (`active = true`) mounts nothing;
-- listeners, `fetch` and `setTimeout` are refused from their own stages (no script code runs that late).
+**What the run owns** is released at teardown and cannot be made again by the run once its stage has begun; a handle
+kept to it does nothing afterwards:
+
+- controls: `app.control()` throws `[app] this app has stopped` from the start (in a `destroy` listener too);
+- player effects and voice levels: from the player stage on, `world.getPlayer()` and `world.getPlayers()` throw
+  `[app] this app has stopped`, and no handle of the run starts an effect or a voice level (`applyEffect`,
+  `setVoiceLevel(level)` throw); ending them (`cancelEffect`, `setVoiceLevel(null)`) still works;
+- nodes and what they hold (meshes, sounds, videos, animations, physics): from the node stage on, `world.add`,
+  `world.attach` and every method and setter of a node of the run throw `[app] this app has stopped` (getters keep
+  reading), and nothing mounts or rebuilds for the run; a node's handle stays that way once the run has ended;
+- listeners (`app.on`, `world.on`), requests (`fetch`), object URLs (`URL.createObjectURL`, all revoked at their stage)
+  and timers (`setTimeout`) are refused from their own stages.
 
 Whatever the run makes before a stage (a player looked up in a `destroy` listener, a timer set from an effect's
-`onEnd`) is released by that stage. A removed app's script is also stopped once its `destroy` event is over, so
-during a removal those later callbacks can only end what the app started.
+`onEnd`) is released by that stage.
+
+**Effects on shared or persistent state** are not resources: chat messages (`world.chat`), network sends
+(`app.send`, `app.sendTo`, `app.emit`), storage writes (`world.set`), a player's `teleport`, `push`, `damage`, `heal`,
+`setSessionAvatar` and `screenshare`, wallet queries and `world.open`. They are allowed while the run is alive,
+including in the callbacks the teardown runs, and refused (`[app] this app has stopped`) once the run has ended.

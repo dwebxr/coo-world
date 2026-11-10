@@ -63,6 +63,11 @@ A node is counted for the app it is mounted for. Moving a mounted node (also one
 `world.add`) under another node unmounts it and mounts it again at its new place, so it is counted at its new depth.
 A node that was never placed in the world (or under a mounted node) is not mounted by setting `active = true`.
 
+A node belongs to the app run that created or mounted it. Once that run has ended (the app was removed or rebuilt),
+or while its nodes are being torn down, every method and setter of the node throws `[app] this app has stopped`;
+getters keep reading. A node that is not mounted does not play, animate or load (an audio's `play()`, a skinned mesh's
+`play()`, a UI image's `src`), and nothing mounts or rebuilds under a node while it unmounts.
+
 An app's root (what its `app` stands for) stays where its app placed it: adding another app's root throws
 `[node.add] cannot add another app's root node`, and so does adding an app's own root under a node that is not
 placed anywhere yet (place that node first, then add the root).

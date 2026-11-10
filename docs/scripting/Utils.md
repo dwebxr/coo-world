@@ -63,7 +63,10 @@ A `fetch(url, options)` function is available for making network requests. It fo
 
 `blob()` resolves to a script-safe blob rather than a DOM `Blob`: an immutable object with `size`, `type`, `arrayBuffer()`, `text()` and `slice(start, end)`. It has no `stream()` or `bytes()`, `instanceof Blob` is false, and a slice always keeps the type of the response (a type argument is ignored). The whole body is read into memory when `blob()` resolves, so prefer `arrayBuffer()` or `text()` when you only need the bytes once.
 
-A blob returned by `fetch()` is the only value `URL.createObjectURL(blob)` accepts. The object URL serves the bytes with the response's media type when it is a common image, audio, video or model type (for example `image/png`, `audio/mpeg`, `video/mp4`, `model/gltf-binary`); any other type is served as `application/octet-stream`.
+A blob returned by `fetch()` is the only value `URL.createObjectURL(blob)` accepts. The object URL belongs to the app
+run whose `fetch()` returned the blob: at most 256 of them are live per run (`URL.revokeObjectURL(url)` frees one, and
+revokes only URLs made this way), every one is revoked when the run ends, and none is made for a run that has ended
+(`[app] this app has stopped`). The object URL serves the bytes with the response's media type when it is a common image, audio, video or model type (for example `image/png`, `audio/mpeg`, `video/mp4`, `model/gltf-binary`); any other type is served as `application/octet-stream`.
 
 ```javascript
 const resp = await fetch('https://example.com/picture.png')

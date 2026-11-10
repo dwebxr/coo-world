@@ -11,7 +11,7 @@ import { glbToNodes } from '../extras/glbToNodes'
 import { createEmoteFactory } from '../extras/createEmoteFactory'
 import { formatBytes } from '../extras/formatBytes'
 import { imageElementsPlugin, isAppleMobile } from '../extras/gltfImageElements'
-import { checkGLTF, createGLTFBudget } from '../extras/gltfLimits'
+import { checkGLTF, createGLTFBudget, GLTF_LIMITS } from '../extras/gltfLimits'
 import { MAX_IMAGE_PIXELS, readImageHeader } from '../extras/imageHeader'
 import { emoteUrls } from '../extras/playerEmotes'
 import Hls from 'hls.js/dist/hls.js'
@@ -773,9 +773,13 @@ export class ClientLoader extends System {
     }
     if (type === 'model' || type === 'emote' || type === 'avatar') {
       const buffer = await file.arrayBuffer()
-      // the structure before parsing; then what the parser allocates, charged where it does (one budget per file)
-      checkGLTF(buffer)
-      const budget = createGLTFBudget({ fileBytes: buffer.byteLength })
+      // one budget per file, made first: the structure check before parsing is charged to it (and its clock), then
+      // what the parser allocates and does, where it does
+      const budget = createGLTFBudget({
+        fileBytes: buffer.byteLength,
+        maxTextureSize: this.world.graphics?.renderer?.capabilities?.maxTextureSize,
+      })
+      checkGLTF(buffer, GLTF_LIMITS, budget)
       const glb = await this.gltfLoader.parseAsync(buffer, '', budget)
       try {
         assertTextureBudget(glb)

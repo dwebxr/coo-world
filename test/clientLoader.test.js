@@ -46,6 +46,7 @@ const ClientLoader = loadClient('core/systems/ClientLoader.js', 'ClientLoader', 
   // the declared-size check runs for real in gltfLimits.test.js and clientLoaderGLTF.test.js; these bodies are not glTF
   checkGLTF: () => {},
   createGLTFBudget: () => null,
+  GLTF_LIMITS: {},
   isAppleMobile: () => false,
   emoteUrls: [],
   Hls: class {},

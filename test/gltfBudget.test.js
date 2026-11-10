@@ -624,27 +624,24 @@ test('an animation track gets whole keyframes from tight arrays, asserted on the
   // (gltfLimits.test.js); the parser refuses it too, on the arrays it would hand three.js
   const bin = new Uint8Array(16 + 72)
   new Float32Array(bin.buffer, 0, 4).set([0, 99, 1, 99])
-  const animated = (timesView, interpolation = 'CUBICSPLINE', values = 6) =>
-    glb(
+  const animatedJSON = (timesView, interpolation = 'CUBICSPLINE', values = 6) => ({
+    asset: { version: '2.0' },
+    ...scene,
+    nodes: [{ name: 'n' }],
+    animations: [
       {
-        asset: { version: '2.0' },
-        ...scene,
-        nodes: [{ name: 'n' }],
-        animations: [
-          {
-            samplers: [{ input: 0, output: 1, interpolation }],
-            channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
-          },
-        ],
-        accessors: [
-          { bufferView: 0, componentType: 5126, type: 'SCALAR', count: 2, min: [0], max: [1] },
-          { bufferView: 1, componentType: 5126, type: 'VEC3', count: values },
-        ],
-        bufferViews: [timesView, { buffer: 0, byteOffset: 16, byteLength: 72 }],
-        buffers: [{ byteLength: bin.length }],
+        samplers: [{ input: 0, output: 1, interpolation }],
+        channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
       },
-      bin
-    )
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5126, type: 'SCALAR', count: 2, min: [0], max: [1] },
+      { bufferView: 1, componentType: 5126, type: 'VEC3', count: values },
+    ],
+    bufferViews: [timesView, { buffer: 0, byteOffset: 16, byteLength: 72 }],
+    buffers: [{ byteLength: bin.length }],
+  })
+  const animated = (...args) => glb(animatedJSON(...args), bin)
   await refusedAt(
     animated({ buffer: 0, byteLength: 16, byteStride: 8 }),
     'animation track',
@@ -658,6 +655,19 @@ test('an animation track gets whole keyframes from tight arrays, asserted on the
     'animation track',
     /no whole number/
   )
+  // and a sparse time accessor on an interleaved view: the parser copies the whole interleaved array into a plain
+  // attribute (4 floats, its count 4), so the times are checked against the 2 the document declares
+  const sparseTimes = animatedJSON({ buffer: 0, byteLength: 16, byteStride: 8 }, 'LINEAR', 4)
+  sparseTimes.accessors[0].sparse = {
+    count: 1,
+    indices: { bufferView: 2, componentType: 5121 },
+    values: { bufferView: 3 },
+  }
+  sparseTimes.bufferViews.push(
+    { buffer: 0, byteOffset: 80, byteLength: 1 },
+    { buffer: 0, byteOffset: 84, byteLength: 4 }
+  )
+  await refusedAt(glb(sparseTimes, bin), 'animation track', /no whole number of values per keyframe/)
   // tight times: the track is made, and its keyframes are charged as work
   const { gltf, charges } = await parse(animated({ buffer: 0, byteLength: 8 }))
   assert.equal(gltf.animations[0].tracks[0].getValueSize(), 9)
@@ -684,6 +694,17 @@ test('placing an object is charged what three.js goes through to take it from it
   assert.deepEqual(placed.slice(100), Array(100).fill(101), 'the second: the scene and its 100 children')
   const limits = { ...GLTF_LIMITS, work: 100000 }
   await refusedAt(repeated(1000), 'placing an object', /more than \d+ steps \(at placing an object\)/, { limits })
+  // a root shared by two scenes (valid glTF, and passed by checkGLTF) loads: it ends in the second, its move charged
+  const shared = glb({
+    asset: { version: '2.0' },
+    scene: 0,
+    scenes: [{ nodes: [0, 1] }, { nodes: [0, 2] }],
+    nodes: [{ name: 'shared' }, {}, {}],
+  })
+  checkGLTF(shared)
+  const sharedParse = await parse(shared)
+  assert.equal(sharedParse.gltf.scenes.length, 2)
+  assert.equal(sharedParse.gltf.scenes[1].getObjectByName('shared')?.parent, sharedParse.gltf.scenes[1])
 })
 
 test('instancing: each instanced mesh is charged the attributes it reads, and emptying the group its splices', async () => {
@@ -710,12 +731,22 @@ test('instancing: each instanced mesh is charged the attributes it reads, and em
   assert.equal(gltf.scene.getObjectByProperty('isInstancedMesh', true).count, 10)
   assert.deepEqual(
     charges.filter(c => c.what === 'instancing attributes').map(c => c.n),
-    [30, 30, 30, 30]
+    [1 + 30, 1 + 30, 1 + 30, 1 + 30]
   )
   assert.deepEqual(
     charges.filter(c => c.what === 'emptying a group').map(c => c.n),
     [4 + 3 + 2 + 1]
   )
+  // the reviewer's probe, scaled down: many instancing attributes on an empty accessor (refused before parsing,
+  // gltfLimits.test.js), each charged for each primitive all the same
+  const keys = Object.fromEntries(Array.from({ length: 200 }, (_, k) => [`_A${k}`, 2]))
+  const empty = JSON.parse(new TextDecoder().decode(new Uint8Array(file, 20, new DataView(file).getUint32(12, true))))
+  empty.nodes[0].extensions.EXT_mesh_gpu_instancing.attributes = keys
+  empty.accessors.push({ componentType: 5126, type: 'SCALAR', count: 0 })
+  const emptied = await parse(glb(empty, bin))
+  const perKey = emptied.charges.filter(c => c.what === 'instancing attributes')
+  assert.equal(perKey.length, 4 * 200)
+  assert.ok(perKey.every(c => c.n === 1))
 })
 
 test('a skin has an inverse bind matrix for each joint in a plain array, asserted on the array itself', async () => {
@@ -725,6 +756,75 @@ test('a skin has an inverse bind matrix for each joint in a plain array, asserte
   json.skins[0].joints = [1, 1]
   const binStart = 28 + new DataView(file).getUint32(12, true)
   await refusedAt(glb(json, new Uint8Array(file, binStart)), 'skin', /skin 0 has no inverse bind matrix for each joint/)
+})
+
+test('a VRM 0 spring bone group with UniVRM\u2019s center -1 loads, with no center', async t => {
+  t.mock.method(console, 'warn', () => {})
+  const positions = new Uint8Array(36)
+  const file = glb(
+    {
+      asset: { version: '2.0' },
+      extensionsUsed: ['VRM'],
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0, children: [1] }, { name: 'hair' }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+      accessors: [vec3(3, { bufferView: 0, min: [0, 0, 0], max: [0, 0, 0] })],
+      bufferViews: [{ buffer: 0, byteLength: 36 }],
+      buffers: [{ byteLength: 36 }],
+      extensions: { VRM: { secondaryAnimation: { boneGroups: [{ bones: [1], center: -1 }], colliderGroups: [] } } },
+    },
+    positions
+  )
+  checkGLTF(file)
+  const { gltf } = await parse(file, { vrm: true })
+  const [joint] = gltf.userData.vrmSpringBoneManager.joints
+  assert.equal(joint.bone.name, 'hair')
+  assert.equal(joint.center ?? null, null)
+})
+
+test('a refused texture of an MToon material leaves no rejection unhandled (three-vrm never awaits its wrapper)', async () => {
+  // three-vrm's MToon plugin wraps each texture it assigns in a promise nothing awaits, and sets the colour space of
+  // what was assigned: a refusal there was an unhandled rejection (VRoid's AvatarSample_A, refused by the earlier
+  // byte limit, left 18). The refused texture is an empty placeholder in the material, and the parse fails with the
+  // refusal all the same (budget.refused)
+  const header = png(100000, 100000)
+  const bin = new Uint8Array(36 + header.length)
+  bin.set(header, 36)
+  const file = glb(
+    {
+      asset: { version: '2.0' },
+      extensionsUsed: ['VRMC_materials_mtoon'],
+      ...scene,
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      materials: [
+        {
+          pbrMetallicRoughness: { baseColorTexture: { index: 0 } },
+          extensions: { VRMC_materials_mtoon: { specVersion: '1.0', shadeMultiplyTexture: { index: 0 } } },
+        },
+      ],
+      textures: [{ source: 0 }],
+      images: [{ bufferView: 1, mimeType: 'image/png' }],
+      accessors: [vec3(3, { bufferView: 0, min: [0, 0, 0], max: [0, 0, 0] })],
+      bufferViews: [
+        { buffer: 0, byteLength: 36 },
+        { buffer: 0, byteOffset: 36, byteLength: header.length },
+      ],
+      buffers: [{ byteLength: bin.length }],
+    },
+    bin
+  )
+  const unhandled = []
+  const listener = error => unhandled.push(error)
+  process.on('unhandledRejection', listener)
+  try {
+    await assert.rejects(parse(file, { vrm: true }), /image 0 is larger than 36000000 pixels/)
+    await new Promise(resolve => setTimeout(resolve, 50))
+  } finally {
+    process.off('unhandledRejection', listener)
+  }
+  assert.deepEqual(unhandled.map(String), [])
 })
 
 test('a parse past its time limit is refused at the next charge (a monotonic clock, checked as it goes)', async () => {
@@ -864,6 +964,132 @@ test('three-vrm makes what checkGLTF counts: joints over the parsed objects, mor
   assert.ok(outlineCopyBytes >= copied, `${outlineCopyBytes} counted, ${copied} copied`)
 })
 
+// a binary chunk built view by view (each 4-byte aligned)
+function chunks() {
+  const parts = []
+  const bufferViews = []
+  let length = 0
+  return {
+    view(array) {
+      length = Math.ceil(length / 4) * 4
+      bufferViews.push({ buffer: 0, byteOffset: length, byteLength: array.byteLength })
+      parts.push([length, new Uint8Array(array.buffer, array.byteOffset, array.byteLength)])
+      length += array.byteLength
+      return bufferViews.length - 1
+    },
+    done() {
+      const bin = new Uint8Array(length)
+      for (const [at, bytes] of parts) bin.set(bytes, at)
+      return { bin, bufferViews, buffers: [{ byteLength: length }] }
+    },
+  }
+}
+
+// the mesh shape of VRoid's AvatarSample_A, the largest of the sample avatars measured: a face of 10 primitives
+// sharing 2054 vertices and 56 morph targets (positions and normals), and a hair mesh of 73 primitives sharing
+// 8056 vertices, all skinned; each primitive its own indices (so its own geometry, and its own morph texture)
+function vroidShaped() {
+  const b = chunks()
+  const accessors = []
+  const add = (array, def) => accessors.push({ bufferView: b.view(array), ...def }) - 1
+  const skinnedMesh = (vertices, primitiveCount, targetCount) => {
+    const weights = new Float32Array(vertices * 4)
+    for (let i = 0; i < vertices; i++) weights[i * 4] = 1
+    const attributes = {
+      POSITION: add(new Float32Array(vertices * 3), vec3(vertices, { min: [0, 0, 0], max: [0, 0, 0] })),
+      NORMAL: add(new Float32Array(vertices * 3), vec3(vertices)),
+      TEXCOORD_0: add(new Float32Array(vertices * 2), { componentType: 5126, type: 'VEC2', count: vertices }),
+      JOINTS_0: add(new Uint16Array(vertices * 4), { componentType: 5123, type: 'VEC4', count: vertices }),
+      WEIGHTS_0: add(weights, { componentType: 5126, type: 'VEC4', count: vertices }),
+    }
+    const targets = Array.from({ length: targetCount }, () => ({
+      POSITION: add(new Float32Array(vertices * 3), vec3(vertices, { min: [0, 0, 0], max: [0, 0, 0] })),
+      NORMAL: add(new Float32Array(vertices * 3), vec3(vertices)),
+    }))
+    const triangles = Math.floor(vertices / primitiveCount / 3) * 3
+    return {
+      primitives: Array.from({ length: primitiveCount }, (_, p) => ({
+        attributes,
+        indices: add(
+          Uint32Array.from({ length: triangles }, (_, i) => (p * triangles + i) % vertices),
+          {
+            componentType: 5125,
+            type: 'SCALAR',
+            count: triangles,
+          }
+        ),
+        ...(targetCount ? { targets } : {}),
+        material: 0,
+      })),
+      ...(targetCount ? { weights: Array(targetCount).fill(0) } : {}),
+    }
+  }
+  const face = skinnedMesh(2054, 10, 56)
+  const hair = skinnedMesh(8056, 73, 0)
+  const inverse = add(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]), {
+    componentType: 5126,
+    type: 'MAT4',
+    count: 1,
+  })
+  const { bin, bufferViews, buffers } = b.done()
+  return glb(
+    {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0, 1, 2] }],
+      nodes: [{ name: 'Face', mesh: 0, skin: 0 }, { name: 'Hair', mesh: 1, skin: 0 }, { name: 'Head' }],
+      skins: [{ joints: [2], inverseBindMatrices: inverse }],
+      meshes: [face, hair],
+      materials: [{}],
+      accessors,
+      bufferViews,
+      buffers,
+    },
+    bin
+  )
+}
+
+test('an avatar of VRoid’s shape loads within the limits, with three times its cost to spare on each meter', async () => {
+  // measured on VRoid's sample avatars (see the CHANGELOG): this one's morph textures are its largest cost. Ten face
+  // geometries, each 2054 x 2 texels (positions, normals) over 56 layers: past a 4096-texel row, so with the renderer's
+  // maximum texture size not known the charge is the most any size would take (two rows), 7,340,032 bytes each
+  const file = vroidShaped()
+  checkGLTF(file, GLTF_LIMITS, createGLTFBudget({ fileBytes: file.byteLength }))
+  const { gltf, budget, charges } = await parse(file, { vrm: true })
+  assert.equal(gltf.scene.getObjectByName('Face').children.length, 10)
+  const morph = charges.filter(c => c.what === 'morph target texture')
+  assert.deepEqual(
+    morph.map(c => c.n),
+    Array(10).fill(8192 * 16 * 56)
+  )
+  assert.ok(budget.used.bytes - 2 * file.byteLength <= GLTF_LIMITS.allocatedBytes / 3, `${budget.used.bytes} bytes`)
+  assert.ok(budget.used.work <= budget.maxWork / 3, `${budget.used.work} steps of ${budget.maxWork}`)
+  // with the renderer's size known (16384), one row each: 4108 texels
+  const sized = createGLTFBudget({ fileBytes: file.byteLength, maxTextureSize: 16384, onCharge: () => {} })
+  await new GLTFLoader().parseAsync(file, '', sized)
+  assert.equal(sized.used.bytes - budget.used.bytes, 10 * (4108 - 8192) * 16 * 56)
+  // three.js's texels per vertex: 1 for positions, 2 once there are normals, 3 once there are colours (the slots
+  // before the last are kept whether used or not): normals alone are 2
+  const positions = new Uint8Array(36)
+  const normalsOnly = glb(
+    {
+      asset: { version: '2.0' },
+      ...scene,
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0, NORMAL: 0 }, targets: [{ NORMAL: 0 }, { NORMAL: 0 }] }] }],
+      accessors: [vec3(3, { bufferView: 0, min: [0, 0, 0], max: [0, 0, 0] })],
+      bufferViews: [{ buffer: 0, byteLength: 36 }],
+      buffers: [{ byteLength: 36 }],
+    },
+    positions
+  )
+  const normals = await parse(normalsOnly)
+  assert.deepEqual(
+    normals.charges.filter(c => c.what === 'morph target texture').map(c => c.n),
+    [3 * 2 * 16 * 2]
+  )
+})
+
 test('the bundled files parse within the budget, and what they are charged is the same every time', async t => {
   t.mock.method(console, 'warn', () => {})
   // measured with this parser and three-vrm 3.3.3; a change in what is charged (a parser update that adds or
@@ -895,7 +1121,7 @@ test('the bundled files parse within the budget, and what they are charged is th
       {
         bytes: 165608,
         pixels: 0,
-        work: 25993,
+        work: 25994,
         counts: { scenes: 1, animations: 1, channels: 198, nodes: 67, tracks: 198 },
       },
     ],
@@ -904,7 +1130,7 @@ test('the bundled files parse within the budget, and what they are charged is th
       {
         bytes: 9356,
         pixels: 65536,
-        work: 244,
+        work: 245,
         counts: {
           scenes: 1,
           meshes: 1,
@@ -920,7 +1146,7 @@ test('the bundled files parse within the budget, and what they are charged is th
   ]) {
     const bytes = fs.readFileSync(new URL(`../src/${name}`, import.meta.url))
     const file = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-    const { budget } = await parse(file, { vrm: name.endsWith('.vrm') })
+    const { budget } = await parse(file, { vrm: true }) // as the client parses every file
     assert.equal(budget.used.bytes, expected.bytes, `${name} bytes`)
     assert.equal(budget.used.pixels, expected.pixels, `${name} pixels`)
     assert.equal(budget.used.work, expected.work, `${name} work`)

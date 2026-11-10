@@ -6,7 +6,7 @@ import { GLTFLoader } from '../src/core/libs/gltfloader/GLTFLoader.js'
 import { VRMLoaderPlugin } from '@pixiv/three-vrm'
 import { loadClient } from './lib/clientHarness.mjs'
 import { imageElementsPlugin } from '../src/core/extras/gltfImageElements.js'
-import { checkGLTF, createGLTFBudget } from '../src/core/extras/gltfLimits.js'
+import { checkGLTF, createGLTFBudget, GLTF_LIMITS } from '../src/core/extras/gltfLimits.js'
 import { png } from './lib/imageBytes.mjs'
 import { MAX_IMAGE_PIXELS, readImageHeader } from '../src/core/extras/imageHeader.js'
 
@@ -37,6 +37,7 @@ const ClientLoader = loadClient('core/systems/ClientLoader.js', 'ClientLoader', 
   imageElementsPlugin,
   checkGLTF,
   createGLTFBudget,
+  GLTF_LIMITS,
   isAppleMobile: () => apple,
   emoteUrls: [],
   Hls: class {},

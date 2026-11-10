@@ -16,9 +16,14 @@
 //   charge. Nothing is predicted: what the parser does is what is counted.
 //
 // The contract, as it is: the limits bound what the vendored parser itself allocates, creates and decodes, and the
-// work it does, charged before it happens. Cost inside three.js and three-vrm that is proportional to those charges
-// is covered by them. Cost there that multiplies in ways the charges do not capture is not proven absent; the time
-// limit refuses the parse at the next charge after it, but cannot interrupt one long loop inside a library.
+// work it and this check do, charged before it happens, and the time they take. The parser's charges are measured
+// at that moment: an allocation at its real size, an accessor's use at its declared size (elements x components),
+// a morph-target texture by three.js's own formula (for the renderer's texture size, or the largest any size would
+// take while that is not known). The three-vrm counts before parsing are bounds, each at least what it stands for
+// (checkVRM says which are exact). Cost inside three.js and three-vrm that is proportional to the charges is
+// covered by them; cost there that multiplies in ways the charges do not capture is not proven absent. The time
+// limit refuses at the next charge after it, but cannot interrupt one long loop inside a library. The server
+// parses with the same vendored parser without this check, a budget or a time limit.
 //
 // Both throw a GLTFLimitError with the reason.
 
@@ -33,16 +38,21 @@ export const GLTF_LIMITS = Object.freeze({
   nodeDepth: 256, // the parser loads a node's children recursively; a chain of thousands overflowed its stack
   listLength: 1 << 20, // any list in the document
   targets: 1024, // morph targets of one primitive
+  instancingAttributes: 16, // EXT_mesh_gpu_instancing attributes of one node (TRANSLATION, ROTATION, SCALE, a few more)
   // the parser (createGLTFBudget): bytes it allocates, beyond twice the file's own size (the GLB's binary chunk and
-  // the bufferViews are each a copy of the file's data). The bundled avatar's parse allocates 17.8 MB: twice its
-  // 4.8 MB, and 8.1 MB more (its face's morph-target texture and the copy of its texture image)
-  allocatedBytes: 64 * MiB,
+  // the bufferViews are each a copy of the file's data). Most of it, for an avatar, is the morph-target textures
+  // three.js builds: one per geometry, and a VRoid face is ten geometries sharing one set of vertices and targets.
+  // VRoid's AvatarSample_A (15.1 MB) is charged 110.8 MB, 80.6 MB more than twice its size, where the renderer's
+  // maximum texture size is 4096 or not known yet (74.2 MB at 16384): under a third of its limit with this. The
+  // bundled avatar is charged 17.8 MB
+  allocatedBytes: 320 * MiB,
   // steps of work, beyond one per byte of the file: every use of an accessor at its size (elements x components),
   // each object placed under a parent at what three.js goes through to move it, each clone at what it copies, and
   // the loops and walks the document sizes (sparse entries, subtree walks, the entries of each list the parser goes
-  // through). An honest file goes through its accessors about once: the bundled avatar takes 981,151 steps for its
-  // 4.8 MB, an emote 2,850 to 54,456
-  work: 1 << 25,
+  // through). The accessors of a VRoid avatar's face and hair are used by every primitive sharing them: VRoid's
+  // AvatarSample_B (15.4 MB) takes 19.9 million steps, a quarter of its limit; the bundled avatar 981,151, an
+  // emote 2,851 to 54,457 (with the VRM plugin registered, as the client parses every file)
+  work: 1 << 26,
   // the parse's wall time, checked at every charge (the backstop for what multiplies past the charges). It cannot
   // interrupt one long loop inside three.js or three-vrm, only refuse at the next charge after it. The bundled
   // avatar's check and parse take about 3 ms in Node on a desktop (a browser also waits for its image decode)
@@ -181,7 +191,7 @@ export function readGLTF(data, limits = GLTF_LIMITS) {
     refuse('the JSON does not parse')
   }
   if (!isObject(json)) refuse('the JSON is not an object')
-  return { json, bin }
+  return { json, bin, jsonLength: text.length }
 }
 
 // the bytes of a data: URI (base64 or percent-encoded)
@@ -256,8 +266,15 @@ const ANIMATION_OUTPUTS = {
   weights: { type: 'SCALAR', normalized: true },
 }
 
-export function checkGLTF(data, limits = GLTF_LIMITS) {
-  const { json, bin } = readGLTF(data, limits)
+// `budget`: the file's budget (createGLTFBudget), made before the check: the check's own loops are charged to it as
+// work and look at its clock, so no part of loading a file runs unmetered. Every loop here is linear in the size of
+// the document (each entry visited a bounded number of times)
+export function checkGLTF(data, limits = GLTF_LIMITS, budget = null) {
+  const step = (n, what) => {
+    if (budget) budget.work(n, what)
+  }
+  const { json, bin, jsonLength } = readGLTF(data, limits)
+  step(jsonLength, 'the JSON')
   if (!isObject(json.asset) || typeof json.asset.version !== 'string' || !/^2\./.test(json.asset.version)) {
     refuse('not a glTF 2.0 document')
   }
@@ -308,6 +325,7 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
     'textures',
   ]) {
     collections[name] = items(json[name], name)
+    step(collections[name].length, name)
   }
   const extensions = object(json.extensions, 'extensions')
   const lightsExtension = object(extensions.KHR_lights_punctual, 'KHR_lights_punctual')
@@ -374,6 +392,8 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
     whole(accessor.byteOffset, `accessor ${i} byteOffset`)
     whole(accessor.count, `accessor ${i} count`)
     if (accessor.count === undefined) refuse(`accessor ${i} has no count`)
+    // at least one element (the specification's minimum; the parser goes through an empty one's uses all the same)
+    if (accessor.count === 0) refuse(`accessor ${i} has no elements`)
     const componentBytes = COMPONENT_BYTES[accessor.componentType]
     const size = TYPE_SIZES[accessor.type]
     if (!Object.hasOwn(COMPONENT_BYTES, accessor.componentType) || !Object.hasOwn(TYPE_SIZES, accessor.type)) {
@@ -451,6 +471,7 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
   // every texture reference in a material, its extensions included: a `...Texture` object with an index
   collections.materials.forEach((material, i) => {
     const visit = (value, where) => {
+      step(1, 'material entries')
       if (Array.isArray(value)) return value.forEach((entry, k) => visit(entry, `${where} ${k}`))
       if (!isObject(value)) return
       for (const [key, entry] of Object.entries(value)) {
@@ -479,6 +500,7 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
     let targetCount
     items(mesh.primitives, `mesh ${i} primitives`).forEach((primitive, k) => {
       const where = `mesh ${i} primitive ${k}`
+      step(1 + Object.keys(object(primitive.attributes, `${where} attributes`)).length, 'primitive entries')
       if (primitive.attributes === undefined) refuse(`${where} has no attributes`)
       indexMap(primitive.attributes, 'accessors', `${where} attribute`)
       const count = sameCount(primitive.attributes, where)
@@ -497,6 +519,7 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
       if (primitive.mode > 6) refuse(`${where} has an unknown mode`)
       const targets = items(list(primitive.targets, `${where} targets`, limits.targets), `${where} targets`)
       targets.forEach((target, t) => {
+        step(1 + Object.keys(target).length, 'target entries')
         indexMap(target, 'accessors', `${where} target ${t}`)
         sameCount(target, `${where} target ${t}`, count)
       })
@@ -529,6 +552,7 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
     // glTF 1.0: the vendored parser still reads accessors through `parameters` when it is there
     if (animation.parameters !== undefined) refuse(`animation ${i} has glTF 1.0 parameters`)
     const samplers = items(animation.samplers, `animation ${i} samplers`)
+    step(samplers.length + list(animation.channels, `animation ${i} channels`).length, 'animation entries')
     samplers.forEach((sampler, k) => {
       const where = `animation ${i} sampler ${k}`
       if (sampler.input === undefined || sampler.output === undefined) refuse(`${where} has no input or output`)
@@ -590,6 +614,7 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
   const parents = new Array(nodes.length).fill(-1)
   const children = nodes.map(() => [])
   nodes.forEach((node, i) => {
+    step(1 + list(node.children, `node ${i} children`).length, 'node entries')
     for (const child of list(node.children, `node ${i} children`)) {
       index(child, 'nodes', `node ${i} child`)
       if (parents[child] !== -1 || child === i) refuse('the node hierarchy is not a tree')
@@ -607,6 +632,11 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
     const nodeExtensions = object(node.extensions, `node ${i} extensions`)
     index(object(nodeExtensions.KHR_lights_punctual, 'light').light, 'lights', `node ${i} light`)
     const instancing = object(object(nodeExtensions.EXT_mesh_gpu_instancing, 'instancing').attributes, 'instancing')
+    // TRANSLATION, ROTATION, SCALE and a few of the file's own: the parser goes through them for each primitive
+    const instancingKeys = Object.keys(instancing).length
+    if (instancingKeys > limits.instancingAttributes) {
+      refuse(`node ${i} has ${instancingKeys} instancing attributes, more than ${limits.instancingAttributes}`)
+    }
     indexMap(instancing, 'accessors', `node ${i} instancing`)
     // one count of instances (the parser takes the first attribute's), and each transform of its type
     sameCount(instancing, `node ${i} instancing`)
@@ -632,29 +662,32 @@ export function checkGLTF(data, limits = GLTF_LIMITS) {
     }
   }
   if (order.length !== nodes.length) refuse('the node hierarchy is not a tree')
-  const sceneOf = new Map()
+  // a scene's roots: each listed once, and a child of no node. (A root shared by several scenes is valid glTF: the
+  // parser moves it to the last, and each move is charged at what it costs)
   collections.scenes.forEach((scene, i) => {
+    const listed = new Set()
     for (const root of list(scene.nodes, `scene ${i} nodes`)) {
       if (parents[root] !== -1) refuse(`scene ${i} lists node ${root}, which is a child of another node`)
-      if (sceneOf.has(root)) {
-        refuse(
-          sceneOf.get(root) === i
-            ? `scene ${i} lists node ${root} twice`
-            : `node ${root} is a root of scenes ${sceneOf.get(root)} and ${i}`
-        )
-      }
-      sceneOf.set(root, i)
+      if (listed.has(root)) refuse(`scene ${i} lists node ${root} twice`)
+      listed.add(root)
     }
   })
 
-  return checkVRM(json, collections, parents, order, limits, { list, object, items, index })
+  return checkVRM(json, collections, parents, order, limits, { list, object, items, index, step })
 }
 
 // three-vrm's work, counted before it runs, in the units its plugins (version 3.3.3) iterate: most of them walk the
 // parsed scene graph (`object.traverse`), so the counts are of the objects the parser and the plugins put in it, not
 // of the document's nodes. VRM 0 (`extensions.VRM`) and VRM 1 (`VRMC_vrm`, `VRMC_springBone`, `VRMC_node_constraint`).
-// Each count names its unit; an upper bound where the plugin's own choice depends on the parsed result.
-function checkVRM(json, collections, parents, order, limits, { list, object, items, index }) {
+// Each count names its unit. Exact: springColliders, constraints, VRM 1 springJoints (consecutive joints listed) and
+// VRM 1 morph binds. Bounds, and why: the objects below a node (a node carrying one thing is that thing, a Bone or
+// Group holding it is one more: both counted as the larger), so the VRM 0 springJoints, the subtree walks of
+// expressionWork and firstPersonWork, and springColliderWork with them; expressions (three-vrm skips duplicate VRM 0
+// names, and runs VRM 1 or VRM 0, not both); material binds (every mesh with the material, its outline copy too);
+// springSortWork (a product of the deepest object and the most joints on one); outlineDraws (every VRM 0 material,
+// and every VRM 1 material with an outline mode, counted as outlined); outlineCopyBytes (every texture slot at the
+// largest image extras, and 8 KiB more).
+function checkVRM(json, collections, parents, order, limits, { list, object, items, index, step }) {
   const caps = limits.vrm
   const extensions = object(json.extensions, 'extensions')
   const nodes = collections.nodes
@@ -720,6 +753,7 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
   }
   // objects in each node's subtree (with the colliders), the deepest object, and every object of the scene graph
   // (with what the plugins add to the scene itself: the normalized humanoid rig, an object per expression)
+  step(4 * nodes.length, 'VRM node walks') // the walks over every node below
   const below = nodes.map((node, i) => objectsOf(node, i) + collidersAt[i])
   const objectDepth = new Array(nodes.length).fill(0)
   let deepest = 0
@@ -734,22 +768,28 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
   for (let i = 0; i < nodes.length; i++) if (parents[i] === -1) nodeObjects += below[i]
 
   // the meshes of the scene graph: one per primitive of each node's mesh; and by material (index, and name: VRM 0
-  // material values find their materials by name; an outline copy is named "<name> (Outline)")
+  // material values find their materials by name; an outline copy is named "<name> (Outline)"). Counted per mesh,
+  // times the nodes using it (a loop over the nodes' primitives was the nodes times the primitives)
+  const usesOf = new Map()
+  nodes.forEach(node => {
+    if (node.mesh !== undefined) usesOf.set(node.mesh, (usesOf.get(node.mesh) || 0) + 1)
+  })
   let meshObjects = 0
   let meshNodes = 0
   const meshesByMaterial = new Map()
   const meshesByName = new Map()
   const materialName = m => (m === undefined ? '' : typeof materials[m].name === 'string' ? materials[m].name : '')
-  nodes.forEach(node => {
-    if (node.mesh === undefined) return
-    meshNodes++
-    for (const primitive of primitivesOf(node.mesh)) {
-      meshObjects++
-      meshesByMaterial.set(primitive.material, (meshesByMaterial.get(primitive.material) || 0) + 1)
+  for (const [mesh, uses] of usesOf) {
+    meshNodes += uses
+    const primitives = primitivesOf(mesh)
+    step(1 + primitives.length, 'VRM mesh uses')
+    for (const primitive of primitives) {
+      meshObjects += uses
+      meshesByMaterial.set(primitive.material, (meshesByMaterial.get(primitive.material) || 0) + uses)
       const name = materialName(primitive.material)
-      meshesByName.set(name, (meshesByName.get(name) || 0) + 1)
+      meshesByName.set(name, (meshesByName.get(name) || 0) + uses)
     }
-  })
+  }
   // an outlined mesh holds two materials (its own and the outline copy); every scene walk for materials sees both
   const sceneMaterials = 2 * meshObjects
 
@@ -782,19 +822,24 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
   })
 
   if (v0) {
+    // UniVRM writes -1 for "none" in the fields three-vrm reads as absent when they name nothing (a bone group's
+    // center, a bind's mesh, a mesh annotation's mesh, the first-person bone, the meta texture, a human bone's node)
+    const optional = (value, collection, where) => {
+      if (value !== -1) index(value, collection, where)
+    }
     const humanoid = object(v0.humanoid, 'VRM humanoid')
     items(humanoid.humanBones, 'VRM humanBones').forEach((bone, i) =>
-      index(bone.node, 'nodes', `VRM humanBone ${i} node`)
+      optional(bone.node, 'nodes', `VRM humanBone ${i} node`)
     )
     for (const [g, group] of v0Groups.entries()) {
       for (const [b, bind] of items(group.binds, `VRM blendShapeGroup ${g} binds`).entries()) {
-        index(bind.mesh, 'meshes', `VRM blendShapeGroup ${g} bind ${b} mesh`)
+        optional(bind.mesh, 'meshes', `VRM blendShapeGroup ${g} bind ${b} mesh`)
         // a bind walks every node for those using its mesh, then the subtree of each (for its primitives), and
         // binds each one
         const using = usingMesh.get(bind.mesh) || { nodes: 0, below: 0 }
         counts.expressionWork += nodes.length + using.below
         counts.expressionBinds += using.nodes
-        counts.expressionPrimitives += using.nodes * primitivesOf(bind.mesh).length
+        if (using.nodes > 0) counts.expressionPrimitives += using.nodes * primitivesOf(bind.mesh).length
       }
       for (const value of items(group.materialValues, `VRM blendShapeGroup ${g} materialValues`)) {
         // a material value walks the scene, and looks each mesh whose material has its name up in what it found so
@@ -817,7 +862,7 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
         if (bone === undefined) continue
         joints += below[bone]
       }
-      index(group.center, 'nodes', `VRM boneGroup ${g} center`)
+      optional(group.center, 'nodes', `VRM boneGroup ${g} center`)
       let colliders = 0
       for (const ref of list(group.colliderGroups, `VRM boneGroup ${g} colliderGroups`)) {
         if (!Number.isSafeInteger(ref) || ref < 0 || ref >= v0CollidersIn.length) {
@@ -829,12 +874,12 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
       counts.springColliderWork += joints * colliders
     })
     const firstPerson = object(v0.firstPerson, 'VRM firstPerson')
-    index(firstPerson.firstPersonBone, 'nodes', 'VRM firstPersonBone')
+    optional(firstPerson.firstPersonBone, 'nodes', 'VRM firstPersonBone')
     const annotations = items(firstPerson.meshAnnotations, 'VRM meshAnnotations')
-    annotations.forEach((annotation, i) => index(annotation.mesh, 'meshes', `VRM meshAnnotation ${i} mesh`))
+    annotations.forEach((annotation, i) => optional(annotation.mesh, 'meshes', `VRM meshAnnotation ${i} mesh`))
     counts.firstPersonWork += meshNodes * annotations.length
     const meta = object(v0.meta, 'VRM meta')
-    index(meta.texture, 'textures', 'VRM meta texture')
+    optional(meta.texture, 'textures', 'VRM meta texture')
   }
 
   if (vrm1) {
@@ -930,7 +975,8 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
   // sorting the joints (the manager, before its first update): from each dependency, a walk up to the root, and at
   // each object above it the joints there; then a walk down from their common ancestor
   if (counts.springJoints > 0) {
-    const mostJoints = Math.max(0, ...jointsAt)
+    let mostJoints = 0
+    for (const n of jointsAt) if (n > mostJoints) mostJoints = n
     counts.springSortWork = jointDependencies * deepest * (1 + mostJoints) + sceneObjects
   }
 
@@ -954,44 +1000,34 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
   }
   const groups = new Map()
   const keyOf = primitive => primitiveKey(primitive)
-  collections.meshes.forEach(mesh => {
-    for (const primitive of list(mesh.primitives, 'primitives')) {
-      if (outlined(primitive.material)) groups.set(keyOf(primitive), (groups.get(keyOf(primitive)) || 0) + 2)
-    }
+  const keys = collections.meshes.map(mesh => list(mesh.primitives, 'primitives').map(keyOf))
+  collections.meshes.forEach((mesh, i) => {
+    step(1 + keys[i].length, 'VRM outlines')
+    list(mesh.primitives, 'primitives').forEach((primitive, k) => {
+      if (outlined(primitive.material)) groups.set(keys[i][k], (groups.get(keys[i][k]) || 0) + 2)
+    })
   })
   if (groups.size > 0) {
-    nodes.forEach(node => {
-      for (const primitive of primitivesOf(node.mesh)) counts.outlineDraws += groups.get(keyOf(primitive)) || 0
-    })
+    for (const [mesh, uses] of usesOf) {
+      for (const key of keys[mesh]) counts.outlineDraws += uses * (groups.get(key) || 0)
+    }
   }
-  // and the outline material it clones for each such primitive of each mesh: MToon is a ShaderMaterial, so the clone
-  // copies the material's userData as JSON (its extras and the extensions the parser does not handle, which include
-  // the MToon extension itself) and clones each texture of its uniforms with its userData (the image's extras). As
-  // JSON text, two bytes a character (an upper bound: under VRM 0 every image may be one of its textures), and
-  // 8 KiB for the uniforms, the material object and the MToon extension a VRM 0 material is converted to
+  // and the outline material it clones for each such primitive of each mesh. MToon is a ShaderMaterial: the clone
+  // copies the material's userData as JSON (its extras, and the extensions the parser does not handle, which include
+  // the MToon extension itself), and clones the texture in each of its texture uniforms with that texture's userData
+  // (an image's extras). Which image a slot holds is not modelled (an extension's source, the parser's texture cache
+  // and VRM 0's slots may each resolve it to another): every slot is counted at the largest extras of any image.
+  // As JSON text, two bytes a character, and 8 KiB for the uniforms, the material object and the MToon extension a
+  // VRM 0 material is converted to. A bound by construction (each term is at least what it stands for)
   const text = value => (value === undefined ? 0 : 2 * (JSON.stringify(value) || '').length)
-  const imageExtras = textureIndex => text(collections.images[collections.textures[textureIndex]?.source]?.extras)
-  const allImageExtras = collections.textures.reduce((sum, _, t) => sum + imageExtras(t), 0)
+  let largestImageExtras = 0
+  for (const image of collections.images) largestImageExtras = Math.max(largestImageExtras, text(image.extras))
+  step(collections.images.length, 'VRM image extras')
   const copies = new Map()
   const copyBytes = m => {
     if (!copies.has(m)) {
       const material = materials[m]
-      let bytes = 8192 + text(material.extras) + text(material.extensions)
-      if (v0) {
-        bytes += allImageExtras
-      } else {
-        const visit = value => {
-          if (Array.isArray(value)) return value.forEach(visit)
-          if (!isObject(value)) return
-          for (const [key, entry] of Object.entries(value)) {
-            if (key === 'extras') continue
-            if (/Texture$/.test(key) && isObject(entry)) bytes += imageExtras(entry.index)
-            visit(entry)
-          }
-        }
-        visit(material)
-      }
-      copies.set(m, bytes)
+      copies.set(m, 8192 + text(material.extras) + text(material.extensions) + MTOON_TEXTURE_SLOTS * largestImageExtras)
     }
     return copies.get(m)
   }
@@ -1006,6 +1042,11 @@ function checkVRM(json, collections, parents, order, limits, { list, object, ite
   }
   return { nodes: nodes.length, vrm: counts }
 }
+
+// the texture uniforms of three-vrm's MToonMaterial (3.3.3): map, alphaMap, normalMap, emissiveMap,
+// shadeMultiplyTexture, shadingShiftTexture, matcapTexture, rimMultiplyTexture, outlineWidthMultiplyTexture,
+// uvAnimationMaskTexture (test/gltfLimits.test.js reads them from the class)
+export const MTOON_TEXTURE_SLOTS = 10
 
 // the parser's cache key for a primitive's geometry (its createPrimitiveKey, without Draco: this client has no
 // decoder): primitives with the same key share one geometry
@@ -1023,12 +1064,14 @@ function primitiveKey(primitive) {
 // The per-file budget the parser charges (see the COO_BUDGET and COO_WORK sites in the vendored GLTFLoader).
 // `fileBytes`: the file's size (its data is copied twice: the GLB's binary chunk, then the bufferViews; and an honest
 // file's accessors are gone through about once). `onCharge(kind, n, what, total)`: told of every charge (tests).
-// `now`: a monotonic clock in milliseconds (tests)
+// `now`: a monotonic clock in milliseconds (tests). `maxTextureSize`: the renderer's, when it is known (the
+// morph-target textures three.js builds are padded to rows of it)
 export function createGLTFBudget({
   fileBytes = 0,
   limits = GLTF_LIMITS,
   onCharge,
   now = () => globalThis.performance.now(),
+  maxTextureSize,
 } = {}) {
   const maxBytes = limits.allocatedBytes + 2 * fileBytes
   const maxWork = limits.work + fileBytes
@@ -1049,14 +1092,19 @@ export function createGLTFBudget({
   // every later charge of the kind refused is refused too (its total stays past the limit), so a part of the parse
   // still running (promise chains the parser started side by side) allocates, or walks, nothing more than the
   // limits allow. (Refusing every kind after the first refusal would reject chains nothing waits on any more.)
+  // the first refusal is kept (budget.refused): the parser fails the parse with it even where it had to swallow it
   const fail = (what, reason) => {
     onCharge?.('refused', 0, what, reason)
-    refuse(reason)
+    const error = new GLTFLimitError(reason)
+    budget.refused ??= error
+    throw error
   }
   const budget = {
     used,
+    refused: null,
     maxBytes,
     maxWork,
+    maxTextureSize: Number.isSafeInteger(maxTextureSize) && maxTextureSize > 0 ? maxTextureSize : undefined,
     bytes(n, what) {
       clock(what)
       if (!Number.isFinite(n) || n < 0) fail(what, `${what}: an impossible size`)

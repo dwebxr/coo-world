@@ -1819,8 +1819,9 @@ class GLTFMeshGpuInstancing {
 					budget.bytes( count * 64, 'instance matrices' );
 					budget.count( 'meshInstances' );
 					chargeUserData( budget, mesh );
-					// COO_WORK: the instancing attributes, read for each instance
-					for ( const key in attributes ) budget.work( attributes[ key ].count * attributes[ key ].itemSize, 'instancing attributes' );
+					// COO_WORK: each instancing attribute, read for each instance and set on the geometry: a step for the key
+					// and one per component, for each instanced mesh (an empty accessor still costs its key)
+					for ( const key in attributes ) budget.work( 1 + attributes[ key ].count * attributes[ key ].itemSize, 'instancing attributes' );
 
 				}
 
@@ -1857,7 +1858,7 @@ class GLTFMeshGpuInstancing {
 				}
 
 				// Add instance attributes to the geometry, excluding TRS.
-				for ( const attributeName in attributes ) { // COO_EXEMPT: the node's instancing attributes
+				for ( const attributeName in attributes ) { // COO_WORK: the node's instancing attributes, each charged above for this mesh
 
 					if ( attributeName === '_COLOR_0' ) {
 
@@ -2509,17 +2510,20 @@ function chargeClone( budget, object ) {
 
 }
 
-// COO_BUDGET: the renderer keeps a geometry's morph targets in a float texture: 4 floats per vertex, attribute and
-// target, in rows of at most 4096 texels (the smallest common maximum texture size; a larger one pads less)
-function morphTextureBytes( geometry ) {
+// COO_BUDGET: what three.js (WebGLMorphtargets) allocates for a geometry's morph targets when it is first drawn: one
+// texture per geometry (primitives sharing their vertex and morph accessors but not their indices are separate
+// geometries, each with its own), a layer per target of position.count x (1, 2 or 3: positions, then normals, then
+// colours) texels of 4 floats, in rows of the renderer's maximum texture size. Without that size (the renderer not
+// known yet), the most any size a GPU reports (4096 to 32768) would take
+function morphTextureBytes( geometry, maxTextureSize ) {
 
-	const position = geometry.attributes.position;
 	const morphs = geometry.morphAttributes;
-	const kinds = ( morphs.position ? 1 : 0 ) + ( morphs.normal ? 1 : 0 ) + ( morphs.color ? 1 : 0 );
-	const targets = Math.max( morphs.position ? morphs.position.length : 0, morphs.normal ? morphs.normal.length : 0, morphs.color ? morphs.color.length : 0 );
-	const texels = ( position ? position.count : 0 ) * kinds;
-	const rows = Math.ceil( texels / 4096 );
-	return Math.min( texels, 4096 ) * rows * 16 * targets;
+	const layers = ( morphs.position || morphs.normal || morphs.color || [] ).length;
+	const kinds = morphs.color ? 3 : morphs.normal ? 2 : morphs.position ? 1 : 0;
+	const texels = ( geometry.attributes.position ? geometry.attributes.position.count : 0 ) * kinds;
+	const padded = ( size ) => ( texels > size ? size * Math.ceil( texels / size ) : texels );
+	const allocated = maxTextureSize > 0 ? padded( maxTextureSize ) : Math.max( padded( 4096 ), padded( 8192 ), padded( 16384 ), padded( 32768 ) );
+	return allocated * 16 * layers;
 
 }
 
@@ -2630,7 +2634,7 @@ function addMorphTargets( geometry, targets, parser ) {
 		geometry.morphTargetsRelative = true;
 
 		// COO_BUDGET: the morph-target texture the renderer will build for this geometry (once: geometries are shared)
-		if ( parser.budget ) parser.budget.bytes( morphTextureBytes( geometry ), 'morph target texture' );
+		if ( parser.budget ) parser.budget.bytes( morphTextureBytes( geometry, parser.budget.maxTextureSize ), 'morph target texture' );
 
 		return geometry;
 
@@ -2905,6 +2909,9 @@ class GLTFParser {
 
 		} ).then( function ( dependencies ) {
 
+			// COO_BUDGET: a refusal swallowed on the way (assignTexture) fails the parse before the plugins run on it
+			if ( parser.budget && parser.budget.refused ) throw parser.budget.refused;
+
 			const result = {
 				scene: dependencies[ 0 ][ json.scene || 0 ],
 				scenes: dependencies[ 0 ],
@@ -2930,6 +2937,9 @@ class GLTFParser {
 					scene.updateMatrixWorld(); // COO_EXEMPT: each scene's objects once more (loadScene charged a step for each)
 
 				}
+
+				// COO_BUDGET: and one made while they ran
+				if ( parser.budget && parser.budget.refused ) throw parser.budget.refused;
 
 				onLoad( result );
 
@@ -3751,6 +3761,20 @@ class GLTFParser {
 			materialParams[ mapName ] = texture;
 
 			return texture;
+
+		} ).catch( function ( error ) {
+
+			// COO_BUDGET: a refused texture is an empty placeholder here, and the parse fails at its end (budget.refused).
+			// three-vrm's MToon plugin wraps each texture it assigns in a promise it never awaits, and sets the colour
+			// space of what was assigned: a rejection, or nothing assigned, was an unhandled rejection
+			if ( error && error.isGLTFLimit && parser.budget ) {
+
+				materialParams[ mapName ] = new Texture(); // COO_EXEMPT: an empty placeholder, once per refused texture slot
+				return materialParams[ mapName ];
+
+			}
+
+			throw error;
 
 		} );
 
@@ -4979,14 +5003,18 @@ class GLTFParser {
 		const outputArray = this._getArrayFromAccessor( outputAccessor );
 
 		// COO_SPARSE: what three's interpolants and mixer loop on (`i !== stride`): one time per keyframe and a whole
-		// number of values per keyframe, from arrays holding just the accessors' elements (an interleaved accessor's
-		// array holds its neighbours' too)
+		// number of values per keyframe, the real arrays holding just the accessors' own elements, as many as the
+		// document declares (an interleaved accessor's array holds its neighbours' too, and a sparse accessor on an
+		// interleaved view copies all of them: its attribute's count is the array's, not the accessor's)
+		const json = this.json;
+		const keyframes = json.accessors[ sampler.input ].count;
+		const outputs = json.accessors[ sampler.output ].count * outputAccessor.itemSize;
 		const cubic = sampler.interpolation === 'CUBICSPLINE';
 		const perKeyframe = outputArray.length / inputAccessor.array.length;
 		const sample = perKeyframe / ( cubic ? 3 : 1 );
 		if ( inputAccessor.isInterleavedBufferAttribute || outputAccessor.isInterleavedBufferAttribute
-			|| inputAccessor.array.length === 0 || inputAccessor.array.length !== inputAccessor.count
-			|| outputArray.length !== outputAccessor.count * outputAccessor.itemSize
+			|| inputAccessor.array.length === 0 || inputAccessor.array.length !== keyframes
+			|| outputArray.length !== outputs
 			|| ! Number.isInteger( sample ) || sample < 1
 			|| ( PATH_PROPERTIES[ target.path ] === PATH_PROPERTIES.rotation && sample !== 4 ) ) {
 

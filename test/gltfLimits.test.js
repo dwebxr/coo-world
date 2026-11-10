@@ -1,7 +1,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { checkGLTF, readGLTF, createGLTFBudget, GLTF_LIMITS, GLTFLimitError } from '../src/core/extras/gltfLimits.js'
+import {
+  checkGLTF,
+  readGLTF,
+  createGLTFBudget,
+  GLTF_LIMITS,
+  GLTFLimitError,
+  MTOON_TEXTURE_SLOTS,
+} from '../src/core/extras/gltfLimits.js'
+import { MToonMaterial } from '@pixiv/three-vrm'
 import { png, jpeg, gif } from './lib/imageBytes.mjs'
 
 // Before parsing: the container and the document's structure, and three-vrm's work as its plugins expand it. (What
@@ -366,6 +374,13 @@ test('accessors are what the parser and three.js assume of them: animations, ski
   assert.ok(checkGLTF(text(instanced({ TRANSLATION: 1 }))))
   refused(instanced({ TRANSLATION: 1, SCALE: 3 }), /node 0 instancing attributes have different counts/)
   refused(instanced({ ROTATION: 1 }), /node 0 instancing ROTATION is not VEC4/)
+  // the reviewer's probe: 100,000 instancing attributes on an empty accessor, for each of 100 primitives, made
+  // 10,000,000 setAttribute calls for 6,462 steps. An accessor has at least one element, and a node at most 16
+  // instancing attributes (the parser charges each, per primitive: gltfBudget.test.js)
+  const many = instanced(Object.fromEntries(Array.from({ length: 17 }, (_, k) => [`_A${k}`, 1])))
+  refused(many, /node 0 has 17 instancing attributes, more than 16/)
+  assert.ok(checkGLTF(text(instanced(Object.fromEntries(Array.from({ length: 16 }, (_, k) => [`_A${k}`, 1]))))))
+  refused(doc({ accessors: [{ componentType: 5126, type: 'VEC3', count: 0 }] }), /accessor 0 has no elements/)
 
   // strides and lengths: what fits in the bufferView as the parser reads it
   const strided = (view, accessor) =>
@@ -427,6 +442,61 @@ test('accessors are what the parser and three.js assume of them: animations, ski
   )
 })
 
+test('the check is metered too, and linear in the document: no part of loading a file runs unmetered', t => {
+  // given the file's budget, the check charges a step per entry it goes through, and looks at its clock
+  const json = doc({ nodes: Array.from({ length: 1000 }, () => ({})), scenes: [{ nodes: [0] }] })
+  const charged = new Map()
+  const budget = createGLTFBudget({
+    fileBytes: text(json).byteLength,
+    onCharge: (kind, n, what) => kind === 'work' && charged.set(what, (charged.get(what) || 0) + n),
+  })
+  checkGLTF(text(json), GLTF_LIMITS, budget)
+  assert.equal(charged.get('the JSON'), JSON.stringify(json).length)
+  assert.equal(charged.get('nodes'), 1000)
+  assert.equal(charged.get('node entries'), 1000)
+  let now = 0
+  const slow = createGLTFBudget({ now: () => (now += 1000), limits: { ...GLTF_LIMITS, work: 10 } })
+  assert.throws(
+    () => checkGLTF(text(json), GLTF_LIMITS, slow),
+    /the parser would take more than 10 steps|took more than/
+  )
+  // (work looks at the clock each 65,536 steps: a document of 70,000 nodes)
+  const late = createGLTFBudget({ now: () => (now += 20000) })
+  const big = doc({ nodes: Array.from({ length: 70000 }, () => ({})) })
+  assert.throws(() => checkGLTF(text(big), GLTF_LIMITS, late), /the parse took more than 10 s/)
+  // the reviewer's probe: 4000 textures naming one image whose extras are 1 MB stringified it 4000 times (3 s; with
+  // 300,000 textures, half an hour) before any budget existed. Each image's extras are measured once now
+  const extras = doc({
+    images: [{ uri: 'data:image/png;base64,AA==', extras: { s: 'x'.repeat(100000) } }],
+    textures: Array.from({ length: 4000 }, () => ({ source: 0 })),
+  })
+  let measured = 0
+  const stringify = JSON.stringify
+  t.mock.method(JSON, 'stringify', (...args) => {
+    const out = stringify(...args)
+    if (out && out.length > 100000) measured++
+    return out
+  })
+  checkGLTF(text(extras))
+  assert.ok(measured <= 2, `the large extras were stringified ${measured} times`)
+  t.mock.restoreAll()
+  // nodes x primitives: 20,000 nodes using one mesh of 5,000 primitives were counted node by node, primitive by
+  // primitive (100,000,000 steps, seconds)
+  const wide = doc({
+    nodes: Array.from({ length: 20000 }, () => ({ mesh: 0 })),
+    meshes: [{ primitives: Array.from({ length: 5000 }, () => ({ attributes: { POSITION: 0 } })) }],
+  })
+  const started = performance.now()
+  assert.ok(checkGLTF(text(wide)))
+  assert.ok(performance.now() - started < 1500, 'counted per mesh, times its uses')
+  // and the most joints on one object of 130,000 nodes (a spread of that many arguments overflowed the call)
+  const many = doc({
+    nodes: [{ children: Array.from({ length: 129999 }, (_, i) => i + 1) }, ...Array(129999).fill({})],
+    extensions: { VRM: { secondaryAnimation: { boneGroups: [{ bones: [0] }] } } },
+  })
+  assert.throws(() => checkGLTF(text(many)), /three-vrm springJoints: 130000, more than 16384/)
+})
+
 test('the node hierarchy is a tree of bounded depth', () => {
   for (const nodes of [
     [{ children: [0] }],
@@ -443,14 +513,25 @@ test('the node hierarchy is a tree of bounded depth', () => {
   // a wide tree is fine (and checked in linear time)
   const wide = [{ children: Array.from({ length: 60000 }, (_, i) => i + 1) }, ...Array(60000).fill({})]
   assert.equal(checkGLTF(text(doc({ nodes: wide }))).nodes, 60001)
-  // a scene's roots: each once, a child of no node, in no other scene. The parser re-parents a root it meets again,
-  // a search and a splice of its old parent's children each time (Codex's probe: 1000 roots listed twice shifted
-  // 999,000 entries); such a scene never loaded as written
+  // a scene's roots: each once, and a child of no node. The parser re-parents a root it meets again, a search and a
+  // splice of its old parent's children each time (Codex's probe: 1000 roots listed twice shifted 999,000 entries);
+  // such a scene never loaded as written. A root shared by two scenes is valid glTF (each move is charged:
+  // gltfBudget.test.js loads one)
   const roots = (scenes, nodes = [{}, {}, {}]) => doc({ nodes, scenes: scenes.map(list => ({ nodes: list })) })
   assert.ok(checkGLTF(text(roots([[0, 1], [2]]))))
+  assert.ok(
+    checkGLTF(
+      text(
+        roots([
+          [0, 1],
+          [0, 2],
+        ])
+      )
+    ),
+    'a root in two scenes'
+  )
   refused(roots([[0, 1, 0]]), /scene 0 lists node 0 twice/)
   refused(roots([[0, 1]], [{ children: [1] }, {}]), /scene 0 lists node 1, which is a child of another node/)
-  refused(roots([[0], [1, 0]]), /node 0 is a root of scenes 0 and 1/)
   const thousand = Array.from({ length: 1000 }, (_, i) => i)
   refused(roots([[...thousand, ...thousand]], Array(1000).fill({})), /scene 0 lists node 0 twice/)
 })
@@ -626,17 +707,64 @@ test('three-vrm walks are counted in objects of the scene graph, as the plugins 
   assert.equal(checkGLTF(text(heavy(50))).vrm.outlineCopyBytes, 50 * one)
   // (200 on one geometry draw 80,000 groups, inside that cap; their copies are not)
   refused(heavy(200, 5000), /three-vrm outlineCopyBytes: \d+, more than 16777216/)
-  // a texture's image extras are copied with it
+  // and each texture slot of MToon copies a texture's userData (an image's extras). Which image a slot holds is not
+  // modelled: an extension's source, the parser's texture cache (keyed by uri or bufferView and sampler) and VRM 0's
+  // slots may each resolve it to another image than the one it names. So every slot counts the largest image extras
+  // in the file, whether the material names a texture or not
   const textured = heavy(1)
+  textured.textures = [{ source: 0 }, { source: 1 }]
+  textured.images = [
+    { bufferView: 0, mimeType: 'image/png', extras: { note: 'x'.repeat(100) } },
+    { bufferView: 0, mimeType: 'image/png', extras: { note: 'x'.repeat(1000) } },
+  ]
   textured.materials[0].extensions.VRMC_materials_mtoon.shadeMultiplyTexture = { index: 0 }
-  textured.textures = [{ source: 0 }]
-  textured.images = [{ bufferView: 0, mimeType: 'image/png', extras: { note: 'x'.repeat(100) } }]
+  const largest = 2 * JSON.stringify(textured.images[1].extras).length
   assert.equal(
     checkGLTF(text(textured)).vrm.outlineCopyBytes,
     8192 +
       2 * JSON.stringify(textured.materials[0].extras).length +
       2 * JSON.stringify(textured.materials[0].extensions).length +
-      2 * JSON.stringify(textured.images[0].extras).length
+      MTOON_TEXTURE_SLOTS * largest
+  )
+})
+
+test("the outline copy bound counts every texture uniform three-vrm's MToon material has", () => {
+  const material = new MToonMaterial()
+  // (the shadow-map arrays are the renderer's, not the file's)
+  const slots = Object.entries(material.uniforms)
+    .filter(([name, uniform]) => /(^map|Map|Texture)$/.test(name) && !Array.isArray(uniform.value))
+    .map(([name]) => name)
+  assert.equal(slots.length, MTOON_TEXTURE_SLOTS, slots.join(', '))
+  material.dispose()
+})
+
+test('VRM 0: UniVRM writes -1 for "none", accepted where three-vrm reads the field as absent', () => {
+  // VRoid's samples Avatar_Orion and Darkness_Shibu have spring bone groups with `center: -1`, and were refused
+  const vrm0 = more => ({
+    ...doc(),
+    nodes: [{ mesh: 0 }, {}],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+    extensions: {
+      VRM: {
+        humanoid: { humanBones: [{ bone: 'hips', node: -1 }] },
+        blendShapeMaster: { blendShapeGroups: [{ binds: [{ mesh: -1, index: 0 }] }] },
+        secondaryAnimation: { colliderGroups: [], boneGroups: [{ bones: [1], center: -1 }] },
+        firstPerson: { firstPersonBone: -1, meshAnnotations: [{ mesh: -1 }] },
+        meta: { texture: -1 },
+        ...more,
+      },
+    },
+  })
+  const counted = checkGLTF(text(vrm0())).vrm
+  assert.equal(counted.expressionBinds, 0, 'a bind naming no mesh binds nothing')
+  // where three-vrm would use it (a collider group's node, a bone), -1 is refused
+  refused(
+    vrm0({ secondaryAnimation: { colliderGroups: [{ node: -1, colliders: [] }], boneGroups: [] } }),
+    /VRM colliderGroup 0 node is not an index of nodes/
+  )
+  refused(
+    vrm0({ secondaryAnimation: { boneGroups: [{ bones: [-1] }] } }),
+    /VRM boneGroup 0 bone is not an index of nodes/
   )
 })
 
@@ -670,15 +798,16 @@ test('the bundled avatar, emotes and models pass, with their three-vrm counts', 
 test('the budget: bytes beyond twice the file, counts per kind, image decodes sized from their headers', () => {
   const charges = []
   const budget = createGLTFBudget({ fileBytes: MiB, onCharge: (...args) => charges.push(args) })
-  assert.equal(budget.maxBytes, 66 * MiB)
-  budget.bytes(66 * MiB, 'all of it')
+  assert.equal(budget.maxBytes, 322 * MiB)
+  budget.bytes(322 * MiB, 'all of it')
   assert.throws(
     () => budget.bytes(1, 'one more'),
     error =>
       error instanceof GLTFLimitError &&
       error.isGLTFLimit &&
-      /more than 69206016 bytes \(at one more\)/.test(error.message)
+      /more than 337641472 bytes \(at one more\)/.test(error.message)
   )
+  assert.equal(budget.refused.message, 'model file: the parser would allocate more than 337641472 bytes (at one more)')
   assert.throws(() => budget.bytes(0, 'after'), /more than/, 'every later charge is refused too')
   assert.throws(() => createGLTFBudget().bytes(NaN, 'x'), /impossible size/)
   assert.throws(() => createGLTFBudget().bytes(-1, 'x'), /impossible size/)
@@ -686,8 +815,8 @@ test('the budget: bytes beyond twice the file, counts per kind, image decodes si
   const work = createGLTFBudget({ limits: { ...GLTF_LIMITS, work: 10 } })
   work.work(10, 'ten')
   assert.throws(() => work.work(1, 'one more'), /the parser would take more than 10 steps \(at one more\)/)
-  assert.equal(GLTF_LIMITS.work, 2 ** 25)
-  assert.equal(createGLTFBudget({ fileBytes: 1000 }).maxWork, 2 ** 25 + 1000, 'and a step per byte of the file')
+  assert.equal(GLTF_LIMITS.work, 2 ** 26)
+  assert.equal(createGLTFBudget({ fileBytes: 1000 }).maxWork, 2 ** 26 + 1000, 'and a step per byte of the file')
   assert.throws(() => createGLTFBudget().work(NaN, 'x'), /impossible amount of work/)
   assert.throws(
     () => createGLTFBudget().refuse('a document rule', 'x'),
@@ -746,6 +875,6 @@ test('the budget: bytes beyond twice the file, counts per kind, image decodes si
   uris.imageURI('https://elsewhere.example/t.png', 'image 3')
   assert.equal(uris.used.counts.images, 1)
   // every charge and refusal is reported (the parser-level tests use this)
-  assert.deepEqual(charges[0], ['bytes', 66 * MiB, 'all of it', 66 * MiB])
+  assert.deepEqual(charges[0], ['bytes', 322 * MiB, 'all of it', 322 * MiB])
   assert.equal(charges.filter(c => c[0] === 'refused').length, 2)
 })

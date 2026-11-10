@@ -26,9 +26,10 @@ const randomFloat = num(100, 1000, 2);
 
 ## `setTimeout`
 
-`setTimeout(fn, ms)` runs `fn` once after `ms` milliseconds and returns a number. Timers belong to the app's current
-run: they are all cancelled when the app is rebuilt, crashes or is removed. An app may have at most 1,024 timers
-pending at once; past that `setTimeout` throws.
+`setTimeout(fn, ms)` runs `fn` once after `ms` milliseconds and returns a number. `ms` is a number (a numeric string
+also works); any other value counts as `0`. Timers belong to the app's current run: they are all cancelled when the
+app is rebuilt, crashes or is removed. An app may have at most 1,024 timers pending at once; past that `setTimeout`
+throws.
 
 ---
 

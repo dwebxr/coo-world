@@ -42,6 +42,11 @@ The parent node, if any.
 
 The child nodes.
 
+### `.cursor`: String
+
+The page's mouse cursor while the pointer is over the node (a CSS cursor value, at most 128 characters), or
+`null`. Anything other than a string throws.
+
 ## Methods
 
 ### `.add(otherNode)`: Self
@@ -53,6 +58,10 @@ its descendants`), so the parent chain can never loop. One app may have at most 
 (in its own tree and in world space together) and 256 levels of nesting below a mounted root; nodes that are created
 but not added (for example clones kept for later) do not count. Mounting past either limit throws
 `[app] node limit reached: …` and crashes the app, as any other script error does.
+
+A node is counted for the app it is mounted for. Moving a mounted node (also one placed in world space with
+`world.add`) under another node unmounts it and mounts it again at its new place, so it is counted at its new depth.
+A node that was never placed in the world (or under a mounted node) is not mounted by setting `active = true`.
 
 ### `.remove(otherNode)`: Self
 

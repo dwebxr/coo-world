@@ -28,6 +28,12 @@ when a native trap caused the latch. During the destroy event, world/app reads, 
 Native queries, creation and other native-capable calls remain blocked. A legitimate replacement
 script can run again after cleanup of the old run.
 
+Each build of an app (when its blueprint changes, after a crash, or when it is removed) ends the script's run. The
+`world`, `app` and player objects and the control a run was given belong to that run: once it has ended, using them
+throws `[app] this app has stopped` (a control answers but changes nothing), a pending `fetch` or body read never
+settles, and a node of the old run cannot be mounted again by setting `active`. The run's own `destroy` handler
+still works as before; a promise or timer it starts does not.
+
 A separate simulation health probe checks PhysX after a native trap. If it fails, or an exception
 interrupts the main scene's simulation/fetch, the world stops ticking. The server refuses further
 mutations and attempts to save settled edits, deletions and changed, loaded settings/spawn values before
@@ -133,8 +139,8 @@ An omitted or `null` `layerMask` means `0` (unfiltered). Explicit masks must be 
 
 ### `.overlapSphere(radius: Number, origin: Vector3, layerMask: ?Number)`
 
-Returns an array of overlapping physics hits, each exposing `tag` and `playerId` (which may be
-`null`). No hits returns `[]`.
+Returns an array of overlapping physics hits, each a new plain object `{ tag, playerId }` (either may be
+`null`). No hits returns `[]`. A hit's `tag` is reported only when it is a string, here and in `raycast`.
 
 `radius` must be positive and remain finite and positive after conversion to float32; invalid
 radii throw. `origin` accepts endowed and stock THREE `Vector3` instances; lookalike objects

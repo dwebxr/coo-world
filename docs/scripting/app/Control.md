@@ -74,6 +74,8 @@ app.on('update', () => {
 *   `pointer.lock()`: Requests to lock the pointer to the screen.
 *   `pointer.unlock()`: Releases the pointer lock.
 
+`coords`, `position` and `delta` are new vectors on every read (changing one changes nothing else).
+
 ### Scroll
 
 Get mouse scroll wheel changes.
@@ -102,6 +104,18 @@ control.camera.position.y = 4
 *   `camera.rotation` (Euler): The euler rotation (radians) of the camera in world space.
 *   `camera.zoom` (Number): Third person zoom value, eg how far back the camera is from its position.
 *   `camera.write` (Boolean): Set this to `true` if you want to modify the camera in any way.
+
+While `write` is on, the camera moves only to finite numbers: a position, rotation or zoom that is not a finite
+number leaves the camera where it is for that frame.
+
+### Releasing
+
+`control.release()` ends the control. Its action hints leave the screen and a hidden reticle comes back. After
+that (also when the app stops or is rebuilt, which releases its control) the control still answers, but changes
+nothing: `setActions` and `hideReticle` do nothing, and its buttons no longer fire.
+
+If a control's per-frame values make the engine fail (for example an accessor that throws on `camera.position`),
+the app crashes like any other script error and the frame goes on for everyone else.
 
 
 ### Screen

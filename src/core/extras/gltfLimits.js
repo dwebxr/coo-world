@@ -31,7 +31,7 @@
 //
 // Both throw a GLTFLimitError with the reason.
 
-import { IMAGE_HEADER_BYTES, MAX_IMAGE_PIXELS, readImageHeader } from './imageHeader.js'
+import { IMAGE_HEADER_BYTES, MAX_IMAGE_PIXELS, imageType, readImageHeader } from './imageHeader.js'
 
 const MiB = 1024 * 1024
 
@@ -268,6 +268,14 @@ export function isDataURI(uri) {
     (uri.charCodeAt(2) | 0x20) === 116 &&
     (uri.charCodeAt(3) | 0x20) === 97
   )
+}
+
+// An image's media type from its own bytes, as the header reader identifies them (image/png, image/jpeg or
+// image/webp), or null for any other: the type a Blob of it is given for the decoder (the document's mimeType may name
+// another, and WebKit's <img> did not show a PNG handed over as image/webp)
+export function imageMediaType(bytes) {
+  const type = imageType(bytes)
+  return type ? `image/${type}` : null
 }
 
 // base64's alphabet: each character's six bits, -1 for any other
@@ -626,17 +634,20 @@ export function checkGLTF(data, limits = GLTF_LIMITS, budget = null) {
   collections.scenes.forEach((scene, i) => {
     for (const node of list(scene.nodes, `scene ${i} nodes`)) index(node, 'nodes', `scene ${i} node`)
   })
+  // the bytes each buffer really holds (its data, as the parser will have it), for the bufferViews below
+  const bufferBytes = []
   collections.buffers.forEach((buffer, i) => {
     if (buffer.type !== undefined) refuse(`buffer ${i} has a glTF 1.0 type`)
     whole(buffer.byteLength, `buffer ${i} byteLength`)
     // a GLB's first buffer is its binary chunk; any other buffer must be a data: URI
     if (buffer.uri === undefined) {
       if (i !== 0 || bin === null) refuse(`buffer ${i} has no data in the file`)
+      bufferBytes[i] = bin
     } else if (!isDataURI(buffer.uri)) {
       refuse(`a model may not reference external files (buffer ${i})`)
     } else {
       // its data, sized by the decoder the parser decodes it with (one pass, nothing allocated): at least its
-      // byteLength, on which every bufferView and accessor check relies (shorter, the parser's arrays threw)
+      // byteLength (shorter, the parser's arrays threw)
       let size
       try {
         size = dataURIPayload(buffer.uri).size
@@ -647,6 +658,7 @@ export function checkGLTF(data, limits = GLTF_LIMITS, budget = null) {
       if (size < (buffer.byteLength || 0)) {
         refuse(`buffer ${i} has ${size} bytes of data, fewer than its byteLength (${buffer.byteLength})`)
       }
+      bufferBytes[i] = size
     }
   })
   collections.bufferViews.forEach((view, i) => {
@@ -659,6 +671,13 @@ export function checkGLTF(data, limits = GLTF_LIMITS, budget = null) {
     if (view.byteStride !== undefined && (view.byteStride < 4 || view.byteStride > 252 || view.byteStride % 4 !== 0)) {
       refuse(`bufferView ${i} byteStride is not a multiple of 4 from 4 to 252`)
     }
+    // within its buffer: its byteLength, and the bytes the buffer really holds (a data: buffer's decoded data, the
+    // GLB's binary chunk). Past them, the parser's arrays threw ("Invalid typed array length"); an accessor is held to
+    // its bufferView below, so to its buffer
+    const buffer = collections.buffers[view.buffer]
+    const end = (view.byteOffset || 0) + (view.byteLength || 0)
+    const holds = Math.min(buffer.byteLength ?? Infinity, bufferBytes[view.buffer])
+    if (end > holds) refuse(`bufferView ${i} ends at byte ${end}, past the ${holds} of buffer ${view.buffer}`)
     const meshopt = object(object(view.extensions, `bufferView ${i} extensions`).EXT_meshopt_compression, 'meshopt')
     index(meshopt.buffer, 'buffers', `bufferView ${i} meshopt buffer`)
     for (const key of ['byteOffset', 'byteLength', 'byteStride', 'count'])

@@ -44,6 +44,7 @@ export const ALLOWED = {
     onLoad: "hands the result to the loader's caller",
     onError: "hands the error to the loader's caller",
     isDataURI: 'a test of five characters (gltfLimits.js)',
+    imageMediaType: "an image's first twelve bytes read (gltfLimits.js)",
   },
   qualified: {
     'Array.isArray': 'a type test',

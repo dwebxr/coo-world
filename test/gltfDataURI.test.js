@@ -372,3 +372,42 @@ test('only a buffer or an image has a URI: a `uri` elsewhere is a string like an
   )
   assert.ok(checkGLTF(text({ asset: { version: '2.0' }, nodes: [{ uri: 'data:,short' }] })))
 })
+
+test('an image is handed to the decoder as the type its bytes are, not the type the document declares', async t => {
+  // the reviewer's probe: a PNG declared image/webp went in a Blob of type image/webp (WebKit's <img> may not show
+  // it). The Blob's type is the header reader's, on both paths: an image in a bufferView and one in a data: URI
+  const types = []
+  t.mock.method(globalThis, 'createImageBitmap', async blob => {
+    types.push(blob.type)
+    return { width: 16, height: 16, close() {} }
+  })
+  const image = png(16, 16)
+  const bin = new Uint8Array(36 + image.length)
+  bin.set(image, 36)
+  const file = glb(
+    {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } }, emissiveTexture: { index: 1 } }],
+      textures: [{ source: 0 }, { source: 1 }],
+      images: [
+        { bufferView: 1, mimeType: 'image/webp' },
+        { uri: `data:image/webp;base64,${Buffer.from(image).toString('base64')}`, mimeType: 'image/webp' },
+      ],
+      accessors: [vec3(3, { bufferView: 0, min: [0, 0, 0], max: [0, 0, 0] })],
+      bufferViews: [
+        { buffer: 0, byteLength: 36 },
+        { buffer: 0, byteOffset: 36, byteLength: image.length },
+      ],
+      buffers: [{ byteLength: bin.length }],
+    },
+    bin
+  )
+  const budget = createGLTFBudget({ fileBytes: file.byteLength })
+  checkGLTF(file, GLTF_LIMITS, budget)
+  await new GLTFLoader().parseAsync(file, '', budget)
+  assert.deepEqual(types, ['image/png', 'image/png'])
+})

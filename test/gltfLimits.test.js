@@ -242,6 +242,44 @@ test('required extensions must be ones this client loads; optional compression w
   refused(doc({ extensionsUsed: ['VRM'], extensionsRequired: ['VRM', 'VRM'] }), /an extension is named twice/)
 })
 
+test('a bufferView is within its buffer: its byteLength, and the bytes the buffer really holds', () => {
+  // the reviewer's probe: nothing compared a bufferView with its buffer, and one past it ended in the parser's
+  // "Invalid typed array length"
+  const views = (bufferViews, buffer = { byteLength: 36, uri: dataURI(36) }) =>
+    doc({
+      buffers: [buffer],
+      bufferViews,
+      accessors: [{ bufferView: 0, componentType: 5126, type: 'SCALAR', count: 1 }],
+    })
+  assert.ok(checkGLTF(text(views([{ buffer: 0, byteOffset: 24, byteLength: 12 }]))))
+  refused(
+    views([{ buffer: 0, byteOffset: 24, byteLength: 24 }]),
+    /bufferView 0 ends at byte 48, past the 36 of buffer 0/
+  )
+  // past the byteLength the document declares, though the data: URI holds more
+  refused(
+    views([{ buffer: 0, byteLength: 40 }], { byteLength: 36, uri: dataURI(48) }),
+    /bufferView 0 ends at byte 40, past the 36 of buffer 0/
+  )
+  // a GLB's binary chunk: its own length, whatever the buffer declares
+  const inGLB = (byteLength, view) =>
+    glb({ ...doc(), buffers: [{ byteLength }], bufferViews: [view], accessors: [] }, 36)
+  assert.ok(checkGLTF(inGLB(36, { buffer: 0, byteLength: 36 })))
+  assert.throws(
+    () => checkGLTF(inGLB(36, { buffer: 0, byteOffset: 4, byteLength: 36 })),
+    /bufferView 0 ends at byte 40, past the 36 of buffer 0/
+  )
+  assert.throws(
+    () => checkGLTF(inGLB(100, { buffer: 0, byteLength: 64 })),
+    /bufferView 0 ends at byte 64, past the 36 of buffer 0/
+  )
+  // and an accessor is held to its bufferView, as before
+  refused(
+    doc({ accessors: [{ bufferView: 0, componentType: 5126, type: 'VEC3', count: 4 }] }),
+    /accessor 0 is longer than bufferView 0/
+  )
+})
+
 test('accessors are what the parser and three.js assume of them: animations, skins, primitives, strides', () => {
   // a document with two keyframes (times: accessor 0), a translation per keyframe (1), three per keyframe for
   // CUBICSPLINE (2), and a node whose mesh has two morph targets (accessors 3, 4)

@@ -101,7 +101,7 @@ import {
 // import { toTrianglesDrawMode } from '../utils/BufferGeometryUtils.js';
 import { toTrianglesDrawMode } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 // COO_BUDGET: the one test of a data: URI the check, the budget and this parser share (pure: no three.js, no DOM)
-import { isDataURI } from '../../extras/gltfLimits.js';
+import { imageMediaType, isDataURI } from '../../extras/gltfLimits.js';
 
 class GLTFLoader extends Loader {
 
@@ -3673,7 +3673,9 @@ class GLTFParser {
 				}
 
 				isObjectURL = true;
-				const blob = new Blob( [ bufferView ], { type: sourceDef.mimeType } ); // COO_BUDGET: charged above (image blob); COO_REVOKE
+				// the type its bytes are (the header reader's), not the one the document declares
+				const type = imageMediaType( new Uint8Array( bufferView ) ) || sourceDef.mimeType; // COO_EXEMPT: a view of the bufferView
+				const blob = new Blob( [ bufferView ], { type } ); // COO_BUDGET: charged above (image blob); COO_REVOKE
 				sourceURI = URL.createObjectURL( blob ); // COO_REVOKE: revoked however the load ends
 				return sourceURI;
 
@@ -3690,7 +3692,8 @@ class GLTFParser {
 				const bytes = budget.imageURI( sourceDef.uri, 'image ' + sourceIndex );
 				budget.bytes( bytes.byteLength, 'image blob' );
 				isObjectURL = true;
-				const blob = new Blob( [ bytes ], { type: sourceDef.mimeType || getImageURIMimeType( sourceDef.uri ) } ); // COO_BUDGET: charged above (image blob); COO_REVOKE
+				// (the type its bytes are, which the budget's header reader identified: PNG, JPEG or WebP)
+				const blob = new Blob( [ bytes ], { type: imageMediaType( bytes ) } ); // COO_BUDGET: charged above (image blob); COO_REVOKE
 				sourceURI = URL.createObjectURL( blob ); // COO_REVOKE: revoked however the load ends
 				return sourceURI;
 

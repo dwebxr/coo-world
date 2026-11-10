@@ -37,31 +37,50 @@ export function resolveReference(url, assetsUrl) {
   return `https://${url}`
 }
 
-// an absolute http(s) URL: a protocol-relative (`//host/x`) or relative one resolves against a page the server
-// does not know
-export function isAbsoluteHttpURL(value) {
-  if (typeof value !== 'string') return false
-  try {
-    const { protocol } = new URL(value)
-    return protocol === 'http:' || protocol === 'https:'
-  } catch {
-    return false
-  }
-}
-
 // a `.` or `..` path segment, with either separator the URL parser accepts for http(s)
 const DOT_SEGMENT = /(?:^|[/\\])\.{1,2}(?:[/\\]|$)/
+
+// Why an assets URL is not clean enough for the clean-up to tell where references go (null when it is): it must start
+// with the literal lower-case http:// or https://, have no userinfo, `?`, `#`, backslash or dot segment, and be its
+// own normalised form (apart from one trailing slash). `https:/host/assets`, `https://host/assets?rev=1`, a fragment
+// or credentials make a reference resolve elsewhere than the store, or fail, so the clean-up does not run with them.
+export function assetsUrlProblem(value) {
+  if (typeof value !== 'string' || !value) return 'not set'
+  if (!/^https?:\/\//.test(value)) return 'it does not start with a lower-case http:// or https://'
+  if (/[?#]/.test(value)) return 'it has a query or a fragment'
+  if (value.includes('\\')) return 'it has a backslash'
+  if (DOT_SEGMENT.test(value)) return 'it has a dot segment'
+  let url
+  try {
+    url = new URL(value)
+  } catch {
+    return 'it does not parse'
+  }
+  if (url.username || url.password) return 'it has userinfo'
+  if (url.href !== value && url.href !== `${value}/` && `${url.href}/` !== value) {
+    return 'it is not in its normalised form'
+  }
+  return null
+}
+
+// an assets URL's origin and path segments (a trailing slash dropped), or null when it is not clean
+function storeRoot(assetsUrl) {
+  if (assetsUrlProblem(assetsUrl)) return null
+  const url = new URL(assetsUrl)
+  return { origin: url.origin, segments: url.pathname.split('/').filter(Boolean) }
+}
 
 // Where a blueprint's script comes from, as far as the server can know it for certain (the start-up clean-up):
 // - { source: 'none' }: no script: not a string, empty once trimmed, or a value starting with a lower-case `blob:`,
 //   which resolveReference leaves as it is (what URL.createObjectURL returns: a browser tab's own object, which
 //   nobody else can load). `Blob:x` or `blob/x` is not one: the runtime turns them into a request elsewhere;
-// - { source: 'store', name }: a file of the asset store, only when the reference (trimmed, as the loaders take it)
-//   is the canonical asset://<name>, or an absolute URL that the runtime sends to the store unchanged: it starts with
-//   the literal lower-case http:// or https:// that both resolveReference and the server's loader (ServerLoader
-//   locate) take as remote, resolveReference returns it as it is, it has no userinfo, its own text has no `?`, `#`,
-//   `%`, backslash or dot segment, and its normalised form is one valid name directly under the absolute assets
-//   URL `assetsUrl`. So the file the clean-up reads by that name is the object the loaders fetch;
+// - { source: 'store', name }: a file of the asset store, only with a clean assets URL `assetsUrl` (assetsUrlProblem)
+//   and only when the reference (trimmed, as the loaders take it) is the canonical asset://<name>, or an absolute URL
+//   that the runtime sends to the store unchanged: it starts with the literal lower-case http:// or https:// that
+//   both resolveReference and the server's loader (ServerLoader locate) take as remote, resolveReference returns it
+//   as it is, it has no userinfo, its own text has no `?`, `#`, `%`, backslash or dot segment, and its parsed origin
+//   and path segments are the assets URL's followed by one valid name. So the file the clean-up reads by that name is
+//   the object the loaders fetch;
 // - { source: 'unknown' }: anything else. Another origin; a page path such as /assets/x.js or blob/../assets/x.js,
 //   which lands wherever the page is served from (a proxy can put another application there); anything the runtime
 //   rewrites (`https:/host/x`, a tab inside the scheme and `HTTPS://` become other requests or none); a query, an
@@ -71,10 +90,12 @@ export function scriptSource(value, assetsUrl) {
   const ref = loaderReference(value)
   if (typeof ref !== 'string' || !ref) return { source: 'none' }
   if (ref.startsWith('blob:')) return { source: 'none' }
+  const unknown = { source: 'unknown' }
+  const root = storeRoot(assetsUrl)
+  if (!root) return unknown
   const canonical = assetName(ref)
   if (canonical) return { source: 'store', name: canonical }
-  const unknown = { source: 'unknown' }
-  if (!isAbsoluteHttpURL(assetsUrl) || !/^https?:\/\//.test(ref)) return unknown
+  if (!/^https?:\/\//.test(ref)) return unknown
   if (resolveReference(ref, assetsUrl) !== ref || /[?#%\\]/.test(ref) || DOT_SEGMENT.test(ref)) return unknown
   let url
   try {
@@ -82,10 +103,11 @@ export function scriptSource(value, assetsUrl) {
   } catch {
     return unknown
   }
-  if (url.username || url.password) return unknown
-  const root = new URL(assetsUrl.endsWith('/') ? assetsUrl : `${assetsUrl}/`)
-  if (url.origin !== root.origin || !url.pathname.startsWith(root.pathname)) return unknown
-  const name = assetName(ASSET_PROTOCOL + url.pathname.slice(root.pathname.length))
+  if (url.username || url.password || url.origin !== root.origin) return unknown
+  const segments = url.pathname.split('/').slice(1)
+  if (segments.length !== root.segments.length + 1) return unknown
+  if (root.segments.some((segment, i) => segments[i] !== segment)) return unknown
+  const name = assetName(ASSET_PROTOCOL + segments[segments.length - 1])
   return name ? { source: 'store', name } : unknown
 }
 

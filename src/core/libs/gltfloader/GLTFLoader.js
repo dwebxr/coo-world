@@ -18,7 +18,8 @@
  * count(kind, n), work(n, what), image(bytes, what), imageURI(uri, what), refuse(reason, what). It throws a
  * GLTFLimitError (error.isGLTFLimit) when a limit is passed; such an error is never swallowed as a missing texture.
  * Without a budget (the server) nothing is charged; the document rules (COO_SPARSE) and the fixes (COO_REVOKE, the
- * Draco cache key) apply all the same.
+ * Draco cache key) apply all the same. test/gltfLoaderAnnotations.test.js fails on an allocation-, copy- or
+ * loop-shaped line without one of these markers on it or within three lines above it.
  * 
  */
 
@@ -107,103 +108,103 @@ class GLTFLoader extends Loader {
 
 		this.register( function ( parser ) {
 
-			return new GLTFMaterialsClearcoatExtension( parser );
+			return new GLTFMaterialsClearcoatExtension( parser ); // COO_EXEMPT: once per parse
 
 		} );
 
 		this.register( function ( parser ) {
 
-			return new GLTFMaterialsDispersionExtension( parser );
+			return new GLTFMaterialsDispersionExtension( parser ); // COO_EXEMPT: once per parse
 
 		} );
 
 		this.register( function ( parser ) {
 
-			return new GLTFTextureBasisUExtension( parser );
+			return new GLTFTextureBasisUExtension( parser ); // COO_EXEMPT: once per parse
 
 		} );
 
 		this.register( function ( parser ) {
 
-			return new GLTFTextureWebPExtension( parser );
+			return new GLTFTextureWebPExtension( parser ); // COO_EXEMPT: once per parse
 
 		} );
 
 		this.register( function ( parser ) {
 
-			return new GLTFTextureAVIFExtension( parser );
+			return new GLTFTextureAVIFExtension( parser ); // COO_EXEMPT: once per parse
 
 		} );
 
 		this.register( function ( parser ) {
 
-			return new GLTFMaterialsSheenExtension( parser );
+			return new GLTFMaterialsSheenExtension( parser ); // COO_EXEMPT: once per parse
 
 		} );
 
 		this.register( function ( parser ) {
 
-			return new GLTFMaterialsTransmissionExtension( parser );
+			return new GLTFMaterialsTransmissionExtension( parser ); // COO_EXEMPT: once per parse
 
 		} );
 
 		this.register( function ( parser ) {
 
-			return new GLTFMaterialsVolumeExtension( parser );
+			return new GLTFMaterialsVolumeExtension( parser ); // COO_EXEMPT: once per parse
 
 		} );
 
 		this.register( function ( parser ) {
 
-			return new GLTFMaterialsIorExtension( parser );
+			return new GLTFMaterialsIorExtension( parser ); // COO_EXEMPT: once per parse
 
 		} );
 
 		this.register( function ( parser ) {
 
-			return new GLTFMaterialsEmissiveStrengthExtension( parser );
+			return new GLTFMaterialsEmissiveStrengthExtension( parser ); // COO_EXEMPT: once per parse
 
 		} );
 
 		this.register( function ( parser ) {
 
-			return new GLTFMaterialsSpecularExtension( parser );
+			return new GLTFMaterialsSpecularExtension( parser ); // COO_EXEMPT: once per parse
 
 		} );
 
 		this.register( function ( parser ) {
 
-			return new GLTFMaterialsIridescenceExtension( parser );
+			return new GLTFMaterialsIridescenceExtension( parser ); // COO_EXEMPT: once per parse
 
 		} );
 
 		this.register( function ( parser ) {
 
-			return new GLTFMaterialsAnisotropyExtension( parser );
+			return new GLTFMaterialsAnisotropyExtension( parser ); // COO_EXEMPT: once per parse
 
 		} );
 
 		this.register( function ( parser ) {
 
-			return new GLTFMaterialsBumpExtension( parser );
+			return new GLTFMaterialsBumpExtension( parser ); // COO_EXEMPT: once per parse
 
 		} );
 
 		this.register( function ( parser ) {
 
-			return new GLTFLightsExtension( parser );
+			return new GLTFLightsExtension( parser ); // COO_EXEMPT: once per parse
 
 		} );
 
 		this.register( function ( parser ) {
 
-			return new GLTFMeshoptCompression( parser );
+			return new GLTFMeshoptCompression( parser ); // COO_EXEMPT: once per parse
 
 		} );
 
 		this.register( function ( parser ) {
 
-			return new GLTFMeshGpuInstancing( parser );
+			return new GLTFMeshGpuInstancing( parser ); // COO_EXEMPT: once per parse
 
 		} );
 
@@ -257,7 +258,7 @@ class GLTFLoader extends Loader {
 
 		};
 
-		const loader = new FileLoader( this.manager );
+		const loader = new FileLoader( this.manager ); // COO_EXEMPT: once per load
 
 		loader.setPath( this.path );
 		loader.setResponseType( 'arraybuffer' );
@@ -336,7 +337,7 @@ class GLTFLoader extends Loader {
 		let json;
 		const extensions = {};
 		const plugins = {};
-		const textDecoder = new TextDecoder();
+		const textDecoder = new TextDecoder(); // COO_EXEMPT: once per parse
 
 		if ( typeof data === 'string' ) {
 
@@ -344,7 +345,7 @@ class GLTFLoader extends Loader {
 
 		} else if ( data instanceof ArrayBuffer ) {
 
-			const magic = textDecoder.decode( new Uint8Array( data, 0, 4 ) );
+			const magic = textDecoder.decode( new Uint8Array( data, 0, 4 ) ); // COO_EXEMPT: a view of four bytes
 
 			if ( magic === BINARY_EXTENSION_HEADER_MAGIC ) {
 
@@ -380,7 +381,7 @@ class GLTFLoader extends Loader {
 
 		}
 
-		const parser = new GLTFParser( json, {
+		const parser = new GLTFParser( json, { // COO_EXEMPT: once per parse
 
 			path: path || this.resourcePath || '',
 			crossOrigin: this.crossOrigin,
@@ -394,7 +395,7 @@ class GLTFLoader extends Loader {
 
 		parser.fileLoader.setRequestHeader( this.requestHeader );
 
-		for ( let i = 0; i < this.pluginCallbacks.length; i ++ ) {
+		for ( let i = 0; i < this.pluginCallbacks.length; i ++ ) { // COO_EXEMPT: the registered plugins (a constant few)
 
 			const plugin = this.pluginCallbacks[ i ]( parser );
 
@@ -422,7 +423,7 @@ class GLTFLoader extends Loader {
 				switch ( extensionName ) {
 
 					case EXTENSIONS.KHR_MATERIALS_UNLIT:
-						extensions[ extensionName ] = new GLTFMaterialsUnlitExtension();
+						extensions[ extensionName ] = new GLTFMaterialsUnlitExtension(); // COO_EXEMPT: per extensionsUsed entry (COO_WORK above)
 						break;
 
 					case EXTENSIONS.KHR_DRACO_MESH_COMPRESSION:
@@ -430,18 +431,18 @@ class GLTFLoader extends Loader {
 						// the fallback data. A required one still needs the decoder
 						if ( this.dracoLoader || extensionsRequired.indexOf( extensionName ) >= 0 ) {
 
-							extensions[ extensionName ] = new GLTFDracoMeshCompressionExtension( json, this.dracoLoader );
+							extensions[ extensionName ] = new GLTFDracoMeshCompressionExtension( json, this.dracoLoader ); // COO_EXEMPT: needs a DRACOLoader (none here) or a file requiring Draco (refused before parsing)
 
 						}
 
 						break;
 
 					case EXTENSIONS.KHR_TEXTURE_TRANSFORM:
-						extensions[ extensionName ] = new GLTFTextureTransformExtension();
+						extensions[ extensionName ] = new GLTFTextureTransformExtension(); // COO_EXEMPT: per extensionsUsed entry (COO_WORK above)
 						break;
 
 					case EXTENSIONS.KHR_MESH_QUANTIZATION:
-						extensions[ extensionName ] = new GLTFMeshQuantizationExtension();
+						extensions[ extensionName ] = new GLTFMeshQuantizationExtension(); // COO_EXEMPT: per extensionsUsed entry (COO_WORK above)
 						break;
 
 					default:
@@ -468,7 +469,7 @@ class GLTFLoader extends Loader {
 
 		const scope = this;
 
-		return new Promise( function ( resolve, reject ) {
+		return new Promise( function ( resolve, reject ) { // COO_EXEMPT: once per parse
 
 			scope.parse( data, path, resolve, reject, budget ); // COO_BUDGET
 
@@ -608,18 +609,18 @@ class GLTFLightsExtension {
 		switch ( lightDef.type ) {
 
 			case 'directional':
-				lightNode = new DirectionalLight( color );
+				lightNode = new DirectionalLight( color ); // COO_EXEMPT: a light, counted at the top of _loadLight
 				lightNode.target.position.set( 0, 0, - 1 );
 				lightNode.add( lightNode.target );
 				break;
 
 			case 'point':
-				lightNode = new PointLight( color );
+				lightNode = new PointLight( color ); // COO_EXEMPT: a light, counted at the top of _loadLight
 				lightNode.distance = range;
 				break;
 
 			case 'spot':
-				lightNode = new SpotLight( color );
+				lightNode = new SpotLight( color ); // COO_EXEMPT: a light, counted at the top of _loadLight
 				lightNode.distance = range;
 				// Handle spotlight properties.
 				lightDef.spot = lightDef.spot || {};
@@ -706,7 +707,7 @@ class GLTFMaterialsUnlitExtension {
 
 		const pending = [];
 
-		materialParams.color = new Color( 1.0, 1.0, 1.0 );
+		materialParams.color = new Color( 1.0, 1.0, 1.0 ); // COO_EXEMPT: per material (counted: materials)
 		materialParams.opacity = 1.0;
 
 		const metallicRoughness = materialDef.pbrMetallicRoughness;
@@ -847,7 +848,7 @@ class GLTFMaterialsClearcoatExtension {
 
 				const scale = extension.clearcoatNormalTexture.scale;
 
-				materialParams.clearcoatNormalScale = new Vector2( scale, scale );
+				materialParams.clearcoatNormalScale = new Vector2( scale, scale ); // COO_EXEMPT: per material (counted: materials)
 
 			}
 
@@ -1031,7 +1032,7 @@ class GLTFMaterialsSheenExtension {
 
 		const pending = [];
 
-		materialParams.sheenColor = new Color( 0, 0, 0 );
+		materialParams.sheenColor = new Color( 0, 0, 0 ); // COO_EXEMPT: per material (counted: materials)
 		materialParams.sheenRoughness = 0;
 		materialParams.sheen = 1;
 
@@ -1178,7 +1179,7 @@ class GLTFMaterialsVolumeExtension {
 		materialParams.attenuationDistance = extension.attenuationDistance || Infinity;
 
 		const colorArray = extension.attenuationColor || [ 1, 1, 1 ];
-		materialParams.attenuationColor = new Color().setRGB( colorArray[ 0 ], colorArray[ 1 ], colorArray[ 2 ], LinearSRGBColorSpace );
+		materialParams.attenuationColor = new Color().setRGB( colorArray[ 0 ], colorArray[ 1 ], colorArray[ 2 ], LinearSRGBColorSpace ); // COO_EXEMPT: per material (counted: materials)
 
 		return Promise.all( pending );
 
@@ -1281,7 +1282,7 @@ class GLTFMaterialsSpecularExtension {
 		}
 
 		const colorArray = extension.specularColorFactor || [ 1, 1, 1 ];
-		materialParams.specularColor = new Color().setRGB( colorArray[ 0 ], colorArray[ 1 ], colorArray[ 2 ], LinearSRGBColorSpace );
+		materialParams.specularColor = new Color().setRGB( colorArray[ 0 ], colorArray[ 1 ], colorArray[ 2 ], LinearSRGBColorSpace ); // COO_EXEMPT: per material (counted: materials)
 
 		if ( extension.specularColorTexture !== undefined ) {
 
@@ -1526,7 +1527,7 @@ class GLTFTextureWebPExtension {
 
 		if ( ! this.isSupported ) {
 
-			this.isSupported = new Promise( function ( resolve, reject ) {
+			this.isSupported = new Promise( function ( resolve, reject ) { // COO_EXEMPT: once per parser (the WebP support check)
 
 				// HYP_WEBP_NODE
 				// in nodejs we just fake support so the GLTFLoader doesnt fail
@@ -1534,7 +1535,7 @@ class GLTFTextureWebPExtension {
 					return resolve(true)
 				}
 
-				const image = new Image();
+				const image = new Image(); // COO_EXEMPT: once per parser (the WebP support check)
 
 				// Lossy test image. Support for lossy images doesn't guarantee support for all
 				// WebP images, unfortunately.
@@ -1617,9 +1618,9 @@ class GLTFTextureAVIFExtension {
 
 		if ( ! this.isSupported ) {
 
-			this.isSupported = new Promise( function ( resolve ) {
+			this.isSupported = new Promise( function ( resolve ) { // COO_EXEMPT: once per parser (the AVIF support check)
 
-				const image = new Image();
+				const image = new Image(); // COO_EXEMPT: once per parser (the AVIF support check)
 
 				// Lossy test image.
 				image.src = 'data:image/avif;base64,AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUIAAADybWV0YQAAAAAAAAAoaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAGxpYmF2aWYAAAAADnBpdG0AAAAAAAEAAAAeaWxvYwAAAABEAAABAAEAAAABAAABGgAAABcAAAAoaWluZgAAAAAAAQAAABppbmZlAgAAAAABAABhdjAxQ29sb3IAAAAAamlwcnAAAABLaXBjbwAAABRpc3BlAAAAAAAAAAEAAAABAAAAEHBpeGkAAAAAAwgICAAAAAxhdjFDgQAMAAAAABNjb2xybmNseAACAAIABoAAAAAXaXBtYQAAAAAAAAABAAEEAQKDBAAAAB9tZGF0EgAKCBgABogQEDQgMgkQAAAAB8dSLfI=';
@@ -1706,8 +1707,8 @@ class GLTFMeshoptCompression {
 					// Support for MeshoptDecoder 0.18 or earlier, without decodeGltfBufferAsync
 					return decoder.ready.then( function () {
 
-						const result = new ArrayBuffer( count * stride );
-						decoder.decodeGltfBuffer( new Uint8Array( result ), count, stride, source, extensionDef.mode, extensionDef.filter );
+						const result = new ArrayBuffer( count * stride ); // COO_BUDGET: charged above (meshopt buffer); needs a decoder this client does not have
+						decoder.decodeGltfBuffer( new Uint8Array( result ), count, stride, source, extensionDef.mode, extensionDef.filter ); // COO_EXEMPT: a view of the buffer just charged
 						return result;
 
 					} );
@@ -1778,7 +1779,7 @@ class GLTFMeshGpuInstancing {
 		const pending = [];
 		const attributes = {};
 
-		for ( const key in attributesDef ) {
+		for ( const key in attributesDef ) { // COO_EXEMPT: the node's instancing attributes, once each (entries of the document)
 
 			pending.push( this.parser.getDependency( 'accessor', attributesDef[ key ] ).then( accessor => {
 
@@ -1805,7 +1806,7 @@ class GLTFMeshGpuInstancing {
 			const instancedMeshes = [];
 			const budget = this.parser.budget;
 
-			for ( const mesh of meshes ) {
+			for ( const mesh of meshes ) { // COO_BUDGET: each one charged below
 
 				// COO_BUDGET: an instance matrix (16 floats) per instance, and the mesh copied into the instanced one
 				if ( budget ) {
@@ -1817,14 +1818,14 @@ class GLTFMeshGpuInstancing {
 				}
 
 				// Temporal variables
-				const m = new Matrix4();
-				const p = new Vector3();
-				const q = new Quaternion();
-				const s = new Vector3( 1, 1, 1 );
+				const m = new Matrix4(); // COO_EXEMPT: four temporaries per instanced mesh (counted: meshInstances)
+				const p = new Vector3(); // COO_EXEMPT: as above
+				const q = new Quaternion(); // COO_EXEMPT: as above
+				const s = new Vector3( 1, 1, 1 ); // COO_EXEMPT: as above
 
-				const instancedMesh = new InstancedMesh( mesh.geometry, mesh.material, count );
+				const instancedMesh = new InstancedMesh( mesh.geometry, mesh.material, count ); // COO_BUDGET: charged above (instance matrices, meshInstances)
 
-				for ( let i = 0; i < count; i ++ ) {
+				for ( let i = 0; i < count; i ++ ) { // COO_BUDGET: an instance each, charged above (instance matrices)
 
 					if ( attributes.TRANSLATION ) {
 
@@ -1849,12 +1850,12 @@ class GLTFMeshGpuInstancing {
 				}
 
 				// Add instance attributes to the geometry, excluding TRS.
-				for ( const attributeName in attributes ) {
+				for ( const attributeName in attributes ) { // COO_EXEMPT: the node's instancing attributes
 
 					if ( attributeName === '_COLOR_0' ) {
 
 						const attr = attributes[ attributeName ];
-						instancedMesh.instanceColor = new InstancedBufferAttribute( attr.array, attr.itemSize, attr.normalized );
+						instancedMesh.instanceColor = new InstancedBufferAttribute( attr.array, attr.itemSize, attr.normalized ); // COO_EXEMPT: shares the accessor's array
 
 					} else if ( attributeName !== 'TRANSLATION' &&
 						 attributeName !== 'ROTATION' &&
@@ -1867,7 +1868,7 @@ class GLTFMeshGpuInstancing {
 				}
 
 				// Just in case
-				Object3D.prototype.copy.call( instancedMesh, mesh );
+				Object3D.prototype.copy.call( instancedMesh, mesh ); // COO_EXEMPT: the mesh's own properties (no children yet: loadNode adds them later); its userData was charged above
 
 				this.parser.assignFinalMaterial( instancedMesh );
 
@@ -1879,7 +1880,7 @@ class GLTFMeshGpuInstancing {
 
 				nodeObject.clear();
 
-				nodeObject.add( ... instancedMeshes );
+				nodeObject.add( ... instancedMeshes ); // COO_EXEMPT: the instanced meshes counted above
 
 				return nodeObject;
 
@@ -1906,11 +1907,11 @@ class GLTFBinaryExtension {
 		this.content = null;
 		this.body = null;
 
-		const headerView = new DataView( data, 0, BINARY_EXTENSION_HEADER_LENGTH );
-		const textDecoder = new TextDecoder();
+		const headerView = new DataView( data, 0, BINARY_EXTENSION_HEADER_LENGTH ); // COO_EXEMPT: a view of the file (no copy)
+		const textDecoder = new TextDecoder(); // COO_EXEMPT: once per parse
 
 		this.header = {
-			magic: textDecoder.decode( new Uint8Array( data.slice( 0, 4 ) ) ),
+			magic: textDecoder.decode( new Uint8Array( data.slice( 0, 4 ) ) ), // COO_EXEMPT: four bytes
 			version: headerView.getUint32( 4, true ),
 			length: headerView.getUint32( 8, true )
 		};
@@ -1926,10 +1927,10 @@ class GLTFBinaryExtension {
 		}
 
 		const chunkContentsLength = this.header.length - BINARY_EXTENSION_HEADER_LENGTH;
-		const chunkView = new DataView( data, BINARY_EXTENSION_HEADER_LENGTH );
+		const chunkView = new DataView( data, BINARY_EXTENSION_HEADER_LENGTH ); // COO_EXEMPT: a view of the file (no copy)
 		let chunkIndex = 0;
 
-		while ( chunkIndex < chunkContentsLength ) {
+		while ( chunkIndex < chunkContentsLength ) { // COO_EXEMPT: each chunk consumes at least its 8-byte header of the file
 
 			const chunkLength = chunkView.getUint32( chunkIndex, true );
 			chunkIndex += 4;
@@ -1939,7 +1940,7 @@ class GLTFBinaryExtension {
 
 			if ( chunkType === BINARY_EXTENSION_CHUNK_TYPES.JSON ) {
 
-				const contentArray = new Uint8Array( data, BINARY_EXTENSION_HEADER_LENGTH + chunkIndex, chunkLength );
+				const contentArray = new Uint8Array( data, BINARY_EXTENSION_HEADER_LENGTH + chunkIndex, chunkLength ); // COO_EXEMPT: a view of the file (no copy)
 				this.content = textDecoder.decode( contentArray );
 
 			} else if ( chunkType === BINARY_EXTENSION_CHUNK_TYPES.BIN ) {
@@ -1999,7 +2000,7 @@ class GLTFDracoMeshCompressionExtension {
 		const attributeNormalizedMap = {};
 		const attributeTypeMap = {};
 
-		for ( const attributeName in gltfAttributeMap ) {
+		for ( const attributeName in gltfAttributeMap ) { // COO_EXEMPT: Draco only runs with a decoder, which this client does not have (COO_OPTIONAL_DRACO)
 
 			const threeAttributeName = ATTRIBUTES[ attributeName ] || attributeName.toLowerCase();
 
@@ -2007,7 +2008,7 @@ class GLTFDracoMeshCompressionExtension {
 
 		}
 
-		for ( const attributeName in primitive.attributes ) {
+		for ( const attributeName in primitive.attributes ) { // COO_EXEMPT: Draco only runs with a decoder, which this client does not have (COO_OPTIONAL_DRACO)
 
 			const threeAttributeName = ATTRIBUTES[ attributeName ] || attributeName.toLowerCase();
 
@@ -2025,11 +2026,11 @@ class GLTFDracoMeshCompressionExtension {
 
 		return parser.getDependency( 'bufferView', bufferViewIndex ).then( function ( bufferView ) {
 
-			return new Promise( function ( resolve, reject ) {
+			return new Promise( function ( resolve, reject ) { // COO_EXEMPT: Draco only runs with a decoder, which this client does not have (COO_OPTIONAL_DRACO)
 
 				dracoLoader.decodeDracoFile( bufferView, function ( geometry ) {
 
-					for ( const attributeName in geometry.attributes ) {
+					for ( const attributeName in geometry.attributes ) { // COO_EXEMPT: Draco only runs with a decoder, which this client does not have (COO_OPTIONAL_DRACO)
 
 						const attribute = geometry.attributes[ attributeName ];
 						const normalized = attributeNormalizedMap[ attributeName ];
@@ -2075,7 +2076,7 @@ class GLTFTextureTransformExtension {
 
 		}
 
-		texture = texture.clone();
+		texture = texture.clone(); // COO_EXEMPT: charged by assignTexture (a transformed texture is a clone)
 
 		if ( transform.texCoord !== undefined ) {
 
@@ -2148,7 +2149,7 @@ class GLTFCubicSplineInterpolant extends Interpolant {
 			valueSize = this.valueSize,
 			offset = index * valueSize * 3 + valueSize;
 
-		for ( let i = 0; i !== valueSize; i ++ ) {
+		for ( let i = 0; i !== valueSize; i ++ ) { // COO_EXEMPT: at playback; the sample size is whole (checkGLTF: three output values per keyframe)
 
 			result[ i ] = values[ offset + i ];
 
@@ -2183,7 +2184,7 @@ class GLTFCubicSplineInterpolant extends Interpolant {
 
 		// Layout of keyframe output values for CUBICSPLINE animations:
 		//   [ inTangent_1, splineVertex_1, outTangent_1, inTangent_2, splineVertex_2, ... ]
-		for ( let i = 0; i !== stride; i ++ ) {
+		for ( let i = 0; i !== stride; i ++ ) { // COO_EXEMPT: at playback; the sample size is whole (checkGLTF: three output values per keyframe)
 
 			const p0 = values[ offset0 + i + stride ]; // splineVertex_k
 			const m0 = values[ offset0 + i + stride2 ] * td; // outTangent_k * (t_k+1 - t_k)
@@ -2200,7 +2201,7 @@ class GLTFCubicSplineInterpolant extends Interpolant {
 
 }
 
-const _q = new Quaternion();
+const _q = new Quaternion(); // COO_EXEMPT: once (the module)
 
 class GLTFCubicSplineQuaternionInterpolant extends GLTFCubicSplineInterpolant {
 
@@ -2322,7 +2323,7 @@ function createDefaultMaterial( cache ) {
 
 	if ( cache[ 'DefaultMaterial' ] === undefined ) {
 
-		cache[ 'DefaultMaterial' ] = new MeshStandardMaterial( {
+		cache[ 'DefaultMaterial' ] = new MeshStandardMaterial( { // COO_EXEMPT: once per parse (cached)
 			color: 0xFFFFFF,
 			emissive: 0x000000,
 			metalness: 1,
@@ -2342,7 +2343,7 @@ function addUnknownExtensionsToUserData( knownExtensions, object, objectDef ) {
 
 	// Add unknown glTF extensions to an object's userData.
 
-	for ( const name in objectDef.extensions ) {
+	for ( const name in objectDef.extensions ) { // COO_EXEMPT: one document object's extensions, as references (a clone's copy is charged: chargeUserData)
 
 		if ( knownExtensions[ name ] === undefined ) {
 
@@ -2457,8 +2458,8 @@ function conversionBytes( geometry ) {
 		bytes += attribute.isInterleavedBufferAttribute ? attribute.data.array.byteLength : attribute.array.byteLength;
 
 	};
-	for ( const name in geometry.attributes ) add( geometry.attributes[ name ] );
-	for ( const name in geometry.morphAttributes ) geometry.morphAttributes[ name ].forEach( add );
+	for ( const name in geometry.attributes ) add( geometry.attributes[ name ] ); // COO_EXEMPT: the geometry's attributes (entries of the document)
+	for ( const name in geometry.morphAttributes ) geometry.morphAttributes[ name ].forEach( add ); // COO_EXEMPT: its morph attributes (at most 3 kinds x 1024 targets)
 	const position = geometry.attributes.position;
 	const count = geometry.index ? geometry.index.count : ( position ? position.count : 0 );
 	if ( ! geometry.index ) bytes += count * 12;
@@ -2502,7 +2503,7 @@ function addMorphTargets( geometry, targets, parser ) {
 	const pendingNormalAccessors = [];
 	const pendingColorAccessors = [];
 
-	for ( let i = 0, il = targets.length; i < il; i ++ ) {
+	for ( let i = 0, il = targets.length; i < il; i ++ ) { // COO_WORK: charged above (morph targets)
 
 		const target = targets[ i ];
 
@@ -2595,7 +2596,7 @@ function updateMorphTargets( mesh, meshDef, budget = null ) {
 
 			mesh.morphTargetDictionary = {};
 
-			for ( let i = 0, il = targetNames.length; i < il; i ++ ) {
+			for ( let i = 0, il = targetNames.length; i < il; i ++ ) { // COO_EXEMPT: as many as the mesh's influences (counted: influences)
 
 				mesh.morphTargetDictionary[ targetNames[ i ] ] = i;
 
@@ -2652,9 +2653,9 @@ function createAttributesKey( attributes ) {
 
 	let attributesKey = '';
 
-	const keys = Object.keys( attributes ).sort();
+	const keys = Object.keys( attributes ).sort(); // COO_EXEMPT: one document object's keys, once per primitive key (COO_WORK: primitive key)
 
-	for ( let i = 0, il = keys.length; i < il; i ++ ) {
+	for ( let i = 0, il = keys.length; i < il; i ++ ) { // COO_EXEMPT: as above
 
 		attributesKey += keys[ i ] + ':' + attributes[ keys[ i ] ] + ';';
 
@@ -2700,7 +2701,7 @@ function getImageURIMimeType( uri ) {
 
 }
 
-const _identityMatrix = new Matrix4();
+const _identityMatrix = new Matrix4(); // COO_EXEMPT: once (the module)
 
 /* GLTF PARSER */
 
@@ -2717,10 +2718,10 @@ class GLTFParser {
 		this.budget = options.budget || null;
 
 		// loader object cache
-		this.cache = new GLTFRegistry();
+		this.cache = new GLTFRegistry(); // COO_EXEMPT: once per parse
 
 		// associations between Three.js objects and glTF elements
-		this.associations = new Map();
+		this.associations = new Map(); // COO_EXEMPT: once per parse
 
 		// BufferGeometry caching
 		this.primitiveCache = {};
@@ -2762,18 +2763,18 @@ class GLTFParser {
 
 		if ( typeof createImageBitmap === 'undefined' || ( isSafari && safariVersion < 17 ) || ( isFirefox && firefoxVersion < 98 ) ) {
 
-			this.textureLoader = new TextureLoader( this.options.manager );
+			this.textureLoader = new TextureLoader( this.options.manager ); // COO_EXEMPT: once per parse
 
 		} else {
 
-			this.textureLoader = new ImageBitmapLoader( this.options.manager );
+			this.textureLoader = new ImageBitmapLoader( this.options.manager ); // COO_EXEMPT: once per parse
 
 		}
 
 		this.textureLoader.setCrossOrigin( this.options.crossOrigin );
 		this.textureLoader.setRequestHeader( this.options.requestHeader );
 
-		this.fileLoader = new FileLoader( this.options.manager );
+		this.fileLoader = new FileLoader( this.options.manager ); // COO_EXEMPT: once per parse
 		this.fileLoader.setResponseType( 'arraybuffer' );
 
 		if ( this.options.crossOrigin === 'use-credentials' ) {
@@ -2849,7 +2850,7 @@ class GLTFParser {
 
 			} ) ).then( function () {
 
-				for ( const scene of result.scenes ) {
+				for ( const scene of result.scenes ) { // COO_EXEMPT: the scenes (counted), each walked once more: loadScene charged a step per object
 
 					scene.updateMatrixWorld();
 
@@ -2991,10 +2992,10 @@ class GLTFParser {
 
 	_invokeOne( func ) {
 
-		const extensions = Object.values( this.plugins );
+		const extensions = Object.values( this.plugins ); // COO_EXEMPT: the registered plugins (a constant few)
 		extensions.push( this );
 
-		for ( let i = 0; i < extensions.length; i ++ ) {
+		for ( let i = 0; i < extensions.length; i ++ ) { // COO_EXEMPT: the registered plugins (a constant few)
 
 			const result = func( extensions[ i ] );
 
@@ -3008,12 +3009,12 @@ class GLTFParser {
 
 	_invokeAll( func ) {
 
-		const extensions = Object.values( this.plugins );
+		const extensions = Object.values( this.plugins ); // COO_EXEMPT: the registered plugins (a constant few)
 		extensions.unshift( this );
 
 		const pending = [];
 
-		for ( let i = 0; i < extensions.length; i ++ ) {
+		for ( let i = 0; i < extensions.length; i ++ ) { // COO_EXEMPT: the registered plugins (a constant few)
 
 			const result = func( extensions[ i ] );
 
@@ -3195,7 +3196,7 @@ class GLTFParser {
 
 		}
 
-		return new Promise( function ( resolve, reject ) {
+		return new Promise( function ( resolve, reject ) { // COO_EXEMPT: once per buffer (charged above when a data: URI)
 
 			loader.load( LoaderUtils.resolveURL( bufferDef.uri, options.path ), resolve, undefined, function () {
 
@@ -3299,16 +3300,16 @@ class GLTFParser {
 
 				if ( ! ib ) {
 
-					array = new TypedArray( bufferView, ibSlice * byteStride, accessorDef.count * byteStride / elementBytes );
+					array = new TypedArray( bufferView, ibSlice * byteStride, accessorDef.count * byteStride / elementBytes ); // COO_EXEMPT: a view of a charged bufferView (cached per slice)
 
 					// Integer parameters to IB/IBA are in array elements, not bytes.
-					ib = new InterleavedBuffer( array, byteStride / elementBytes );
+					ib = new InterleavedBuffer( array, byteStride / elementBytes ); // COO_EXEMPT: wraps the view (cached per slice)
 
 					parser.cache.add( ibCacheKey, ib );
 
 				}
 
-				bufferAttribute = new InterleavedBufferAttribute( ib, itemSize, ( byteOffset % byteStride ) / elementBytes, normalized );
+				bufferAttribute = new InterleavedBufferAttribute( ib, itemSize, ( byteOffset % byteStride ) / elementBytes, normalized ); // COO_EXEMPT: a view of a charged bufferView, and its attribute (one per accessor)
 
 			} else {
 
@@ -3320,11 +3321,11 @@ class GLTFParser {
 
 				} else {
 
-					array = new TypedArray( bufferView, byteOffset, accessorDef.count * itemSize );
+					array = new TypedArray( bufferView, byteOffset, accessorDef.count * itemSize ); // COO_EXEMPT: a view of a charged bufferView, and its attribute (one per accessor)
 
 				}
 
-				bufferAttribute = new BufferAttribute( array, itemSize, normalized );
+				bufferAttribute = new BufferAttribute( array, itemSize, normalized ); // COO_EXEMPT: a view of a charged bufferView, and its attribute (one per accessor)
 
 			}
 
@@ -3492,7 +3493,7 @@ class GLTFParser {
 
 				}
 
-				return texture.clone();
+				return texture.clone(); // COO_BUDGET: charged above (textures, its userData)
 
 			} );
 
@@ -3520,8 +3521,8 @@ class GLTFParser {
 				}
 
 				isObjectURL = true;
-				const blob = new Blob( [ bufferView ], { type: sourceDef.mimeType } );
-				sourceURI = URL.createObjectURL( blob );
+				const blob = new Blob( [ bufferView ], { type: sourceDef.mimeType } ); // COO_BUDGET: charged above (image blob); COO_REVOKE
+				sourceURI = URL.createObjectURL( blob ); // COO_REVOKE: revoked however the load ends
 				return sourceURI;
 
 			} );
@@ -3545,7 +3546,7 @@ class GLTFParser {
 
 					onLoad = function ( imageBitmap ) {
 
-						const texture = new Texture( imageBitmap );
+						const texture = new Texture( imageBitmap ); // COO_EXEMPT: one per decode (counted: images)
 						texture.needsUpdate = true;
 
 						resolve( texture );
@@ -3624,7 +3625,7 @@ class GLTFParser {
 
 				}
 
-				texture = texture.clone();
+				texture = texture.clone(); // COO_BUDGET: charged above (textures, its userData)
 				texture.channel = mapDef.texCoord;
 
 			}
@@ -3697,9 +3698,9 @@ class GLTFParser {
 
 				}
 
-				pointsMaterial = new PointsMaterial();
-				Material.prototype.copy.call( pointsMaterial, material );
-				pointsMaterial.color.copy( material.color );
+				pointsMaterial = new PointsMaterial(); // COO_BUDGET: counted above (materials; once per material, cached)
+				Material.prototype.copy.call( pointsMaterial, material ); // COO_EXEMPT: copies into the material just counted
+				pointsMaterial.color.copy( material.color ); // COO_EXEMPT: as above
 				pointsMaterial.map = material.map;
 				pointsMaterial.sizeAttenuation = false; // glTF spec says points should be 1px
 
@@ -3724,9 +3725,9 @@ class GLTFParser {
 
 				}
 
-				lineMaterial = new LineBasicMaterial();
-				Material.prototype.copy.call( lineMaterial, material );
-				lineMaterial.color.copy( material.color );
+				lineMaterial = new LineBasicMaterial(); // COO_BUDGET: counted above (materials; once per material, cached)
+				Material.prototype.copy.call( lineMaterial, material ); // COO_EXEMPT: copies into the material just counted
+				lineMaterial.color.copy( material.color ); // COO_EXEMPT: as above
 				lineMaterial.map = material.map;
 
 				this.cache.add( cacheKey, lineMaterial );
@@ -3757,7 +3758,7 @@ class GLTFParser {
 
 				}
 
-				cachedMaterial = material.clone();
+				cachedMaterial = material.clone(); // COO_BUDGET: counted above (materials; once per variant, cached)
 
 				if ( useVertexColors ) cachedMaterial.vertexColors = true;
 				if ( useFlatShading ) cachedMaterial.flatShading = true;
@@ -3821,7 +3822,7 @@ class GLTFParser {
 
 			const metallicRoughness = materialDef.pbrMetallicRoughness || {};
 
-			materialParams.color = new Color( 1.0, 1.0, 1.0 );
+			materialParams.color = new Color( 1.0, 1.0, 1.0 ); // COO_EXEMPT: per material (counted: materials)
 			materialParams.opacity = 1.0;
 
 			if ( Array.isArray( metallicRoughness.baseColorFactor ) ) {
@@ -3894,7 +3895,7 @@ class GLTFParser {
 
 			pending.push( parser.assignTexture( materialParams, 'normalMap', materialDef.normalTexture ) );
 
-			materialParams.normalScale = new Vector2( 1, 1 );
+			materialParams.normalScale = new Vector2( 1, 1 ); // COO_EXEMPT: per material (counted: materials)
 
 			if ( materialDef.normalTexture.scale !== undefined ) {
 
@@ -3921,7 +3922,7 @@ class GLTFParser {
 		if ( materialDef.emissiveFactor !== undefined && materialType !== MeshBasicMaterial ) {
 
 			const emissiveFactor = materialDef.emissiveFactor;
-			materialParams.emissive = new Color().setRGB( emissiveFactor[ 0 ], emissiveFactor[ 1 ], emissiveFactor[ 2 ], LinearSRGBColorSpace );
+			materialParams.emissive = new Color().setRGB( emissiveFactor[ 0 ], emissiveFactor[ 1 ], emissiveFactor[ 2 ], LinearSRGBColorSpace ); // COO_EXEMPT: per material (counted: materials)
 
 		}
 
@@ -4033,7 +4034,7 @@ class GLTFParser {
 				} else {
 
 					// Otherwise create a new geometry
-					geometryPromise = addPrimitiveAttributes( new BufferGeometry(), primitive, parser );
+					geometryPromise = addPrimitiveAttributes( new BufferGeometry(), primitive, parser ); // COO_BUDGET: counted above (primitives)
 
 				}
 
@@ -4086,12 +4087,12 @@ class GLTFParser {
 
 		return Promise.all( pending ).then( function ( results ) {
 
-			const materials = results.slice( 0, results.length - 1 );
+			const materials = results.slice( 0, results.length - 1 ); // COO_WORK: charged at the top of loadMesh (mesh primitives)
 			const geometries = results[ results.length - 1 ];
 
 			const meshes = [];
 
-			for ( let i = 0, il = geometries.length; i < il; i ++ ) {
+			for ( let i = 0, il = geometries.length; i < il; i ++ ) { // COO_WORK: charged at the top of loadMesh (mesh primitives)
 
 				const geometry = geometries[ i ];
 				const primitive = primitives[ i ];
@@ -4111,8 +4112,8 @@ class GLTFParser {
 
 					// .isSkinnedMesh isn't in glTF spec. See ._markDefs()
 					mesh = meshDef.isSkinnedMesh === true
-						? new SkinnedMesh( geometry, material )
-						: new Mesh( geometry, material );
+						? new SkinnedMesh( geometry, material ) // COO_BUDGET: counted above (meshInstances)
+						: new Mesh( geometry, material ); // COO_BUDGET: counted above (meshInstances)
 
 					if ( mesh.isSkinnedMesh === true ) {
 
@@ -4140,19 +4141,19 @@ class GLTFParser {
 
 				} else if ( primitive.mode === WEBGL_CONSTANTS.LINES ) {
 
-					mesh = new LineSegments( geometry, material );
+					mesh = new LineSegments( geometry, material ); // COO_BUDGET: counted above (meshInstances)
 
 				} else if ( primitive.mode === WEBGL_CONSTANTS.LINE_STRIP ) {
 
-					mesh = new Line( geometry, material );
+					mesh = new Line( geometry, material ); // COO_BUDGET: counted above (meshInstances)
 
 				} else if ( primitive.mode === WEBGL_CONSTANTS.LINE_LOOP ) {
 
-					mesh = new LineLoop( geometry, material );
+					mesh = new LineLoop( geometry, material ); // COO_BUDGET: counted above (meshInstances)
 
 				} else if ( primitive.mode === WEBGL_CONSTANTS.POINTS ) {
 
-					mesh = new Points( geometry, material );
+					mesh = new Points( geometry, material ); // COO_BUDGET: counted above (meshInstances)
 
 				} else {
 
@@ -4160,7 +4161,7 @@ class GLTFParser {
 
 				}
 
-				if ( Object.keys( mesh.geometry.morphAttributes ).length > 0 ) {
+				if ( Object.keys( mesh.geometry.morphAttributes ).length > 0 ) { // COO_EXEMPT: at most three kinds
 
 					updateMorphTargets( mesh, meshDef, parser.budget ); // COO_BUDGET
 
@@ -4178,7 +4179,7 @@ class GLTFParser {
 
 			}
 
-			for ( let i = 0, il = meshes.length; i < il; i ++ ) {
+			for ( let i = 0, il = meshes.length; i < il; i ++ ) { // COO_WORK: charged at the top of loadMesh (mesh primitives)
 
 				parser.associations.set( meshes[ i ], {
 					meshes: meshIndex,
@@ -4195,13 +4196,13 @@ class GLTFParser {
 
 			}
 
-			const group = new Group();
+			const group = new Group(); // COO_EXEMPT: one per mesh (counted: meshes)
 
 			if ( meshDef.extensions ) addUnknownExtensionsToUserData( extensions, group, meshDef );
 
 			parser.associations.set( group, { meshes: meshIndex } );
 
-			for ( let i = 0, il = meshes.length; i < il; i ++ ) {
+			for ( let i = 0, il = meshes.length; i < il; i ++ ) { // COO_WORK: charged at the top of loadMesh (mesh primitives)
 
 				group.add( meshes[ i ] );
 
@@ -4235,11 +4236,11 @@ class GLTFParser {
 
 		if ( cameraDef.type === 'perspective' ) {
 
-			camera = new PerspectiveCamera( MathUtils.radToDeg( params.yfov ), params.aspectRatio || 1, params.znear || 1, params.zfar || 2e6 );
+			camera = new PerspectiveCamera( MathUtils.radToDeg( params.yfov ), params.aspectRatio || 1, params.znear || 1, params.zfar || 2e6 ); // COO_EXEMPT: a camera, counted at the top of loadCamera
 
 		} else if ( cameraDef.type === 'orthographic' ) {
 
-			camera = new OrthographicCamera( - params.xmag, params.xmag, params.ymag, - params.ymag, params.znear, params.zfar );
+			camera = new OrthographicCamera( - params.xmag, params.xmag, params.ymag, - params.ymag, params.znear, params.zfar ); // COO_EXEMPT: a camera, counted at the top of loadCamera
 
 		}
 
@@ -4300,7 +4301,7 @@ class GLTFParser {
 			const bones = [];
 			const boneInverses = [];
 
-			for ( let i = 0, il = jointNodes.length; i < il; i ++ ) {
+			for ( let i = 0, il = jointNodes.length; i < il; i ++ ) { // COO_WORK: charged at the top of loadSkin (skin)
 
 				const jointNode = jointNodes[ i ];
 
@@ -4308,7 +4309,7 @@ class GLTFParser {
 
 					bones.push( jointNode );
 
-					const mat = new Matrix4();
+					const mat = new Matrix4(); // COO_EXEMPT: one per joint (counted: joints)
 
 					if ( inverseBindMatrices !== null ) {
 
@@ -4326,7 +4327,7 @@ class GLTFParser {
 
 			}
 
-			return new Skeleton( bones, boneInverses );
+			return new Skeleton( bones, boneInverses ); // COO_EXEMPT: one per skin (counted: skins; its bone matrices: joints)
 
 		} );
 
@@ -4360,7 +4361,7 @@ class GLTFParser {
 		const pendingSamplers = [];
 		const pendingTargets = [];
 
-		for ( let i = 0, il = channels.length; i < il; i ++ ) {
+		for ( let i = 0, il = channels.length; i < il; i ++ ) { // COO_WORK: charged above (animation channels)
 
 			const channel = channels[ i ];
 			const sampler = animationDef.samplers[ channel.sampler ];
@@ -4397,7 +4398,7 @@ class GLTFParser {
 
 			const tracks = [];
 
-			for ( let i = 0, il = nodes.length; i < il; i ++ ) {
+			for ( let i = 0, il = nodes.length; i < il; i ++ ) { // COO_WORK: one per channel, charged above (animation channels)
 
 				const node = nodes[ i ];
 				const inputAccessor = inputAccessors[ i ];
@@ -4417,7 +4418,7 @@ class GLTFParser {
 
 				if ( createdTracks ) {
 
-					for ( let k = 0; k < createdTracks.length; k ++ ) {
+					for ( let k = 0; k < createdTracks.length; k ++ ) { // COO_EXEMPT: the tracks made (counted: tracks)
 
 						tracks.push( createdTracks[ k ] );
 
@@ -4427,7 +4428,7 @@ class GLTFParser {
 
 			}
 
-			return new AnimationClip( animationName, undefined, tracks );
+			return new AnimationClip( animationName, undefined, tracks ); // COO_EXEMPT: one per animation (counted: animations)
 
 		} );
 
@@ -4530,7 +4531,7 @@ class GLTFParser {
 
 			}
 
-			for ( let i = 0, il = children.length; i < il; i ++ ) {
+			for ( let i = 0, il = children.length; i < il; i ++ ) { // COO_WORK: charged above (node children)
 
 				node.add( children[ i ] );
 
@@ -4592,7 +4593,7 @@ class GLTFParser {
 
 			return ext.createNodeAttachment && ext.createNodeAttachment( nodeIndex );
 
-		} ).forEach( function ( promise ) {
+		} ).forEach( function ( promise ) { // COO_EXEMPT: the registered plugins (a constant few)
 
 			pending.push( promise );
 
@@ -4607,11 +4608,11 @@ class GLTFParser {
 			// .isBone isn't in glTF spec. See ._markDefs
 			if ( nodeDef.isBone === true ) {
 
-				node = new Bone();
+				node = new Bone(); // COO_BUDGET: counted above (nodes)
 
 			} else if ( objects.length > 1 ) {
 
-				node = new Group();
+				node = new Group(); // COO_BUDGET: counted above (nodes)
 
 			} else if ( objects.length === 1 ) {
 
@@ -4619,13 +4620,13 @@ class GLTFParser {
 
 			} else {
 
-				node = new Object3D();
+				node = new Object3D(); // COO_BUDGET: counted above (nodes)
 
 			}
 
 			if ( node !== objects[ 0 ] ) {
 
-				for ( let i = 0, il = objects.length; i < il; i ++ ) {
+				for ( let i = 0, il = objects.length; i < il; i ++ ) { // COO_EXEMPT: what the node carries (a mesh, a camera, what each plugin attaches)
 
 					node.add( objects[ i ] );
 
@@ -4646,7 +4647,7 @@ class GLTFParser {
 
 			if ( nodeDef.matrix !== undefined ) {
 
-				const matrix = new Matrix4();
+				const matrix = new Matrix4(); // COO_EXEMPT: one per node (counted: nodes)
 				matrix.fromArray( nodeDef.matrix );
 				node.applyMatrix4( matrix );
 
@@ -4724,7 +4725,7 @@ class GLTFParser {
 
 		return Promise.all( pending ).then( function ( nodes ) {
 
-			for ( let i = 0, il = nodes.length; i < il; i ++ ) {
+			for ( let i = 0, il = nodes.length; i < il; i ++ ) { // COO_WORK: charged above (scene nodes)
 
 				scene.add( nodes[ i ] );
 
@@ -4858,7 +4859,7 @@ class GLTFParser {
 
 			}
 
-			const track = new TypedKeyframeTrack(
+			const track = new TypedKeyframeTrack( // COO_BUDGET: counted above (tracks)
 				targetNames[ j ] + '.' + PATH_PROPERTIES[ target.path ],
 				inputAccessor.array,
 				outputArray,
@@ -4891,7 +4892,7 @@ class GLTFParser {
 			const scale = getNormalizedComponentScale( outputArray.constructor );
 			const scaled = new Float32Array( outputArray.length );
 
-			for ( let j = 0, jl = outputArray.length; j < jl; j ++ ) {
+			for ( let j = 0, jl = outputArray.length; j < jl; j ++ ) { // COO_BUDGET: charged above (normalised animation values)
 
 				scaled[ j ] = outputArray[ j ] * scale;
 
@@ -4915,7 +4916,7 @@ class GLTFParser {
 
 			const interpolantType = ( this instanceof QuaternionKeyframeTrack ) ? GLTFCubicSplineQuaternionInterpolant : GLTFCubicSplineInterpolant;
 
-			return new interpolantType( this.times, this.values, this.getValueSize() / 3, result );
+			return new interpolantType( this.times, this.values, this.getValueSize() / 3, result ); // COO_EXEMPT: one per track when it plays (tracks counted)
 
 		};
 
@@ -4935,7 +4936,7 @@ function computeBounds( geometry, primitiveDef, parser ) {
 
 	const attributes = primitiveDef.attributes;
 
-	const box = new Box3();
+	const box = new Box3(); // COO_EXEMPT: per geometry (counted: primitives)
 
 	if ( attributes.POSITION !== undefined ) {
 
@@ -4949,8 +4950,8 @@ function computeBounds( geometry, primitiveDef, parser ) {
 		if ( min !== undefined && max !== undefined ) {
 
 			box.set(
-				new Vector3( min[ 0 ], min[ 1 ], min[ 2 ] ),
-				new Vector3( max[ 0 ], max[ 1 ], max[ 2 ] )
+				new Vector3( min[ 0 ], min[ 1 ], min[ 2 ] ), // COO_EXEMPT: per geometry (counted: primitives)
+				new Vector3( max[ 0 ], max[ 1 ], max[ 2 ] ) // COO_EXEMPT: per geometry (counted: primitives)
 			);
 
 			if ( accessor.normalized ) {
@@ -5034,7 +5035,7 @@ function computeBounds( geometry, primitiveDef, parser ) {
 
 	geometry.boundingBox = box;
 
-	const sphere = new Sphere();
+	const sphere = new Sphere(); // COO_EXEMPT: per geometry (counted: primitives)
 
 	box.getCenter( sphere.center );
 	sphere.radius = box.min.distanceTo( box.max ) / 2;

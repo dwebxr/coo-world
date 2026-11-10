@@ -26,6 +26,7 @@ import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from 
 import { internalEvents } from '../extras/internalEvents'
 import { createInboundGate, createInboundScheduler, packetNodeLimit } from '../extras/inboundPolicy'
 import { SNAPSHOT_CAP, createWriteLedger } from '../extras/writeLedger'
+import { joinStateReport, settingsBytes } from '../extras/joinBudget'
 import { briefError, createLogOnce } from '../extras/logOnce'
 import { readInboundPacket } from '../../server/inboundDecode'
 import * as solanaGating from '../../server/solana-gating'
@@ -181,6 +182,11 @@ export class ServerNetwork extends System {
     } catch (err) {
       console.error(err)
     }
+    // the join snapshot's world state (joinBudget.js): a world stored over the budget loads whole, is reported,
+    // and only shrinks from here
+    this.settingsBytes = settingsBytes(this.world.settings.serialize())
+    const joinReport = joinStateReport(this.world, { snapshotCap: SNAPSHOT_CAP })
+    if (joinReport) console.warn(joinReport)
     // watch settings changes
     this.world.settings.on('change', this.saveSettings)
     // queue first save
@@ -450,6 +456,9 @@ export class ServerNetwork extends System {
       const data = key === 'settings' ? this.world.settings.serialize() : this.spawn
       if (this.dirtyConfig.has(key) || JSON.stringify(data) !== saved) config.add(key)
     }
+    // the script storage file (world.set) is written by its own queue, alongside the database writes
+    const storage = this.world.storage
+    let storageSaved = typeof storage?.flush !== 'function'
     let timer
     const flush = async () => {
       await Promise.all([this.savePromise, this.configPromise])
@@ -463,9 +472,13 @@ export class ServerNetwork extends System {
         })(),
       ])
     }
+    const flushStorage = async () => {
+      if (!storageSaved) storageSaved = await storage.flush()
+    }
+    const incomplete = () => this.dirtyBlueprints.size || this.dirtyApps.size || config.size || !storageSaved
     try {
       await Promise.race([
-        flush(),
+        Promise.all([flush(), flushStorage()]),
         new Promise((resolve, reject) => {
           timer = setTimeout(() => {
             this.flushExpired = true
@@ -473,15 +486,15 @@ export class ServerNetwork extends System {
           }, deadlineMs)
         }),
       ])
-      if (this.dirtyBlueprints.size || this.dirtyApps.size || config.size) {
+      if (incomplete()) {
         throw new Error('final save incomplete')
       }
       console.log('[network] final save complete')
     } finally {
       clearTimeout(timer)
-      if (this.dirtyBlueprints.size || this.dirtyApps.size || config.size) {
+      if (incomplete()) {
         console.error(
-          `[network] not persisted: blueprints=${JSON.stringify([...this.dirtyBlueprints.keys()])} apps=${JSON.stringify([...this.dirtyApps.keys()])} config=${JSON.stringify([...config])}`
+          `[network] not persisted: blueprints=${JSON.stringify([...this.dirtyBlueprints.keys()])} apps=${JSON.stringify([...this.dirtyApps.keys()])} config=${JSON.stringify([...config])} storage=${storageSaved ? 'saved' : 'unsaved'}`
         )
       }
     }
@@ -641,6 +654,19 @@ export class ServerNetwork extends System {
       const livekit = await this.world.livekit.serialize(user.id)
       if (cancelled) return
 
+      // an app holding this user's id (new app ids are checked against present players only, so one can take the
+      // id of a player who is away): the player is refused, the app stays
+      if (this.world.entities.get(user.id)?.isApp) {
+        this.logOnce(
+          this,
+          `id-in-use:${user.id}`,
+          `[network] a player cannot join: app ${previewValue(user.id, 16)} holds the id; removing that app lets them in`
+        )
+        this.write(ws, writePacket('kick', 'id_in_use'), { name: 'kick' })
+        ws.close()
+        return
+      }
+
       // create socket
       socket = new Socket({ id: user.id, ws, network: this })
       socket.wallet = solanaGating.createWalletSession()
@@ -680,7 +706,7 @@ export class ServerNetwork extends System {
       }
 
       // send snapshot
-      const snapshot = writePacket('snapshot', {
+      const state = {
         id: socket.id,
         serverTime: performance.now(),
         assetsUrl: process.env.ASSETS_BASE_URL,
@@ -695,7 +721,31 @@ export class ServerNetwork extends System {
         livekit,
         authToken,
         hasAdminCode: !!process.env.ADMIN_CODE,
-      })
+      }
+      let snapshot = null
+      try {
+        snapshot = writePacket('snapshot', state)
+      } catch (err) {
+        this.logOnce(this, 'snapshot-encode', `[network] the join snapshot could not be encoded: ${briefError(err)}`)
+      }
+      if (!snapshot || snapshot.length > SNAPSHOT_CAP) {
+        // the state a server script assigns (app.state) and players' effects are the parts no budget covers: a
+        // joiner gets the world without them (apps start from {}) rather than no world
+        const bytes = snapshot?.length
+        state.entities = state.entities.map(data => {
+          if (data?.type === 'app') return { ...data, state: {} }
+          if (data?.type === 'player' && data.effect) return { ...data, effect: null }
+          return data
+        })
+        snapshot = writePacket('snapshot', state)
+        if (snapshot.length <= SNAPSHOT_CAP) {
+          this.logOnce(
+            this,
+            'snapshot-degraded',
+            `[network] the join snapshot (${bytes ?? 'not encodable'}, cap ${SNAPSHOT_CAP}) is sent without app state and player effects: ${snapshot.length} bytes`
+          )
+        }
+      }
 
       if (snapshot.length > SNAPSHOT_CAP) throw new Error('snapshot too large')
       if (!this.write(ws, snapshot, { name: 'snapshot', snapshot: true })) throw new Error('snapshot write failed')
@@ -1549,15 +1599,28 @@ export class ServerNetwork extends System {
     const { ok, value: safe } = sanitizeBlueprintAdd(blueprint, {
       onUnknownKey: key => this.logOnce(socket, 'blueprint-unknown', `blueprint: unknown key ${key}`),
     })
-    const fits = ok && this.world.blueprints.canFit(safe, true)
+    // an add never replaces: changing a blueprint takes blueprintModified and its version rule
+    const existing = ok ? this.world.blueprints.get(safe.id) : undefined
+    const fits = ok && !existing && this.world.blueprints.canFit(safe, true)
     if (!fits) {
       // Clients announce the blueprint immediately before the entity that uses it.
       if (typeof blueprint?.id === 'string') {
         socket.refusedBlueprint = { id: blueprint.id, expiresAt: Date.now() + 10000 }
       }
-      return ok
-        ? this.logOnce(socket, 'blueprint-add-budget', 'onBlueprintAdded: world blueprint budget exceeded')
-        : this.logOnce(socket, 'blueprint-add-invalid', 'onBlueprintAdded: invalid blueprint')
+      if (existing) {
+        // the sender replaced its own copy: give it the stored one back
+        this.revertBlueprint(socket, existing)
+        return this.logOnce(socket, 'blueprint-add-exists', 'onBlueprintAdded: blueprint id already exists')
+      }
+      if (!ok) return this.logOnce(socket, 'blueprint-add-invalid', 'onBlueprintAdded: invalid blueprint')
+      const refusal = this.world.blueprints.budgetRefusal(safe, true)
+      return this.logOnce(
+        socket,
+        `blueprint-add-${refusal}`,
+        refusal === 'world'
+          ? 'onBlueprintAdded: world is full (join-state budget exceeded)'
+          : 'onBlueprintAdded: world blueprint budget exceeded'
+      )
     }
     if (socket.refusedBlueprint?.id === safe.id) socket.refusedBlueprint = null
     this.markBlueprintDirty(safe)
@@ -1589,7 +1652,14 @@ export class ServerNetwork extends System {
     // if new version is greater than current version, allow it
     if (safe.version > blueprint.version) {
       if (!this.world.blueprints.canFit(safe)) {
-        this.logOnce(socket, 'blueprint-modify-budget', 'onBlueprintModified: world blueprint budget exceeded')
+        const refusal = this.world.blueprints.budgetRefusal(safe)
+        this.logOnce(
+          socket,
+          `blueprint-modify-${refusal}`,
+          refusal === 'world'
+            ? 'onBlueprintModified: world is full (join-state budget exceeded)'
+            : 'onBlueprintModified: world blueprint budget exceeded'
+        )
         this.revertBlueprint(socket, blueprint)
         return
       }
@@ -1635,6 +1705,11 @@ export class ServerNetwork extends System {
     })
     if (!safe) {
       return this.logOnce(socket, 'entity-invalid', `onEntityAdded: invalid entity: ${String(data?.id).slice(0, 64)}`)
+    }
+    if (!this.world.entities.canFitApp(safe.id, safe)) {
+      // the id is new here, so the sender's optimistic copy is the only one to take back
+      socket.send('entityRemoved', safe.id)
+      return this.logOnce(socket, 'entity-add-budget', 'onEntityAdded: world is full (join-state budget exceeded)')
     }
     this.markAppDirty(safe)
     this.send('entityAdded', safe, socket.id)
@@ -1713,9 +1788,23 @@ export class ServerNetwork extends System {
           `onEntityModified: no permitted fields: ${String(data.id).slice(0, 64)}`
         )
       }
+      // only the blueprint id and a client-set state change an app's join-snapshot size (joinBudget.js)
+      const sized =
+        Object.prototype.hasOwnProperty.call(safe, 'blueprint') || Object.prototype.hasOwnProperty.call(safe, 'state')
+      if (sized && !this.world.entities.canFitApp(entity.data.id, safe)) {
+        this.logOnce(socket, 'entity-modify-budget', 'onEntityModified: world is full (join-state budget exceeded)')
+        // the sender applied its change: the stored fields it touched go back (a server script owns the state)
+        const revert = { id: entity.data.id }
+        for (const key of Object.keys(safe)) {
+          if (key !== 'id' && key !== 'state') revert[key] = entity.data[key]
+        }
+        if (Object.keys(revert).length > 1) socket.send('entityModified', revert)
+        return
+      }
       this.markAppDirty(entity.data, safe)
       this.send('entityModified', safe, socket.id)
       entity.modify(safe)
+      if (sized) this.world.entities.trackApp(entity.data.id, this.world.entities.measureApp(entity.data.id, safe))
     }
   }
 
@@ -1765,6 +1854,7 @@ export class ServerNetwork extends System {
       )
     }
     this.world.settings.set(key, result.value)
+    this.settingsBytes = settingsBytes(this.world.settings.serialize())
     this.send('settingsModified', { key, value: result.value }, socket.id)
     // the sender applied its value locally before sending; correct it if it was adjusted
     if (result.changed) socket.send('settingsModified', { key, value: result.value })

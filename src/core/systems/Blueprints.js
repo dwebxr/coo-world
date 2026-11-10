@@ -2,6 +2,7 @@ import { isEqual, merge } from 'lodash-es'
 import { System } from './System'
 import { sanitizeBlueprintAdd, sanitizeBlueprintModify, WORLD_BLUEPRINT_BYTES } from '../extras/blueprintPolicy'
 import { preflightPacket } from '../extras/clientPreflight'
+import { fitsJoinState } from '../extras/joinBudget'
 import { writePacket } from '../packets'
 
 /**
@@ -83,11 +84,19 @@ export class Blueprints extends System {
   }
 
   canFit(data, add = false) {
+    return !this.budgetRefusal(data, add)
+  }
+
+  // null when the change fits, else the budget it would exceed: 'blueprints' (WORLD_BLUEPRINT_BYTES) or 'world'
+  // (the join snapshot's world state, joinBudget.js)
+  budgetRefusal(data, add = false) {
     const blueprint = add ? data : { ...this.items.get(data.id), ...data }
     const bytes = writePacket('blueprintAdded', blueprint).length
-    const total = this.bytes - (this.sizes.get(data.id) || 0) + bytes
+    const delta = bytes - (this.sizes.get(data.id) || 0)
     // Existing worlds may exceed the budget, but may not grow further.
-    return total <= Math.max(WORLD_BLUEPRINT_BYTES, this.bytes)
+    if (this.bytes + delta > Math.max(WORLD_BLUEPRINT_BYTES, this.bytes)) return 'blueprints'
+    if (!fitsJoinState(this.world, delta)) return 'world'
+    return null
   }
 
   trackSize(data) {

@@ -350,7 +350,7 @@ test('ServerNetwork: oversized snapshot closes with 1011 and never writes the sn
     chat: serial,
     ai: serial,
     blueprints: { serialize: () => 'x'.repeat(SNAPSHOT_CAP) },
-    entities: { ...serial, add: () => ({ data: user, destroy() {} }) },
+    entities: { ...serial, get: () => undefined, add: () => ({ data: user, destroy() {} }) },
     events: { emit() {} },
   }
   const method = connectionMethod({

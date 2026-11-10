@@ -591,6 +591,7 @@ function LoadingOverlay({ world }) {
 const kickMessages = {
   duplicate_user: 'Player already active on another device or window.',
   player_limit: 'Player limit reached.',
+  id_in_use: 'An object in this world uses your player id. A builder has to remove it before you can join.',
   outdated: 'This world was updated. Reload to continue.',
   unknown: 'You were kicked.',
 }

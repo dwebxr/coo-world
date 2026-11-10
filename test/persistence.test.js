@@ -344,3 +344,42 @@ test('N3: world entity teardown preserves app rows; explicit removal still tombs
   world.entities.remove('removed')
   assert.equal(network.dirtyApps.get('removed').record, null)
 })
+
+test(
+  'B8: the final flush also writes the script storage file and reports it when it could not',
+  { timeout: 5000 },
+  async t => {
+    const lines = []
+    t.mock.method(console, 'error', line => lines.push(line))
+    t.mock.method(console, 'log', () => {})
+    for (const [name, flush, outcome] of [
+      ['saved', async () => true, null],
+      ['failed', async () => false, /final save incomplete/],
+      ['stalled', () => new Promise(() => {}), /save deadline exceeded/],
+    ]) {
+      lines.length = 0
+      const { db, tables } = database()
+      const { network, world, socket } = fixture(t, db)
+      let calls = 0
+      world.storage = {
+        flush: () => {
+          calls++
+          return flush()
+        },
+      }
+      await network.onEntityModified(socket, { id: 'app', pinned: true })
+      const done = network.flushBeforeExit(200)
+      if (outcome) await assert.rejects(done, outcome, name)
+      else await done
+      assert.equal(calls, 1, name)
+      assert.ok(tables.entities.has('app'), `${name}: the app is saved alongside`)
+      const reported = lines.filter(line => line.includes('not persisted:'))
+      if (outcome)
+        assert.ok(
+          reported.some(line => line.endsWith('storage=unsaved')),
+          name
+        )
+      else assert.deepEqual(reported, [], name)
+    }
+  }
+)

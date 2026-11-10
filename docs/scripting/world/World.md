@@ -154,6 +154,22 @@ Returns a player. If no `playerId` is provided it returns the local player.
 
 Returns an array of all players.
 
+### `.get(key)` and `.set(key, value)` (server only)
+
+A small key-value store for the whole world, kept in the world folder (`storage.json`) and shared by every app's
+server script. On a client both do nothing (`get` returns `undefined`).
+
+- `set(key, value)` stores a JSON value. `set(key, undefined)` deletes the key.
+- `get(key)` returns a copy of the stored value, so changing what you got does not change the store: call `set`
+  again to save a change.
+- Limits: a key is a string of 1 to 128 characters; a value is at most 64 KiB as JSON; at most 1,024 keys; and
+  4 MiB in total (the operator can change these with the `STORAGE_*` settings). A `set` that would go past a limit
+  throws, and what was stored stays as it was. A value that cannot be turned into JSON throws too.
+- The store is written to disk about once a second, and once more when the server stops.
+- Every server script in the world can read and overwrite every key, so prefix your keys (`myapp:scores`) and do
+  not store secrets.
+- An asset is kept by the world's clean-up while a stored value mentions its `asset://…` URL.
+
 ### `.getQueryParam(key)`
 
 Gets a query parameter value from the browsers url

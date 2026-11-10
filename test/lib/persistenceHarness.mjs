@@ -6,9 +6,10 @@ import * as entityPolicy from '../../src/core/extras/entityModifyPolicy.js'
 import * as blueprintPolicy from '../../src/core/extras/blueprintPolicy.js'
 import * as settingsPolicy from '../../src/core/extras/settingsPolicy.js'
 import * as assetURL from '../../src/core/extras/assetURL.js'
+import * as joinBudget from '../../src/core/extras/joinBudget.js'
 import { appPersistenceData, persistenceRecord } from '../../src/core/extras/persistenceRecord.js'
 import { createInboundGate, createInboundScheduler } from '../../src/core/extras/inboundPolicy.js'
-import { createWriteLedger } from '../../src/core/extras/writeLedger.js'
+import { createWriteLedger, SNAPSHOT_CAP } from '../../src/core/extras/writeLedger.js'
 import { briefError, createLogOnce } from '../../src/core/extras/logOnce.js'
 import { cloneDeep } from 'lodash-es'
 import { createRelayDrop } from '../../src/core/extras/playerRelayPolicy.js'
@@ -43,6 +44,7 @@ export function load(file, name, extra = {}) {
     createInboundGate,
     createInboundScheduler,
     createWriteLedger,
+    SNAPSHOT_CAP,
     createRelayDrop,
     uuid,
     createLogOnce,
@@ -51,6 +53,7 @@ export function load(file, name, extra = {}) {
     ...blueprintPolicy,
     ...settingsPolicy,
     ...assetURL,
+    ...joinBudget,
     ...extra,
   }
   const code = source(file)

@@ -1,6 +1,7 @@
 import {
   PutObjectCommand,
   HeadObjectCommand,
+  GetObjectCommand,
   ListObjectsV2Command,
   DeleteObjectsCommand,
   S3Client,
@@ -9,34 +10,15 @@ import fs from 'fs-extra'
 import path from 'path'
 import { computeAssetFilename, isUploadedAssetFilename } from './assetFilename'
 import { createOnce } from './coalesce'
+import { assetName } from '../core/extras/assetURL'
+import { assetHeaders, extensionOf } from './uploadPolicy'
 
-const contentTypes = {
-  // Images
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  png: 'image/png',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  svg: 'image/svg+xml',
-  // Audio
-  mp3: 'audio/mpeg',
-  wav: 'audio/wav',
-  ogg: 'audio/ogg',
-  // Video
-  mp4: 'video/mp4',
-  webm: 'video/webm',
-  // 3D models
-  gltf: 'model/gltf+json',
-  glb: 'model/gltf-binary',
-  obj: 'model/obj',
-  // Other
-  json: 'application/json',
-  pdf: 'application/pdf',
-  zip: 'application/zip',
-}
+// DeleteObjects takes at most 1000 keys per request
+const DELETE_BATCH = 1000
 
 export class AssetsS3 {
-  constructor() {
+  // `client`: an S3 client to use instead of one built from ASSETS_S3_URI (tests)
+  constructor({ client } = {}) {
     this.url = process.env.ASSETS_BASE_URL
 
     // Parse S3 URI: s3://access_key:secret_key@endpoint/bucket/prefix
@@ -53,15 +35,17 @@ export class AssetsS3 {
     this.writes = new Map() // content filename -> the put in flight for it
 
     // Initialize S3 client
-    this.client = new S3Client({
-      region: config.region,
-      endpoint: config.endpoint,
-      credentials: {
-        accessKeyId: config.accessKeyId,
-        secretAccessKey: config.secretAccessKey,
-      },
-      forcePathStyle: config.forcePathStyle,
-    })
+    this.client =
+      client ??
+      new S3Client({
+        region: config.region,
+        endpoint: config.endpoint,
+        credentials: {
+          accessKeyId: config.accessKeyId,
+          secretAccessKey: config.secretAccessKey,
+        },
+        forcePathStyle: config.forcePathStyle,
+      })
   }
 
   parseURI(uri) {
@@ -266,13 +250,28 @@ export class AssetsS3 {
     return assets
   }
 
-  async delete(assets) {
-    if (assets.length === 0) return
+  // the text of a stored asset://<name>, or null when there is no such object (cleaner: scripts' asset literals)
+  async readText(name) {
+    if (assetName(`asset://${name}`) === null) throw new Error('invalid asset name')
+    try {
+      const response = await this.client.send(new GetObjectCommand({ Bucket: this.bucketName, Key: this.getKey(name) }))
+      return await response.Body.transformToString('utf-8')
+    } catch (error) {
+      if (error.name === 'NoSuchKey' || error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
+        return null
+      }
+      throw error
+    }
+  }
 
-    // S3 delete can handle up to 1000 objects at once
+  // assets: any iterable of filenames (the cleaner passes a Set)
+  async delete(assets) {
+    const names = Array.from(assets)
+    if (names.length === 0) return
+
     const chunks = []
-    for (let i = 0; i < assets.length; i += 1000) {
-      chunks.push(assets.slice(i, i + 1000))
+    for (let i = 0; i < names.length; i += DELETE_BATCH) {
+      chunks.push(names.slice(i, i + DELETE_BATCH))
     }
 
     for (const chunk of chunks) {
@@ -300,8 +299,10 @@ export class AssetsS3 {
     return `${this.prefix}${filename}`
   }
 
+  // the type the local /assets/ route serves for this extension (uploadPolicy.js): every extension uploads accept
+  // and the built-in assets' own; anything else is application/octet-stream. The bucket's front must still add
+  // nosniff and the download headers for non-media files itself (README)
   getContentType(filename) {
-    const ext = filename.split('.').pop().toLowerCase()
-    return contentTypes[ext] || 'application/octet-stream'
+    return assetHeaders(extensionOf(filename))['Content-Type']
   }
 }

@@ -17,7 +17,8 @@ import { PROTOCOL_VERSION, writePacket } from '../core/packets'
 import { buildPublicEnv } from '../core/extras/publicEnv'
 import { readJWT } from '../core/utils-server'
 import { getDB } from './db'
-import { Storage } from './Storage'
+import { Storage, readStorageLimitsEnv } from './Storage'
+import { installShutdown } from './shutdown'
 import { assets } from './assets'
 import { collections } from './collections'
 import { cleaner } from './cleaner'
@@ -56,6 +57,7 @@ if (!(maxUploadSize > 0)) {
 }
 const uploadLimitsConfig = readUploadLimitsEnv(process.env) // UPLOAD_*; throws on a bad value
 const connectionLimitsConfig = readConnectionLimitsEnv(process.env) // WS_CONNECT_*; throws on a bad value
+const storageLimits = readStorageLimitsEnv(process.env) // STORAGE_*; throws on a bad value
 if (!process.env.PUBLIC_WS_URL) {
   throw new Error('[envs] PUBLIC_WS_URL not set')
 }
@@ -94,11 +96,12 @@ await collections.init({ rootDir, worldDir })
 // init db
 const db = await getDB({ worldDir })
 
-// init cleaner
-await cleaner.init({ db })
+// init cleaner (before storage is opened: it reads storage.json itself, read-only)
+const storageFile = path.join(worldDir, '/storage.json')
+await cleaner.init({ db, storageFile })
 
 // init storage
-const storage = new Storage(path.join(worldDir, '/storage.json'))
+const storage = new Storage(storageFile, { limits: storageLimits })
 
 // create world
 const world = createServerWorld()
@@ -266,13 +269,9 @@ async function worldNetwork(fastify) {
 
 console.log(`server listening on port ${port}`)
 
-// Graceful shutdown
-process.on('SIGINT', async () => {
-  await fastify.close()
-  process.exit(0)
-})
-
-process.on('SIGTERM', async () => {
-  await fastify.close()
-  process.exit(0)
+// SIGINT/SIGTERM: final save under a deadline, then exit (shutdown.js)
+installShutdown({
+  network: world.network,
+  stopWorld: () => world.server.destroy(),
+  closeServer: () => fastify.close(),
 })

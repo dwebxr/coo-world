@@ -190,7 +190,7 @@ function makeAI(blueprint) {
   const modified = []
   const ai = new ServerAI({
     loader,
-    blueprints: { get: () => blueprint, modify: change => modified.push(change) },
+    blueprints: { get: () => blueprint, canFit: () => true, modify: change => modified.push(change) },
     network: { stopping: false, markBlueprintDirty() {}, send() {} },
   })
   ai.assets = { upload: async () => {} }

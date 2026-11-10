@@ -6,7 +6,7 @@ import { OpenAI } from 'openai'
 import { System } from './System'
 import { hashFile } from '../utils-server'
 import { anthropicEffort, anthropicRequest, readAnthropicText } from '../extras/anthropicRequest'
-import { assetName, assetRefusal } from '../extras/assetURL'
+import { assetName, assetRefusal, previewValue } from '../extras/assetURL'
 
 const prefix = `app.remove(app.get('Block'))
 `
@@ -71,6 +71,17 @@ export class ServerAI extends System {
     }
   }
 
+  // A generated change passes the same world budgets as a builder's edit (Blueprints.budgetRefusal: the blueprint
+  // budget and the join snapshot's world state); a refused one is logged and not applied
+  admit(change) {
+    if (this.world.blueprints.canFit(change)) return true
+    const refusal = this.world.blueprints.budgetRefusal(change)
+    const reason =
+      refusal === 'world' ? 'the world is full (join-state budget exceeded)' : 'world blueprint budget exceeded'
+    console.warn(`[ai] change to blueprint ${previewValue(change.id, 16)} not applied: ${reason}`)
+    return false
+  }
+
   // AI の呼び出しは待たずに走らせる。失敗 (API の拒否、廃止されたモデル、通信の失敗) は未処理の
   // 拒否にせず、ここでログに出す
   background(name, run) {
@@ -104,7 +115,7 @@ export class ServerAI extends System {
     const blueprint = this.world.blueprints.get(blueprintId)
     const version = blueprint.version + 1
     const change = { id: blueprint.id, version, script: url }
-    if (this.world.network.stopping) return
+    if (this.world.network.stopping || !this.admit(change)) return
     this.world.network.markBlueprintDirty({ ...blueprint, ...change })
     this.world.network.send('blueprintModified', change)
     this.world.blueprints.modify(change)
@@ -139,7 +150,7 @@ export class ServerAI extends System {
     blueprint = this.world.blueprints.get(blueprintId)
     const version = blueprint.version + 1
     const change = { id: blueprint.id, version, script: url }
-    if (this.world.network.stopping) return
+    if (this.world.network.stopping || !this.admit(change)) return
     this.world.network.markBlueprintDirty({ ...blueprint, ...change })
     this.world.network.send('blueprintModified', change)
     this.world.blueprints.modify(change)
@@ -173,7 +184,7 @@ export class ServerAI extends System {
     blueprint = this.world.blueprints.get(blueprintId)
     const version = blueprint.version + 1
     const change = { id: blueprint.id, version, script: url }
-    if (this.world.network.stopping) return
+    if (this.world.network.stopping || !this.admit(change)) return
     this.world.network.markBlueprintDirty({ ...blueprint, ...change })
     this.world.network.send('blueprintModified', change)
     this.world.blueprints.modify(change)
@@ -199,7 +210,7 @@ export class ServerAI extends System {
     const blueprint = this.world.blueprints.get(blueprintId)
     const version = blueprint.version + 1
     const change = { id: blueprint.id, version, name }
-    if (this.world.network.stopping) return
+    if (this.world.network.stopping || !this.admit(change)) return
     this.world.network.markBlueprintDirty({ ...blueprint, ...change })
     this.world.network.send('blueprintModified', change)
     this.world.blueprints.modify(change)

@@ -38,6 +38,7 @@ import { createTokenBalanceService } from '../../src/server/tokenBalance.js'
 import { Ranks } from '../../src/core/extras/ranks.js'
 import { clientIpKeys } from '../../src/server/uploadLimits.js'
 import { previewValue } from '../../src/core/extras/assetURL.js'
+import { joinStateReport, settingsBytes } from '../../src/core/extras/joinBudget.js'
 
 export const serverSource = fs.readFileSync(new URL('../../src/server/index.js', import.meta.url), 'utf8')
 const source = fs.readFileSync(new URL('../../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
@@ -122,6 +123,9 @@ function networkClass(context) {
     sanitizeBlueprintModify,
     WORLD_BLUEPRINT_BYTES,
     previewValue,
+    SNAPSHOT_CAP,
+    joinStateReport,
+    settingsBytes,
     defaultSpawn: '{"position":[0,0,0],"quaternion":[0,0,0,1]}',
     SAVE_INTERVAL: 0,
     // the server's values; tests that wait on them set network.takeoverPingMs / takeoverCloseMs instead
@@ -249,6 +253,7 @@ export function connectionMethod(context) {
     SNAPSHOT_CAP,
     Socket,
     briefError,
+    previewValue,
     solanaGating,
     evmGating,
     ...context,

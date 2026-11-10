@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { bundleProbe } from './lib/workerProbe.mjs'
 import { eventPayload } from '../src/core/extras/eventPayload.js'
+import { callEntry, callScript } from '../src/core/extras/callScript.js'
+import { loadClient } from './lib/clientHarness.mjs'
+import { makeNetwork } from './lib/networkHarness.mjs'
 
 // Objects the engine used to hand to more than one app (or keep for itself while a script held them): each app
 // now gets its own copy, so one app's changes (or accessors) reach nobody else.
@@ -13,6 +16,8 @@ before(async () => {
     export { Apps } from './src/core/systems/Apps'
     export { ClientControls } from './src/core/systems/ClientControls'
     export { createNode } from './src/core/extras/createNode'
+    export { PlayerRemote } from './src/core/entities/PlayerRemote'
+    export { PointerState } from './src/core/systems/ClientPointer'
     export * as THREE from './src/core/extras/three'
   `)
   m = await import(bundle.url)
@@ -83,26 +88,151 @@ test('control.pointer: each read is a new vector made from numbers; nothing reac
   assert.notEqual(control.pointer.delta, world.controls.pointer.delta)
 })
 
-test("control.onTouch: an app's control gets a copy of the touch; the host's record and the player's stay", () => {
+test("control.onTouch: an app's control gets one stable touch facade; the host keeps the live record", () => {
   const world = controls()
   const seen = {}
   world.controls.bind({
     priority: 2,
     object: { isApp: true, data: { id: 'a' } },
     onTouch: touch => {
-      seen.app = touch
-      touch.position.x = 999
-      Object.defineProperty(touch.delta, 'x', { get: () => 'poison' })
+      seen.start = touch
+      touch.position.x = 999 // a copy: changes nothing
+      assert.throws(() => Object.defineProperty(touch, 'position', { get: () => 'poison' }), TypeError)
+    },
+    onTouchEnd: touch => {
+      seen.end = touch // (returning a truthy value would consume the touch)
     },
   })
-  world.controls.bind({ priority: 1, onTouch: touch => (seen.host = touch) })
+  world.controls.bind({
+    priority: 1,
+    onTouch: touch => (seen.host = touch),
+    onTouchEnd: touch => (seen.hostEnd = touch),
+  })
   world.controls.checkPointerChanges = () => {}
-  world.controls.onPointerDown({ pointerType: 'touch', pointerId: 7, clientX: 5, clientY: 6, preventDefault() {} })
+  world.controls.viewport = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }) }
+  const event = (x, y) => ({
+    pointerType: 'touch',
+    pointerId: 7,
+    clientX: x,
+    clientY: y,
+    pageX: x,
+    pageY: y,
+    movementX: 0,
+    movementY: 0,
+    preventDefault() {},
+  })
+  world.controls.onPointerDown(event(5, 6))
   const record = world.controls.touches.get(7)
   assert.equal(seen.host, record, 'the host control (the player) gets the live record')
-  assert.notEqual(seen.app, record)
+  assert.notEqual(seen.start, record)
   assert.equal(record.position.x, 5)
-  assert.equal(record.delta.x, 0)
+  // the kept facade follows the touch as it moves
+  world.controls.onPointerMove(event(15, 6))
+  assert.equal(seen.start.position.x, 15)
+  assert.equal(seen.start.delta.x, 10)
+  assert.notEqual(seen.start.position, seen.start.position, 'each read is a new vector')
+  world.controls.onPointerUp(event(15, 6))
+  assert.equal(seen.end, seen.start, 'the same object at the end, so it can be compared')
+  assert.equal(seen.hostEnd, record)
+  assert.equal(seen.start.id, 7)
+})
+
+test('control.pointer.lock/unlock do nothing once the control is released', () => {
+  const world = controls()
+  const calls = []
+  world.controls.lockPointer = () => calls.push('lock')
+  world.controls.unlockPointer = () => calls.push('unlock')
+  const control = world.controls.bind({ priority: 1, object: { isApp: true, data: { id: 'a' } } })
+  const pointer = control.pointer
+  pointer.lock()
+  pointer.unlock()
+  control.release()
+  pointer.lock()
+  pointer.unlock()
+  assert.deepEqual(calls, ['lock', 'unlock'])
+})
+
+test('XR ray smoothing: same pose values as before, with the smoothing state kept from the script', () => {
+  const world = controls()
+  world.rig.position.set(1, 0, 2)
+  world.rig.quaternion.setFromAxisAngle(new m.THREE.Vector3(0, 1, 0), 0.5)
+  const control = world.controls.bind({ priority: 1, object: { isApp: true, data: { id: 'a' } } })
+  const poses = { Left: control.xrLeftRayPose, Right: control.xrRightRayPose }
+  // a script replaces every method it can on the poses it holds; none may receive an engine object
+  const received = []
+  for (const pose of Object.values(poses)) {
+    for (const target of [pose.position, pose.quaternion]) {
+      const set = target.set
+      target.set = (...args) => {
+        received.push(...args)
+        return set.apply(target, args)
+      }
+      target.lerp = target.slerp = target.copy = target.setFromRotationMatrix = value => received.push(value)
+    }
+  }
+  const frames = [
+    { Left: [0.1, 1.5, -0.2, 0, 0, 0, 1], Right: [0.3, 1.4, -0.1, 0, 0.1, 0, 0.995] },
+    { Left: [0.15, 1.52, -0.25, 0, 0.05, 0, 0.99875], Right: [0.31, 1.41, -0.12, 0, 0.12, 0, 0.9928] },
+    { Left: [0.2, 1.55, -0.3, 0, 0.1, 0, 0.995], Right: [0.32, 1.42, -0.15, 0, 0.15, 0, 0.9887] },
+  ]
+  // the reference: the previous implementation's arithmetic, on plain engine objects
+  const factor = 1 - 0.6
+  const reference = {}
+  for (const frame of frames) {
+    for (const side of ['Left', 'Right']) {
+      const [x, y, z, qx, qy, qz, qw] = frame[side]
+      const point = new m.THREE.Vector3(x, y, z)
+      const rotation = new m.THREE.Quaternion(qx, qy, qz, qw)
+      if (!reference[side]) reference[side] = { position: point.clone(), quaternion: rotation.clone() }
+      reference[side].position.lerp(point, factor)
+      reference[side].quaternion.slerp(rotation, factor)
+    }
+  }
+  const world2 = { position: world.rig.position, quaternion: world.rig.quaternion }
+  const expected = {}
+  for (const side of ['Left', 'Right']) {
+    const local = new m.THREE.Matrix4().compose(
+      reference[side].position,
+      reference[side].quaternion,
+      new m.THREE.Vector3(1, 1, 1)
+    )
+    const rig = new m.THREE.Matrix4().compose(world2.position, world2.quaternion, new m.THREE.Vector3(1, 1, 1))
+    local.premultiply(rig)
+    const position = new m.THREE.Vector3()
+    const quaternion = new m.THREE.Quaternion()
+    local.decompose(position, quaternion, new m.THREE.Vector3())
+    expected[side] = [...position.toArray(), ...quaternion.toArray()]
+  }
+  // drive the real XR path: three frames, both hands
+  let current
+  world.graphics = { renderer: { xr: { getReferenceSpace: () => ({}), getFrame: () => current } } }
+  const source = side => ({
+    handedness: side.toLowerCase(),
+    targetRaySpace: side,
+    gamepad: { axes: [0, 0, 0, 0], buttons: Array.from({ length: 6 }, () => ({ value: 0, pressed: false })) },
+  })
+  world.controls.xrSession = { inputSources: [source('Left'), source('Right')] }
+  for (const frame of frames) {
+    current = {
+      getPose: space => {
+        const [x, y, z, qx, qy, qz, qw] = frame[space]
+        return { transform: { position: { x, y, z }, orientation: { x: qx, y: qy, z: qz, w: qw } } }
+      },
+    }
+    world.controls.preFixedUpdate()
+    world.controls.applyXRRig(world.rig)
+  }
+  for (const side of ['Left', 'Right']) {
+    const pose = poses[side]
+    const actual = [...pose.position.toArray(), ...pose.quaternion.toArray()]
+    actual.forEach((value, i) => assert.ok(Math.abs(value - expected[side][i]) < 1e-12, `${side} ${i}`))
+    assert.equal('lPosition' in pose, false, 'no smoothing state on the script-visible pose')
+  }
+  assert.ok(received.length > 0)
+  assert.ok(
+    received.every(value => typeof value === 'number'),
+    'only numbers reached script-held methods'
+  )
 })
 
 test('control.camera: a script-held camera that throws or lies is contained per control', () => {
@@ -184,4 +314,110 @@ test('engine world events: enter, leave, health and command payloads are frozen 
   const proto = eventPayload(JSON.parse('{"__proto__":{"polluted":true}}'))
   assert.equal({}.polluted, undefined)
   assert.equal(Object.getPrototypeOf(proto), Object.prototype)
+})
+
+// what each engine producer emitted, through the real code that emits it
+function capture() {
+  const emitted = []
+  return { emitted, events: { emit: (name, data) => emitted.push([name, data]) } }
+}
+
+function assertFrozenPayload([name, data], expectedName) {
+  assert.equal(name, expectedName)
+  assert.ok(Object.isFrozen(data), `${name} payload is frozen`)
+  for (const value of Object.values(data)) if (value && typeof value === 'object') assert.ok(Object.isFrozen(value))
+}
+
+test('engine world events from their real producers: enter, leave, health and command are frozen', async () => {
+  // enter, on a client, when a remote player is added
+  const enter = capture()
+  const Entities = loadClient('core/systems/Entities.js', 'Entities', {
+    App: class {},
+    PlayerLocal: class {},
+    PlayerRemote: class {
+      constructor(_world, data) {
+        this.data = data
+      }
+    },
+    preflightPacket: () => true,
+  })
+  const entities = new Entities({ network: { isClient: true, id: 'me' }, events: enter.events, emit() {} })
+  entities.add({ type: 'player', id: 'p', owner: 'other' })
+  assertFrozenPayload(enter.emitted[0], 'enter')
+  // health and leave, from a remote player
+  const player = capture()
+  const remote = Object.create(m.PlayerRemote.prototype)
+  Object.assign(remote, {
+    data: { id: 'p' },
+    nametag: {},
+    base: { deactivate() {} },
+    aura: { deactivate() {} },
+    world: {
+      events: player.events,
+      emit() {},
+      setHot() {},
+      entities: { remove() {} },
+      network: { send() {} },
+    },
+  })
+  remote.modify({ health: 50 })
+  remote.destroy()
+  assertFrozenPayload(player.emitted[0], 'health')
+  assertFrozenPayload(player.emitted[1], 'leave')
+  // command, from the client's chat input
+  const client = capture()
+  const Chat = loadClient('core/systems/Chat.js', 'Chat')
+  const chat = new Chat({ network: { isServer: false, id: 'me', send() {} }, events: client.events })
+  chat.command('/dance now')
+  assertFrozenPayload(client.emitted[0], 'command')
+  assert.deepEqual(client.emitted[0][1].args, ['dance', 'now'])
+  // command, on the server, from a client's packet
+  const network = makeNetwork()
+  const server = capture()
+  network.world.events = server.events
+  await network.onCommand({ id: 'p', player: { data: { id: 'p' } } }, { args: ['dance', { deep: [1] }] })
+  assertFrozenPayload(server.emitted[0], 'command')
+  assert.ok(Object.isFrozen(server.emitted[0][1].args[1].deep))
+})
+
+test('shared defaults: action default callbacks are frozen; engine calls never look up call/apply on a callback', () => {
+  const a = m.createNode('action').getProxy()
+  const b = m.createNode('action').getProxy()
+  for (const key of ['onStart', 'onTrigger', 'onCancel']) {
+    assert.equal(a[key], b[key], 'one default function for every action node')
+    assert.ok(Object.isFrozen(a[key]))
+    assert.throws(() =>
+      Object.defineProperty(a[key], 'call', {
+        value() {
+          throw new Error('other action poisoned')
+        },
+      })
+    )
+  }
+  const fn = function (x) {
+    return ['real', this, x]
+  }
+  fn.call = () => 'replaced call'
+  fn.apply = () => 'replaced apply'
+  assert.deepEqual(callScript(fn, 1), ['real', undefined, 1])
+  const entry = {
+    onPress() {
+      return this
+    },
+  }
+  entry.onPress.call = () => 'replaced call'
+  assert.equal(callEntry(entry, 'onPress'), entry)
+  // a pointer callback is invoked the same way
+  const original = globalThis.document
+  globalThis.document = { body: { style: {} } }
+  try {
+    const seen = []
+    const onPointerDown = event => seen.push(event.type)
+    onPointerDown.call = () => seen.push('replaced call')
+    const node = { parent: null, cursor: null, onPointerDown }
+    new m.PointerState().update({ node }, true, false)
+    assert.deepEqual(seen, ['pointerdown'])
+  } finally {
+    globalThis.document = original
+  }
 })

@@ -101,6 +101,7 @@ function fixture({ pause, fail, existing = false, auth = { userId: 'player' } } 
     events: {
       emit(name, data) {
         assert.equal(name, 'enter')
+        assert.ok(Object.isFrozen(data), 'the enter payload every app sees is frozen')
         assert.ok(network.sockets.has(data.playerId), 'socket is registered before enter')
         if (fail === 'enter') throw failure
         entered.push(data.playerId)

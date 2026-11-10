@@ -6,10 +6,11 @@
 // only reaches public addresses, and bounds time, size and concurrency:
 //
 //   - http and https only, no credentials in the URL
-//   - the host is resolved once, through DNS, and every address it resolves to must be public; the connection is
-//     then made to one of those addresses, not to the name, so a second DNS answer cannot redirect it (DNS
-//     rebinding). An IP literal is checked directly, and the connected socket's remote address is checked again
-//     before anything is written to it
+//   - the host is resolved once, through DNS, and every address it resolves to must be public (see the address
+//     rules below); the connection is then made to one of those addresses, not to the name, so a second DNS answer
+//     cannot redirect it (DNS rebinding). When connecting to it fails, one more of the checked answers is tried,
+//     of the other family when there is one. An IP literal is checked directly, and the connected socket's remote
+//     address is checked again before anything is written to it
 //   - redirects are followed here (`redirect: 'follow'`, at most `maxRedirects`), each hop through the same
 //     checks. A followed redirect's own body is never read: its connection is closed. `'manual'` hands the
 //     redirect back as received and `'error'` rejects
@@ -17,7 +18,8 @@
 //     reading stops at `maxBytes` of decoded body
 //   - all responses in flight share `budgetBytes`. The budget covers a request until its Response is handed over:
 //     the body is kept as the chunks received, so no copy is made to assemble it, and what the caller reads or
-//     keeps afterwards is the caller's memory
+//     keeps afterwards is the caller's memory. The handed-over body still follows the caller's signal, as fetch's
+//     does: an abort errors an unread body
 //   - one deadline covers the whole request: its body, resolving, connecting, redirects and the response body
 //   - at most `concurrency` requests at once, and `perKey` per caller key (an app); more are refused, not queued.
 //     A request keeps its slot until its DNS queries have really ended, also after a timeout or an abort
@@ -75,17 +77,19 @@ for (const [address, prefix] of [
   blockedIPv4.addSubnet(address, prefix, 'ipv4')
 }
 
-// IPv6 is an allow list: an address is public only in global unicast (2000::/3) and outside the special-purpose
-// ranges IANA lists inside it (https://www.iana.org/assignments/iana-ipv6-special-registry). That refuses
-// loopback, unspecified, link-local, unique-local, multicast, NAT64, discard, segment routing, the reserved and
-// unassigned space, and every form that embeds an IPv4 address (compatible ::a.b.c.d, translated
-// ::ffff:0:a.b.c.d, 6to4), except IPv4-mapped ::ffff:a.b.c.d, which the IPv4 rules decide.
-// Prefixes are [16-bit groups, length]
+// IPv6: an address is refused when it is not global unicast (2000::/3) or when it is in a special-purpose range
+// inside global unicast (https://www.iana.org/assignments/iana-ipv6-special-registry) or in returned 3ffe::/16.
+// Outside 2000::/3 that refuses loopback, unspecified, link-local, unique-local, multicast, NAT64, discard, segment
+// routing and every form that embeds an IPv4 address (compatible ::a.b.c.d, translated ::ffff:0:a.b.c.d), except
+// IPv4-mapped ::ffff:a.b.c.d, which the IPv4 rules decide. Inside 2000::/3 no allocation table is kept: an
+// unallocated block there is admitted (it has no route on the public internet), since a stale table would refuse
+// real address space once it is allocated. Prefixes are [16-bit groups, length]
 const GLOBAL_UNICAST = [[0x2000], 3]
 const SPECIAL_IPV6 = [
   [[0x2001, 0x0000], 23], // IETF protocol assignments: Teredo, benchmarking, ORCHID, AMT, anycast services, ...
   [[0x2001, 0x0db8], 32], // documentation
   [[0x2002], 16], // 6to4: embeds an IPv4 address
+  [[0x3ffe], 16], // the 6bone's, returned to IANA (the historical Teredo test prefix 3ffe:831f::/32 is in it)
   [[0x3fff, 0x0000], 20], // documentation
 ]
 
@@ -170,6 +174,8 @@ const DROPPED_HEADERS = new Set([
 ])
 // not carried to another origin by a redirect
 const CREDENTIAL_HEADERS = new Set(['authorization', 'cookie'])
+// fetch's request-body header names: dropped with the body when a redirect turns a request into a GET
+const REQUEST_BODY_HEADERS = new Set(['content-encoding', 'content-language', 'content-location', 'content-type'])
 
 const hostOf = url => (url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname)
 
@@ -179,9 +185,14 @@ const hostOf = url => (url.hostname.startsWith('[') ? url.hostname.slice(1, -1) 
 // cancellable. One resolver per request, so a cancel ends that request's queries only
 const createDnsResolver = () => new Resolver({ timeout: 3_000, tries: 2 })
 
-// the addresses `host` resolves to, IPv4 first. `holds` receives a promise that settles once both queries have
-// ended (answered, failed or cancelled): the request keeps its slot until then
-function resolveHost(createResolver, host, stop, holds) {
+// The DNS queries a request has running. The request keeps its slot while there are any: `idle` is called once,
+// from the callback of the last one to end (answered, failed or cancelled)
+function createDnsWork() {
+  return { outstanding: 0, idle: null }
+}
+
+// the addresses `host` resolves to, IPv4 first; `work` counts the queries until their callbacks have run
+function resolveHost(createResolver, host, stop, work) {
   const resolver = createResolver()
   const cancel = () => {
     try {
@@ -192,19 +203,28 @@ function resolveHost(createResolver, host, stop, holds) {
   }
   const query = method =>
     new Promise(resolve => {
+      let ended = false
+      const end = (err, addresses) => {
+        if (ended) return
+        ended = true
+        resolve({ err, addresses: !err && Array.isArray(addresses) ? addresses : [] })
+        if (--work.outstanding === 0) {
+          stop.removeEventListener('abort', cancel)
+          const idle = work.idle
+          work.idle = null
+          idle?.()
+        }
+      }
+      work.outstanding++
       try {
-        resolver[method](host, (err, addresses) => {
-          resolve({ err, addresses: !err && Array.isArray(addresses) ? addresses : [] })
-        })
+        resolver[method](host, end)
       } catch (err) {
-        resolve({ err, addresses: [] })
+        end(err)
       }
     })
-  const ended = Promise.all([query('resolve4'), query('resolve6')])
-  holds.push(ended)
   stop.addEventListener('abort', cancel, { once: true })
+  const ended = Promise.all([query('resolve4'), query('resolve6')])
   if (stop.aborted) cancel()
-  ended.then(() => stop.removeEventListener('abort', cancel))
   return ended.then(([v4, v6]) => {
     const answers = [...v4.addresses, ...v6.addresses].map(address => ({
       address: String(address),
@@ -230,8 +250,9 @@ function trimHttpWhitespace(value) {
   return value.slice(start, end)
 }
 
-// the caller's headers as a lower-case map: a plain object of strings, a Headers object or [name, value] pairs.
-// Bounded and validated as Node will send them, so a bad value is refused here instead of throwing mid-request
+// The caller's headers as a lower-case map: a plain object of strings, a Headers object or [name, value] pairs.
+// Bounded and validated as Node will send them, so a bad value is refused here instead of throwing mid-request.
+// Repeated names are combined by the platform's Headers, with its rules (Cookie with "; ", others with ", ")
 function prepareHeaders(input, { maxHeaders, maxHeaderBytes }) {
   const headers = Object.create(null)
   if (input === undefined || input === null) return headers
@@ -240,6 +261,8 @@ function prepareHeaders(input, { maxHeaders, maxHeaderBytes }) {
   else if (Array.isArray(input)) entries = input
   else if (typeof input === 'object') entries = Object.entries(input)
   else throw refuse('header', 'the headers must be an object of strings')
+  const tooLarge = () => refuse('header', `the request headers are larger than ${maxHeaderBytes} bytes`)
+  const combined = new Headers()
   let count = 0
   let bytes = 0
   for (const entry of entries) {
@@ -249,18 +272,23 @@ function prepareHeaders(input, { maxHeaders, maxHeaderBytes }) {
       throw refuse('header', 'a header name and value must be strings')
     }
     bytes += name.length + value.length
-    if (bytes > maxHeaderBytes) throw refuse('header', `the request headers are larger than ${maxHeaderBytes} bytes`)
+    if (bytes > maxHeaderBytes) throw tooLarge()
     const normalized = trimHttpWhitespace(value)
     try {
       http.validateHeaderName(name)
       http.validateHeaderValue(name, normalized)
+      if (!DROPPED_HEADERS.has(name.toLowerCase())) combined.append(name, normalized)
     } catch {
       throw refuse('header', `the header ${previewValue(name)} has an invalid name or value`)
     }
-    const lower = name.toLowerCase()
-    if (DROPPED_HEADERS.has(lower)) continue
-    headers[lower] = lower in headers ? `${headers[lower]}, ${normalized}` : normalized
   }
+  // the combined headers within the same bounds (separators add a little)
+  bytes = 0
+  for (const [name, value] of combined) {
+    bytes += name.length + value.length
+    headers[name] = name in headers ? `${headers[name]}, ${value}` : value
+  }
+  if (bytes > maxHeaderBytes) throw tooLarge()
   return headers
 }
 
@@ -352,28 +380,66 @@ function responseHeaders(res, decoded) {
   return headers
 }
 
-// a body over the chunks as received: handing it over copies nothing, and a chunk is let go once it is read
-function chunkStream(chunks) {
-  let next = 0
+// A body nobody reads any more takes its abort listener with it: the listener holds the body only weakly, and
+// this removes it once the body is collected
+const bodyListeners = new FinalizationRegistry(({ signal, listener }) => signal.removeEventListener('abort', listener))
+
+// made outside chunkStream, so its closure holds the WeakRef and the signal, not the chunks
+const abortListener = (ref, signal) => () => ref.deref()?.abort(signal.reason)
+
+// A body over the chunks as received: handing it over copies nothing, and a chunk is let go once it is read. As
+// fetch's body, it follows the caller's signal: an abort before it is read to the end errors it with the signal's
+// reason (an AbortError for abort()) and lets the unread chunks go. The listener leaves when the body is read to
+// the end, cancelled or errored
+function chunkStream(chunks, signal) {
+  const body = { chunks, next: 0, controller: null, listener: null }
+  const detach = () => {
+    if (!body.listener) return
+    signal.removeEventListener('abort', body.listener)
+    bodyListeners.unregister(body)
+    body.listener = null
+  }
+  body.abort = reason => {
+    body.chunks = []
+    detach()
+    try {
+      body.controller.error(reason)
+    } catch {
+      // already closed or errored
+    }
+  }
   return new ReadableStream({
+    start(controller) {
+      body.controller = controller
+      if (!signal) return
+      if (signal.aborted) return body.abort(signal.reason)
+      body.listener = abortListener(new WeakRef(body), signal)
+      signal.addEventListener('abort', body.listener, { once: true })
+      bodyListeners.register(body, { signal, listener: body.listener }, body)
+    },
     pull(controller) {
-      if (next < chunks.length) {
-        controller.enqueue(chunks[next])
-        chunks[next++] = null
+      if (body.next < body.chunks.length) {
+        controller.enqueue(body.chunks[body.next])
+        body.chunks[body.next++] = null
       } else {
         controller.close()
+        detach()
       }
+    },
+    cancel() {
+      body.chunks = []
+      detach()
     },
   })
 }
 
-function toResponse({ status, statusText, headers, chunks }) {
-  try {
-    return new Response(chunks ? chunkStream(chunks) : null, { status, statusText, headers })
-  } catch {
-    // a reason phrase the Response constructor does not accept is left out
-    return new Response(chunks ? chunkStream(chunks) : null, { status, headers })
-  }
+// the reason phrases the Response constructor accepts
+const REASON_PHRASE = /^[\t\x20-\x7e\x80-\xff]*$/
+
+function toResponse({ status, statusText, headers, chunks }, signal) {
+  const init = { status, headers }
+  if (REASON_PHRASE.test(statusText)) init.statusText = statusText // any other is left out
+  return new Response(chunks ? chunkStream(chunks, signal) : null, init)
 }
 
 export function createOutboundFetch(options = {}) {
@@ -394,28 +460,35 @@ export function createOutboundFetch(options = {}) {
   const activeByKey = new Map()
   let buffered = 0 // decoded response bytes held by requests in flight
 
-  // where to connect for this URL: { address, family } for a checked address, or null for a trusted origin
-  async function destination(url, stop, holds) {
+  // Where to connect for this URL: { address, family, fallback } for checked addresses, or null for a trusted
+  // origin. `fallback` is one more checked answer, of the other family when there is one: it is tried only when
+  // connecting to the first fails
+  async function destination(url, stop, dns) {
     if (trusted.has(url.origin)) return null
     const host = hostOf(url)
     if (net.isIP(host)) {
       if (!isAllowedAddress(host)) throw refuse('address', 'the address is not public')
-      return { address: host, family: net.isIP(host) }
+      return { address: host, family: net.isIP(host), fallback: null }
     }
-    const answers = await resolveHost(createResolver, host, stop, holds)
+    const answers = await resolveHost(createResolver, host, stop, dns)
     // all of them: a name that also resolves to a private address is not one to pick an answer from
     for (const answer of answers) {
       if (!isAllowedAddress(answer.address)) {
         throw refuse('address', 'the host resolves to an address that is not public')
       }
     }
-    return answers[0] // the first IPv4 answer if there is one, otherwise the first IPv6 one
+    const [first] = answers // the first IPv4 answer if there is one, otherwise the first IPv6 one
+    const fallback =
+      answers.find(answer => answer.family !== first.family) ||
+      answers.find(answer => answer.address !== first.address) ||
+      null
+    return { address: first.address, family: first.family, fallback }
   }
 
   // One request/response exchange. Resolves { status, statusText, headers, chunks } (chunks null for a response
   // without a body), or { redirect, status } for a redirect to follow. However it settles, its connection is
   // closed then: nothing of an exchange outlives it
-  function exchange(url, { method, headers, body, redirect, maxBytes, onBytes, stop, holds }) {
+  function exchange(url, { method, headers, body, redirect, maxBytes, onBytes, stop, deadline, dns }) {
     return new Promise((resolve, reject) => {
       let settled = false
       let req = null
@@ -442,7 +515,8 @@ export function createOutboundFetch(options = {}) {
         if (REDIRECTS.has(status) && redirect === 'error') {
           return finish(refuse('redirect', 'the response is a redirect and the request allows none'))
         }
-        if (REDIRECTS.has(status) && redirect === 'follow' && res.headers.location) {
+        // an empty Location is a reference to this same URL, as fetch reads it
+        if (REDIRECTS.has(status) && redirect === 'follow' && res.headers.location !== undefined) {
           return finish(null, { redirect: res.headers.location, status })
         }
         if (!(status >= 200 && status <= 599)) return finish(failed('network', 'invalid response status'))
@@ -496,10 +570,21 @@ export function createOutboundFetch(options = {}) {
           // the TLS server name, and the name the certificate is verified for, is the URL's host, never the address
           if (secure) requestOptions.servername = host
           if (target) {
-            // connect to the address that was checked; the name still goes out as Host and TLS server name
+            // Connect to the addresses that were checked; the name still goes out as Host and TLS server name.
+            // With a fallback, Node's connect tries the first address for a third of the time left (at least
+            // 250 ms) or until it fails to connect, then the fallback for the rest: one more checked address, never
+            // an unchecked one, and only before anything was sent
+            const candidates = [target, target.fallback].filter(Boolean).map(({ address, family }) => ({
+              address,
+              family,
+            }))
             requestOptions.lookup = (hostname, opts, callback) => {
-              if (opts?.all) callback(null, [{ address: target.address, family: target.family }])
+              if (opts?.all) callback(null, candidates)
               else callback(null, target.address, target.family)
+            }
+            if (candidates.length > 1) {
+              requestOptions.autoSelectFamily = true
+              requestOptions.autoSelectFamilyAttemptTimeout = Math.max(250, Math.floor((deadline - Date.now()) / 3))
             }
           }
         }
@@ -532,7 +617,7 @@ export function createOutboundFetch(options = {}) {
         req.end()
       }
 
-      destination(url, stop, holds).then(target => {
+      destination(url, stop, dns).then(target => {
         if (settled) return
         try {
           send(target)
@@ -564,7 +649,7 @@ export function createOutboundFetch(options = {}) {
     }
     active++
     if (key !== null) activeByKey.set(key, (activeByKey.get(key) || 0) + 1)
-    const holds = [] // work that keeps the slot until it has really ended (DNS queries)
+    const dns = createDnsWork() // keeps the slot until its queries have really ended
     let held = 0
     const onBytes = bytes => {
       if (buffered + bytes > config.budgetBytes) return false
@@ -574,6 +659,7 @@ export function createOutboundFetch(options = {}) {
     }
     // the request's own stop: its deadline or the caller's signal, whichever comes first
     const stop = new AbortController()
+    const deadline = Date.now() + timeoutMs
     const timer = setTimeout(() => stop.abort(failed('timeout', 'it took too long')), timeoutMs)
     const onAbort = () => stop.abort(new OutboundError('aborted', 'outbound request aborted'))
     const { signal } = request
@@ -598,9 +684,11 @@ export function createOutboundFetch(options = {}) {
           maxBytes,
           onBytes,
           stop: stop.signal,
-          holds,
+          deadline,
+          dns,
         })
-        if (!result.redirect) return toResponse(result)
+        // the returned body still follows the caller's signal, as fetch's does
+        if (result.redirect === undefined) return toResponse(result, signal)
         if (hop >= config.maxRedirects) throw refuse('redirects', 'too many redirects')
         let next
         try {
@@ -615,7 +703,7 @@ export function createOutboundFetch(options = {}) {
         ) {
           method = 'GET'
           body = null
-          headers = withoutHeaders(headers, name => name.startsWith('content-'))
+          headers = withoutHeaders(headers, name => REQUEST_BODY_HEADERS.has(name))
         }
         if (next.origin !== url.origin) headers = withoutHeaders(headers, name => CREDENTIAL_HEADERS.has(name))
         url = next
@@ -636,8 +724,9 @@ export function createOutboundFetch(options = {}) {
           else activeByKey.delete(key)
         }
       }
-      if (holds.length) Promise.all(holds).then(release)
-      else release()
+      // at once when its DNS queries have ended (the usual case), otherwise from the last one's callback
+      if (dns.outstanding === 0) release()
+      else dns.idle = release
     }
   }
 }

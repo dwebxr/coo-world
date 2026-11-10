@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { getEventListeners } from 'node:events'
 import http from 'node:http'
+import https from 'node:https'
 import net from 'node:net'
 import v8 from 'node:v8'
 import vm from 'node:vm'
@@ -80,22 +82,60 @@ function resolverFor(table, calls = []) {
   })
 }
 
-test('the budget covers what a request holds: handing the body over makes no copy of it', async t => {
-  // first in this file and after a collection, so no earlier garbage can be collected meanwhile and hide a copy
-  const size = 4 * 1024 * 1024
-  const payload = Buffer.alloc(size, 1)
-  const local = await serve(t, (req, res) => res.end(payload))
-  const fetch = createOutboundFetch({ isAllowedAddress: allowLocal, maxBytes: size, budgetBytes: size })
-  gc()
-  const before = process.memoryUsage().arrayBuffers
+// The requests the module makes, seen through a wrapper around `module.request` (the module calls it through the
+// same object): each one's socket, whether and when it closed, the bytes it read, and with `chunks` the
+// response's own 'data' chunks
+function watchRequests(t, { module = http, chunks = false } = {}) {
+  const seen = []
+  const original = module.request
+  t.mock.method(module, 'request', function (...args) {
+    const req = original.apply(this, args)
+    const entry = { socket: null, closed: false, bytesRead: 0, chunks: [] }
+    seen.push(entry)
+    req.on('socket', socket => {
+      entry.socket = socket
+      socket.on('close', () => {
+        entry.closed = true
+        entry.bytesRead = socket.bytesRead
+      })
+    })
+    if (chunks) req.on('response', res => res.on('data', chunk => entry.chunks.push(chunk)))
+    return req
+  })
+  return seen
+}
+
+// a body written in three parts, apart, so that it arrives as several chunks
+const PART = 100_000
+const threeParts = (req, res) => {
+  res.writeHead(200)
+  res.write(Buffer.alloc(PART, 1))
+  setTimeout(() => {
+    res.write(Buffer.alloc(PART, 2))
+    setTimeout(() => res.end(Buffer.alloc(PART, 3)), 10)
+  }, 10)
+}
+
+test('the budget covers what a request holds: the body handed over is the chunks received, not a copy', async t => {
+  const local = await serve(t, threeParts)
+  const seen = watchRequests(t, { chunks: true })
+  const concat = t.mock.method(Buffer, 'concat')
+  const fetch = createOutboundFetch({ isAllowedAddress: allowLocal, maxBytes: 3 * PART, budgetBytes: 3 * PART })
   const response = await fetch(local.origin)
-  const allocated = (process.memoryUsage().arrayBuffers - before) / size
-  // the socket's reads (Node's parser copies a body out of them) and the chunks received: twice the body. An
-  // assembled copy and the Response's own copy of it came to four or five times
-  assert.ok(allocated < 3, `${allocated.toFixed(2)} times the body allocated by the time it is handed over`)
-  assert.equal((await response.arrayBuffer()).byteLength, size)
-  // charged once: the whole budget is free again after the hand-over
-  assert.equal((await (await fetch(local.origin)).arrayBuffer()).byteLength, size)
+  const received = seen[0].chunks
+  assert.ok(received.length >= 3, `${received.length} chunks`)
+  const reader = response.body.getReader()
+  const handed = []
+  for (let read = await reader.read(); !read.done; read = await reader.read()) handed.push(read.value)
+  // the very objects that arrived, in order: nothing was assembled or copied on the way
+  assert.equal(handed.length, received.length)
+  handed.forEach((chunk, i) => assert.equal(chunk, received[i], `chunk ${i}`))
+  assert.ok(
+    concat.mock.calls.every(call => call.result.length < PART),
+    'no body was concatenated'
+  )
+  // charged once and released at the hand-over: the whole budget is free for the next request
+  assert.equal((await (await fetch(local.origin)).arrayBuffer()).byteLength, 3 * PART)
 })
 
 test('isPublicAddress: private, loopback, link-local, metadata, mapped and special ranges are not public', () => {
@@ -132,20 +172,47 @@ test('isPublicAddress: private, loopback, link-local, metadata, mapped and speci
   ]) {
     assert.equal(isPublicAddress(address), false, address)
   }
+  // public addresses in use (allocated space only)
   for (const address of [
     '8.8.8.8',
     '1.1.1.1',
     '172.32.0.1',
     '100.128.0.1',
     '2606:4700:4700::1111',
+    '2606:4700::1111',
     '2a00:1450:4001::1',
-    '2001:200::1', // just past 2001::/23
-    '3fff:1000::1', // just past 3fff::/20
+    '2a00:1450::1',
+    '2400:cb00::1',
+    '2001:4860:4860::8888',
     '::ffff:8.8.8.8',
     '::ffff:808:808',
   ]) {
     assert.equal(isPublicAddress(address), true, address)
   }
+})
+
+test('isPublicAddress: the edges of every excluded IPv6 range', () => {
+  const last = prefix => `${prefix}:ffff:ffff:ffff:ffff:ffff:ffff`
+  // [range, first address inside, last address inside, first address outside (allocated, so public), or null
+  // where the next address belongs to another excluded range]
+  for (const [range, first, end, outside] of [
+    ['2001::/23', '2001::', last('2001:1ff'), '2001:200::'], // 2001:200::/23 is APNIC's
+    ['2001:db8::/32', '2001:db8::', last('2001:db8'), '2001:db9::'], // in APNIC's 2001:c00::/23
+    ['2002::/16', '2002::', last('2002:ffff'), '2003::'], // 2003::/18 is RIPE NCC's
+    ['3ffe::/16', '3ffe::', last('3ffe:ffff'), null], // 3fff:: is documentation
+    ['3fff::/20', '3fff::', last('3fff:fff'), null], // 3fff:1000:: is unallocated: see below
+  ]) {
+    assert.equal(isPublicAddress(first), false, `${range}: ${first}`)
+    assert.equal(isPublicAddress(end), false, `${range}: ${end}`)
+    if (outside) assert.equal(isPublicAddress(outside), true, `${range}: ${outside}`)
+  }
+  // global unicast itself: 2000::/3 is 2000:: to 3fff:ffff:..., and nothing either side of it
+  assert.equal(isPublicAddress(last('1fff:ffff')), false)
+  assert.equal(isPublicAddress('4000::'), false)
+  // the policy keeps no allocation table inside 2000::/3: an unallocated block there is admitted (it has no route
+  // on the public internet). These are the first addresses past 3fff::/20 and inside 2000::/3, both unallocated
+  assert.equal(isPublicAddress('3fff:1000::'), true, 'not special-purpose, so not refused')
+  assert.equal(isPublicAddress('2000::'), true, 'not special-purpose, so not refused')
 })
 
 test('isPublicAddress: IPv6 is public only in global unicast outside its special ranges, in every spelling', () => {
@@ -159,6 +226,9 @@ test('isPublicAddress: IPv6 is public only in global unicast outside its special
     ['100::1', '100::1'], // discard
     ['3fff::1', '3fff::1'], // documentation
     ['3fff:fff::1', '3fff:fff::1'], // documentation, the end of the /20
+    ['3ffe::1', '3ffe::1'], // returned 6bone space
+    ['3ffe:831f::7f00:1', '3ffe:831f::7f00:1'], // the historical Teredo test prefix
+    ['3ffe:831f:0:0:0:0:127.0.0.1', '3ffe:831f::7f00:1'],
     ['5f00::1', '5f00::1'], // segment routing
     ['4000::1', '4000::1'], // reserved
     ['1::1', '1::1'], // reserved
@@ -204,6 +274,7 @@ test('with the production policy an address that is not public is refused before
     'http://[fdaa::3]/',
     'http://0.0.0.0/',
     'http://[3fff::1]/',
+    'http://[3ffe:831f::7f00:1]/',
     'http://[4000::1]/',
   ]) {
     await assert.rejects(
@@ -414,6 +485,75 @@ test('headers are validated and bounded before anything is sent; a bad one is a 
   assert.deepEqual(unhandled, [])
 })
 
+test('repeated headers are combined as the platform combines them: Cookie with "; ", others with ", "', async t => {
+  const local = await serve(t, (req, res, entry) => res.end(JSON.stringify(entry.headers)))
+  const fetch = createOutboundFetch({ isAllowedAddress: allowLocal })
+  const sent = async headers => (await fetch(local.origin, { headers })).json()
+  const cookies = new Headers()
+  cookies.append('cookie', 'session=one')
+  cookies.append('cookie', 'pref=two')
+  for (const headers of [
+    [
+      ['cookie', 'session=one'],
+      ['Cookie', 'pref=two'],
+    ],
+    { Cookie: 'session=one', cookie: 'pref=two' },
+    cookies,
+  ]) {
+    assert.equal((await sent(headers)).cookie, 'session=one; pref=two', JSON.stringify([...new Headers(headers)]))
+  }
+  const ordinary = await sent([
+    ['x-list', 'a'],
+    ['X-List', 'b'],
+    ['host', 'evil.example'],
+    ['Connection', 'upgrade'],
+  ])
+  assert.equal(ordinary['x-list'], 'a, b')
+  assert.equal(ordinary.host, `127.0.0.1:${local.port}`, 'a dropped header stays dropped')
+  assert.equal(ordinary.connection, 'close')
+  // the combined headers stay within the size bound: 64 one-letter names and their values are 16 KiB exactly,
+  // and the 63 separators that combining adds take them past it
+  const repeated = Array.from({ length: 64 }, () => ['a', 'v'.repeat(255)])
+  await assert.rejects(fetch(local.origin, { headers: repeated }), code('header'))
+  assert.equal((await sent(repeated.slice(1))).a.length, 63 * 255 + 62 * 2)
+})
+
+test('a throw while making, writing or ending the request ends it at once, and its slot comes back', async t => {
+  const local = await serve(t, (req, res) => res.end('ok'))
+  const fetch = createOutboundFetch({ isAllowedAddress: allowLocal, concurrency: 1, timeoutMs: 5000 })
+  const original = http.request
+  const thrown = name => Object.assign(new Error(name), { code: `E_TEST_${name.toUpperCase()}` })
+  let fault = null
+  t.mock.method(http, 'request', function (...args) {
+    if (fault === 'request') throw thrown('request')
+    const req = original.apply(this, args)
+    if (fault === 'write') {
+      req.write = () => {
+        throw thrown('write')
+      }
+    }
+    if (fault === 'end') {
+      req.end = () => {
+        throw thrown('end')
+      }
+    }
+    return req
+  })
+  for (fault of ['request', 'write', 'end']) {
+    const started = Date.now()
+    await assert.rejects(
+      fetch(local.origin, { method: 'POST', body: 'x' }),
+      err => code('network')(err) && err.message.includes(`E_TEST_${fault.toUpperCase()}`),
+      fault
+    )
+    assert.ok(Date.now() - started < 1000, `${fault}: at once, not at the deadline`)
+  }
+  fault = null
+  assert.equal(await (await fetch(local.origin)).text(), 'ok', 'the only slot is free again')
+  await sleep(20)
+  assert.deepEqual(unhandled, [])
+})
+
 test('a request body is admitted, sized and read under the deadline; only the listed types are accepted', async t => {
   const local = await serve(t, (req, res, entry) => res.end(entry.body))
   const fetch = createOutboundFetch({
@@ -570,23 +710,32 @@ test('one deadline covers connecting, redirects and the body; a caller can abort
 
 test('the deadline covers a connection that never completes its handshake', async t => {
   // accepts TCP and never answers TLS: the request is never even sent
-  const closed = []
+  const accepted = []
   const server = net.createServer(socket => {
+    const entry = { closed: false }
+    accepted.push(entry)
     socket.resume() // reads the ClientHello, so the client's close is seen
-    socket.on('close', () => closed.push(Date.now()))
+    socket.on('close', () => (entry.closed = true))
   })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   t.after(() => server.close())
   const { port } = server.address()
+  const seen = watchRequests(t, { module: https })
+  // a deadline long enough for a slow machine to accept the connection, and a wide margin past it
+  const timeoutMs = 1000
   const fetch = createOutboundFetch({
     resolver: resolverFor({ 'stall.test': ['127.0.0.1'] }),
     isAllowedAddress: allowLocal,
-    timeoutMs: 200,
+    timeoutMs,
   })
   const started = Date.now()
   await assert.rejects(fetch(`https://stall.test:${port}/`), code('timeout'))
-  assert.ok(Date.now() - started < 1500, 'ended near its deadline')
-  await waitFor(() => closed.length === 1, 1000, 'the stalled connection to close')
+  const elapsed = Date.now() - started
+  assert.ok(elapsed >= timeoutMs - 50 && elapsed < timeoutMs + 3000, `ended at ${elapsed} ms`)
+  // the client's connection is closed at the deadline, and the server sees it go
+  assert.equal(seen.length, 1)
+  await waitFor(() => seen[0].closed, 3000, 'the client connection to close')
+  await waitFor(() => accepted.length === 1 && accepted[0].closed, 3000, 'the server to see the close')
 })
 
 test('the deadline covers resolving the name: a slow answer is cancelled, and its slot comes back only once it has ended', async () => {
@@ -641,6 +790,76 @@ test('the deadline covers resolving the name: a slow answer is cancelled, and it
   assert.equal(cancels, 7)
 })
 
+test('a request gives its slot back as soon as it has ended, DNS included: requests one after another always fit', async t => {
+  const local = await serve(t, (req, res) => res.end('ok'))
+  const fetch = createOutboundFetch({
+    resolver: resolverFor({ 'private.test': ['10.0.0.1'], 'local.test': ['127.0.0.1'] }),
+    isAllowedAddress: allowLocal,
+    concurrency: 1,
+  })
+  const outcomes = []
+  for (let i = 0; i < 3; i++) {
+    try {
+      await fetch('http://private.test/')
+      outcomes.push('fetched')
+    } catch (err) {
+      outcomes.push(err.code)
+    }
+  }
+  for (let i = 0; i < 3; i++) {
+    try {
+      const response = await fetch(`http://local.test:${local.port}/`)
+      outcomes.push(response.status)
+    } catch (err) {
+      outcomes.push(err.code)
+    }
+  }
+  assert.deepEqual(outcomes, ['address', 'address', 'address', 200, 200, 200])
+})
+
+test('when the checked address does not connect, one more checked answer is tried, of the other family first', async t => {
+  const allowLoopback = address => /^127\.0\.0\.\d+$/.test(address) || address === '::1'
+  // a server on IPv6 loopback only: the IPv4 answer is refused there, and the IPv6 one connects
+  const v6 = http.createServer((req, res) => res.end(`via ${req.socket.localAddress}`))
+  const listening = await new Promise(resolve => {
+    v6.once('error', () => resolve(false))
+    v6.listen({ port: 0, host: '::1', ipv6Only: true }, () => resolve(true))
+  })
+  t.after(() => v6.close())
+  if (listening) {
+    const connected = []
+    const fetch = createOutboundFetch({
+      resolver: resolverFor({ 'both.test': ['127.0.0.1', '::1'] }),
+      isAllowedAddress: address => (connected.push(address), allowLoopback(address)),
+    })
+    assert.equal(await (await fetch(`http://both.test:${v6.address().port}/`)).text(), 'via ::1')
+    assert.equal(connected.at(-1), '::1', 'the socket check saw the fallback')
+  } else {
+    t.diagnostic('no IPv6 loopback here: the cross-family case is skipped')
+  }
+
+  // the same family when there is no other: 127.0.0.2 does not answer (a hang on macOS, a refusal on Linux)
+  const local = await serve(t, (req, res) => res.end('reached'))
+  const sameFamily = createOutboundFetch({
+    resolver: resolverFor({ 'two.test': ['127.0.0.2', '127.0.0.1'] }),
+    isAllowedAddress: allowLoopback,
+    timeoutMs: 3000,
+  })
+  const started = Date.now()
+  assert.equal(await (await sameFamily(`http://two.test:${local.port}/`)).text(), 'reached')
+  assert.ok(Date.now() - started < 3000, 'within the one deadline')
+  // one more, not every answer: the third address is never tried
+  const connections = local.connections
+  const failing = createOutboundFetch({
+    resolver: resolverFor({ 'three.test': ['127.0.0.2', '127.0.0.3', '127.0.0.1'] }),
+    isAllowedAddress: allowLoopback,
+    timeoutMs: 1000,
+  })
+  await assert.rejects(failing(`http://three.test:${local.port}/`), err => code('timeout')(err) || code('network')(err))
+  await sleep(50)
+  assert.equal(local.connections, connections, 'nothing reached 127.0.0.1')
+})
+
 test('the connected address is checked again before anything is sent', async t => {
   const local = await serve(t, (req, res) => res.end('reached'))
   // the answer passes and the connection does not: it stands for a destination that changed in between
@@ -686,11 +905,11 @@ test('a redirect that is followed is not read: its connection closes at once, wh
       // a redirect whose body never ends, and one whose body is far larger than maxBytes
       const length = req.url === '/large' ? { 'content-length': String(256 * 1024 * 1024) } : {}
       res.writeHead(302, { location: '/final', ...length })
-      const state = { sent: 0, closed: false }
+      const state = { closed: false }
       redirects[req.url] = state
       const chunk = Buffer.alloc(64 * 1024)
       const pump = () => {
-        while (!res.destroyed && res.write(chunk, err => err || (state.sent += chunk.length)));
+        while (!res.destroyed && res.write(chunk));
       }
       res.on('drain', pump)
       res.on('close', () => (state.closed = true))
@@ -698,12 +917,16 @@ test('a redirect that is followed is not read: its connection closes at once, wh
     }
     res.end('final')
   })
+  const seen = watchRequests(t)
   const maxBytes = 4 * 1024 * 1024
   const fetch = createOutboundFetch({ isAllowedAddress: allowLocal, maxBytes, budgetBytes: maxBytes, timeoutMs: 5000 })
-  for (const path of ['/endless', '/large']) {
+  for (const [i, path] of ['/endless', '/large'].entries()) {
     assert.equal(await (await fetch(`${local.origin}${path}`)).text(), 'final', path)
-    await waitFor(() => redirects[path].closed, 1000, `the ${path} redirect's connection to close`)
-    assert.ok(redirects[path].sent < maxBytes, `${path}: ${redirects[path].sent} bytes left the server`)
+    const redirect = seen[2 * i] // the redirect's exchange, then the final one's
+    await waitFor(() => redirect.closed, 2000, `the ${path} redirect's connection to close`)
+    // what the client took in: the headers and whatever came with them in its first read, nothing after
+    assert.ok(redirect.bytesRead < 1024 * 1024, `${path}: the client read ${redirect.bytesRead} bytes`)
+    await waitFor(() => redirects[path].closed, 2000, `the server to see the ${path} redirect's connection close`)
   }
 })
 
@@ -721,6 +944,8 @@ test('redirects are followed here, hop by hop through the same checks', async t 
     if (path === 'keep') return res.writeHead(307, { location: '/final' }).end()
     if (path === 'bad') return res.writeHead(302, { location: 'http://[' }).end()
     if (path === 'nowhere') return res.writeHead(302).end('no location')
+    if (path === 'here') return res.writeHead(302, { location: '' }).end('an empty Location')
+    res.writeHead(200, { 'x-method': entry.method })
     res.end(JSON.stringify({ method: entry.method, body: entry.body, type: entry.headers['content-type'] || null }))
   })
   const resolver = resolverFor({ localhost: ['127.0.0.1'] })
@@ -736,6 +961,18 @@ test('redirects are followed here, hop by hop through the same checks', async t 
   const nowhere = await fetch(`${local.origin}/nowhere`)
   assert.equal(nowhere.status, 302)
   assert.equal(await nowhere.text(), 'no location')
+  // an empty Location is this same URL, as fetch reads it: followed until the limit, or handed back when manual
+  const before = local.requests.length
+  await assert.rejects(fetch(`${local.origin}/here`), code('redirects'))
+  assert.equal(local.requests.length - before, 4)
+  assert.ok(local.requests.slice(before).every(request => request.url === '/here'))
+  const manual = await fetch(`${local.origin}/here`, { redirect: 'manual' })
+  assert.equal(manual.status, 302)
+  assert.equal(manual.headers.get('location'), '')
+  // 303 keeps a HEAD a HEAD
+  const head = await fetch(`${local.origin}/see-other`, { method: 'HEAD' })
+  assert.equal(head.status, 200)
+  assert.equal(head.headers.get('x-method'), 'HEAD')
   // 303 turns a POST into a GET without its body; 307 keeps both
   const init = { method: 'POST', body: 'data', headers: { 'content-type': 'text/plain' } }
   assert.deepEqual(await (await fetch(`${local.origin}/see-other`, init)).json(), {
@@ -748,6 +985,30 @@ test('redirects are followed here, hop by hop through the same checks', async t 
     body: 'data',
     type: 'text/plain',
   })
+  // the GET loses fetch's request-body headers only; other content-* headers stay
+  const echo = await serve(t, (req, res, entry) => {
+    if (req.url === '/see-other') return res.writeHead(303, { location: '/final' }).end()
+    res.end(JSON.stringify(entry.headers))
+  })
+  const rewritten = await (
+    await fetch(`${echo.origin}/see-other`, {
+      method: 'POST',
+      body: 'data',
+      headers: {
+        'content-type': 'text/plain',
+        'content-encoding': 'identity',
+        'content-language': 'en',
+        'content-location': '/data',
+        'content-range': 'bytes 0-3/4',
+        'content-x-app': 'kept',
+      },
+    })
+  ).json()
+  for (const name of ['content-type', 'content-encoding', 'content-language', 'content-location', 'content-length']) {
+    assert.equal(rewritten[name], undefined, name)
+  }
+  assert.equal(rewritten['content-range'], 'bytes 0-3/4')
+  assert.equal(rewritten['content-x-app'], 'kept')
   // credentials do not follow a redirect to another origin; other headers do
   const landed = await (
     await fetch(`${local.origin}/to-other`, {
@@ -806,6 +1067,70 @@ test('all responses in flight share one memory budget', async t => {
   while (waiting.length < 3) await sleep(5)
   waiting[2].end()
   assert.equal((await (await third).arrayBuffer()).byteLength, 60_000)
+})
+
+test('the body handed over still follows the caller’s signal, as fetch’s does', async t => {
+  const local = await serve(t, threeParts)
+  const fetch = createOutboundFetch({ isAllowedAddress: allowLocal })
+  const isAbortError = err => err?.name === 'AbortError'
+  // aborted before the body is read: reading it rejects with an AbortError, as native fetch's body does
+  const first = new AbortController()
+  const unread = await fetch(local.origin, { signal: first.signal })
+  first.abort()
+  await assert.rejects(unread.text(), isAbortError)
+  // the reason given to abort() is the error
+  const second = new AbortController()
+  const withReason = await fetch(local.origin, { signal: second.signal })
+  const reason = new Error('enough')
+  second.abort(reason)
+  await assert.rejects(withReason.arrayBuffer(), err => err === reason)
+  // partly read: the rest is not delivered
+  const third = new AbortController()
+  const partly = await fetch(local.origin, { signal: third.signal })
+  const reader = partly.body.getReader()
+  assert.equal((await reader.read()).done, false)
+  third.abort()
+  await assert.rejects(reader.read(), isAbortError)
+  // read to the end first: a later abort changes nothing, and nothing is left listening
+  const fourth = new AbortController()
+  const whole = await fetch(local.origin, { signal: fourth.signal })
+  assert.equal((await whole.arrayBuffer()).byteLength, 3 * PART)
+  assert.equal(getEventListeners(fourth.signal, 'abort').length, 0)
+  fourth.abort()
+})
+
+test('one long-lived signal for many requests keeps no listener behind', async t => {
+  const local = await serve(t, (req, res) => res.end('ok'))
+  const fetch = createOutboundFetch({ isAllowedAddress: allowLocal })
+  const warnings = []
+  const onWarning = warning => warnings.push(warning)
+  process.on('warning', onWarning)
+  t.after(() => process.off('warning', onWarning))
+  const { signal } = new AbortController()
+  for (let i = 0; i < 1000; i++) assert.equal(await (await fetch(local.origin, { signal })).text(), 'ok')
+  assert.equal(getEventListeners(signal, 'abort').length, 0)
+  // a refused request, a body cancelled unread and one without a body leave none either
+  await assert.rejects(fetch('http://10.0.0.1/', { signal }), code('address'))
+  await (await fetch(local.origin, { signal })).body.cancel()
+  await fetch(local.origin, { signal, method: 'HEAD' })
+  assert.equal(getEventListeners(signal, 'abort').length, 0)
+  await sleep(0)
+  assert.deepEqual(
+    warnings.filter(warning => warning.name === 'MaxListenersExceededWarning'),
+    [],
+    'no listener build-up'
+  )
+  // a body nobody reads holds its listener (weakly) until it is collected, then the listener goes too
+  const dropUnread = async () => {
+    for (let i = 0; i < 8; i++) await fetch(local.origin, { signal })
+  }
+  await dropUnread()
+  assert.equal(getEventListeners(signal, 'abort').length, 8)
+  for (let i = 0; i < 100 && getEventListeners(signal, 'abort').length > 0; i++) {
+    gc()
+    await sleep(10)
+  }
+  assert.equal(getEventListeners(signal, 'abort').length, 0, 'the collected bodies took their listeners along')
 })
 
 test('a trusted origin (the configured assets URL) is reached without the address check; nothing else is', async t => {

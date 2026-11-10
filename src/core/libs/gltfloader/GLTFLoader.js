@@ -2512,6 +2512,23 @@ function guarded( start ) {
 
 }
 
+// COO_BUDGET: a buffer's or an image's URI for its loader. A data: or blob: URI is used as it is (what three.js's
+// LoaderUtils.resolveURL returns for one): resolveURL tests it with /^data:.*,.*$/i, which backtracks over every
+// comma before a line break, quadratically (a 98 KB file of commas blocked the main thread for 5 s; minutes at 1 MB).
+// A prefix test of five characters instead. This parser runs on the server too, with no budget or check before it
+function resolveURI( uri, path ) {
+
+	if ( typeof uri === 'string' ) {
+
+		const scheme = uri.slice( 0, 5 ).toLowerCase(); // COO_EXEMPT: five characters; COO_EXEMPT: five characters
+		if ( scheme === 'data:' || scheme === 'blob:' ) return uri;
+
+	}
+
+	return LoaderUtils.resolveURL( uri, path ); // COO_EXEMPT: a URI that is not data: or blob:, at most 2048 characters (checkGLTF), never fetched by the client
+
+}
+
 // COO_BUDGET: what object.clone() makes: a copy of every object below it, with its userData and morph influences
 // (geometries and materials are shared)
 function chargeClone( budget, object ) {
@@ -3329,7 +3346,7 @@ class GLTFParser {
 
 		return new Promise( function ( resolve, reject ) { // COO_EXEMPT: once per buffer (charged above when a data: URI)
 
-			loader.load( LoaderUtils.resolveURL( bufferDef.uri, options.path ), resolve, undefined, function () { // COO_EXEMPT: a data: URI buffer, charged above (any other URI is refused before a fetch); COO_EXEMPT: a URL, once per buffer or image (a data: URI is charged as its bytes)
+			loader.load( resolveURI( bufferDef.uri, options.path ), resolve, undefined, function () { // COO_EXEMPT: a data: URI buffer, charged above (any other URI is refused before a fetch); COO_BUDGET: its URI used as it is (resolveURI)
 
 				reject( new Error( 'THREE.GLTFLoader: Failed to load buffer "' + bufferDef.uri + '".' ) ); // COO_EXEMPT: an error, once
 
@@ -3687,7 +3704,7 @@ class GLTFParser {
 
 				}
 
-				loader.load( LoaderUtils.resolveURL( sourceURI, options.path ), onLoad, undefined, reject ); // COO_BUDGET: the decode, sized from its header above; COO_EXEMPT: a URL, once per buffer or image (a data: URI is charged as its bytes)
+				loader.load( resolveURI( sourceURI, options.path ), onLoad, undefined, reject ); // COO_BUDGET: the decode, sized from its header above; COO_BUDGET: a data: or blob: URI used as it is (resolveURI)
 
 			} );
 

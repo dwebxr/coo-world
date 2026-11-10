@@ -5,7 +5,7 @@ import v8 from 'node:v8'
 import vm from 'node:vm'
 import { GLTFLoader } from '../src/core/libs/gltfloader/GLTFLoader.js'
 import { VRMLoaderPlugin } from '@pixiv/three-vrm'
-import { Object3D, SkinnedMesh, Texture } from 'three'
+import { LoaderUtils, Object3D, SkinnedMesh, Texture } from 'three'
 import {
   checkGLTF,
   createGLTFBudget,
@@ -1062,6 +1062,80 @@ test('a data: URI is the image, not its name: its textures are cached by the ima
     charges.filter(c => c.what === 'track name').map(c => [c.kind, c.n]),
     [['bytes', 2 * (1000 + 16)]]
   )
+})
+
+test('the parser never hands a data: or blob: URI to resolveURL: without the check, a hostile one is linear', async t => {
+  // the reviewer's probe, on the server's path (the parser without the check or a budget): three.js's resolveURL
+  // tests a data: URI with /^data:.*,.*$/i, which backtracked over every comma before a line break (a 98 KB file: 5 s;
+  // 1 MB: minutes). The parser uses a data: or blob: URI as it is now. A wrapper fails the test if resolveURL is ever
+  // given one, and records the URIs it is given
+  t.mock.method(console, 'error', () => {})
+  const given = []
+  const violations = []
+  const resolveURL = LoaderUtils.resolveURL
+  t.mock.method(LoaderUtils, 'resolveURL', (url, path) => {
+    const scheme = typeof url === 'string' ? url.slice(0, 5).toLowerCase() : ''
+    if (scheme === 'data:' || scheme === 'blob:') {
+      violations.push(`${scheme} (${url.length} characters)`)
+      return url // (not the real one: it would backtrack)
+    }
+    given.push(url)
+    return resolveURL(url, path)
+  })
+  const mesh = material => ({
+    asset: { version: '2.0' },
+    ...scene,
+    nodes: [{ mesh: 0 }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, ...(material ? { material: 0 } : {}) }] }],
+  })
+  const withBuffer = uri =>
+    glb({
+      ...mesh(false),
+      accessors: [vec3(3, { bufferView: 0, min: [0, 0, 0], max: [0, 0, 0] })],
+      bufferViews: [{ buffer: 0, byteLength: 36 }],
+      buffers: [{ byteLength: 36, uri }],
+    })
+  const withImages = images =>
+    glb(
+      {
+        ...mesh(true),
+        materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } }, emissiveTexture: { index: 1 } }],
+        textures: images.map((_, i) => ({ source: i })),
+        images,
+        accessors: [vec3(3, { bufferView: 0, min: [0, 0, 0], max: [0, 0, 0] })],
+        bufferViews: [
+          { buffer: 0, byteLength: 36 },
+          { buffer: 0, byteOffset: 36, byteLength: png(16, 16).length },
+        ],
+        buffers: [{ byteLength: 36 + png(16, 16).length }],
+      },
+      (() => {
+        const bin = new Uint8Array(36 + png(16, 16).length)
+        bin.set(png(16, 16), 36)
+        return bin
+      })()
+    )
+  const parse = file => new GLTFLoader().parseAsync(file, '')
+  // a legitimate data: buffer loads; a data: image and an embedded one (a blob: URL the parser makes) load
+  assert.ok(
+    (await parse(withBuffer(`data:application/octet-stream;base64,${Buffer.alloc(36).toString('base64')}`))).scene
+  )
+  decoded = 0
+  const good = `data:image/png;base64,${Buffer.from(png(16, 16)).toString('base64')}`
+  const images = await parse(withImages([{ uri: good }, { bufferView: 1, mimeType: 'image/png' }]))
+  let map = null
+  images.scene.traverse(o => o.isMesh && (map = o.material.map))
+  assert.ok(map?.image, 'the data: image loaded')
+  assert.equal(decoded, 2)
+  // the hostile buffer and image: each parse settles, and resolveURL never saw them
+  const commas = ','.repeat(100000) + '\n' + 'x'
+  await parse(withBuffer('data:application/octet-stream,' + commas)).catch(error => error)
+  const header = [...png(16, 16)].map(b => '%' + b.toString(16).padStart(2, '0')).join('')
+  await parse(withImages([{ uri: 'data:image/png,' + header + commas }, { uri: good }])).catch(error => error)
+  // (a URI that is not data: or blob: still goes to resolveURL: the wrapper sees what reaches it)
+  await parse(withImages([{ uri: 'a.png' }, { uri: good }])).catch(error => error)
+  assert.deepEqual(given, ['a.png'])
+  assert.deepEqual(violations, [], 'resolveURL was given a data: or blob: URI')
 })
 
 test('a userData copy is charged at least what it holds: the heap of the worst shapes, through the parser', async () => {

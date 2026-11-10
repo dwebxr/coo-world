@@ -741,6 +741,44 @@ test('strings are short, and strings where they are used as one: names, keys, UR
   )
 })
 
+test('a URI has no line break, and a data: URI the shape of one: its header a name', () => {
+  // the reviewer's probe: a data: URI of 100,000 commas, a line break and one more character (98 KB). three.js's
+  // resolveURL tests it with /^data:.*,.*$/i, which backtracked over every comma: 5 s on the main thread, minutes at
+  // 1 MB. The check refuses it, in a single pass
+  const hostile = doc({
+    buffers: [{ byteLength: 36, uri: 'data:application/octet-stream,' + ','.repeat(100000) + '\n' + 'x' }],
+  })
+  const started = performance.now()
+  refused(hostile, /buffers 0 uri has a line break/)
+  assert.ok(performance.now() - started < 500, `${performance.now() - started} ms`)
+  for (const lineBreak of ['\n', '\r', String.fromCharCode(0x2028), String.fromCharCode(0x2029)]) {
+    refused(doc({ images: [{ uri: `data:image/png;base64,AAAA${lineBreak}AAAA` }] }), /images 0 uri has a line break/)
+    refused(doc({ images: [{ uri: `https://example.com/a${lineBreak}.png` }] }), /images 0 uri has a line break/)
+  }
+  // the shape `data:[<type>/<subtype>][;<name>=<value>]...[;base64],<payload>`, the part before the comma at most
+  // 1024 characters (a name)
+  const image = uri => doc({ images: [{ uri }] })
+  for (const uri of [
+    'data:,',
+    'data:;base64,AAAA',
+    'data:image/png;base64,AAAA',
+    'data:application/octet-stream;base64,AAAA',
+    'data:application/gltf-buffer;base64,AAAA',
+    'data:image/png;name=a.png;charset=utf-8;BASE64,AAAA',
+    'data:text/plain,a,b,c',
+    `data:image/png;base64,${'A'.repeat(300000)}`,
+  ]) {
+    assert.ok(checkGLTF(text(image(uri))), uri.slice(0, 60))
+  }
+  refused(image('data:image/png;base64'), /images 0 uri is a data: URI without a comma/)
+  refused(image('data:image;base64,AAAA'), /media type is not a type\/subtype/)
+  refused(image('data:image/png/x;base64,AAAA'), /media type is not a type\/subtype/)
+  refused(image('data:im age/png,AAAA'), /media type is not a type\/subtype/)
+  refused(image('data:image/png;base64;x=1,AAAA'), /a parameter that is not name=value/)
+  refused(image('data:image/png;=1,AAAA'), /a parameter that is not name=value/)
+  refused(image(`data:image/png;x=${'1'.repeat(1020)},AAAA`), /a data: header 1032 characters long, more than 1024/)
+})
+
 test('extras are small: each object’s, and all the parsed scene holds, as the userData every clone copies', () => {
   // extras and extensions become an object's userData, copied (as JSON) with every clone: at most 64 KiB of JSON an
   // object (the most in the bundled files and VRoid's samples: 1,957), counting every extension (which of them the

@@ -357,9 +357,47 @@ const ANIMATION_OUTPUTS = {
 
 const place = (top, at) => (at === undefined ? top : `${top} ${at}`)
 
+// a token of a media type or of a parameter's name (RFC 2045): one character class, so a linear match
+const MEDIA_TOKEN = /^[a-z0-9!#$&^_.+-]+$/i
+const LINE_BREAK = /[\n\r\u2028\u2029]/
+// A URI: no line break (three.js's and three-vrm's resolveURL test a data: URI with /^data:.*,.*$/i, which backtracks
+// over every comma before one, quadratically). A data: URI is the data, so any length (its bytes are charged where
+// they are decoded), in the shape `data:[<type>/<subtype>][;<name>=<value>]...[;base64],<payload>` (RFC 2397), the
+// part before the comma a name (at most nameLength). Any other URI names a file (never fetched: the client refuses
+// external files), at most uriLength
+function checkURI(uri, top, at, limits) {
+  if (LINE_BREAK.test(uri)) refuse(`${place(top, at)} uri has a line break`)
+  if (!uri.startsWith('data:')) {
+    if (uri.length > limits.uriLength) {
+      refuse(`${place(top, at)} uri is ${uri.length} characters long, more than ${limits.uriLength}`)
+    }
+    return
+  }
+  const comma = uri.indexOf(',')
+  if (comma < 0) refuse(`${place(top, at)} uri is a data: URI without a comma`)
+  if (comma - 5 > limits.nameLength) {
+    refuse(`${place(top, at)} uri has a data: header ${comma - 5} characters long, more than ${limits.nameLength}`)
+  }
+  const [type, ...parameters] = uri.slice(5, comma).split(';')
+  const slash = type.indexOf('/')
+  if (
+    type !== '' &&
+    !(slash > 0 && MEDIA_TOKEN.test(type.slice(0, slash)) && MEDIA_TOKEN.test(type.slice(slash + 1)))
+  ) {
+    refuse(`${place(top, at)} uri is a data: URI whose media type is not a type/subtype`)
+  }
+  parameters.forEach((parameter, k) => {
+    if (k === parameters.length - 1 && parameter.toLowerCase() === 'base64') return
+    const equals = parameter.indexOf('=')
+    if (equals < 1 || !MEDIA_TOKEN.test(parameter.slice(0, equals))) {
+      refuse(`${place(top, at)} uri is a data: URI with a parameter that is not name=value`)
+    }
+  })
+}
+
 // The document's strings and keys, outside extras and the extensions nothing here reads: each one short (the names
-// and kinds the parser and three-vrm read, once per object: GLTF_LIMITS.nameLength), a URI short unless it is a data:
-// URI (its bytes are charged where they are decoded), the asset's and the VRM meta's text within textLength; and
+// and kinds the parser and three-vrm read, once per object: GLTF_LIMITS.nameLength), a URI as checkURI says, the
+// asset's and the VRM meta's text within textLength; and
 // the values the parser and three-vrm treat as strings, strings (STRING_KEYS). A step per value
 function checkText(json, limits, step) {
   let values = 0
@@ -368,8 +406,9 @@ function checkText(json, limits, step) {
     values++
     if (STRING_KEYS.has(key) && typeof value !== 'string') refuse(`${place(top, at)} ${key} is not a string`)
     if (typeof value === 'string') {
-      const max = key === 'uri' ? (value.startsWith('data:') ? Infinity : limits.uriLength) : cap
-      if (value.length > max) refuse(`${place(top, at)} ${key} is ${value.length} characters long, more than ${max}`)
+      if (key === 'uri') checkURI(value, top, at, limits)
+      else if (value.length > cap)
+        refuse(`${place(top, at)} ${key} is ${value.length} characters long, more than ${cap}`)
     } else if (Array.isArray(value)) {
       for (let i = 0; i < value.length; i++) visit(value[i], key, top, depth === 1 ? i : at, cap, depth + 1)
     } else if (isObject(value)) {

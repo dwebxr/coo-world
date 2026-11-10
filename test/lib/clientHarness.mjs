@@ -20,6 +20,8 @@ import { CHAT_BODY_MAX_LENGTH, chatEnvelope, cutText, sanitizeChatMessage } from
 import { sanitizeName, sanitizePlayerSelfModify, isEmoteUrl } from '../../src/core/extras/entityModifyPolicy.js'
 import { normalizeSettingValue } from '../../src/core/extras/settingsPolicy.js'
 import { createEventLedger } from '../../src/core/extras/appEventQueue.js'
+import * as assetURL from '../../src/core/extras/assetURL.js'
+import { resolveAssetFile } from '../../src/core/extras/resolveAssetFile.js'
 
 class System extends EventEmitter {
   constructor(world) {
@@ -68,6 +70,8 @@ export function loadClient(file, name, context = {}) {
     normalizeSettingValue,
     createEventLedger,
     internalEvents,
+    ...assetURL,
+    resolveAssetFile,
     ...context,
   }
   const code = source.replace(/^import[\s\S]*?from ['"][^'"]+['"]\n/gm, '').replace(/^export /gm, '')

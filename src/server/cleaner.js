@@ -62,7 +62,8 @@ class Cleaner {
     for (const row of blueprintRows) {
       inspect('blueprints', row.id, () => {
         const data = JSON.parse(row.data)
-        const result = sanitizeBlueprintAdd(data)
+        // persisted: the shape is checked, not the model/script reference rule for new values
+        const result = sanitizeBlueprintAdd(data, { persisted: true })
         if (!result.ok || result.value.id !== row.id) throw new Error('invalid blueprint')
         const found = new Set()
         // Even an orphan must be fully inspected before any deletion is allowed.
@@ -76,7 +77,7 @@ class Cleaner {
     }
     for (const blueprint of collections.blueprints) {
       inspect('collections', blueprint?.id, () => {
-        if (!sanitizeBlueprintAdd(blueprint).ok) throw new Error('invalid blueprint')
+        if (!sanitizeBlueprintAdd(blueprint, { persisted: true }).ok) throw new Error('invalid blueprint')
         discoverAssets(blueprint, assetsToKeep)
       })
     }

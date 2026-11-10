@@ -6,6 +6,7 @@ import { OpenAI } from 'openai'
 import { System } from './System'
 import { hashFile } from '../utils-server'
 import { anthropicEffort, anthropicRequest, readAnthropicText } from '../extras/anthropicRequest'
+import { assetName, assetRefusal } from '../extras/assetURL'
 
 const prefix = `app.remove(app.get('Block'))
 `
@@ -115,8 +116,7 @@ export class ServerAI extends System {
     let blueprint = this.world.blueprints.get(blueprintId)
     if (!blueprint) return console.error('[ai] edit blueprint but blueprint not found')
     // get code to edit
-    let script = this.world.loader.get('script', blueprint.script)
-    if (!script) script = await this.world.loader.load('script', blueprint.script)
+    const script = await this.readScript(blueprint)
     // send prompt to ai to generate code
     const startAt = performance.now()
     const code = script.code.replace(prefix, '')
@@ -151,8 +151,7 @@ export class ServerAI extends System {
     let blueprint = this.world.blueprints.get(blueprintId)
     if (!blueprint) return console.error('[ai] fix blueprint but blueprint not found')
     // get code to fix
-    let script = this.world.loader.get('script', blueprint.script)
-    if (!script) script = await this.world.loader.load('script', blueprint.script)
+    const script = await this.readScript(blueprint)
     // send prompt to ai to generate code
     const startAt = performance.now()
     const code = script.code.replace(prefix, '')
@@ -178,6 +177,19 @@ export class ServerAI extends System {
     this.world.network.markBlueprintDirty({ ...blueprint, ...change })
     this.world.network.send('blueprintModified', change)
     this.world.blueprints.modify(change)
+  }
+
+  // The script text edit and fix send to the AI provider. Only an asset://<name> script is read, through the
+  // loader (which keeps local reads inside the assets directory). Any other value, such as a local path,
+  // asset:// traversal or a remote URL, is refused here, before the loader or the provider sees it; background()
+  // logs the refusal as the action's failure.
+  async readScript(blueprint) {
+    if (assetName(blueprint.script) === null) {
+      throw assetRefusal('the script is not an asset:// file', blueprint.script)
+    }
+    let script = this.world.loader.get('script', blueprint.script)
+    if (!script) script = await this.world.loader.load('script', blueprint.script)
+    return script
   }
 
   async classify({ blueprintId, prompt }) {

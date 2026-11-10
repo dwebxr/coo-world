@@ -37,6 +37,7 @@ const files = {
   'short.gltf': model({ uri: `data:application/octet-stream;base64,${base64.slice(0, 32)}` }),
 }
 
+const budgets = []
 // the parsed file is handed over as it is, so a test can look at what the parser built
 const ServerLoader = loadClient('core/systems/ServerLoader.js', 'ServerLoader', {
   fs: { readFile: async file => Buffer.from(files[path.basename(file)]) },
@@ -52,6 +53,11 @@ const ServerLoader = loadClient('core/systems/ServerLoader.js', 'ServerLoader', 
   glbToNodes: glb => ({ clone: () => glb }),
   createNode: () => ({ add() {}, clone: () => ({}) }),
   createEmoteFactory: glb => ({ toClip: () => glb }),
+  // the real budget, with what it was made with noted
+  createGLTFBudget: options => {
+    budgets.push(options)
+    return createGLTFBudget(options)
+  },
 })
 const makeLoader = () =>
   new ServerLoader({
@@ -177,6 +183,17 @@ test('the server is not charged for morph-target textures, which only a renderer
   assert.ok((await charged({ maxTextureSize: 4096 })).includes('morph target texture'))
   const server = await charged({ renderer: false })
   assert.ok(!server.includes('morph target texture'), 'the server builds none and is charged for none')
+  // and that is the budget the server loader makes, for a model and for an emote, one per file
+  files['morphed.gltf'] = Buffer.from(morphed())
+  budgets.length = 0
+  const loader = makeLoader()
+  await loader.load('model', 'asset://morphed.gltf')
+  await loader.load('emote', 'asset://morphed.gltf')
+  assert.equal(budgets.length, 2)
+  for (const options of budgets) {
+    assert.equal(options.renderer, false)
+    assert.equal(options.fileBytes, files['morphed.gltf'].byteLength)
+  }
   // so the server is never the stricter one: everything else is charged alike
   const rest = kinds => kinds.filter(what => what !== 'morph target texture')
   assert.deepEqual(rest(server), rest(await charged({})))

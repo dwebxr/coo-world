@@ -1,7 +1,7 @@
 // scripts/check-models.mjs is what an operator runs before upgrading a world: it must accept the bundled files,
 // name a refused one with its reason, say so with its exit status, and never request what a file names.
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -55,10 +55,48 @@ test('a refused file is named with its reason and makes the exit status 1; only 
   assert.match(result.stdout, /^3 files checked, 2 refused, 2 unreadable$/m)
 })
 
-test('an unknown option is an error, not a path', () => {
-  const result = run('--max-texture=4096')
-  assert.equal(result.status, 2)
-  assert.match(result.stderr, /unknown option --max-texture=4096/)
+test('a wrong argument is an error and nothing is checked', () => {
+  const unknown = run('--max-texture=4096')
+  assert.equal(unknown.status, 2)
+  assert.match(unknown.stderr, /unknown option --max-texture=4096/)
+  // a size the budget would quietly ignore must not pass for the size asked
+  for (const value of ['0', '-1', '4096.5', '1e999', '99999999999999999999', 'abc', '']) {
+    const result = run(`--max-texture-size=${value}`, path.join('src', 'world', 'assets'))
+    assert.equal(result.status, 2, `--max-texture-size=${value}: ${result.stdout}`)
+    assert.match(result.stderr, /--max-texture-size needs a positive whole number/)
+    assert.equal(result.stdout, '', 'nothing was checked')
+  }
+  assert.equal(run('--max-texture-size=4096', path.join('src', 'world', 'assets', 'avatar.vrm')).status, 0)
+})
+
+test('a long report reaches a slow reader whole, with its last line', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'check-models-many-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  // far more output than a pipe holds (64 KiB): 1,500 lines of about 150 characters
+  const COUNT = 1500
+  for (let i = 0; i < COUNT; i++) {
+    fs.writeFileSync(path.join(dir, `file-${String(i).padStart(4, '0')}.gltf`), '{"asset":{"version":"2.0"}}')
+  }
+  const child = spawn(process.execPath, [path.join(ROOT, 'scripts', 'check-models.mjs'), dir], { cwd: ROOT })
+  t.after(() => child.kill('SIGKILL'))
+  let out = ''
+  child.stdout.setEncoding('utf8').on('data', text => (out += text))
+  child.stderr.resume()
+  // the reader is not there while the report is written
+  child.stdout.pause()
+  await new Promise(resolve => setTimeout(resolve, 3000))
+  child.stdout.resume()
+  const status = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('the script did not finish within 60 s')), 60_000)
+    child.on('close', code => {
+      clearTimeout(timer)
+      resolve(code)
+    })
+  })
+  assert.equal(status, 0)
+  const lines = out.split('\n').filter(Boolean)
+  assert.equal(lines.filter(text => text.startsWith('ok ')).length, COUNT, 'every file has its line')
+  assert.equal(lines.at(-1), `${COUNT} files checked, 0 refused, 0 unreadable`)
 })
 
 test('nothing a file names is requested: an external image is left out and the file is still judged', async t => {

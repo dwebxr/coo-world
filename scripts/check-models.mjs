@@ -25,13 +25,21 @@ const MODEL = /\.(glb|gltf|vrm)$/i
 
 const options = {}
 const targets = []
+// a wrong argument is said and nothing is checked: a silently ignored one would check something else than asked
+const usage = message => {
+  console.error(message)
+  process.exit(2) // nothing has been written to stdout yet
+}
 for (const arg of process.argv.slice(2)) {
-  const size = /^--max-texture-size=(\d+)$/.exec(arg)
-  if (size) options.maxTextureSize = Number(size[1])
-  else if (arg.startsWith('--')) {
-    console.error(`unknown option ${arg}`)
-    process.exit(2)
-  } else targets.push(arg)
+  const size = /^--max-texture-size=(.*)$/.exec(arg)
+  if (size) {
+    const value = Number(size[1])
+    if (!/^\d+$/.test(size[1]) || !Number.isSafeInteger(value) || value < 1) {
+      usage(`--max-texture-size needs a positive whole number, not "${size[1]}"`)
+    }
+    options.maxTextureSize = value
+  } else if (arg.startsWith('--')) usage(`unknown option ${arg}`)
+  else targets.push(arg)
 }
 if (!targets.length) targets.push(path.join('world', 'assets'))
 
@@ -105,4 +113,5 @@ const plural = files.length === 1 ? '' : 's'
 console.log(`${files.length} file${plural} checked, ${refused} refused, ${failed} unreadable`)
 if (late.length)
   console.log(`(${late.length} late errors from refused files: ${[...new Set(late)].slice(0, 3).join(' | ')})`)
-process.exit(refused || failed ? 1 : 0)
+// not process.exit(): output still on its way to a pipe would be cut off (a long report read slowly lost its end)
+process.exitCode = refused || failed ? 1 : 0

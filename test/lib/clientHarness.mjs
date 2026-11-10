@@ -29,6 +29,7 @@ import { eventPayload } from '../../src/core/extras/eventPayload.js'
 import { Ranks } from '../../src/core/extras/ranks.js'
 import {
   NODE_CLIMB_LIMIT,
+  NODE_LIMIT,
   NodeLimitError,
   assertMovableRoot,
   placeWorldNode,
@@ -36,6 +37,7 @@ import {
   unplaceWorldNode,
 } from '../../src/core/extras/nodeLimits.js'
 import * as assetURL from '../../src/core/extras/assetURL.js'
+import * as runTeardown from '../../src/core/extras/runTeardown.js'
 import { resolveAssetFile } from '../../src/core/extras/resolveAssetFile.js'
 
 class System extends EventEmitter {
@@ -103,6 +105,8 @@ export function loadClient(file, name, context = {}) {
     unplaceWorldNode,
     assertMovableRoot,
     treeApp,
+    NODE_LIMIT,
+    ...runTeardown,
     ...assetURL,
     resolveAssetFile,
     ...context,

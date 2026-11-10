@@ -7,6 +7,8 @@ import { readVec3, isFiniteF32, warnOnce } from '../extras/physxConvert.js'
 import { System } from './System'
 import { getNodeRef, resolveValueRef } from '../nodes/Node'
 import { NODE_CLIMB_LIMIT, assertMovableRoot, placeWorldNode, unplaceWorldNode } from '../extras/nodeLimits.js'
+import { Teardown, tornDown } from '../extras/runTeardown.js'
+import { stoppedError } from '../extras/physicsFailure.js'
 import { Layers } from '../extras/Layers'
 import { ControlPriorities } from '../extras/ControlPriorities'
 import { warn } from '../extras/warn'
@@ -93,6 +95,8 @@ export class Apps extends System {
           return
         }
         assertMovableRoot(node, entity, 'world.add')
+        // nothing is placed for a run whose node teardown has started (runTeardown.js)
+        if (tornDown(entity.deadHook, Teardown.NODES)) throw stoppedError(entity)
         if (node.parent) {
           node.parent.remove(node)
         } else if (node.mounted && node.ctx?.entity !== entity) {
@@ -121,6 +125,7 @@ export class Apps extends System {
           return
         }
         assertMovableRoot(node, entity, 'world.attach')
+        if (tornDown(entity.deadHook, Teardown.NODES)) throw stoppedError(entity)
         const parent = node.parent
         if (!parent) return
         const finalMatrix = new THREE.Matrix4()
@@ -139,6 +144,7 @@ export class Apps extends System {
         node.activate({ world, entity, run: entity.deadHook })
       },
       on(entity, name, callback) {
+        if (tornDown(entity.deadHook, Teardown.LISTENERS)) throw stoppedError(entity)
         entity.onWorldEvent(name, callback)
       },
       off(entity, name, callback) {
@@ -362,6 +368,7 @@ export class Apps extends System {
     }
     this.appMethods = {
       on(entity, name, callback) {
+        if (tornDown(entity.deadHook, Teardown.LISTENERS)) throw stoppedError(entity)
         entity.on(name, callback)
       },
       off(entity, name, callback) {

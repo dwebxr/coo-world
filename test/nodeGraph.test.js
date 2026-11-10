@@ -337,3 +337,32 @@ test('teardown: an unmount that throws still unmounts and releases the whole sub
   assert.equal(child.parent, null)
   assert.deepEqual(parent.children, [])
 })
+
+test('unmount: script code run from an unmount cannot mount anything under the node being unmounted', () => {
+  const { entity, root } = appWorld()
+  const added = new m.Node()
+  let mounts = 0
+  const mount = added.mount
+  added.mount = function () {
+    mounts++
+    return mount.call(this)
+  }
+  // what a method a script defined on a transform the host reads can do: add to the parent that is unmounting
+  class Hook extends m.Node {
+    unmount() {
+      root.add(added)
+      super.unmount()
+    }
+  }
+  root.add(new Hook())
+  root.add(new m.Node())
+  assert.equal(entity.liveNodes, 3)
+  root.deactivate()
+  assert.equal(mounts, 0, 'the node added meanwhile was never mounted')
+  assert.equal(added.mounted, false)
+  assert.equal(entity.liveNodes, 0)
+  root.traverse(node => assert.equal(node.mounted, false))
+  // mounting it again later works
+  root.activate()
+  assert.equal(added.mounted, true)
+})

@@ -1,5 +1,6 @@
 import { callForScript, toScriptError } from './scriptValues.js'
 import { stoppedError } from './physicsFailure.js'
+import { Teardown, tornDown } from './runTeardown.js'
 import { getRef } from '../nodes/Node'
 import { clamp, uuid } from '../utils'
 import * as THREE from './three'
@@ -35,16 +36,17 @@ const cleanups = new WeakMap()
 // what the engine knows about each proxy (never read from the proxy itself, which a script can change)
 const handles = new WeakMap()
 
-// a retiring handle (its run is being torn down) accepts nothing new that a cleanup would have to undo (an effect, a
-// voice modifier): those calls throw the stopped error. Ending what exists (cancelEffect, an effect handle's
-// cancel, setVoiceLevel(null)) still works. App.unbuild retires every handle of the run before it runs any cleanup,
-// because a cleanup runs script code (an effect's onEnd) that may use any handle the run has.
+// A handle starts nothing that a cleanup would have to undo (an effect, a voice modifier) once it is retired: when it
+// is evicted or cleaned up (its player left, its run ended), when its player has left, and for every handle of a run
+// whose players teardown stage has started (runTeardown.js). Those calls throw; ending what exists (cancelEffect, an
+// effect handle's cancel, setVoiceLevel(null)) still works.
 export function retirePlayerProxy(proxy) {
   handles.get(proxy)?.retire()
 }
 
-// runs once per proxy
+// runs once per proxy: retired first, then cleaned up (so a callback the cleanup runs cannot start anything on it)
 export function cleanupPlayerProxy(proxy) {
+  retirePlayerProxy(proxy)
   const cleanup = cleanups.get(proxy)
   if (!cleanup) return
   cleanups.delete(proxy)
@@ -74,7 +76,12 @@ export function createPlayerProxy(entity, player) {
   const run = entity.deadHook
   let activeEffectConfig = null
   let voiceMod
-  let retiring = false
+  let retired = false
+  // what a retired handle answers for a call that would start something
+  const assertCanStart = () => {
+    if (run !== entity.deadHook || tornDown(run, Teardown.PLAYERS)) throw stoppedError(entity)
+    if (retired || player.destroyed) throw new Error('[player] this player has left')
+  }
   // a client script changes another player only through a server script: on a remote player these calls
   // do nothing here, said once per method because scripts tend to call them every frame
   const warned = new Set()
@@ -250,7 +257,7 @@ export function createPlayerProxy(entity, player) {
       return !!player.data.effect
     },
     applyEffect(opts) {
-      if (retiring) throw stoppedError(entity)
+      assertCanStart()
       if (!opts) return
       const effect = {}
       // effect.id = uuid()
@@ -324,7 +331,7 @@ export function createPlayerProxy(entity, player) {
     },
     setVoiceLevel(level) {
       // removing the modifier is how a script ends it, so only a new or changed level is refused
-      if (level && retiring) throw stoppedError(entity)
+      if (level) assertCanStart()
       if (!world.network.isServer) {
         return console.error(`[setVoiceLevel] must be applied on the server`)
       }
@@ -345,7 +352,7 @@ export function createPlayerProxy(entity, player) {
       }
     },
   }
-  handles.set(proxy, { player, run, entity, retire: () => (retiring = true) })
+  handles.set(proxy, { player, run, entity, retire: () => (retired = true) })
   cleanups.set(proxy, () => {
     try {
       activeEffectConfig?.onEnd()

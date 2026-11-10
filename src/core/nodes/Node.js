@@ -1,4 +1,6 @@
 import { callForScript } from '../extras/scriptValues'
+import { stoppedError } from '../extras/physicsFailure.js'
+import { Teardown, tornDown } from '../extras/runTeardown.js'
 import { isBoolean } from 'lodash-es'
 import * as THREE from '../extras/three'
 import { getNodeRef, isRefAllowed, registerNodeRefGetter } from './refs'
@@ -145,6 +147,8 @@ export class Node {
     this._worldOwner = null
     // the app this node is the root of (App.build), which alone may move it (nodeLimits.js assertMovableRoot)
     this._appRoot = null
+    // true while this node unmounts: nothing mounts under it meanwhile (see deactivate)
+    this._unmounting = false
   }
 
   // Mounts this node and its active descendants into `ctx` (the world and the entity that owns them). A mounted
@@ -155,8 +159,11 @@ export class Node {
     if (this.mounted) return
     if (ctx) this.ctx = ctx
     if (!this._active || !this.ctx) return
-    // a context from an app run that has ended (the app was rebuilt or removed) mounts nothing
-    if (this.ctx.run && this.ctx.run !== this.ctx.entity?.deadHook) return
+    // a context from an app run that has ended (the app was rebuilt or removed), or whose node teardown has started,
+    // mounts nothing; nor does a node added under one that is unmounting
+    const run = this.ctx.run
+    if (run && (run !== this.ctx.entity?.deadHook || tornDown(run, Teardown.NODES))) return
+    if (this.parent?._unmounting) return
     // top down mount
     this.updateTransform()
     const entity = this.ctx.entity
@@ -170,23 +177,39 @@ export class Node {
   }
 
   // Unmounts bottom up. Every mounted node in the subtree is unmounted and returns its budget even when an unmount
-  // throws; the first error is rethrown afterwards.
+  // throws; the first error is rethrown afterwards. An unmount can run script code (a method a script defined on a
+  // transform the host reads, say), which may change the children: nothing mounts under this node meanwhile, and the
+  // children are read again until none is mounted (each pass unmounts at least one, so the passes are bounded).
   deactivate() {
     if (!this.mounted) return
     let failed = false
     let failure
-    const children = this.children
-    for (let i = 0, l = children.length; i < l; i++) {
-      try {
-        children[i].deactivate()
-      } catch (err) {
-        if (!failed) [failed, failure] = [true, err]
-      }
-    }
-    try {
-      this.unmount()
-    } catch (err) {
+    const fail = err => {
       if (!failed) [failed, failure] = [true, err]
+    }
+    const unmounting = this._unmounting
+    this._unmounting = true
+    try {
+      for (let pass = 0; pass <= NODE_LIMIT && this.children.length; pass++) {
+        const mounted = this.children.filter(child => child.mounted)
+        if (!mounted.length) break
+        for (const child of mounted) {
+          // (a child a callback moved elsewhere is no longer this node's to unmount)
+          if (child.parent !== this) continue
+          try {
+            child.deactivate()
+          } catch (err) {
+            fail(err)
+          }
+        }
+      }
+      try {
+        this.unmount()
+      } catch (err) {
+        fail(err)
+      }
+    } finally {
+      this._unmounting = unmounting
     }
     this.isDirty = false
     this.isTransformed = true
@@ -206,6 +229,9 @@ export class Node {
     // an app's root goes only where its own app placed the tree (not into a detached one, which could be mounted
     // anywhere later)
     if (node._appRoot) assertMovableRoot(node, treeApp(this), 'node.add')
+    // nothing is added to a mounted tree of a run whose node teardown has started (it would mount for that run)
+    const run = this.mounted ? this.ctx?.run : null
+    if (run && tornDown(run, Teardown.NODES)) throw stoppedError(this.ctx.entity)
     if (node.parent) {
       node.parent.remove(node)
     } else if (node.mounted) {

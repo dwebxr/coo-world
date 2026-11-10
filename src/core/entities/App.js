@@ -3,12 +3,7 @@ import { Entity } from './Entity'
 import { createNode } from '../extras/createNode'
 import { LerpVector3 } from '../extras/LerpVector3'
 import { LerpQuaternion } from '../extras/LerpQuaternion'
-import {
-  cleanupPlayerProxy,
-  createPlayerProxy,
-  isPlayerProxyCurrent,
-  retirePlayerProxy,
-} from '../extras/createPlayerProxy'
+import { cleanupPlayerProxy, createPlayerProxy, isPlayerProxyCurrent } from '../extras/createPlayerProxy'
 import { createEntityProxy } from '../extras/createEntityProxy'
 import { serializeError } from '../extras/serializeError'
 import { registerAppProxy } from '../nodes/refs'
@@ -16,7 +11,8 @@ import { createScriptTimers } from '../extras/scriptTimers'
 import { createScriptResponse, toHostFetchOptions } from '../extras/scriptFetch'
 import { toScriptError } from '../extras/scriptValues'
 import { copyProps } from '../extras/appFields'
-import { NodeLimitError } from '../extras/nodeLimits.js'
+import { NODE_LIMIT, NodeLimitError } from '../extras/nodeLimits.js'
+import { Teardown, beginTeardown, tornDown } from '../extras/runTeardown.js'
 import { createEventQueue } from '../extras/appEventQueue'
 import { briefError, createLogOnce } from '../extras/logOnce'
 
@@ -39,11 +35,9 @@ if (typeof window !== 'undefined') {
   safeMode = new URLSearchParams(window.location.search).get('safemode')
 }
 
-// the controls an app run made (app.control), released by unbuild; closed once the run's teardown has started
+// the controls an app run made (app.control), released by unbuild (admission: runTeardown.js)
 function runControlsOf(entity) {
-  if (entity.runControls?.run !== entity.deadHook) {
-    entity.runControls = { run: entity.deadHook, controls: new Set(), closing: false }
-  }
+  if (entity.runControls?.run !== entity.deadHook) entity.runControls = { run: entity.deadHook, controls: new Set() }
   return entity.runControls
 }
 
@@ -260,9 +254,11 @@ export class App extends Entity {
         )
       }
     }
-    // from here on the run makes no control: every callback the teardown runs (the destroy listeners, an onRelease,
-    // an effect's onEnd) comes after this, so none can leave one behind
-    runControlsOf(this).closing = true
+    // The run's teardown state moves forward stage by stage (runTeardown.js): once a stage below has started, the kind
+    // it releases is refused for this run on every path (a lookup, a kept handle, a callback), so script code that
+    // runs during a later stage cannot leave one behind. Controls close first, before any callback runs.
+    const run = this.deadHook
+    beginTeardown(run, Teardown.CONTROLS)
     // notify any running script; a throwing listener must not skip the teardown below
     this.destroying = true
     try {
@@ -276,7 +272,7 @@ export class App extends Entity {
     // release every control the run made, through the host (ClientControls.releaseControl): never through the
     // proxy a script holds, which a script can make throw on any read
     const runControls = this.runControls
-    if (runControls?.run === this.deadHook) {
+    if (runControls?.run === run) {
       while (runControls.controls.size) {
         const [control] = runControls.controls
         runControls.controls.delete(control)
@@ -284,16 +280,13 @@ export class App extends Entity {
       }
     }
     this.control = null
-    // cancel any effects; the cleanups are host-private (createPlayerProxy) and each runs on its own. While they run
-    // the run's registry is closing: a cleanup callback (an effect's onEnd) that looks a player up gets the stopped
-    // error instead of a new handle, so nothing of this run reaches the next one and the drain ends. Every handle
-    // is retired first: through a handle it kept, such a callback can end things but not start a new effect or
-    // voice modifier, which no cleanup would be left to undo
+    // cancel any effects; the cleanups are host-private (createPlayerProxy) and each runs on its own. From here on a
+    // lookup gets the stopped error instead of a handle (with or without a registry), and no handle of the run, new or
+    // kept, starts an effect or a voice modifier: a cleanup callback (an effect's onEnd) can end things only
+    beginTeardown(run, Teardown.PLAYERS)
     const players = this.players
-    if (players && players.run === this.deadHook) {
-      players.closing = true
+    if (players && players.run === run) {
       players.cache.clear()
-      for (const proxy of players.owned) retirePlayerProxy(proxy)
       while (players.owned.size) {
         const [proxy] = players.owned
         players.owned.delete(proxy)
@@ -302,15 +295,19 @@ export class App extends Entity {
     }
     this.players = null
     // deactivate local node (unless another app now holds it: one that took over a world-space node of this app's
-    // with this app's root moved under it)
+    // with this app's root moved under it). From here on nothing mounts for this run
+    beginTeardown(run, Teardown.NODES)
     stage('root', () => {
       const root = this.root
       if (root?.mounted && root._nodeOwner !== this) return
       root?.deactivate()
     })
     // deactivate world nodes
-    // (only nodes this app still owns: one another app took over left this list when it moved)
-    for (const node of [...this.worldNodes]) {
+    // (only nodes this app still owns: one another app took over left this list when it moved). The list is read
+    // again after every step (an unmount can run script code), bounded by the node budget
+    for (let steps = 0; this.worldNodes.size && steps <= NODE_LIMIT; steps++) {
+      const [node] = this.worldNodes
+      this.worldNodes.delete(node)
       if (node._worldOwner !== this) continue
       stage('world nodes', () => {
         node._worldOwner = null
@@ -319,14 +316,17 @@ export class App extends Entity {
     }
     this.worldNodes.clear()
     // clear script event listeners
+    beginTeardown(run, Teardown.LISTENERS)
     stage('listeners', () => this.clearEventListeners())
     this.hotEvents = 0
     // cancel update tracking
     stage('hot', () => this.world.setHot(this, false))
     // abort fetch's etc
+    beginTeardown(run, Teardown.REQUESTS)
     stage('requests', () => this.abortController?.abort())
     this.abortController = null
     // cancel script timers
+    beginTeardown(run, Teardown.TIMERS)
     stage('timers', () => this.timers.clear())
     // mark dead and re-create hook (async etc): proxies, nodes and player handles of this run stop working
     this.deadHook.dead = true
@@ -583,7 +583,13 @@ export class App extends Entity {
   // script and the abort is not reported; a fetch called by a run that has ended starts nothing and stays pending too
   fetchFor(run, controller, url, options = {}) {
     const signal = controller?.signal
-    const isDead = () => run !== this.deadHook || run.dead || this.crashed || this.destroyed || !!this.world.fatalError
+    const isDead = () =>
+      run !== this.deadHook ||
+      run.dead ||
+      tornDown(run, Teardown.REQUESTS) ||
+      this.crashed ||
+      this.destroyed ||
+      !!this.world.fatalError
     return new Promise((resolve, reject) => {
       if (!signal || isDead()) return
       let init
@@ -613,7 +619,7 @@ export class App extends Entity {
 
   // scripts get an opaque handle; the timer itself stays host-private. A run that has ended gets the stopped error
   setTimeoutFor(run, fn, ms) {
-    if (run !== this.deadHook) throw stoppedError(this)
+    if (run !== this.deadHook || tornDown(run, Teardown.TIMERS)) throw stoppedError(this)
     assertScriptActive(this)
     return this.timers.set(() => {
       if (this.crashed || this.world.fatalError || run.dead) return
@@ -641,23 +647,25 @@ export class App extends Entity {
 
   // the controls the current run makes (Apps.control); app.control() throws once the run's teardown has started
   getRunControls() {
-    const runControls = runControlsOf(this)
-    if (runControls.closing) throw stoppedError(this)
-    return runControls.controls
+    if (tornDown(this.deadHook, Teardown.CONTROLS)) throw stoppedError(this)
+    return runControlsOf(this).controls
   }
 
-  // player handles belong to the current run (the cache is emptied by unbuild)
+  // player handles belong to the current run (the cache is emptied by unbuild); none once its players stage started
   getPlayerProxy(playerId) {
+    if (tornDown(this.deadHook, Teardown.PLAYERS)) throw stoppedError(this)
     if (playerId === undefined) playerId = this.world.entities.player?.data.id
     if (this.players?.run !== this.deadHook) this.players = { run: this.deadHook, cache: new Map(), owned: new Set() }
     const players = this.players
-    if (players.closing) throw stoppedError(this)
     let proxy = players.cache.get(playerId)
     if (!proxy || !isPlayerProxyCurrent(proxy)) {
-      // a proxy whose player left is cleaned up now (it stays owned until then, whatever the cache holds)
+      // a proxy whose player left is retired (it starts nothing more) and cleaned up now (it stays owned until then,
+      // whatever the cache holds)
+      if (proxy) players.cache.delete(playerId)
       if (proxy && players.owned.delete(proxy)) cleanupPlayerProxy(proxy)
       const player = this.world.entities.getPlayer(playerId)
-      if (!player) return null
+      // no handle for a player that has left (it may still be listed while it leaves)
+      if (!player || player.destroyed) return null
       proxy = createPlayerProxy(this, player)
       players.cache.set(playerId, proxy)
       players.owned.add(proxy)

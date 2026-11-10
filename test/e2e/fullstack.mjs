@@ -1208,11 +1208,13 @@ async function probes(admin, watcher) {
           'joins still work after a refused modify'
         )
       } finally {
+        // the budget blueprints the server took shrink through a versioned modify (an add never replaces one)
         await page.evaluate(ids => {
           const w = window.world
           for (const id of ids) {
             w.entities.get(id)?.destroy(true)
-            w.blueprints.add({ id, version: 0, disabled: true, props: {} }, true)
+            const bp = w.blueprints.get(id)
+            if (bp) w.blueprints.modify({ id, version: bp.version + 1, disabled: true, props: {} }, true)
           }
         }, ids)
         await barrier('budget-cleanup')

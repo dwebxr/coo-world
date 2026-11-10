@@ -158,14 +158,21 @@ export class Mesh extends Node {
     }
   }
 
+  // every part goes even if one throws (taking a linked instance out can run script code, see Stage Model.destroy)
   unmount() {
-    this.handle?.destroy()
-    if (this.sItem) {
-      this.ctx.world.stage.octree.remove(this.sItem)
-      this.sItem = null
-    }
+    const handle = this.handle
+    const sItem = this.sItem
     this.handle = null
-    this.releaseShared()
+    this.sItem = null
+    try {
+      handle?.destroy()
+    } finally {
+      try {
+        if (sItem) this.ctx.world.stage.octree.remove(sItem)
+      } finally {
+        this.releaseShared()
+      }
+    }
   }
 
   releaseShared() {

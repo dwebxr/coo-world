@@ -520,9 +520,13 @@ class Model {
         this.iMesh.setEmissiveIntensityAt(item.idx, item.emissiveIntensity)
         this.iMesh.instanceEmissiveIntensity.needsUpdate = true
       },
+      // (the octree entry goes even if taking the instance out throws, so a raycast never hits a removed node)
       destroy: () => {
-        this.destroy(item)
-        this.stage.octree.remove(sItem)
+        try {
+          this.destroy(item)
+        } finally {
+          this.stage.octree.remove(sItem)
+        }
       },
     }
   }
@@ -545,17 +549,26 @@ class Model {
       this.items.pop()
       this.dirty = true
     } else {
-      // there are other instances after this one in the buffer, swap it with the last one and pop it off the end
-      this.iMesh.setMatrixAt(item.idx, last.matrix)
-      if (last.color) this.iMesh.setColorAt(item.idx, last.color)
-      if (last.emissive) this.iMesh.setEmissiveAt(item.idx, last.emissive)
-      if (last.emissiveIntensity || last.emissiveIntensity === 0) {
-        this.iMesh.setEmissiveIntensityAt(item.idx, last.emissiveIntensity)
-      }
-      last.idx = item.idx
-      this.items[item.idx] = last
+      // there are other instances after this one in the buffer, swap it with the last one and pop it off the end. The
+      // list is updated first and the moved instance's values written after: its matrix is a node's own matrixWorld,
+      // on which a script can define methods (setMatrixAt calls its toArray), and those may throw
+      const idx = item.idx
+      last.idx = idx
+      this.items[idx] = last
       this.items.pop()
       this.dirty = true
+      try {
+        this.iMesh.setMatrixAt(idx, last.matrix)
+      } catch (err) {
+        // the slot must not keep showing the removed instance: it shows nothing until the moved one moves again
+        this.iMesh.instanceMatrix.array.fill(0, idx * 16, idx * 16 + 16)
+        throw err
+      }
+      if (last.color) this.iMesh.setColorAt(idx, last.color)
+      if (last.emissive) this.iMesh.setEmissiveAt(idx, last.emissive)
+      if (last.emissiveIntensity || last.emissiveIntensity === 0) {
+        this.iMesh.setEmissiveIntensityAt(idx, last.emissiveIntensity)
+      }
     }
   }
 

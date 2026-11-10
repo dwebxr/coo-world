@@ -23,6 +23,7 @@ before(async () => {
     export { Apps } from './src/core/systems/Apps'
     export { Stage } from './src/core/systems/Stage'
     export { createNode } from './src/core/extras/createNode'
+    export { callEntry, callScript } from './src/core/extras/callScript'
     export { Object3D } from 'three'
   `)
   m = await import(bundle.url)
@@ -266,4 +267,42 @@ test("a video's material is bound to its app run the same way", () => {
   assert.throws(() => run(`world.material.textureY = 0.5`, host), /this app has stopped/)
   assert.equal(offset.y, 0)
   assert.equal(run(`return world.material.textureX`, host), 0.25)
+})
+
+test('callbacks: a call or apply a script defines on its function is never what the engine invokes', () => {
+  const host = { effects: [] }
+  run(
+    `'use strict'
+    const seen = []
+    const fn = function (x) {
+      seen.push(['real', this === undefined, x])
+    }
+    // assignment over the frozen Function.prototype.call throws under lockdown; a definition does not
+    Object.defineProperty(fn, 'call', { value: () => seen.push('replaced call') })
+    Object.defineProperty(fn, 'apply', { value: () => seen.push('replaced apply') })
+    const entry = { onPress() { seen.push(['entry', this === entry]) } }
+    Object.defineProperty(entry.onPress, 'call', { value: () => seen.push('replaced call') })
+    world.fn = fn
+    world.entry = entry
+    world.seen = seen
+  `,
+    host
+  )
+  m.callScript(host.fn, 1)
+  m.callEntry(host.entry, 'onPress')
+  // an effect's onEnd, called by the player handle when the effect ends
+  const player = {
+    world: { network: { isServer: false, isClient: true, id: 'me', send() {} } },
+    data: { id: 'me', owner: 'me' },
+    setEffect: (effect, onEnd) => (host.onEnd = onEnd),
+  }
+  const entity = { deadHook: { dead: false } }
+  const proxy = m.createPlayerProxy(entity, player)
+  proxy.applyEffect({ freeze: true, duration: 1, onEnd: host.fn })
+  host.onEnd()
+  assert.deepEqual(host.seen, [
+    ['real', true, 1],
+    ['entry', true],
+    ['real', true, undefined],
+  ])
 })

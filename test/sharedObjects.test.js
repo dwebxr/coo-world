@@ -498,15 +498,18 @@ test('shared defaults: action default callbacks are frozen; engine calls never l
   const fn = function (x) {
     return ['real', this, x]
   }
-  fn.call = () => 'replaced call'
-  fn.apply = () => 'replaced apply'
+  // defined, not assigned: under lockdown an assignment over the frozen Function.prototype.call throws, a
+  // definition still makes an own property (proxyCopiesHardened.test.js runs the same in a compartment)
+  Object.defineProperty(fn, 'call', { value: () => 'replaced call' })
+  Object.defineProperty(fn, 'apply', { value: () => 'replaced apply' })
+  assert.equal(fn.call(), 'replaced call')
   assert.deepEqual(callScript(fn, 1), ['real', undefined, 1])
   const entry = {
     onPress() {
       return this
     },
   }
-  entry.onPress.call = () => 'replaced call'
+  Object.defineProperty(entry.onPress, 'call', { value: () => 'replaced call' })
   assert.equal(callEntry(entry, 'onPress'), entry)
   // a pointer callback is invoked the same way
   const original = globalThis.document
@@ -514,7 +517,7 @@ test('shared defaults: action default callbacks are frozen; engine calls never l
   try {
     const seen = []
     const onPointerDown = event => seen.push(event.type)
-    onPointerDown.call = () => seen.push('replaced call')
+    Object.defineProperty(onPointerDown, 'call', { value: () => seen.push('replaced call') })
     const node = { parent: null, cursor: null, onPointerDown }
     new m.PointerState().update({ node }, true, false)
     assert.deepEqual(seen, ['pointerdown'])

@@ -351,7 +351,7 @@ test('player handles: a script cannot evict its handle to skip the cleanup (voic
 
 test('player handles: a lookup from an effect callback during teardown does not reach the next run', async () => {
   const seen = []
-  const { world } = makeWorld((world, app) => {
+  const { world } = makeWorld(world => {
     const p = world.getPlayer('p1')
     seen.push(p)
     p.applyEffect({
@@ -582,29 +582,38 @@ test('fetch and setTimeout kept from an old run act for nobody after a rebuild',
 })
 
 test('node budget: a model over the budget mounts nothing more and shows the crash block (real nodes)', async () => {
-  const runs = []
-  const { world, app } = makeWorld(() => runs.push('ran'))
-  await tick()
-  // a model 300 levels deep: the real mount refuses level 256
-  world.models['deep.glb'] = () => {
-    const root = m.createNode('group')
-    let parent = root
-    for (let i = 0; i < 300; i++) {
-      const child = m.createNode('group')
-      parent.add(child)
-      parent = child
-    }
-    return root
-  }
-  const logs = quietly()
-  try {
-    world.blueprints.modify({ id: 'bp', version: 1, model: 'deep.glb' })
+  for (const alreadyCrashed of [false, true]) {
+    const runs = []
+    const { world, app } = makeWorld(() => runs.push('ran'))
     await tick()
-  } finally {
-    logs.restore()
+    // a model 300 levels deep: the real mount refuses level 256
+    world.models['deep.glb'] = () => {
+      const root = m.createNode('group')
+      let parent = root
+      for (let i = 0; i < 300; i++) {
+        const child = m.createNode('group')
+        parent.add(child)
+        parent = child
+      }
+      return root
+    }
+    let crashBlock = null
+    world.models['asset://crash-block.glb'] = () => (crashBlock = m.createNode('group'))
+    const logs = quietly()
+    try {
+      if (alreadyCrashed) app.crashed = true
+      world.blueprints.modify({ id: 'bp', version: 1, model: 'deep.glb' })
+      await tick()
+    } finally {
+      logs.restore()
+    }
+    const label = `already crashed: ${alreadyCrashed}`
+    assert.deepEqual(runs, ['ran'], `the over-budget build ran no script (${label})`)
+    assert.equal(app.crashed, true, label)
+    assert.ok(crashBlock, `the crash block was built (${label})`)
+    assert.equal(app.root, crashBlock, `the crash block is shown (${label})`)
+    assert.equal(app.liveNodes, 1, `only the crash block is mounted (${label})`)
+    assert.equal(app.building, false, label)
+    if (!alreadyCrashed) assert.match(app.scriptError.message, /more than 256 levels of nodes/)
   }
-  assert.deepEqual(runs, ['ran'], 'the over-budget build ran no script')
-  assert.equal(app.crashed, true)
-  assert.match(app.scriptError.message, /more than 256 levels of nodes/)
-  assert.equal(app.liveNodes, 1, 'only the crash block is mounted')
 })

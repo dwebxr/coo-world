@@ -10,6 +10,7 @@ import { glbToNodes } from '../extras/glbToNodes'
 import { createEmoteFactory } from '../extras/createEmoteFactory'
 import { formatBytes } from '../extras/formatBytes'
 import { imageElementsPlugin, isAppleMobile } from '../extras/gltfImageElements'
+import { checkGLTF } from '../extras/gltfLimits'
 import { emoteUrls } from '../extras/playerEmotes'
 import Hls from 'hls.js/dist/hls.js'
 
@@ -600,6 +601,8 @@ export class ClientLoader extends System {
     }
     if (type === 'model' || type === 'emote' || type === 'avatar') {
       const buffer = await file.arrayBuffer()
+      // what the file declares (accessor counts, instances, joints) is checked before the parser allocates it
+      checkGLTF(buffer)
       const glb = await this.gltfLoader.parseAsync(buffer, '')
       try {
         assertTextureBudget(glb)

@@ -6,6 +6,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin } from '@pixiv/three-vrm'
 import { loadClient } from './lib/clientHarness.mjs'
 import { imageElementsPlugin } from '../src/core/extras/gltfImageElements.js'
+import { checkGLTF } from '../src/core/extras/gltfLimits.js'
 
 // The browser's loader with three's real GLTF parser and three-vrm's real plugin: a model, avatar or emote may only
 // use what is inside its file, embedded images still load (both the ImageBitmap path and the iPhone <img> path),
@@ -32,6 +33,7 @@ const ClientLoader = loadClient('core/systems/ClientLoader.js', 'ClientLoader', 
   createEmoteFactory: glb => (keep(glb), { toClip: () => null }),
   formatBytes: n => String(n),
   imageElementsPlugin,
+  checkGLTF,
   isAppleMobile: () => apple,
   emoteUrls: [],
   Hls: class {},
@@ -205,6 +207,32 @@ test('a model or emote that names an external buffer is refused before anything 
   parsed = null
   assert.ok(await loader.load('model', serve('data-buffer.gltf', triangle({ buffer: 'data:' }))))
   assert.equal(parsed.scene.getObjectByName('tri').geometry.attributes.position.count, 3)
+})
+
+test('a file that declares more than it carries is refused before the parser runs, for load and insert', async t => {
+  const parse = t.mock.method(GLTFLoader.prototype, 'parse')
+  const loader = makeLoader()
+  // 239 bytes: one accessor of a billion VEC3 floats with no data, which the parser would zero-fill (12 GB)
+  const file = new TextEncoder().encode(
+    JSON.stringify({
+      asset: { version: '2.0' },
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+      nodes: [{ mesh: 0 }],
+      accessors: [{ componentType: 5126, type: 'VEC3', count: 1000000000 }],
+    })
+  )
+  assert.ok(file.length < 240)
+  for (const type of ['model', 'emote', 'avatar']) {
+    await assert.rejects(loader.load(type, serve(`declared-${type}.gltf`, file)), /beyond the file: 12000000000/, type)
+  }
+  await assert.rejects(
+    loader.insert('model', 'asset://picked.gltf', new File([file], 'picked.gltf')),
+    /beyond the file/
+  )
+  assert.equal(parse.mock.callCount(), 0, 'the parser never ran')
+  // and the files are not kept
+  assert.equal(loader.hasFile('asset://declared-model.gltf'), false)
+  assert.equal(loader.hasFile('asset://picked.gltf'), false)
 })
 
 test('an image inside the file loads (ImageBitmap and <img> paths); an external one is not fetched', async t => {

@@ -1,7 +1,7 @@
 // Test-only. The instrumentation itself lives on the host side (test/e2e/lib/script-class-hook.js): the engine
 // freezes the math classes before any script runs, so a script cannot wrap their methods. The hook, installed
-// by the e2e harness before the engine starts, wraps them while that is still possible and leaves two test
-// methods on Vector3 that this app drives. Never inspect components here.
+// by the e2e harness before the engine starts, wraps them while that is still possible and leaves a test
+// method on Vector3 (`__e2eSentinel`) that this app drives. Never inspect components here.
 let selfTest = null
 const check = (value, message) => {
   if (!value) throw new Error(message)
@@ -17,7 +17,9 @@ function behavior() {
   v._onChange(() => changes++)
   const chaining = v.set(1, 2, 3) === v && v.copy(new Vector3(4, 5, 6)) === v
   v.x = 7
-  const stock = new Vector3().__e2eStock(1, 2, 3)
+  // THREE's own Vector3 class, as the interpolation classes use it
+  const StockVector3 = new LerpVector3(new Vector3(), 0.2).previous.constructor
+  const stock = new StockVector3(1, 2, 3)
   const q = new Quaternion().set(0, 0, 0, 1)
   q.x = 0.25
   const e = new Euler()

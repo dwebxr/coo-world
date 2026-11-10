@@ -21,6 +21,9 @@ before(async () => {
     export { Keyframe } from './src/core/extras/Curve'
     export { createNode } from './src/core/extras/createNode'
     export * as Nodes from './src/core/nodes'
+    export { Stage } from './src/core/systems/Stage'
+    export { PointerState, createPointerEvent } from './src/core/systems/ClientPointer'
+    export { setVectorFromPoint, setQuaternionFromPoint } from './src/core/extras/xrPose'
   `)
   m = await import(bundle.url)
   scripts = new m.Scripts({})
@@ -74,7 +77,7 @@ test('every endowed value is frozen, and so is every class prototype and constru
       assert.equal(Object.isFrozen(value.prototype), true, `${name}.prototype is frozen`)
     }
   }
-  for (const cls of [m.StockVector3, m.Matrix3, m.Keyframe]) {
+  for (const cls of [m.StockVector3, m.Matrix3, m.Keyframe, m.THREE.Color]) {
     assert.equal(Object.isFrozen(cls), true)
     assert.equal(Object.isFrozen(cls.prototype), true)
   }
@@ -99,12 +102,22 @@ const ATTACKS = {
   'through a host matrix': `Object.getPrototypeOf(world.matrix).multiply = function () { return this }`,
   'a lerp class': `BufferedLerpVector3.prototype.update = function () { return this }`,
   'a curve': `Curve.prototype.evaluate = function () { return 1 }`,
-  'a keyframe, reached through a curve': `Object.getPrototypeOf(new Curve().add({ time: 0, value: 0 })).set = function () { return this }`,
+  'a keyframe, reached through a curve': `Object.getPrototypeOf(new Curve().add({ time: 0, value: 0 }).keyframes[0]).set = function () { return this }`,
+  'a method object itself': `Vector3.prototype.add.call = function () { return 42 }`,
+  'a keyframe method object': `new Curve().add({ time: 0, value: 0 }).keyframes[0].set.shared = 1`,
+  'the stock Vector3 the lerp classes use': `new LerpVector3(new Vector3(), 0.2).previous.constructor.prototype.add = function () { return this }`,
+  'a color, reached through a material': `Object.getPrototypeOf(world.color).set = function () { return this }`,
+  'the color class through its constructor': `world.color.constructor.prototype.copy = function () { return 'patched' }`,
+  'the shared colour name table': `world.color.constructor.NAMES.red = 0x00ff00`,
 }
 
 for (const [name, code] of Object.entries(ATTACKS)) {
   test(`a script cannot change a shared class: ${name}`, () => {
-    const host = { position: new m.THREE.Vector3(1, 2, 3), matrix: new m.THREE.Matrix4() }
+    const host = {
+      position: new m.THREE.Vector3(1, 2, 3),
+      matrix: new m.THREE.Matrix4(),
+      color: new m.THREE.Color('white'),
+    }
     assert.throws(() => run(`'use strict'; ${code}`, host), TypeError)
     // the engine's view of the classes is unchanged
     assert.equal(new m.THREE.Vector3(1, 0, 0).add(new m.THREE.Vector3(1, 0, 0)).x, 2)
@@ -116,8 +129,112 @@ for (const [name, code] of Object.entries(ATTACKS)) {
     const q = new m.THREE.Quaternion()
     q.x = 0.5 // would throw 'hooked' if the inherited callback had been replaced
     assert.equal(new m.THREE.Matrix4().makeTranslation(1, 2, 3).multiply(new m.THREE.Matrix4()).elements[12], 1)
+    assert.equal(new m.THREE.Color('red').getHex(), 0xff0000)
+    assert.equal(new m.THREE.Color().copy(new m.THREE.Color('blue')).getHex(), 0x0000ff)
+    assert.equal(new m.StockVector3(1, 0, 0).add(new m.StockVector3(1, 0, 0)).x, 2)
+    assert.equal(new m.Keyframe().set({ time: 0.5, value: 2 }).value, 2)
+    assert.equal(
+      Function.prototype.call.call(m.THREE.Vector3.prototype.add, new m.THREE.Vector3(1), new m.THREE.Vector3(1)).x,
+      2
+    )
   })
 }
+
+// What the engine hands a script once things are mounted and running, beyond bare node proxies.
+test('a material proxy gives out only frozen-class objects', () => {
+  const stage = new m.Stage({ rig: new m.Object3D(), camera: new m.Object3D(), setupMaterial() {} })
+  const material = stage.createMaterial()
+  const color = run(`return world.color`, material.proxy)
+  assert.equal(color instanceof m.THREE.Color, true)
+  assert.equal(Object.isFrozen(Object.getPrototypeOf(color)), true)
+  assert.throws(() => run(`'use strict'; Object.getPrototypeOf(world.color).set = () => {}`, material.proxy), TypeError)
+  // the documented use still works
+  run(`world.color = 'red'`, material.proxy)
+  assert.equal(material.raw.color.getHex(), 0xff0000)
+})
+
+test('pointer callbacks get a new frozen event each time, and nothing of the engine through it', () => {
+  globalThis.document = { body: { style: {} } }
+  try {
+    const seen = []
+    const leaf = { parent: null, cursor: null }
+    const root = { parent: null, cursor: null }
+    leaf.parent = root
+    const record = name => event => {
+      seen.push({ name, event })
+      // what a hostile callback tries
+      for (const attempt of [
+        () => (event.type = 'forged'),
+        () => (event.stopPropagation = () => {}),
+        () => (Object.getPrototypeOf(event).set = () => {}),
+        () => (event.extra = 1),
+      ]) {
+        assert.throws(() => {
+          'use strict'
+          attempt()
+        }, TypeError)
+      }
+    }
+    leaf.onPointerEnter = record('leaf-enter')
+    root.onPointerEnter = record('root-enter')
+    leaf.onPointerDown = event => {
+      seen.push({ name: 'leaf-down', event })
+      event.stopPropagation()
+    }
+    root.onPointerDown = record('root-down')
+    leaf.onPointerUp = record('leaf-up')
+    leaf.onPointerLeave = record('leaf-leave')
+    const state = new m.PointerState()
+    state.update({ node: leaf }, false, false)
+    state.update({ node: leaf }, true, false)
+    state.update({ node: leaf }, false, true)
+    state.update(null, false, false)
+    assert.deepEqual(
+      seen.map(entry => `${entry.name}:${entry.event.type}`),
+      [
+        'root-enter:pointerenter',
+        'leaf-enter:pointerenter',
+        'leaf-down:pointerdown',
+        'leaf-up:pointerup',
+        'leaf-leave:pointerleave',
+      ]
+    )
+    // root never saw the press: the leaf stopped it. every call got its own plain, frozen object
+    assert.equal(new Set(seen.map(entry => entry.event)).size, seen.length)
+    for (const { event } of seen) {
+      assert.equal(Object.isFrozen(event), true)
+      assert.equal(Object.isFrozen(event.stopPropagation), true)
+      assert.equal(Object.getPrototypeOf(event), Object.prototype)
+      assert.deepEqual(Object.keys(event), ['type', 'stopPropagation'])
+    }
+  } finally {
+    delete globalThis.document
+  }
+})
+
+test('an XR pose reaches script-held objects as numbers, never as the browser object', () => {
+  const point = { x: 1, y: 2, z: 3, w: 4, isDOMPoint: true }
+  const received = []
+  // a script that replaced the methods of a pose object it holds
+  const position = new m.THREE.Vector3()
+  position.copy = value => received.push(['copy', value])
+  const set = position.set
+  position.set = (...args) => {
+    received.push(['set', ...args])
+    return set.apply(position, args)
+  }
+  m.setVectorFromPoint(position, point)
+  assert.deepEqual(received, [['set', 1, 2, 3]])
+  assert.deepEqual([...position], [1, 2, 3])
+  const quaternion = new m.THREE.Quaternion()
+  quaternion.copy = value => received.push(['copy', value])
+  m.setQuaternionFromPoint(quaternion, point)
+  assert.deepEqual([quaternion.x, quaternion.y, quaternion.z, quaternion.w], [1, 2, 3, 4])
+  assert.equal(
+    received.some(entry => entry.includes(point)),
+    false
+  )
+})
 
 test('what one script leaves on a shared class cannot be seen by another, because it cannot be left', () => {
   assert.throws(() => run(`'use strict'; Vector3.prototype.note = 'from A'`), TypeError)

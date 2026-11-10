@@ -7,7 +7,6 @@
 // still be changed. This hook wraps every method and setter to count PhysX natives (objects with a `ptr`)
 // that reach THREE math, and leaves test-only methods on Vector3 for the e2e apps:
 //   __e2eSentinel(command)   'arm' | 'disarm' | 'report' -> JSON string of the sentinel state
-//   __e2eStock(x, y, z)      a THREE Vector3 of the stock class, which scripts otherwise cannot construct
 //   __e2eComposeFault(on)    while on, Matrix4.compose throws for a position with x > 900 (a host-owned node
 //                            that keeps failing, for the Stage retry cap)
 // The sentinel wrappers cost an argument array per math call, so on the server they are installed only when
@@ -83,10 +82,6 @@
     }
     define('__e2eComposeFault', function (on) {
       composeFault = on === true
-    })
-    const Stock = byName.StockVector3
-    define('__e2eStock', function (x = 0, y = 0, z = 0) {
-      return new Stock(x, y, z)
     })
   }
 })()

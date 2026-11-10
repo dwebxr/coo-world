@@ -25,8 +25,9 @@ import { createScriptConsole, hostInspect } from '../extras/scriptConsole'
  */
 
 // Classes scripts can reach. The first group is endowed to every script (createEndowments). The second is not,
-// but its instances are reachable: THREE's own Vector3 is what the math classes use for their internal
-// temporaries, Matrix3 is accepted and produced by Matrix4 methods, and a Curve holds Keyframes.
+// but its instances are reachable: THREE's own Vector3 is what the Lerp classes and the math classes' internal
+// temporaries are made of, Matrix3 is accepted and produced by Matrix4 methods, a Curve holds Keyframes, and a
+// material proxy returns its Color.
 // THREE's Object3D is deliberately not offered to scripts: it dispatches shared, mutable event objects, through
 // which a script listener could get hold of every object the engine later adds to its scene.
 const SCRIPT_CLASSES = [
@@ -42,6 +43,7 @@ const SCRIPT_CLASSES = [
   ['StockVector3', StockVector3],
   ['Matrix3', Matrix3],
   ['Keyframe', Keyframe],
+  ['Color', THREE.Color],
 ]
 
 function hardenClasses() {

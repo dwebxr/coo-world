@@ -233,3 +233,59 @@ test('cleaner: props holding a non-string url (or an empty asset://) are skipped
     ['assets', ['unused.glb']],
   ])
 })
+
+test('cleaner: a kept blueprint whose script is loaded from elsewhere stops all deletion and says which', async t => {
+  for (const script of [
+    'https://code.example/app.js',
+    'http://code.example/app.js',
+    '//code.example/app.js',
+    'code.example/app.js',
+  ]) {
+    const f = fixture(t)
+    f.tables.blueprints[0] = row({ id: 'bp', version: 0, model: 'asset://used.glb', script })
+    await f.run()
+    assert.deepEqual(f.deleted, [], script)
+    assert.deepEqual(f.warnings, [
+      '[clean] skipped all deletion: kept blueprints load their script from elsewhere ["bp"]; upload those scripts as assets (asset://) so the clean-up can read them',
+    ])
+  }
+  // a collection blueprint counts the same; an orphan's (deleted with it) and a path or blob (never loaded) do not
+  const f = fixture(t)
+  f.collections.blueprints.add({ id: 'collection', version: 0, script: 'https://code.example/c.js' })
+  await f.run()
+  assert.deepEqual(f.deleted, [])
+  assert.match(f.warnings[0], /from elsewhere \["collection"\]/)
+  for (const [where, script] of [
+    ['orphan', 'https://code.example/orphan.js'],
+    ['bp', '/etc/app.js'],
+    ['bp', 'blob:nodedata:x'],
+  ]) {
+    const g = fixture(t)
+    const data =
+      where === 'bp'
+        ? { id: 'bp', version: 0, model: 'asset://used.glb', script }
+        : { id: 'orphan', version: 0, script }
+    g.tables.blueprints[where === 'bp' ? 0 : 1] = row(data)
+    await g.run()
+    assert.deepEqual(g.warnings, [], `${where} ${script}`)
+    assert.deepEqual(g.deleted.at(-1), ['assets', ['unused.glb']])
+  }
+})
+
+test('cleaner: assets the store could not delete are reported, not counted as deleted', async t => {
+  const f = fixture(t)
+  const logs = []
+  t.mock.method(console, 'log', line => logs.push(line))
+  f.files.add('denied.glb')
+  // the S3 store answers per key (AssetsS3.delete)
+  const assets = {
+    list: async () => f.files,
+    delete: async () => ({ failed: [{ name: 'denied.glb', code: 'AccessDenied' }] }),
+    readText: async () => null,
+  }
+  const Cleaner = load('server/cleaner.js', 'Cleaner', { assets, collections: f.collections, fs: fs.promises, path })
+  await new Cleaner().init({ db: f.db, storageFile: f.storageFile })
+  assert.ok(logs.includes('[clean] 1 assets deleted'), logs.join('\n'))
+  assert.ok(logs.includes('[clean] 2 assets can be deleted'), logs.join('\n'))
+  assert.deepEqual(f.warnings, ['[clean] 1 assets could not be deleted: ["denied.glb (AccessDenied)"]'])
+})

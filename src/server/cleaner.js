@@ -24,6 +24,15 @@ function discoverAssets(data, found) {
   }
 }
 
+// a script value the server's loader fetches over the network (ServerLoader.locate): http(s), `//host/x` and any
+// other string that is not asset://, an absolute path or blob:
+function isRemoteScript(value) {
+  if (typeof value !== 'string') return false
+  const script = value.trim()
+  if (!script || script.startsWith('asset://') || script.startsWith('blob')) return false
+  return !script.startsWith('/') || script.startsWith('//')
+}
+
 // every asset://<name> inside a text (a stored value, a script's source): keep-more, so a name followed by
 // sentence punctuation is kept both with and without its trailing dots
 const ASSET_LITERAL = /asset:\/\/([A-Za-z0-9._-]{1,128})/g
@@ -89,6 +98,12 @@ class Cleaner {
     const blueprintsToDelete = []
     // the scripts of the blueprints that stay: their source can name assets no record mentions
     const scripts = new Set()
+    // kept blueprints whose script the server fetches from elsewhere (see isRemoteScript)
+    const remote = []
+    const keepScript = (id, script) => {
+      if (assetName(script)) scripts.add(assetName(script))
+      else if (isRemoteScript(script)) remote.push(String(id).slice(0, 24))
+    }
     const blueprintRows = await db('blueprints')
     for (const row of blueprintRows) {
       inspect('blueprints', row.id, () => {
@@ -101,7 +116,7 @@ class Cleaner {
         discoverAssets(data, found)
         if (blueprintIds.has(row.id)) {
           for (const asset of found) assetsToKeep.add(asset)
-          if (assetName(data.script)) scripts.add(assetName(data.script))
+          keepScript(row.id, data.script)
         } else {
           blueprintsToDelete.push(row.id)
         }
@@ -111,7 +126,7 @@ class Cleaner {
       inspect('collections', blueprint?.id, () => {
         if (!sanitizeBlueprintAdd(blueprint, { persisted: true }).ok) throw new Error('invalid blueprint')
         discoverAssets(blueprint, assetsToKeep)
-        if (assetName(blueprint.script)) scripts.add(assetName(blueprint.script))
+        keepScript(blueprint.id, blueprint.script)
       })
     }
     const settingsRow = await db('config').where('key', 'settings').first()
@@ -184,6 +199,15 @@ class Cleaner {
       console.warn(`[clean] skipped all deletion: could not read ${JSON.stringify(unreadable)}`)
       return
     }
+    // A script loaded from elsewhere may world.load assets no record names, and the clean-up does not fetch remote
+    // code at start-up. Unlike a missing file (it names nothing), it may name assets the server cannot see, so
+    // discovery is incomplete: nothing is deleted. The cost is disk that keeps growing, visibly, never lost data.
+    if (remote.length) {
+      console.warn(
+        `[clean] skipped all deletion: kept blueprints load their script from elsewhere ${JSON.stringify(remote)}; upload those scripts as assets (asset://) so the clean-up can read them`
+      )
+      return
+    }
     // Discovery is complete. Reachability comes only from persisted rows, collections, storage and scripts.
     if (blueprintsToDelete.length) {
       console.log(`[clean] ${blueprintsToDelete.length} blueprints can be deleted`)
@@ -198,8 +222,14 @@ class Cleaner {
     if (assetsToDelete.size) {
       console.log(`[clean] ${assetsToDelete.size} assets can be deleted`)
       if (!dryrun) {
-        await assets.delete(assetsToDelete)
-        console.log(`[clean] ${assetsToDelete.size} assets deleted`)
+        // S3 answers per key: one it could not delete is still there
+        const failed = (await assets.delete(assetsToDelete))?.failed ?? []
+        console.log(`[clean] ${assetsToDelete.size - failed.length} assets deleted`)
+        if (failed.length) {
+          console.warn(
+            `[clean] ${failed.length} assets could not be deleted: ${JSON.stringify(failed.slice(0, 10).map(item => `${String(item.name).slice(0, 80)} (${item.code})`))}`
+          )
+        }
       }
     }
     console.log('[clean] complete')

@@ -39,7 +39,18 @@ export async function writeFileAtomic(file, data, { fs: fsp = fs.promises } = {}
     await fsp.rm(temp, { force: true }).catch(() => {})
     throw err
   }
-  await syncDirectory(path.dirname(file), fsp)
+  try {
+    await syncDirectory(path.dirname(file), fsp)
+  } catch (err) {
+    // the complete file is under its final name, but the rename may not survive a power loss
+    err.renamed = true
+    throw err
+  }
+}
+
+// fsyncs the directory holding `file` (a write whose directory sync failed, tried again)
+export function syncDirectoryOf(file, { fs: fsp = fs.promises } = {}) {
+  return syncDirectory(path.dirname(file), fsp)
 }
 
 // The errors that mean "a directory cannot be fsynced here", from opening it read-only or from fsync on it:

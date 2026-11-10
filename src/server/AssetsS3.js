@@ -265,9 +265,12 @@ export class AssetsS3 {
   }
 
   // assets: any iterable of filenames (the cleaner passes a Set)
+  // Resolves { failed: [{ name, code }] }: DeleteObjects answers per key, and a key it lists under Errors (AccessDenied,
+  // InternalError, ...) is still there, so the cleaner does not count it as deleted
   async delete(assets) {
     const names = Array.from(assets)
-    if (names.length === 0) return
+    const failed = []
+    if (names.length === 0) return { failed }
 
     const chunks = []
     for (let i = 0; i < names.length; i += DELETE_BATCH) {
@@ -279,8 +282,9 @@ export class AssetsS3 {
         Key: this.getKey(asset),
       }))
 
+      let response
       try {
-        await this.client.send(
+        response = await this.client.send(
           new DeleteObjectsCommand({
             Bucket: this.bucketName,
             Delete: {
@@ -291,7 +295,15 @@ export class AssetsS3 {
       } catch (error) {
         throw new Error(`Failed to delete from S3: ${error.message}`)
       }
+      for (const error of response?.Errors ?? []) {
+        const key = typeof error?.Key === 'string' ? error.Key : ''
+        failed.push({
+          name: key.startsWith(this.prefix) ? key.slice(this.prefix.length) : key,
+          code: String(error?.Code ?? 'unknown'),
+        })
+      }
     }
+    return { failed }
   }
 
   // Helper methods

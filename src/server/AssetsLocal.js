@@ -3,14 +3,19 @@ import { statfs } from 'node:fs/promises'
 import path from 'path'
 import { computeAssetFilename, isUploadedAssetFilename } from './assetFilename'
 import { createOnce } from './coalesce'
-import { isTempName, removeTempFiles, writeFileAtomic } from './atomicWrite'
+import { isTempName, removeTempFiles, syncDirectoryOf, writeFileAtomic } from './atomicWrite'
 import { assetName } from '../core/extras/assetURL'
 
 export class AssetsLocal {
-  constructor() {
+  // `fs`: the promise API the writes use (tests inject a failing one)
+  constructor({ fs: fsp } = {}) {
     this.url = process.env.ASSETS_BASE_URL
     this.dir = null
+    this.fsp = fsp
     this.writes = new Map() // content filename -> the write in flight for it
+    // names whose file was renamed into place but whose directory sync failed: complete, not known to be durable.
+    // In memory only: after a restart the file either survived or it did not
+    this.unsynced = new Set()
   }
 
   async init({ rootDir, worldDir }) {
@@ -29,20 +34,34 @@ export class AssetsLocal {
   // uploads of the same content that overlap write it once; the others are told it was already there.
   // The file appears under its name only once it is complete (temp file, fsync, rename). A stored file of another
   // size than the upload can only be a cut-off write from before that (the name is the hash of the bytes), so it
-  // is replaced; one of the right size is taken as the same content without reading it.
+  // is replaced; one of the right size is taken as the same content without reading it, unless its own write could
+  // not sync the directory: then the sync is tried again first, and fails this upload the same way if it fails again.
   async upload(file) {
     const { filename, buffer } = await computeAssetFilename(file)
     const assetPath = path.join(this.dir, filename)
+    const options = this.fsp ? { fs: this.fsp } : undefined
     return createOnce(this.writes, filename, async () => {
       const stored = await fs.stat(assetPath).catch(err => {
         if (err.code === 'ENOENT') return null
         throw err
       })
-      if (stored?.isFile() && stored.size === buffer.length) return false
+      if (stored?.isFile() && stored.size === buffer.length) {
+        if (this.unsynced.has(filename)) {
+          await syncDirectoryOf(assetPath, options)
+          this.unsynced.delete(filename)
+        }
+        return false
+      }
       if (stored) {
         console.warn(`[assets] replacing ${filename}: ${stored.size} bytes stored, ${buffer.length} uploaded`)
       }
-      await writeFileAtomic(assetPath, buffer)
+      try {
+        await writeFileAtomic(assetPath, buffer, options)
+      } catch (err) {
+        if (err?.renamed) this.unsynced.add(filename)
+        throw err
+      }
+      this.unsynced.delete(filename)
       return true
     })
   }

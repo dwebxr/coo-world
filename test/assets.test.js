@@ -23,7 +23,7 @@ after(() => bundle?.destroy())
 const sha = buffer => createHash('sha256').update(buffer).digest('hex')
 const glb = text => Buffer.concat([Buffer.from('glTF'), Buffer.from(text)])
 
-async function localAssets(t) {
+async function localAssets(t, options) {
   const worldDir = fs.mkdtempSync(path.join(os.tmpdir(), 'assets-world-'))
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'assets-root-'))
   t.after(() => {
@@ -32,7 +32,7 @@ async function localAssets(t) {
   })
   fs.mkdirSync(path.join(rootDir, 'src/world/assets'), { recursive: true })
   fs.writeFileSync(path.join(rootDir, 'src/world/assets/builtin.js'), 'builtin')
-  const assets = new AssetsLocal()
+  const assets = new AssetsLocal(options)
   const init = () => assets.init({ rootDir, worldDir })
   return { assets, init, dir: path.join(worldDir, 'assets') }
 }
@@ -79,6 +79,77 @@ test('local assets: an upload appears under its hash name only when complete; du
   assert.equal(await assets.upload({ name: 'again.glb', buffer: bytes }), false)
   assert.equal(fs.statSync(path.join(dir, name)).mtimeMs, mtime)
   assert.deepEqual([...(await assets.list())], [name])
+})
+
+test('local assets: while an upload is being written its final name does not exist, not even in part', async t => {
+  let release
+  const gate = new Promise(resolve => (release = resolve))
+  let writing = null
+  const paused = {
+    ...fs.promises,
+    open: async (target, flags) => {
+      const handle = await fs.promises.open(target, flags)
+      if (flags !== 'wx') return handle
+      const writeFile = handle.writeFile.bind(handle)
+      handle.writeFile = async data => {
+        // the write waits, its file already open
+        writing = path.basename(target)
+        await gate
+        return writeFile(data)
+      }
+      return handle
+    },
+  }
+  const { assets, init, dir } = await localAssets(t, { fs: paused })
+  await init()
+  const bytes = glb('x'.repeat(4096))
+  const name = `${sha(bytes)}.glb`
+  const upload = assets.upload({ name: 'a.glb', buffer: bytes })
+  for (let i = 0; !writing && i < 10000; i++) await new Promise(resolve => setImmediate(resolve))
+  assert.ok(writing, 'the upload went through the injected fs')
+  assert.equal(fs.existsSync(path.join(dir, name)), false, 'no final name while the bytes are being written')
+  assert.equal(await assets.exists(name), false)
+  assert.ok(writing.startsWith('~tmp-') && writing.endsWith(name))
+  release()
+  assert.equal(await upload, true)
+  assert.deepEqual(fs.readFileSync(path.join(dir, name)), bytes)
+})
+
+test('local assets: an upload whose directory sync failed syncs again on the next upload before it says "stored"', async t => {
+  let dirSyncs = 0
+  let failing = 1
+  const flaky = {
+    ...fs.promises,
+    open: async (target, flags) => {
+      const handle = await fs.promises.open(target, flags)
+      if (flags !== 'r') return handle
+      handle.sync = async () => {
+        dirSyncs++
+        if (failing-- > 0) throw Object.assign(new Error('directory fsync'), { code: 'EIO' })
+      }
+      return handle
+    },
+  }
+  const { assets, init, dir } = await localAssets(t, { fs: flaky })
+  await init()
+  const bytes = glb('durable')
+  const name = `${sha(bytes)}.glb`
+  await assert.rejects(assets.upload({ name: 'a.glb', buffer: bytes }), { code: 'EIO' })
+  assert.deepEqual(fs.readFileSync(path.join(dir, name)), bytes, 'complete under its name, durability unknown')
+  assert.equal(dirSyncs, 1)
+  // the retry finds the right size, syncs the directory again, and only then answers "already stored"
+  assert.equal(await assets.upload({ name: 'a.glb', buffer: bytes }), false)
+  assert.equal(dirSyncs, 2)
+  // durable now: a further duplicate does not sync again
+  assert.equal(await assets.upload({ name: 'a.glb', buffer: bytes }), false)
+  assert.equal(dirSyncs, 2)
+  // a retry whose sync fails again fails the same way, and the next one tries again
+  const other = glb('again')
+  failing = 2
+  await assert.rejects(assets.upload({ name: 'b.glb', buffer: other }), { code: 'EIO' })
+  await assert.rejects(assets.upload({ name: 'b.glb', buffer: other }), { code: 'EIO' })
+  assert.equal(await assets.upload({ name: 'b.glb', buffer: other }), false)
+  assert.equal(dirSyncs, 5)
 })
 
 test('local assets: a cut-off copy from an earlier write is replaced by the next upload of the same content', async t => {
@@ -156,10 +227,25 @@ function fakeS3() {
         return {}
       }
       if (name === 'PutObjectCommand') objects.set(command.input.Key, command.input.Body)
+      // as S3 answers: per key, Deleted or Errors; a key listed in `denied` stays
+      if (name === 'DeleteObjectsCommand') {
+        const Deleted = []
+        const Errors = []
+        for (const { Key } of command.input.Delete.Objects) {
+          if (denied.has(Key)) {
+            Errors.push({ Key, Code: 'AccessDenied', Message: 'Access Denied' })
+          } else {
+            objects.delete(Key)
+            Deleted.push({ Key })
+          }
+        }
+        return Errors.length ? { Deleted, Errors } : { Deleted }
+      }
       return {}
     },
   }
-  return { client, commands, objects }
+  const denied = new Set()
+  return { client, commands, objects, denied }
 }
 
 function s3(t) {
@@ -174,18 +260,21 @@ function s3(t) {
 }
 
 test('s3 assets: delete takes the Set the cleaner passes (any iterable), in batches of at most 1000 keys', async t => {
-  const { assets, commands } = s3(t)
+  const { assets, commands, objects } = s3(t)
   const names = n => Array.from({ length: n }, (_, i) => `${String(i).padStart(64, '0')}.glb`)
-  await assets.delete(new Set())
+  for (const name of names(1001)) objects.set(`world/${name}`, 'x')
+  assert.deepEqual(await assets.delete(new Set()), { failed: [] })
   assert.equal(commands.length, 0)
-  await assets.delete(new Set(names(1)))
+  assert.deepEqual(await assets.delete(new Set(names(1))), { failed: [] })
+  assert.equal(objects.has(`world/${names(1)[0]}`), false, 'the object is gone')
+  assert.equal(objects.size, 1000)
   assert.deepEqual(
     commands.map(c => c.input.Delete.Objects.length),
     [1]
   )
   assert.equal(commands[0].input.Delete.Objects[0].Key, `world/${names(1)[0]}`)
   commands.length = 0
-  await assets.delete(new Set(names(1001)))
+  assert.deepEqual(await assets.delete(new Set(names(1001))), { failed: [] })
   assert.deepEqual(
     commands.map(c => [c.name, c.input.Bucket, c.input.Delete.Objects.length]),
     [
@@ -193,12 +282,22 @@ test('s3 assets: delete takes the Set the cleaner passes (any iterable), in batc
       ['DeleteObjectsCommand', 'bucket', 1],
     ]
   )
+  assert.equal(objects.size, 0, 'all 1,001 are gone')
   commands.length = 0
   await assets.delete(names(2).values())
   assert.deepEqual(
     commands.map(c => c.input.Delete.Objects.length),
     [2]
   )
+})
+
+test('s3 assets: keys S3 answers with Errors are reported as not deleted', async t => {
+  const { assets, objects, denied } = s3(t)
+  const names = ['a'.repeat(64) + '.glb', 'b'.repeat(64) + '.png', 'c'.repeat(64) + '.js']
+  for (const name of names) objects.set(`world/${name}`, 'x')
+  denied.add(`world/${names[1]}`)
+  assert.deepEqual(await assets.delete(new Set(names)), { failed: [{ name: names[1], code: 'AccessDenied' }] })
+  assert.deepEqual([...objects.keys()], [`world/${names[1]}`], 'the refused object is still there')
 })
 
 test('s3 assets: every extension uploads accept is stored with the type the local route serves', async t => {

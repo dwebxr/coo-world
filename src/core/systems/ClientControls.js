@@ -24,6 +24,11 @@ const v1 = new THREE.Vector3()
 const v2 = new THREE.Vector3()
 const q1 = new THREE.Quaternion()
 const q2 = new THREE.Quaternion()
+const s1 = new THREE.Vector3()
+
+// XR tremor smoothing state per ray pose entry: the engine's own vectors, never on the entry a script holds (a
+// script could replace a method there and be handed the engine's shared temporaries)
+const raySmoothing = new WeakMap()
 
 const captured = new Set()
 
@@ -45,16 +50,36 @@ function controlFailed(control, phase, err) {
   }
 }
 
-// a touch as an app's control sees it: a copy made from numbers (the live record stays with the host and the
-// player's stick, which compare it by identity)
-function touchSnapshot(info) {
-  return {
-    id: info.id,
-    position: new THREE.Vector3(info.position.x, info.position.y, 0),
-    prevPosition: new THREE.Vector3(info.prevPosition.x, info.prevPosition.y, 0),
-    delta: new THREE.Vector3(info.delta.x, info.delta.y, 0),
-    pointerType: info.pointerType,
+// A touch as an app's control sees it: one frozen object per control and touch, the same at onTouch and onTouchEnd
+// (so it can be kept and compared), whose getters read the host's live record and return new vectors made from
+// its numbers. The live record itself stays with the host and the player's stick.
+const touchFacades = new WeakMap() // host touch record -> Map(control -> facade)
+
+function touchFacade(control, info) {
+  let facades = touchFacades.get(info)
+  if (!facades) touchFacades.set(info, (facades = new Map()))
+  let facade = facades.get(control)
+  if (!facade) {
+    facade = Object.freeze({
+      get id() {
+        return info.id
+      },
+      get position() {
+        return new THREE.Vector3(info.position.x, info.position.y, 0)
+      },
+      get prevPosition() {
+        return new THREE.Vector3(info.prevPosition.x, info.prevPosition.y, 0)
+      },
+      get delta() {
+        return new THREE.Vector3(info.delta.x, info.delta.y, 0)
+      },
+      get pointerType() {
+        return info.pointerType
+      },
+    })
+    facades.set(control, facade)
   }
+  return facade
 }
 
 // the action hints a control shows in the HUD (CoreUI Actions): host objects built from the given list, reading
@@ -160,22 +185,18 @@ export class ClientControls extends System {
     }
   }
 
+  // the ray poses in world space: computed in the engine's own objects, written to the script's pose as numbers
   applyXRRigTo(control, xrRig) {
-    if (control.entries.xrLeftRayPose) {
-      const pose = control.entries.xrLeftRayPose
+    for (const pose of [control.entries.xrLeftRayPose, control.entries.xrRightRayPose]) {
+      const smooth = pose && raySmoothing.get(pose)
+      if (!smooth) continue
       const scale = v1.set(1, 1, 1)
-      m1.compose(pose.lPosition, pose.lQuaternion, scale)
+      m1.compose(smooth.position, smooth.quaternion, scale)
       m2.compose(xrRig.position, xrRig.quaternion, scale)
       m1.premultiply(m2)
-      m1.decompose(pose.position, pose.quaternion, scale)
-    }
-    if (control.entries.xrRightRayPose) {
-      const pose = control.entries.xrRightRayPose
-      const scale = v1.set(1, 1, 1)
-      m1.compose(pose.lPosition, pose.lQuaternion, scale)
-      m2.compose(xrRig.position, xrRig.quaternion, scale)
-      m1.premultiply(m2)
-      m1.decompose(pose.position, pose.quaternion, scale)
+      m1.decompose(v2, q2, s1)
+      pose.position.set(v2.x, v2.y, v2.z)
+      pose.quaternion.set(q2.x, q2.y, q2.z, q2.w)
     }
   }
 
@@ -522,7 +543,7 @@ export class ClientControls extends System {
       this.touches.set(e.pointerId, info)
       for (const control of this.controls) {
         if (!control.active) continue
-        const touch = control.options.object?.isApp ? touchSnapshot(info) : info
+        const touch = control.options.object?.isApp ? touchFacade(control, info) : info
         const consume = control.active && callScript(control.options.onTouch, touch)
         if (consume) break
       }
@@ -562,7 +583,7 @@ export class ClientControls extends System {
       if (info) {
         for (const control of this.controls) {
           if (!control.active) continue
-          const touch = control.options.object?.isApp ? touchSnapshot(info) : info
+          const touch = control.options.object?.isApp ? touchFacade(control, info) : info
           const consume = control.active && callScript(control.options.onTouchEnd, touch)
           if (consume) break
         }
@@ -755,15 +776,19 @@ function updateXRHand(controls, src, frame, referenceSpace, side) {
           if (ray) {
             const pose = control.entries[rayPoseProp]
             // apply tremor smoothing to local change
-            if (!pose.lPosition) {
-              pose.lPosition = setVectorFromPoint(new THREE.Vector3(), ray.transform.position)
-              pose.lQuaternion = setQuaternionFromPoint(new THREE.Quaternion(), ray.transform.orientation)
+            let smooth = raySmoothing.get(pose)
+            if (!smooth) {
+              smooth = {
+                position: setVectorFromPoint(new THREE.Vector3(), ray.transform.position),
+                quaternion: setQuaternionFromPoint(new THREE.Quaternion(), ray.transform.orientation),
+              }
+              raySmoothing.set(pose, smooth)
             }
             // the browser's pose objects never reach a method of an object a script may hold (xrPose.js)
             setVectorFromPoint(v1, ray.transform.position)
             setQuaternionFromPoint(q1, ray.transform.orientation)
-            pose.lPosition.lerp(v1, 1 - XR_TREMOR_SMOOTHING_FACTOR)
-            pose.lQuaternion.slerp(q1, 1 - XR_TREMOR_SMOOTHING_FACTOR)
+            smooth.position.lerp(v1, 1 - XR_TREMOR_SMOOTHING_FACTOR)
+            smooth.quaternion.slerp(q1, 1 - XR_TREMOR_SMOOTHING_FACTOR)
             // world transform is applied above in this.applyXRRig()
           }
         }
@@ -913,10 +938,13 @@ function createPointer(controls, control, prop) {
     get locked() {
       return controls.pointer.locked
     },
+    // a released control (or one of a stopped app) changes nothing
     lock() {
+      if (!control.active) return
       controls.lockPointer()
     },
     unlock() {
+      if (!control.active) return
       controls.unlockPointer()
     },
   }

@@ -74,7 +74,8 @@ app.on('update', () => {
 *   `pointer.lock()`: Requests to lock the pointer to the screen.
 *   `pointer.unlock()`: Releases the pointer lock.
 
-`coords`, `position` and `delta` are new vectors on every read (changing one changes nothing else).
+`coords`, `position` and `delta` are new vectors on every read (changing one changes nothing else). `lock()`
+and `unlock()` do nothing once the control is released.
 
 ### Scroll
 

@@ -501,17 +501,25 @@ try {
     // 6. the timer fires while the document has no <body> yet (the head has arrived, the rest is slow or stalled).
     //    The message must still come as soon as the body is there, also while a slow script in the body still holds
     //    DOMContentLoaded back (it used to throw on the missing body and then never show anything: a black page
-    //    for good). A small server in front of the world puts a script at the end of the head, after the watchdog,
-    //    and holds its answer: the parser stops there, in every engine, with the watchdog running and no body.
+    //    for good). Nothing here depends on how fast the machine is: a small server in front of the world puts a
+    //    script at the end of the head, after the watchdog, and answers it only when the test says so (the parser
+    //    stops there in every engine); the page reports when its slow callback has run and whether a body existed;
+    //    the body's first script is held the same way until the assertions are done.
     {
-      const HOLD = 3000
+      const gate = () => {
+        let open
+        const opened = new Promise(resolve => (open = resolve))
+        return { open, opened }
+      }
+      const head = gate()
+      const env = gate()
       let front = null
       let context = null
       try {
         front = http.createServer(async (req, res) => {
           try {
             if (req.url === '/__e2e_hold') {
-              await sleep(HOLD)
+              await head.opened
               res.writeHead(200, { 'content-type': 'text/javascript' })
               return res.end('')
             }
@@ -539,14 +547,32 @@ try {
           }
         })
         await new Promise((resolve, reject) => front.once('error', reject).listen(0, '127.0.0.1', resolve))
+        const SLOW = 1000
         const fresh6 = await fresh(
-          { error: 300, slow: 1000 },
+          { error: 300, slow: SLOW },
           async p => {
-            // the app's script never arrives, and the first script of the body is slow: once the head is released
-            // the body is there, but DOMContentLoaded is still far away
+            // the watchdog's slow timer is the only one of this length: note when its callback runs and whether
+            // the document had a body then (before the callback itself, which threw in the old code)
+            await p.addInitScript(slow => {
+              const setTimer = window.setTimeout
+              window.setTimeout = function (run, ms, ...rest) {
+                if (ms !== slow || typeof run !== 'function') return setTimer.call(window, run, ms, ...rest)
+                return setTimer.call(
+                  window,
+                  function () {
+                    window.__e2eSlowCallback = { body: !!document.body }
+                    return run.apply(this, arguments)
+                  },
+                  ms,
+                  ...rest
+                )
+              }
+            }, SLOW)
+            // the app's script never arrives, and the first script of the body is held: once the head is released
+            // the body is there, but DOMContentLoaded cannot come
             await p.route(/\.js(\?|$)/, async route => {
               if (!route.request().url().includes('/env.js')) return route.abort()
-              await sleep(HOLD + 6000)
+              await env.opened
               await route.continue().catch(() => {})
             })
           },
@@ -554,11 +580,18 @@ try {
         )
         context = fresh6.context
         const { probe, errors } = fresh6
-        // the slow mark (1 s) passes while the parser is held in the head
-        await sleep(1800)
-        const held = await probe.evaluate(() => ({ body: !!document.body, timings: window.__worldBootTimings }))
-        eq(held.body, false, 'no body at the slow mark')
-        eq(held.timings?.slow, 1000, 'the watchdog runs with the test timings')
+        // polled on a timer: a document without a body draws no frames, so the default (per frame) never runs
+        await probe.waitForFunction(() => window.__e2eSlowCallback, null, {
+          timeout: 15000 * TIMEOUT_SCALE,
+          polling: 100,
+        })
+        eq(
+          await probe.evaluate(() => window.__e2eSlowCallback.body),
+          false,
+          'the slow callback ran while the document had no body'
+        )
+        eq(await probe.evaluate(() => !!document.body), false, 'and the parser is still held in the head')
+        head.open()
         await shown(probe, '.boot-error.blocking', 15000 * TIMEOUT_SCALE, errors)
         eq(
           await probe.locator('.boot-error.blocking .boot-error-title').textContent(),
@@ -567,8 +600,12 @@ try {
         )
         eq(await probe.evaluate(() => document.readyState), 'loading', 'without waiting for DOMContentLoaded')
         eq(errors.length, 0, `no error from the watchdog itself: ${errors.join(' | ')}`)
+        // the rest of the document may come now (WebKit does not deliver a click while the parser is held)
+        env.open()
         await closeStaysClosed(probe)
       } finally {
+        head.open()
+        env.open()
         await context?.close().catch(() => {})
         if (front) {
           const closed = new Promise(resolve => front.close(resolve))

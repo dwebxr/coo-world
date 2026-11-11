@@ -29,7 +29,9 @@ for (const action of ['create', 'edit', 'fix', 'classify']) {
     world.blueprints.modify = () => {
       throw new Error('rebuild failed')
     }
-    await assert.rejects(ai[action]({ blueprintId: 'bp', prompt: 'test', error: {} }), /rebuild/)
+    // (a job of ServerAI.run that has not ended)
+    const job = { signal: new AbortController().signal }
+    await assert.rejects(ai[action]({ blueprintId: 'bp', prompt: 'test', error: {} }, job), /rebuild/)
     await world.fatalPromise
     assert.equal(JSON.parse(tables.blueprints.get('bp')?.data || '{}').version, 1)
   })

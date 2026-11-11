@@ -66,6 +66,8 @@ try {
       AI_API_KEY: 'mock-key',
       AI_MODEL: 'claude-opus-5-5',
       ANTHROPIC_BASE_URL: `http://127.0.0.1:${mock.address().port}`,
+      // one AI action an hour per builder: the AI step's second create is refused, whenever the first ends
+      AI_MAX_PER_USER_PER_HOUR: '1',
     },
   })
   browser = await launchBrowser(ENGINE)
@@ -261,7 +263,76 @@ try {
     ok(generate.body.fallbacks === 'default', 'default fallbacks')
     ok(generate.body.model === 'claude-opus-5-5', 'model')
     ok(['low', 'medium', 'high', 'xhigh', 'max'].includes(generate.body.output_config?.effort), 'effort')
-    return `${aiCalls} mock calls, script ${ai.script}`
+    // A refused create leaves no placeholder: ClientAI.create places a blueprint running asset://ai.js and an app
+    // before asking; the server, refusing (the builder's one action this hour is spent), removes the app for
+    // everyone and keeps the blueprint (ServerAI.dropPlaceholder)
+    const callsBefore = aiCalls
+    const refused = await page.evaluate(async () => {
+      const w = window.world
+      w.blueprints.add(
+        {
+          id: 'ai-ph',
+          version: 0,
+          name: 'Model',
+          image: null,
+          author: null,
+          url: null,
+          desc: null,
+          model: 'asset://ai.glb',
+          script: 'asset://ai.js',
+          props: { prompt: 'a refused cube', createdAt: w.network.getTime() },
+          preload: false,
+          public: false,
+          locked: false,
+          frozen: false,
+          unique: false,
+          scene: false,
+          disabled: false,
+        },
+        true
+      )
+      w.entities.add(
+        {
+          id: 'ai-ph-app',
+          type: 'app',
+          blueprint: 'ai-ph',
+          position: [2, 0, -3],
+          quaternion: [0, 0, 0, 1],
+          scale: [1, 1, 1],
+          mover: null,
+          uploader: null,
+          pinned: false,
+          state: {},
+        },
+        true
+      )
+      await new Promise(r => setTimeout(r, 300))
+      const placed = !!w.entities.get('ai-ph-app')
+      w.network.send('ai', { name: 'create', blueprintId: 'ai-ph', appId: 'ai-ph-app', prompt: 'a refused cube' })
+      const t0 = Date.now()
+      while (Date.now() - t0 < 15000) {
+        if (!w.entities.get('ai-ph-app')) break
+        await new Promise(r => setTimeout(r, 200))
+      }
+      return {
+        placed,
+        removed: !w.entities.get('ai-ph-app'),
+        blueprint: !!w.blueprints.get('ai-ph'),
+        // busy while the first create's naming request may still run, then over the hour's limit
+        said: w.chat.msgs.some(m =>
+          [
+            'Your previous AI request is still running.',
+            'You have reached the hourly limit for AI requests. Try again later.',
+          ].includes(m.body)
+        ),
+      }
+    })
+    ok(refused.placed && refused.removed, `placeholder removed: ${JSON.stringify(refused)}`)
+    ok(refused.said, 'the refusal is said in chat')
+    ok(refused.blueprint, 'the blueprint stays')
+    ok(/\[ai\] placeholder app "ai-ph-app" removed/.test(server.out), 'server log')
+    eq(aiCalls, callsBefore, 'no provider call for the refused create')
+    return `${aiCalls} mock calls, script ${ai.script}; refused create's placeholder removed`
   })
 
   await step(`node-client agent.mjs connected for ${AGENT_SECONDS} s`, async () => {

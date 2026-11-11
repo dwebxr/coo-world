@@ -14,6 +14,16 @@ const prefix = `app.remove(app.get('Block'))
 
 const docs = fs.readFileSync(path.join(__dirname, 'public/ai-docs.md'), 'utf8')
 
+// The output limit of a request for a script (create, edit, fix) and of a create's request for a name, in tokens.
+// Each client sends it in its API's own parameter. What it covers differs: Anthropic's max_tokens and OpenAI's
+// max_output_tokens include the model's thinking or reasoning, xAI's max_completion_tokens does not, and Google's
+// reference does not say for maxOutputTokens. A reply cut off at the limit is an error, not a script.
+const SCRIPT_MAX_TOKENS = 16000
+const NAME_MAX_TOKENS = 4096
+
+// the script of the app ClientAI.create places before it asks: a "generating…" display (src/world/assets/ai.js)
+const PLACEHOLDER_SCRIPT = 'asset://ai.js'
+
 /**
  * AI System
  *
@@ -22,7 +32,8 @@ const docs = fs.readFileSync(path.join(__dirname, 'public/ai-docs.md'), 'utf8')
  *
  */
 export class ServerAI extends System {
-  constructor(world) {
+  // `now`, `setTimer` and `clearTimer` are the clock (milliseconds) and the timer of the deadline (run)
+  constructor(world, { now = () => performance.now(), setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
     super(world)
     this.assets = null
     this.provider = process.env.AI_PROVIDER || null
@@ -44,8 +55,16 @@ export class ServerAI extends System {
       }
     }
     this.enabled = !!this.client
-    // how many generations run, and for whom (aiBudget.js; AI_MAX_* in the environment, a bad value throws here)
-    this.budget = createAiBudget(readAiLimitsEnv(process.env))
+    // how many generations run, for whom, and for how long (aiBudget.js; AI_MAX_* in the environment, a bad value
+    // throws here)
+    const limits = readAiLimitsEnv(process.env)
+    this.budget = createAiBudget(limits, { now })
+    this.deadlineMs = limits.maxSeconds * 1000
+    this.now = now
+    this.setTimer = setTimer
+    this.clearTimer = clearTimer
+    // blueprint id -> how many admitted actions run on it
+    this.running = new Map()
   }
 
   serialize() {
@@ -63,17 +82,84 @@ export class ServerAI extends System {
 
   // One `ai` request of a builder. `key` is who it is counted against (the user, or the wallet of a builder by
   // token: ServerNetwork.onAi). The request is read into plain, bounded values, takes a place in the budget, and
-  // runs in the background; the place is given back when it ends, however it ends.
+  // runs in the background (run); the place is given back when it ends, however it ends.
   // -> null when it was started (or AI is off), or what to tell the requester when it was refused
   onAction(action, key = 'unknown') {
     if (!this.enabled) return null
     const request = readAiAction(action)
     if (!request) return AI_REFUSALS.invalid
     const place = this.budget.start(key)
-    if (!place.ok) return AI_REFUSALS[place.reason]
+    if (!place.ok) {
+      this.dropPlaceholder(request)
+      return AI_REFUSALS[place.reason]
+    }
     console.log(`[ai] ${request.name} for ${previewValue(key, 80)}`)
-    this.background(request.name, () => this[request.name](request), place.done)
+    this.run(request, place.done)
     return null
+  }
+
+  // An admitted action, run to its end or to its deadline, whichever comes first. It is everything the action
+  // does: reading the script, the provider request with the SDK's own retries, and for a create the naming request
+  // too. At the deadline the provider requests are aborted (they take the job's signal); what cannot be aborted
+  // (reading the script, an upload) may still finish, and then changes nothing (apply). Either way the place is
+  // given back once (`done`), and a create that did not replace its placeholder's script removes the placeholder.
+  // A failure is logged here rather than left as an unhandled rejection.
+  async run(request, done) {
+    const { name, blueprintId } = request
+    const controller = new AbortController()
+    const job = { signal: controller.signal }
+    this.running.set(blueprintId, (this.running.get(blueprintId) || 0) + 1)
+    let timer
+    const deadline = new Promise(resolve => {
+      timer = this.setTimer(() => resolve(true), this.deadlineMs)
+      // a deadline alone does not keep the process running
+      timer?.unref?.()
+    })
+    try {
+      const work = Promise.resolve().then(() => this[name](request, job))
+      if (await Promise.race([work.then(() => false), deadline])) {
+        console.error(`[ai] ${name} stopped: it ran past its deadline (${this.deadlineMs / 1000} s)`)
+      }
+    } catch (err) {
+      console.error(`[ai] ${name} failed: ${err?.message ?? err}`)
+    } finally {
+      this.clearTimer(timer)
+      // the job has ended: a request still running is aborted, a late reply is not applied
+      controller.abort()
+      const left = this.running.get(blueprintId) - 1
+      if (left > 0) this.running.set(blueprintId, left)
+      else this.running.delete(blueprintId)
+      done()
+      this.dropPlaceholder(request)
+    }
+  }
+
+  // A create's placeholder is the app ClientAI.create adds, with a blueprint of its own, before it asks: it runs
+  // PLACEHOLDER_SCRIPT ("generating…") until the generated script replaces the blueprint's. A create that is
+  // refused, or that ends without that (a failure, the deadline, a script the world has no room for), would leave
+  // it, for everyone, for good. The server removes it, rather than the requester's client on being told: the
+  // server knows how every request ends, also after the requester has left, and does not depend on the client
+  // being one that cleans up. Only this request's placeholder goes: the action is a create, the app named by
+  // appId is of the action's blueprint, that blueprint still runs the placeholder script, and no admitted action
+  // runs on it (so a refused request cannot take away the placeholder of one that runs). A builder may remove any
+  // app (ServerNetwork.onEntityRemoved), so this lets no one remove what they could not. The blueprint stays,
+  // unused: the protocol has no way to remove a blueprint.
+  dropPlaceholder({ name, blueprintId, appId }) {
+    if (name !== 'create' || typeof appId !== 'string') return
+    if (this.world.blueprints.get(blueprintId)?.script !== PLACEHOLDER_SCRIPT) return
+    if (this.running.has(blueprintId) || this.world.network.stopping) return
+    const app = this.world.entities.get(appId)
+    if (!app?.isApp || app.data.blueprint !== blueprintId) return
+    try {
+      this.world.entities.remove(appId)
+    } catch (err) {
+      console.error(`[ai] placeholder teardown failed: ${err?.message ?? err}`)
+      // the app is gone from the world all the same (as in ServerNetwork.rekeyApp)
+      this.world.entities.items.delete(appId)
+      this.world.entities.untrackApp?.(appId)
+    }
+    this.world.network.send('entityRemoved', appId)
+    console.log(`[ai] placeholder app ${previewValue(appId, 16)} removed`)
   }
 
   // A generated change passes the same world budgets as a builder's edit (Blueprints.budgetRefusal: the blueprint
@@ -87,119 +173,98 @@ export class ServerAI extends System {
     return false
   }
 
-  // AI の呼び出しは待たずに走らせる。失敗 (API の拒否、廃止されたモデル、通信の失敗) は未処理の
-  // 拒否にせず、ここでログに出す
-  background(name, run, done) {
-    Promise.resolve()
-      .then(run)
-      .catch(err => console.error(`[ai] ${name} failed: ${err?.message ?? err}`))
-      .finally(() => done?.())
+  // A generated change is applied and announced only while its job runs (a reply after the deadline changes
+  // nothing), not while the server stops, and when it passes the world budgets
+  apply(job, blueprintId, fields) {
+    if (job.signal.aborted || this.world.network.stopping) return
+    const blueprint = this.world.blueprints.get(blueprintId)
+    const change = { id: blueprint.id, version: blueprint.version + 1, ...fields }
+    if (!this.admit(change)) return
+    this.world.network.markBlueprintDirty({ ...blueprint, ...change })
+    this.world.network.send('blueprintModified', change)
+    this.world.blueprints.modify(change)
   }
 
-  async create({ blueprintId, appId, prompt }) {
-    console.log('[ai] creating...')
-    // classify prompt to a short descriptive name for the app
-    this.background('classify', () => this.classify({ blueprintId, prompt }))
-    // send prompt to ai to generate code
-    const startAt = performance.now()
-    let output = await this.client.create(prompt)
-    output = stripCodeFences(output)
-    const changelog = [`create: ${prompt}`]
-    const code = prefix + writeChangelog(output, changelog)
-    const elapsed = (performance.now() - startAt) / 1000
-    // console.log(code)
-    console.log(`[ai] created in ${elapsed}s`)
-    // convert new code to asset
+  // A generated script, stored as an asset and set as the blueprint's script. Not uploaded once the job has ended.
+  async saveScript(job, blueprintId, code) {
     const file = new File([code], 'script.js', { type: 'text/plain' })
     const fileContent = await file.arrayBuffer()
     const hash = await hashFile(Buffer.from(fileContent))
-    const filename = `${hash}.js`
-    const url = `asset://${filename}`
-    // upload new script asset
+    const url = `asset://${hash}.js`
+    if (job.signal.aborted) return
     await this.assets.upload(file)
-    // announce before rebuilding locally
-    const blueprint = this.world.blueprints.get(blueprintId)
-    const version = blueprint.version + 1
-    const change = { id: blueprint.id, version, script: url }
-    if (this.world.network.stopping || !this.admit(change)) return
-    this.world.network.markBlueprintDirty({ ...blueprint, ...change })
-    this.world.network.send('blueprintModified', change)
-    this.world.blueprints.modify(change)
+    this.apply(job, blueprintId, { script: url })
   }
 
-  async edit({ blueprintId, appId, prompt }) {
+  // The script and its name are asked for at once; the create ends when both have settled, however each ends.
+  // A failed naming is logged (the script may still arrive); a failed script fails the create.
+  async create({ blueprintId, prompt }, job) {
+    console.log('[ai] creating...')
+    const [named, made] = await Promise.allSettled([
+      this.classify({ blueprintId, prompt }, job),
+      this.generate({ blueprintId, prompt }, job),
+    ])
+    if (named.status === 'rejected' && !job.signal.aborted) {
+      console.error(`[ai] classify failed: ${named.reason?.message ?? named.reason}`)
+    }
+    if (made.status === 'rejected') throw made.reason
+  }
+
+  async generate({ blueprintId, prompt }, job) {
+    const startAt = this.now()
+    let output = await this.client.create(prompt, { signal: job.signal })
+    output = stripCodeFences(output)
+    const changelog = [`create: ${prompt}`]
+    const code = prefix + writeChangelog(output, changelog)
+    console.log(`[ai] created in ${(this.now() - startAt) / 1000}s`)
+    await this.saveScript(job, blueprintId, code)
+  }
+
+  async edit({ blueprintId, prompt }, job) {
     console.log('[ai] editing...')
     // get existing blueprint
-    let blueprint = this.world.blueprints.get(blueprintId)
+    const blueprint = this.world.blueprints.get(blueprintId)
     if (!blueprint) return console.error('[ai] edit blueprint but blueprint not found')
     // get code to edit
     const script = await this.readScript(blueprint)
+    // a read that ends after the deadline asks the provider nothing
+    if (job.signal.aborted) return
     // send prompt to ai to generate code
-    const startAt = performance.now()
+    const startAt = this.now()
     const code = script.code.replace(prefix, '')
     const changelog = readChangelog(code)
     changelog.push(`edit: ${prompt}`)
-    let output = await this.client.edit(code, prompt)
+    let output = await this.client.edit(code, prompt, { signal: job.signal })
     output = stripCodeFences(output)
     const newCode = prefix + writeChangelog(output, changelog)
-    const elapsed = (performance.now() - startAt) / 1000
-    console.log(`[ai] edited in ${elapsed}s`)
-    // convert new code to asset
-    const file = new File([newCode], 'script.js', { type: 'text/plain' })
-    const fileContent = await file.arrayBuffer()
-    const hash = await hashFile(Buffer.from(fileContent))
-    const filename = `${hash}.js`
-    const url = `asset://${filename}`
-    // upload new script asset
-    await this.assets.upload(file)
-    // announce before rebuilding locally
-    blueprint = this.world.blueprints.get(blueprintId)
-    const version = blueprint.version + 1
-    const change = { id: blueprint.id, version, script: url }
-    if (this.world.network.stopping || !this.admit(change)) return
-    this.world.network.markBlueprintDirty({ ...blueprint, ...change })
-    this.world.network.send('blueprintModified', change)
-    this.world.blueprints.modify(change)
+    console.log(`[ai] edited in ${(this.now() - startAt) / 1000}s`)
+    await this.saveScript(job, blueprintId, newCode)
   }
 
-  async fix({ blueprintId, appId, error }) {
+  async fix({ blueprintId, error }, job) {
     console.log('[ai] fixing...')
     // get existing blueprint
-    let blueprint = this.world.blueprints.get(blueprintId)
+    const blueprint = this.world.blueprints.get(blueprintId)
     if (!blueprint) return console.error('[ai] fix blueprint but blueprint not found')
     // get code to fix
     const script = await this.readScript(blueprint)
+    // a read that ends after the deadline asks the provider nothing
+    if (job.signal.aborted) return
     // send prompt to ai to generate code
-    const startAt = performance.now()
+    const startAt = this.now()
     const code = script.code.replace(prefix, '')
     const changelog = readChangelog(code)
-    let output = await this.client.fix(code, error)
+    let output = await this.client.fix(code, error, { signal: job.signal })
     output = stripCodeFences(output)
     const newCode = prefix + writeChangelog(output, changelog)
-    const elapsed = (performance.now() - startAt) / 1000
-    console.log(`[ai] fixed in ${elapsed}s`)
-    // convert new code to asset
-    const file = new File([newCode], 'script.js', { type: 'text/plain' })
-    const fileContent = await file.arrayBuffer() // or file.text() for string
-    const hash = await hashFile(Buffer.from(fileContent))
-    const filename = `${hash}.js`
-    const url = `asset://${filename}`
-    // upload new script asset
-    await this.assets.upload(file)
-    // announce before rebuilding locally
-    blueprint = this.world.blueprints.get(blueprintId)
-    const version = blueprint.version + 1
-    const change = { id: blueprint.id, version, script: url }
-    if (this.world.network.stopping || !this.admit(change)) return
-    this.world.network.markBlueprintDirty({ ...blueprint, ...change })
-    this.world.network.send('blueprintModified', change)
-    this.world.blueprints.modify(change)
+    console.log(`[ai] fixed in ${(this.now() - startAt) / 1000}s`)
+    await this.saveScript(job, blueprintId, newCode)
   }
 
   // The script text edit and fix send to the AI provider. Only an asset://<name> script is read, through the
   // loader (which keeps local reads inside the assets directory). Any other value, such as a local path,
-  // asset:// traversal or a remote URL, is refused here, before the loader or the provider sees it; background()
-  // logs the refusal as the action's failure.
+  // asset:// traversal or a remote URL, is refused here, before the loader or the provider sees it; run() logs
+  // the refusal as the action's failure.
   async readScript(blueprint) {
     if (assetName(blueprint.script) === null) {
       throw assetRefusal('the script is not an asset:// file', blueprint.script)
@@ -209,162 +274,116 @@ export class ServerAI extends System {
     return script
   }
 
-  async classify({ blueprintId, prompt }) {
+  async classify({ blueprintId, prompt }, job) {
     // get a name for the object
-    const name = await this.client.classify(prompt)
-    // update name
-    const blueprint = this.world.blueprints.get(blueprintId)
-    const version = blueprint.version + 1
-    const change = { id: blueprint.id, version, name }
-    if (this.world.network.stopping || !this.admit(change)) return
-    this.world.network.markBlueprintDirty({ ...blueprint, ...change })
-    this.world.network.send('blueprintModified', change)
-    this.world.blueprints.modify(change)
+    const name = await this.client.classify(prompt, { signal: job.signal })
+    this.apply(job, blueprintId, { name })
   }
 }
 
-class OpenAIClient {
+// Each client's create, edit, fix and classify take `{ signal }`: aborting it stops the request (ServerAI.run)
+
+const SCRIPT_SYSTEM = `
+        ${docs}
+        ===============
+        You are an artist and code generator. Always respond with raw code only, never use markdown code blocks or any other formatting.`
+const editSystem = code => `${SCRIPT_SYSTEM}
+        Here is the existing script that you will be working with:
+        ===============
+        ${code}`
+const NAME_SYSTEM = `You are a classifier. We will give you a prompt that a user has entered to generate a 3D object and your job is respond with a short name for the object. For example if someone prompts "a cool gamer desk with neon lights" you would respond with something like "Gamer Desk" because it is a short descriptive name that captures the essence of the object.`
+const createInput = prompt => `Respond with the javascript needed to generate the following:\n\n"${prompt}"`
+const editInput = prompt => `Please edit the code above to satisfy the following request:\n\n"${prompt}"`
+const fixInput = error => `This code has an error please fix it:\n\n"${JSON.stringify(error, null, 2)}"`
+const nameInput = prompt => `Please classify the following prompt:\n\n"${prompt}"`
+
+// The four requests, the same for every provider; `ask` is the provider's own call
+class ProviderClient {
+  async create(prompt, { signal } = {}) {
+    return this.ask({ system: SCRIPT_SYSTEM, content: createInput(prompt), signal })
+  }
+
+  async edit(code, prompt, { signal } = {}) {
+    return this.ask({ system: editSystem(code), content: editInput(prompt), signal })
+  }
+
+  async fix(code, error, { signal } = {}) {
+    return this.ask({ system: editSystem(code), content: fixInput(error), signal })
+  }
+
+  async classify(prompt, { signal } = {}) {
+    return this.ask({ system: NAME_SYSTEM, content: nameInput(prompt), maxTokens: NAME_MAX_TOKENS, signal })
+  }
+}
+
+// Responses API: max_output_tokens counts the reasoning too; a reply that stopped at it has status 'incomplete'
+class OpenAIClient extends ProviderClient {
   constructor(apiKey, model, effort) {
+    super()
     this.client = new OpenAI({ apiKey })
     this.model = model
     this.effort = effort
   }
 
-  async create(prompt) {
-    const resp = await this.client.responses.create({
-      model: this.model,
-      reasoning: { effort: this.effort },
-      // text: { verbosity: 'low' },
-      // max_output_tokens: 8192,
-      instructions: `
-        ${docs}
-        ===============
-        You are an artist and code generator. Always respond with raw code only, never use markdown code blocks or any other formatting.`,
-      input: `Respond with the javascript needed to generate the following:\n\n"${prompt}"`,
-    })
-    return resp.output_text
-  }
-
-  async edit(code, prompt) {
-    const resp = await this.client.responses.create({
-      model: this.model,
-      reasoning: { effort: this.effort },
-      // text: { verbosity: 'low' },
-      // max_output_tokens: 8192,
-      instructions: `
-        ${docs}
-        ===============
-        You are an artist and code generator. Always respond with raw code only, never use markdown code blocks or any other formatting.
-        Here is the existing script that you will be working with:
-        ===============
-        ${code}`,
-      input: `Please edit the code above to satisfy the following request:\n\n"${prompt}"`,
-    })
-    return resp.output_text
-  }
-
-  async fix(code, error) {
-    const resp = await this.client.responses.create({
-      model: this.model,
-      reasoning: { effort: this.effort },
-      // text: { verbosity: 'low' },
-      // max_output_tokens: 8192,
-      instructions: `
-        ${docs}
-        ===============
-        You are an artist and code generator. Always respond with raw code only, never use markdown code blocks or any other formatting.
-        Here is the existing script that you will be working with:
-        ===============
-        ${code}`,
-      input: `This code has an error please fix it:\n\n"${JSON.stringify(error, null, 2)}"`,
-    })
-    return resp.output_text
-  }
-
-  async classify(prompt) {
-    const resp = await this.client.responses.create({
-      model: this.model,
-      reasoning: { effort: this.effort },
-      // text: { verbosity: 'low' },
-      // max_output_tokens: 8192,
-      instructions: `You are a classifier. We will give you a prompt that a user has entered to generate a 3D object and your job is respond with a short name for the object. For example if someone prompts "a cool gamer desk with neon lights" you would respond with something like "Gamer Desk" because it is a short descriptive name that captures the essence of the object.`,
-      input: `Please classify the following prompt:\n\n"${prompt}"`,
-    })
+  async ask({ system, content, maxTokens = SCRIPT_MAX_TOKENS, signal }) {
+    const resp = await this.client.responses.create(
+      {
+        model: this.model,
+        reasoning: { effort: this.effort },
+        // text: { verbosity: 'low' },
+        max_output_tokens: maxTokens,
+        instructions: system,
+        input: content,
+      },
+      { signal }
+    )
+    if (resp.status === 'incomplete') {
+      throw new Error(`the AI reply was cut off (${resp.incomplete_details?.reason ?? 'incomplete'})`)
+    }
     return resp.output_text
   }
 }
 
-class AnthropicClient {
+class AnthropicClient extends ProviderClient {
   constructor(apiKey, model, effort) {
+    super()
     this.client = new Anthropic({ apiKey })
     this.model = model
     this.effort = effort
     // 考える分も max_tokens に数えられるので、本文 (スクリプト) の分と合わせて取る。
     // ストリーミングなしで SDK が受け付ける範囲 (16000)
-    this.maxTokens = 16000
+    this.maxTokens = SCRIPT_MAX_TOKENS
   }
 
-  async ask({ system, content, effort = this.effort, maxTokens = this.maxTokens }) {
+  async ask({ system, content, effort = this.effort, maxTokens = this.maxTokens, signal }) {
     const params = anthropicRequest({ model: this.model, effort, maxTokens, system, content })
-    const resp = await this.client.beta.messages.create(params)
+    const resp = await this.client.beta.messages.create(params, { signal })
     return readAnthropicText(resp)
   }
 
-  async create(prompt) {
-    return this.ask({
-      system: `
-        ${docs}
-        ===============
-        You are an artist and code generator. Always respond with raw code only, never use markdown code blocks or any other formatting.`,
-      content: `Respond with the javascript needed to generate the following:\n\n"${prompt}"`,
-    })
-  }
-
-  async edit(code, prompt) {
-    return this.ask({
-      system: `
-        ${docs}
-        ===============
-        You are an artist and code generator. Always respond with raw code only, never use markdown code blocks or any other formatting.
-        Here is the existing script that you will be working with:
-        ===============
-        ${code}`,
-      content: `Please edit the code above to satisfy the following request:\n\n"${prompt}"`,
-    })
-  }
-
-  async fix(code, error) {
-    return this.ask({
-      system: `
-        ${docs}
-        ===============
-        You are an artist and code generator. Always respond with raw code only, never use markdown code blocks or any other formatting.
-        Here is the existing script that you will be working with:
-        ===============
-        ${code}`,
-      content: `This code has an error please fix it:\n\n"${JSON.stringify(error, null, 2)}"`,
-    })
-  }
-
   // 短い名前を付けるだけなので、考える量を減らす
-  async classify(prompt) {
+  async classify(prompt, { signal } = {}) {
     return this.ask({
-      system: `You are a classifier. We will give you a prompt that a user has entered to generate a 3D object and your job is respond with a short name for the object. For example if someone prompts "a cool gamer desk with neon lights" you would respond with something like "Gamer Desk" because it is a short descriptive name that captures the essence of the object.`,
-      content: `Please classify the following prompt:\n\n"${prompt}"`,
+      system: NAME_SYSTEM,
+      content: nameInput(prompt),
       effort: 'low',
-      maxTokens: 4096,
+      maxTokens: NAME_MAX_TOKENS,
+      signal,
     })
   }
 }
 
-class XAIClient {
+// Chat Completions: max_completion_tokens counts the visible reply only, not the reasoning (xAI's API reference;
+// max_tokens is deprecated there); a reply that stopped at it has finish_reason 'length'
+class XAIClient extends ProviderClient {
   constructor(apiKey, model) {
+    super()
     this.apiKey = apiKey
     this.model = model
     this.url = 'https://api.x.ai/v1/chat/completions'
   }
 
-  async create(prompt) {
+  async ask({ system, content, maxTokens = SCRIPT_MAX_TOKENS, signal }) {
     const resp = await fetch(this.url, {
       method: 'POST',
       headers: {
@@ -374,123 +393,30 @@ class XAIClient {
       body: JSON.stringify({
         model: this.model,
         stream: false,
+        max_completion_tokens: maxTokens,
         messages: [
-          {
-            role: 'system',
-            content: `
-              ${docs}
-              ===============
-              You are an artist and code generator. Always respond with raw code only, never use markdown code blocks or any other formatting.`,
-          },
-          {
-            role: 'user',
-            content: `Respond with the javascript needed to generate the following:\n\n"${prompt}"`,
-          },
+          { role: 'system', content: system },
+          { role: 'user', content },
         ],
       }),
+      signal,
     })
     const data = await resp.json()
-    return data.choices[0].message.content
-  }
-
-  async edit(code, prompt) {
-    const resp = await fetch(this.url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: this.model,
-        stream: false,
-        messages: [
-          {
-            role: 'system',
-            content: `
-              ${docs}
-              ===============
-              You are an artist and code generator. Always respond with raw code only, never use markdown code blocks or any other formatting.
-              Here is the existing script that you will be working with:
-              ===============
-              ${code}`,
-          },
-          {
-            role: 'user',
-            content: `Please edit the code above to satisfy the following request:\n\n"${prompt}"`,
-          },
-        ],
-      }),
-    })
-    const data = await resp.json()
-    return data.choices[0].message.content
-  }
-
-  async fix(code, error) {
-    const resp = await fetch(this.url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: this.model,
-        stream: false,
-        messages: [
-          {
-            role: 'system',
-            content: `
-              ${docs}
-              ===============
-              You are an artist and code generator. Always respond with raw code only, never use markdown code blocks or any other formatting.
-              Here is the existing script that you will be working with:
-              ===============
-              ${code}`,
-          },
-          {
-            role: 'user',
-            content: `This code has an error please fix it:\n\n"${JSON.stringify(error, null, 2)}"`,
-          },
-        ],
-      }),
-    })
-    const data = await resp.json()
-    return data.choices[0].message.content
-  }
-
-  async classify(prompt) {
-    const resp = await fetch(this.url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: this.model,
-        stream: false,
-        messages: [
-          {
-            role: 'system',
-            content: `You are a classifier. We will give you a prompt that a user has entered to generate a 3D object and your job is respond with a short name for the object. For example if someone prompts "a cool gamer desk with neon lights" you would respond with something like "Gamer Desk" because it is a short descriptive name that captures the essence of the object.`,
-          },
-          {
-            role: 'user',
-            content: `Please classify the following prompt:\n\n"${prompt}"`,
-          },
-        ],
-      }),
-    })
-    const data = await resp.json()
-    return data.choices[0].message.content
+    const choice = data.choices[0]
+    if (choice.finish_reason === 'length') throw new Error('the AI reply was cut off (max_completion_tokens)')
+    return choice.message.content
   }
 }
 
-class GoogleClient {
+// generateContent: generationConfig.maxOutputTokens; a reply that stopped at it has finishReason 'MAX_TOKENS'
+class GoogleClient extends ProviderClient {
   constructor(apiKey, model) {
+    super()
     this.apiKey = apiKey
     this.url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`
   }
 
-  async create(prompt) {
+  async ask({ system, content, maxTokens = SCRIPT_MAX_TOKENS, signal }) {
     const resp = await fetch(this.url, {
       method: 'POST',
       headers: {
@@ -498,115 +424,17 @@ class GoogleClient {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        system_instruction: {
-          parts: {
-            text: `
-              ${docs}
-              ===============
-              You are an artist and code generator. Always respond with raw code only, never use markdown code blocks or any other formatting.`,
-          },
-        },
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: `Respond with the javascript needed to generate the following:\n\n"${prompt}"` }],
-          },
-        ],
+        system_instruction: { parts: { text: system } },
+        contents: [{ role: 'user', parts: [{ text: content }] }],
+        generationConfig: { maxOutputTokens: maxTokens },
       }),
+      signal,
     })
     const data = await resp.json()
     // console.log(JSON.stringify(data, null, 2))
-    return data.candidates[0].content.parts[0].text
-  }
-
-  async edit(code, prompt) {
-    const resp = await fetch(this.url, {
-      method: 'POST',
-      headers: {
-        'x-goog-api-key': this.apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        system_instruction: {
-          parts: {
-            text: `
-              ${docs}
-              ===============
-              You are an artist and code generator. Always respond with raw code only, never use markdown code blocks or any other formatting.
-              Here is the existing script that you will be working with:
-              ===============
-              ${code}`,
-          },
-        },
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: `Please edit the code above to satisfy the following request:\n\n"${prompt}"` }],
-          },
-        ],
-      }),
-    })
-    const data = await resp.json()
-    // console.log(JSON.stringify(data, null, 2))
-    return data.candidates[0].content.parts[0].text
-  }
-
-  async fix(code, error) {
-    const resp = await fetch(this.url, {
-      method: 'POST',
-      headers: {
-        'x-goog-api-key': this.apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        system_instruction: {
-          parts: {
-            text: `
-              ${docs}
-              ===============
-              You are an artist and code generator. Always respond with raw code only, never use markdown code blocks or any other formatting.
-              Here is the existing script that you will be working with:
-              ===============
-              ${code}`,
-          },
-        },
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: `This code has an error please fix it:\n\n"${JSON.stringify(error, null, 2)}"` }],
-          },
-        ],
-      }),
-    })
-    const data = await resp.json()
-    // console.log(JSON.stringify(data, null, 2))
-    return data.candidates[0].content.parts[0].text
-  }
-
-  async classify(prompt) {
-    const resp = await fetch(this.url, {
-      method: 'POST',
-      headers: {
-        'x-goog-api-key': this.apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        system_instruction: {
-          parts: {
-            text: `You are a classifier. We will give you a prompt that a user has entered to generate a 3D object and your job is respond with a short name for the object. For example if someone prompts "a cool gamer desk with neon lights" you would respond with something like "Gamer Desk" because it is a short descriptive name that captures the essence of the object.`,
-          },
-        },
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: `Please classify the following prompt:\n\n"${prompt}"` }],
-          },
-        ],
-      }),
-    })
-    const data = await resp.json()
-    // console.log(JSON.stringify(data, null, 2))
-    return data.candidates[0].content.parts[0].text
+    const candidate = data.candidates[0]
+    if (candidate.finishReason === 'MAX_TOKENS') throw new Error('the AI reply was cut off (maxOutputTokens)')
+    return candidate.content.parts[0].text
   }
 }
 

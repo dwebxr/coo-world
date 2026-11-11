@@ -41,7 +41,11 @@ for (const action of ['create', 'edit', 'fix', 'classify']) {
     ai.client = { [action]: async () => (action === 'classify' ? 'name' : 'app.send("init", {})') }
     ai.assets = { upload: async () => {} }
     if (action === 'create') ai.classify = () => {}
-    await ai[action]({ blueprintId: 'bp', appId: 'app', prompt: 'prompt', error: {} })
+    // (a job of ServerAI.run that has not ended)
+    await ai[action](
+      { blueprintId: 'bp', appId: 'app', prompt: 'prompt', error: {} },
+      { signal: new AbortController().signal }
+    )
     assert.equal(calls.length, 2)
     assert.equal(calls[0][1].version, 8)
     assert.deepEqual([...world.network.dirtyBlueprints.keys()], ['bp'])

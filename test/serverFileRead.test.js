@@ -233,7 +233,7 @@ test('server ai: edit and fix of a script that is a path or asset:// traversal m
 test('server ai: an asset:// script is read through the loader and edited', async () => {
   reset()
   const { ai, calls, modified } = makeAI({ id: 'bp', version: 1, script: 'asset://inside.js' })
-  await ai.edit({ blueprintId: 'bp', appId: 'app', prompt: 'make it spin' })
+  await ai.edit({ blueprintId: 'bp', appId: 'app', prompt: 'make it spin' }, { signal: new AbortController().signal })
   assert.equal(calls.length, 1)
   assert.match(calls[0].system, /INSIDE/)
   assert.deepEqual(reads, [path.join(assetsDir, 'inside.js')])

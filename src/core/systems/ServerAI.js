@@ -7,6 +7,7 @@ import { System } from './System'
 import { hashFile } from '../utils-server'
 import { anthropicEffort, anthropicRequest, readAnthropicText } from '../extras/anthropicRequest'
 import { assetName, assetRefusal, previewValue } from '../extras/assetURL'
+import { AI_REFUSALS, createAiBudget, readAiAction, readAiLimitsEnv } from '../../server/aiBudget'
 
 const prefix = `app.remove(app.get('Block'))
 `
@@ -43,6 +44,8 @@ export class ServerAI extends System {
       }
     }
     this.enabled = !!this.client
+    // how many generations run, and for whom (aiBudget.js; AI_MAX_* in the environment, a bad value throws here)
+    this.budget = createAiBudget(readAiLimitsEnv(process.env))
   }
 
   serialize() {
@@ -58,17 +61,19 @@ export class ServerAI extends System {
     this.assets = assets
   }
 
-  async onAction(action) {
-    if (!this.enabled) {
-      return
-    }
-    if (action.name === 'create') {
-      this.background('create', () => this.create(action))
-    } else if (action.name === 'edit') {
-      this.background('edit', () => this.edit(action))
-    } else if (action.name === 'fix') {
-      this.background('fix', () => this.fix(action))
-    }
+  // One `ai` request of a builder. `key` is who it is counted against (the user, or the wallet of a builder by
+  // token: ServerNetwork.onAi). The request is read into plain, bounded values, takes a place in the budget, and
+  // runs in the background; the place is given back when it ends, however it ends.
+  // -> null when it was started (or AI is off), or what to tell the requester when it was refused
+  onAction(action, key = 'unknown') {
+    if (!this.enabled) return null
+    const request = readAiAction(action)
+    if (!request) return AI_REFUSALS.invalid
+    const place = this.budget.start(key)
+    if (!place.ok) return AI_REFUSALS[place.reason]
+    console.log(`[ai] ${request.name} for ${previewValue(key, 80)}`)
+    this.background(request.name, () => this[request.name](request), place.done)
+    return null
   }
 
   // A generated change passes the same world budgets as a builder's edit (Blueprints.budgetRefusal: the blueprint
@@ -84,10 +89,11 @@ export class ServerAI extends System {
 
   // AI の呼び出しは待たずに走らせる。失敗 (API の拒否、廃止されたモデル、通信の失敗) は未処理の
   // 拒否にせず、ここでログに出す
-  background(name, run) {
+  background(name, run, done) {
     Promise.resolve()
       .then(run)
       .catch(err => console.error(`[ai] ${name} failed: ${err?.message ?? err}`))
+      .finally(() => done?.())
   }
 
   async create({ blueprintId, appId, prompt }) {

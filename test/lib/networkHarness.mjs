@@ -136,6 +136,7 @@ const names = [
   'onEntityRemoved',
   'onSettingsModified',
   'onSpawnModified',
+  'onAi',
 ]
 const methods = names
   .map(name => {

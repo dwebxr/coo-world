@@ -2243,7 +2243,22 @@ export class ServerNetwork extends System {
   onAi = (socket, action) => {
     if (this.stopping) return
     if (!this.requireBuilder(socket, 'use ai')) return
-    this.world.ai.onAction(action)
+    // Counted against the builder (aiBudget.js): the user for a stored rank, the wallet for one who is a builder
+    // only by holding a token (a user id is free: every new connection gets one). A refused request is answered to
+    // that player.
+    const player = socket.player
+    const wallet = player.data.tokenGrantedRank ? solanaGating.walletOf(socket.id) : null
+    const refusal = this.world.ai.onAction(action, wallet ? `wallet:${wallet}` : `user:${player.data.userId}`)
+    if (refusal) {
+      socket.send('chatAdded', {
+        id: uuid(),
+        kind: 'system',
+        from: null,
+        fromId: null,
+        body: refusal,
+        createdAt: moment().toISOString(),
+      })
+    }
   }
 
   onPing = (socket, time) => {

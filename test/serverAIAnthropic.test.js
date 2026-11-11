@@ -151,8 +151,9 @@ test('server ai: edit and fix failures are logged too, with no unhandled rejecti
       blueprints: { get: () => blueprint },
       loader: { get: () => ({ code: 'app.on("update", () => {})' }) },
     }
-    await ai.onAction({ name: 'edit', blueprintId: 'bp', appId: 'app', prompt: 'p' })
-    await ai.onAction({ name: 'fix', blueprintId: 'bp', appId: 'app', error: { message: 'x' } })
+    // (two builders: one builder's second request waits for the first to end, aiBudget.js)
+    ai.onAction({ name: 'edit', blueprintId: 'bp', appId: 'app', prompt: 'p' }, 'user:a')
+    ai.onAction({ name: 'fix', blueprintId: 'bp', appId: 'app', error: { message: 'x' } }, 'user:b')
     for (let i = 0; i < 20 && errors.length < 2; i++) await new Promise(resolve => setImmediate(resolve))
     assert.deepEqual(errors.sort(), ['[ai] edit failed: overloaded', '[ai] fix failed: overloaded'])
     await new Promise(resolve => setImmediate(resolve))

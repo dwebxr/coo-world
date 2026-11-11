@@ -722,6 +722,7 @@ test('transfers are bounded: four from other hosts at once, 256 waiting or runni
   for (const result of refused) {
     assert.equal(result.status, 'rejected')
     assert.match(result.reason.message, /too many downloads from other hosts at once \(256\)/)
+    assert.equal(result.reason.code, 'LOADER_BUSY', 'marked as a refusal for being busy, which a player retries once')
   }
   assert.equal(loader.has('script', 'https://elsewhere.example/256.js'), false, 'a refused load is not kept')
   // the world's own assets are not capped in number, and do not wait for the outside pool

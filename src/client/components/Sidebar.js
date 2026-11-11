@@ -70,6 +70,7 @@ import { TipForm } from './TipForm'
 import { toText } from '../../core/extras/scriptText'
 import { cssImage } from '../../core/extras/cssImage'
 import { setDebugGlobal } from '../../core/extras/debugGlobals'
+import { ErrorBoundary } from './ErrorBoundary'
 import { fieldValues } from '../../core/extras/appFields'
 import { guardTransform } from '../../core/nodes/Node'
 
@@ -246,15 +247,19 @@ export function Sidebar({ world, ui }) {
             </Section>
           )}
         </div>
-        {ui.pane === 'prefs' && <Prefs world={world} hidden={!ui.active} />}
-        {ui.pane === 'world' && <World world={world} hidden={!ui.active} />}
-        {ui.pane === 'apps' && <Apps world={world} hidden={!ui.active} />}
-        {ui.pane === 'add' && <Add world={world} hidden={!ui.active} />}
-        {ui.pane === 'app' && <App key={ui.app.data.id} world={world} hidden={!ui.active} />}
-        {ui.pane === 'script' && <Script key={ui.app.data.id} world={world} hidden={!ui.active} />}
-        {ui.pane === 'nodes' && <Nodes key={ui.app.data.id} world={world} hidden={!ui.active} />}
-        {ui.pane === 'meta' && <Meta key={ui.app.data.id} world={world} hidden={!ui.active} />}
-        {ui.pane === 'players' && <Players world={world} hidden={!ui.active} />}
+        {/* the open pane on its own (ErrorBoundary.js): one that throws while rendering leaves the buttons, the
+            chat and the HUD standing, says so, and can be tried again; another pane or app is a new start */}
+        <ErrorBoundary name={`the ${ui.pane} pane`} mode='panel' resetKey={`${ui.pane}:${ui.app?.data?.id}`}>
+          {ui.pane === 'prefs' && <Prefs world={world} hidden={!ui.active} />}
+          {ui.pane === 'world' && <World world={world} hidden={!ui.active} />}
+          {ui.pane === 'apps' && <Apps world={world} hidden={!ui.active} />}
+          {ui.pane === 'add' && <Add world={world} hidden={!ui.active} />}
+          {ui.pane === 'app' && <App key={ui.app.data.id} world={world} hidden={!ui.active} />}
+          {ui.pane === 'script' && <Script key={ui.app.data.id} world={world} hidden={!ui.active} />}
+          {ui.pane === 'nodes' && <Nodes key={ui.app.data.id} world={world} hidden={!ui.active} />}
+          {ui.pane === 'meta' && <Meta key={ui.app.data.id} world={world} hidden={!ui.active} />}
+          {ui.pane === 'players' && <Players world={world} hidden={!ui.active} />}
+        </ErrorBoundary>
       </div>
     </HintProvider>
   )

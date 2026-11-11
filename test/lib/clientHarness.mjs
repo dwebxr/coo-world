@@ -48,6 +48,8 @@ import { resolveAssetFile } from '../../src/core/extras/resolveAssetFile.js'
 import { createOutboundFetch, OutboundError } from '../../src/core/extras/outboundFetch.js'
 import { LoadingManager } from 'three'
 import * as gltfLimits from '../../src/core/extras/gltfLimits.js'
+import { setDebugGlobal } from '../../src/core/extras/debugGlobals.js'
+import { LOADER_BUSY } from '../../src/core/extras/playerAvatarFallback.js'
 
 class System extends EventEmitter {
   constructor(world) {
@@ -62,6 +64,8 @@ export function loadClient(file, name, context = {}) {
   const source = fs.readFileSync(new URL(`../../src/${file}`, import.meta.url), 'utf8')
   const dependencies = {
     System,
+    setDebugGlobal,
+    LOADER_BUSY,
     Entity: class {},
     THREE,
     DEG2RAD: Math.PI / 180,

@@ -25,6 +25,7 @@ import { Sidebar } from './Sidebar'
 import { WalletButton } from './WalletButton'
 import { toText } from '../../core/extras/scriptText'
 import { cssImage } from '../../core/extras/cssImage'
+import { ErrorBoundary } from './ErrorBoundary'
 import { CHAT_APP_NAME_MAX_LENGTH, CHAT_BODY_MAX_LENGTH } from '../../core/extras/chatPolicy'
 import { NAME_MAX_LENGTH } from '../../core/extras/entityModifyPolicy'
 
@@ -101,19 +102,29 @@ export function CoreUI({ world }) {
         overflow: hidden;
       `}
     >
-      {(disconnected || fatal) && <Disconnected message={fatal ? 'Physics stopped. Reload to reconnect.' : null} />}
-      {!ui.reticleSuppressors && <Reticle world={world} />}
-      {<Toast world={world} />}
-      {ready && <ActionsBlock world={world} />}
-      {ready && <Sidebar world={world} ui={ui} />}
-      {ready && <Chat world={world} />}
-      {avatar && <AvatarPane key={avatar.hash} world={world} info={avatar} />}
-      {!ready && <LoadingOverlay world={world} />}
-      {kicked && <KickedOverlay code={kicked} />}
-      {ready && isTouch && <TouchBtns world={world} />}
-      {ready && isTouch && <TouchStick world={world} />}
-      {confirm && <Confirm options={confirm} />}
-      {ready && (world.solana || world.evm) && <WalletButton world={world} />}
+      {/* each part on its own (ErrorBoundary.js): one that throws while rendering leaves the others standing */}
+      <Part name='disconnected'>
+        {(disconnected || fatal) && <Disconnected message={fatal ? 'Physics stopped. Reload to reconnect.' : null} />}
+      </Part>
+      <Part name='reticle'>{!ui.reticleSuppressors && <Reticle world={world} />}</Part>
+      <Part name='toast'>
+        <Toast world={world} />
+      </Part>
+      <Part name='actions'>{ready && <ActionsBlock world={world} />}</Part>
+      <Part name='sidebar'>{ready && <Sidebar world={world} ui={ui} />}</Part>
+      <Part name='chat'>{ready && <Chat world={world} />}</Part>
+      <ErrorBoundary name='avatar pane' mode='panel' resetKey={avatar?.hash}>
+        {avatar && <AvatarPane key={avatar.hash} world={world} info={avatar} />}
+      </ErrorBoundary>
+      <Part name='loading'>{!ready && <LoadingOverlay world={world} />}</Part>
+      <Part name='kicked'>{kicked && <KickedOverlay code={kicked} />}</Part>
+      <Part name='touch buttons'>{ready && isTouch && <TouchBtns world={world} />}</Part>
+      <Part name='touch stick'>{ready && isTouch && <TouchStick world={world} />}</Part>
+      {/* a dialog that cannot be shown answers "cancel": whoever asked is waiting on its promise */}
+      <ErrorBoundary name='confirm' mode='once' resetKey={confirm} onError={() => confirm?.cancel?.()}>
+        {confirm && <Confirm options={confirm} />}
+      </ErrorBoundary>
+      <Part name='wallet'>{ready && (world.solana || world.evm) && <WalletButton world={world} />}</Part>
       <div id='core-ui-portal' />
     </div>
   )
@@ -907,6 +918,10 @@ function TouchBtns({ world }) {
     world.actions.on('change', onChange)
     return () => {
       world.actions.off('change', onChange)
+      // a button is let go by its pointer leaving it; buttons that are removed while held (the interface failed, the
+      // world stopped being ready) would stay down: jump or the action, held for good
+      world.controls.setTouchBtn('touchA', false)
+      world.controls.setTouchBtn('touchB', false)
     }
   }, [])
   return (
@@ -1077,6 +1092,15 @@ function TouchStick({ world }) {
       </div>
       <div className='stick-inner' ref={innerRef} />
     </div>
+  )
+}
+
+// a part of the HUD: tried again by itself when its render throws
+function Part({ name, children }) {
+  return (
+    <ErrorBoundary name={name} mode='quiet'>
+      {children}
+    </ErrorBoundary>
   )
 }
 

@@ -1,6 +1,16 @@
 // src/client/components/ErrorBoundary.js: a part of the interface that throws while it renders takes down only
-// itself. The class is driven directly (its lifecycle methods with the state React would give it); what React does
-// around a boundary is React's, and the e2e suite hostile-content.mjs checks the whole in a browser.
+// itself.
+//
+// What this covers: the class itself, driven through its lifecycle in the order React uses for a class component
+// (`mount` below): queued state updates, getDerivedStateFromProps and render; a child whose render throws gets
+// getDerivedStateFromError and a second render in the same pass; the commit calls componentDidMount or
+// componentDidUpdate and then componentDidCatch; a setState made during the commit is applied after it, in a render of
+// its own; StrictMode's simulated unmount and mount (development) are componentWillUnmount then componentDidMount.
+// Timers and the clock are the test's.
+//
+// What it does not cover: React itself (its reconciler, concurrent rendering, errors from effects, the DOM). The e2e
+// suite test/e2e/interface-faults.mjs mounts the real interface in a browser: a pane that throws and its Retry, and
+// the whole interface failing once and coming back.
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -9,171 +19,270 @@ import { bundleClient } from './lib/renderHarness.mjs'
 let ui
 before(async () => {
   ui = await bundleClient(`
-    export { ErrorBoundary, afterFailure, RETRY_DELAY_MS, RETRY_LIMIT, RETRY_FORGET_MS } from './src/client/components/ErrorBoundary'
+    export { ErrorBoundary, retryDue, RETRY_DELAY_MS, RETRY_LIMIT, RETRY_FORGET_MS } from './src/client/components/ErrorBoundary'
   `)
 })
 
-// a boundary as React holds one: setState applies at once, getDerivedStateFromProps runs for new props
-function boundary(props) {
+// A boundary mounted as React mounts a class component, around a child that throws while it renders when
+// `child.broken` is set. `strict`: React's StrictMode, which unmounts and mounts a new component once more right after
+// its first commit.
+function mount(props, { broken = false, strict = false } = {}) {
+  const child = { broken }
   const b = new ui.ErrorBoundary({ children: 'CHILD', ...props })
   b.props = { children: 'CHILD', ...props }
+  let queue = []
+  let committing = false
+  let shown
+  const patch = update => {
+    const next = typeof update === 'function' ? update(b.state, b.props) : update
+    if (next) b.state = { ...b.state, ...next }
+  }
+  const render = () => {
+    for (const update of queue) patch(update)
+    queue = []
+    patch(ui.ErrorBoundary.getDerivedStateFromProps(b.props, b.state))
+    let out = b.render()
+    let error = null
+    if (out === b.props.children && child.broken) {
+      error = new Error('bad value')
+      patch(ui.ErrorBoundary.getDerivedStateFromError(error))
+      out = b.render()
+    }
+    return { out, error }
+  }
+  const commit = (first, { out, error }) => {
+    shown = out
+    committing = true
+    try {
+      if (first) b.componentDidMount()
+      else b.componentDidUpdate()
+      if (error) b.componentDidCatch(error)
+    } finally {
+      committing = false
+    }
+    if (queue.length) commit(false, render())
+  }
   b.setState = update => {
-    const patch = typeof update === 'function' ? update(b.state) : update
-    if (patch) b.state = { ...b.state, ...patch }
+    queue.push(update)
+    if (!committing) commit(false, render())
   }
-  b.fail = error => {
-    b.setState(ui.ErrorBoundary.getDerivedStateFromError(error))
-    b.componentDidCatch(error)
+  commit(true, render())
+  if (strict) {
+    b.componentWillUnmount()
+    b.componentDidMount()
   }
-  b.receive = next => {
-    b.props = { ...b.props, ...next }
-    const patch = ui.ErrorBoundary.getDerivedStateFromProps(b.props, b.state)
-    if (patch) b.state = { ...b.state, ...patch }
+  return {
+    b,
+    child,
+    get shown() {
+      return shown
+    },
+    // the parent renders again (with new props)
+    update(next = {}) {
+      b.props = { ...b.props, ...next }
+      commit(false, render())
+    },
+    unmount() {
+      b.componentWillUnmount()
+    },
   }
-  return b
 }
 
-// timers of the boundary, run by hand
+// timers of the boundary, run by hand; `now` is Date.now
 function fakeTimers(t) {
-  const real = { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout, error: console.error }
+  const real = {
+    setTimeout: globalThis.setTimeout,
+    clearTimeout: globalThis.clearTimeout,
+    error: console.error,
+    now: Date.now,
+  }
   const timers = new Map()
   let ids = 0
+  const clock = { timers, errors: [], now: 1_000_000 }
   globalThis.setTimeout = (fn, ms) => {
     timers.set(++ids, { fn, ms })
     return ids
   }
   globalThis.clearTimeout = id => timers.delete(id)
-  const errors = []
-  console.error = (...line) => errors.push(line)
+  Date.now = () => clock.now
+  console.error = (...line) => clock.errors.push(line)
   t.after(() => {
     globalThis.setTimeout = real.setTimeout
     globalThis.clearTimeout = real.clearTimeout
+    Date.now = real.now
     console.error = real.error
   })
-  return {
-    timers,
-    errors,
-    run() {
-      const [[id, timer]] = timers
-      timers.delete(id)
-      timer.fn()
-      return timer.ms
-    },
+  // the pending timers with this delay
+  clock.pending = ms => [...timers.values()].filter(timer => timer.ms === ms).length
+  // runs the first pending timer with this delay; `late`: it runs that much after it was due, as in a background tab
+  clock.run = (ms, late = 0) => {
+    const entry = [...timers].find(([, timer]) => timer.ms === ms)
+    assert.ok(entry, `a timer of ${ms} ms is pending`)
+    timers.delete(entry[0])
+    clock.now += ms + late
+    entry[1].fn()
   }
+  return clock
 }
 
 const text = element => element?.props?.text ?? null
 
-test('a part that renders is shown as it is', () => {
-  const b = boundary({ mode: 'quiet' })
-  assert.equal(b.render(), 'CHILD')
+test('a part that renders is shown as it is', t => {
+  const clock = fakeTimers(t)
+  const part = mount({ mode: 'quiet' })
+  assert.equal(part.shown, 'CHILD')
+  assert.equal(clock.timers.size, 0, 'nothing to try or to forget')
 })
 
 test('quiet: nothing is shown, the failure is logged, and the part is tried again, three times in a row at most', t => {
   const clock = fakeTimers(t)
-  const b = boundary({ mode: 'quiet', name: 'chat' })
+  const part = mount({ mode: 'quiet', name: 'chat' })
+  part.child.broken = true
+  part.update() // its next render throws
   for (let attempt = 0; attempt < ui.RETRY_LIMIT; attempt++) {
-    b.fail(new Error('bad value'))
-    assert.equal(b.render(), null, 'nothing in its place')
-    assert.equal(clock.timers.size, 1, `try ${attempt + 1} is scheduled`)
-    assert.equal(clock.run(), ui.RETRY_DELAY_MS)
-    assert.equal(b.render(), 'CHILD', 'tried again')
+    assert.equal(part.shown, null, 'nothing in its place')
+    assert.equal(clock.pending(ui.RETRY_DELAY_MS), 1, `try ${attempt + 1} is scheduled`)
+    part.update() // the parent renders again meanwhile: no second timer
+    assert.equal(clock.timers.size, 1)
+    clock.run(ui.RETRY_DELAY_MS) // the try renders the child, which throws again
   }
-  b.fail(new Error('bad value'))
-  assert.equal(b.render(), null)
+  assert.equal(part.shown, null)
   assert.equal(clock.timers.size, 0, 'no fourth try')
   assert.equal(clock.errors.length, ui.RETRY_LIMIT + 1, 'each failure is logged')
   assert.match(String(clock.errors[0][0]), /chat failed to render/)
+  part.child.broken = false
+  part.update()
+  assert.equal(part.shown, null, 'a part that kept failing stays away')
 })
 
-test('quiet: a part that has rendered for a while starts counting again', t => {
+test('quiet: a part that comes back is shown; its tries are forgotten only once it has stayed rendered for a while', t => {
   const clock = fakeTimers(t)
-  const realNow = Date.now
-  let now = 1_000_000
-  Date.now = () => now
-  t.after(() => (Date.now = realNow))
-  const b = boundary({ mode: 'quiet' })
+  const part = mount({ mode: 'quiet' })
+  part.child.broken = true
+  part.update()
+  part.child.broken = false
+  clock.run(ui.RETRY_DELAY_MS)
+  assert.equal(part.shown, 'CHILD', 'tried again, and shown')
+  assert.equal(part.b.state.tries, 1)
+  assert.equal(clock.pending(ui.RETRY_FORGET_MS), 1, 'forgetting starts')
+
+  // failing again before then: the count goes on, and the forgetting stops
+  part.child.broken = true
+  part.update()
+  assert.equal(clock.pending(ui.RETRY_FORGET_MS), 0)
+  assert.equal(clock.pending(ui.RETRY_DELAY_MS), 1)
+  part.child.broken = false
+  clock.run(ui.RETRY_DELAY_MS)
+  assert.equal(part.b.state.tries, 2)
+
+  // rendered for RETRY_FORGET_MS: the next failure counts from zero
+  clock.run(ui.RETRY_FORGET_MS)
+  assert.equal(part.b.state.tries, 0)
+  assert.equal(part.shown, 'CHILD')
+  assert.equal(clock.timers.size, 0)
+})
+
+test('root: a message with a Reload button once the tries are used up, even when each try runs late', t => {
+  const clock = fakeTimers(t)
+  const part = mount({ mode: 'root' })
+  part.child.broken = true
+  part.update()
   for (let i = 0; i < ui.RETRY_LIMIT; i++) {
-    b.fail(new Error('x'))
-    clock.run()
+    assert.equal(part.shown, null, 'no message while tries are left')
+    // a background tab: each try runs long after the last failure, never after a render that held
+    clock.run(ui.RETRY_DELAY_MS, ui.RETRY_FORGET_MS * 2)
   }
-  now += ui.RETRY_FORGET_MS + 1
-  b.fail(new Error('x'))
-  assert.equal(clock.timers.size, 1, 'a failure long after the last one is tried again')
-  assert.equal(b.state.tries, 0)
+  assert.equal(text(part.shown), 'The interface hit an error.')
+  assert.equal(part.shown.props.button, 'Reload')
+  assert.equal(clock.timers.size, 0)
+})
+
+test('StrictMode: a boundary unmounted and mounted again right after it failed still tries again', t => {
+  const clock = fakeTimers(t)
+  const part = mount({ mode: 'quiet' }, { broken: true, strict: true })
+  assert.equal(part.shown, null)
+  assert.equal(clock.pending(ui.RETRY_DELAY_MS), 1, 'the try is scheduled again on the second mount')
+  part.child.broken = false
+  clock.run(ui.RETRY_DELAY_MS)
+  assert.equal(part.shown, 'CHILD')
+  part.unmount()
+  // the same for the forgetting, on a part that is rendered
+  const again = mount({ mode: 'root' })
+  again.child.broken = true
+  again.update()
+  again.child.broken = false
+  clock.run(ui.RETRY_DELAY_MS)
+  again.unmount()
+  assert.equal(clock.timers.size, 0)
+  again.b.componentDidMount()
+  assert.equal(clock.pending(ui.RETRY_FORGET_MS), 1)
 })
 
 test('a new resetKey is a new start: the part is shown again and its tries are forgotten', t => {
   const clock = fakeTimers(t)
-  const b = boundary({ mode: 'panel', resetKey: 'app:1' })
-  b.fail(new Error('x'))
-  assert.equal(text(b.render()), 'This panel hit an error.')
-  b.receive({ resetKey: 'app:1' })
-  assert.equal(text(b.render()), 'This panel hit an error.', 'the same key changes nothing')
-  b.receive({ resetKey: 'app:2' })
-  assert.equal(b.render(), 'CHILD')
+  const part = mount({ mode: 'panel', resetKey: 'app:1' }, { broken: true })
+  assert.equal(text(part.shown), 'This panel hit an error.')
+  part.update({ resetKey: 'app:1' })
+  assert.equal(text(part.shown), 'This panel hit an error.', 'the same key changes nothing')
+  part.child.broken = false
+  part.update({ resetKey: 'app:2' })
+  assert.equal(part.shown, 'CHILD')
   assert.equal(clock.timers.size, 0, 'a panel is never retried by itself')
+
+  const quiet = mount({ mode: 'quiet', resetKey: 1 }, { broken: true })
+  assert.equal(clock.pending(ui.RETRY_DELAY_MS), 1)
+  quiet.child.broken = false
+  quiet.update({ resetKey: 2 })
+  assert.equal(quiet.shown, 'CHILD')
+  assert.equal(quiet.b.state.tries, 0)
+  assert.equal(clock.timers.size, 0, 'the pending try goes with the old key')
 })
 
 test('panel: a message with a Retry button; Retry shows the part again', t => {
   fakeTimers(t)
-  const b = boundary({ mode: 'panel' })
-  b.fail(new Error('x'))
-  const notice = b.render()
-  assert.equal(notice.props.button, 'Retry')
-  notice.props.onClick()
-  assert.equal(b.render(), 'CHILD')
+  const part = mount({ mode: 'panel' }, { broken: true })
+  assert.equal(part.shown.props.button, 'Retry')
+  part.shown.props.onClick()
+  assert.equal(text(part.shown), 'This panel hit an error.', 'still failing')
+  part.child.broken = false
+  part.shown.props.onClick()
+  assert.equal(part.shown, 'CHILD')
 })
 
 test('once: nothing is shown, nothing is retried, and onError is told (a throw in it is contained)', t => {
   const clock = fakeTimers(t)
   let told = 0
-  const b = boundary({ mode: 'once', onError: () => told++ })
-  b.fail(new Error('x'))
-  assert.equal(b.render(), null)
+  const part = mount({ mode: 'once', onError: () => told++ }, { broken: true })
+  assert.equal(part.shown, null)
   assert.equal(told, 1)
   assert.equal(clock.timers.size, 0)
-  const loud = boundary({
-    mode: 'once',
-    onError: () => {
-      throw new Error('cancel failed')
+  const loud = mount(
+    {
+      mode: 'once',
+      onError: () => {
+        throw new Error('cancel failed')
+      },
     },
-  })
-  loud.fail(new Error('x'))
-  assert.equal(loud.render(), null)
-})
-
-test('root: tried again like quiet, then a message with a Reload button', t => {
-  const clock = fakeTimers(t)
-  const b = boundary({ mode: 'root' })
-  for (let i = 0; i < ui.RETRY_LIMIT; i++) {
-    b.fail(new Error('x'))
-    assert.equal(b.render(), null, 'no message while tries are left')
-    clock.run()
-  }
-  b.fail(new Error('x'))
-  const notice = b.render()
-  assert.equal(text(notice), 'The interface hit an error.')
-  assert.equal(notice.props.button, 'Reload')
+    { broken: true }
+  )
+  assert.equal(loud.shown, null)
 })
 
 test('a boundary that is removed leaves no timer behind', t => {
   const clock = fakeTimers(t)
-  const b = boundary({ mode: 'quiet' })
-  b.fail(new Error('x'))
+  const part = mount({ mode: 'quiet' }, { broken: true })
   assert.equal(clock.timers.size, 1)
-  b.componentWillUnmount()
+  part.unmount()
   assert.equal(clock.timers.size, 0)
 })
 
-test('afterFailure: when another try is due', () => {
-  const { afterFailure, RETRY_LIMIT } = ui
-  const fresh = { tries: 0, failedAt: 0 }
-  assert.equal(afterFailure(fresh, 'quiet', 5).retry, true)
-  assert.equal(afterFailure(fresh, 'root', 5).retry, true)
-  assert.equal(afterFailure(fresh, 'panel', 5).retry, false)
-  assert.equal(afterFailure(fresh, 'once', 5).retry, false)
-  assert.equal(afterFailure(fresh, undefined, 5).retry, false)
-  assert.equal(afterFailure({ tries: RETRY_LIMIT, failedAt: 1000 }, 'quiet', 2000).retry, false)
-  assert.equal(afterFailure({ tries: RETRY_LIMIT - 1, failedAt: 1000 }, 'quiet', 2000).retry, true)
+test('retryDue: which parts are tried again by themselves', () => {
+  const { retryDue, RETRY_LIMIT } = ui
+  assert.equal(retryDue('quiet', 0), true)
+  assert.equal(retryDue('root', 0), true)
+  assert.equal(retryDue('panel', 0), false)
+  assert.equal(retryDue('once', 0), false)
+  assert.equal(retryDue(undefined, 0), false)
+  assert.equal(retryDue('quiet', RETRY_LIMIT), false)
+  assert.equal(retryDue('quiet', RETRY_LIMIT - 1), true)
 })

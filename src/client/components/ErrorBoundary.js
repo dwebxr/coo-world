@@ -18,22 +18,30 @@ import { Component } from 'react'
 //   root   around the whole interface: tried again like `quiet`, and when that is used up, a message with a Reload
 //          button (the world is still on screen behind it).
 // `resetKey` names what the part is showing (the open pane, the app it belongs to): a new key is a new start.
+//
+// The timers are set from what React committed (componentDidMount, componentDidUpdate) and cleared when the boundary
+// is unmounted, so a boundary that is unmounted and mounted again (React's StrictMode does this to every new
+// component in development) sets them again.
 export const RETRY_DELAY_MS = 3000
 export const RETRY_LIMIT = 3
-// a part that then renders for this long has recovered: its next failure counts from zero
+// a part that then stays rendered for this long has recovered: its next failure counts from zero. Measured from the
+// part's own commits, not from its last failure: a tab in the background runs the retries late, and a count that
+// was forgotten for the time between failures would never reach the limit.
 export const RETRY_FORGET_MS = 60000
 
-// The boundary's state after a failure at `now`: whether another try is due (pure, so it can be tested without React)
-export function afterFailure(state, mode, now) {
-  const tries = now - state.failedAt > RETRY_FORGET_MS ? 0 : state.tries
-  return { failed: true, tries, failedAt: now, retry: (mode === 'quiet' || mode === 'root') && tries < RETRY_LIMIT }
+// whether a part that failed after `tries` tries in a row is tried again by itself
+export function retryDue(mode, tries) {
+  return (mode === 'quiet' || mode === 'root') && tries < RETRY_LIMIT
 }
 
 export class ErrorBoundary extends Component {
   constructor(props) {
     super(props)
-    this.state = { failed: false, tries: 0, failedAt: 0, retry: false, resetKey: props.resetKey }
-    this.timer = null
+    this.state = { failed: false, tries: 0, resetKey: props.resetKey }
+    // the next try, while the part is failed
+    this.retryTimer = null
+    // forgetting the tries, while the part is rendered
+    this.forgetTimer = null
   }
 
   static getDerivedStateFromError() {
@@ -42,7 +50,7 @@ export class ErrorBoundary extends Component {
 
   static getDerivedStateFromProps(props, state) {
     if (props.resetKey === state.resetKey) return null
-    return { failed: false, tries: 0, failedAt: 0, retry: false, resetKey: props.resetKey }
+    return { failed: false, tries: 0, resetKey: props.resetKey }
   }
 
   componentDidCatch(error) {
@@ -52,31 +60,60 @@ export class ErrorBoundary extends Component {
     } catch (err) {
       console.error('[ui] onError failed:', err)
     }
-    const next = afterFailure(this.state, this.props.mode, Date.now())
-    this.setState(next)
-    clearTimeout(this.timer)
-    if (next.retry) {
-      this.timer = setTimeout(() => {
-        this.setState(state => (state.failed ? { failed: false, tries: state.tries + 1 } : null))
-      }, RETRY_DELAY_MS)
-    }
+  }
+
+  componentDidMount() {
+    this.schedule()
+  }
+
+  componentDidUpdate() {
+    this.schedule()
   }
 
   componentWillUnmount() {
-    clearTimeout(this.timer)
+    this.clear()
+  }
+
+  // after each commit: a failed part with a try left is tried again later, and a part that is rendered after a
+  // failure has its tries forgotten once it has stayed rendered for RETRY_FORGET_MS
+  schedule() {
+    const { failed, tries } = this.state
+    if (failed) {
+      clearTimeout(this.forgetTimer)
+      this.forgetTimer = null
+      if (this.retryTimer || !retryDue(this.props.mode, tries)) return
+      this.retryTimer = setTimeout(() => {
+        this.retryTimer = null
+        this.setState(state => (state.failed ? { failed: false, tries: state.tries + 1 } : null))
+      }, RETRY_DELAY_MS)
+      return
+    }
+    clearTimeout(this.retryTimer)
+    this.retryTimer = null
+    if (this.forgetTimer || !tries) return
+    this.forgetTimer = setTimeout(() => {
+      this.forgetTimer = null
+      this.setState(state => (state.failed ? null : { tries: 0 }))
+    }, RETRY_FORGET_MS)
+  }
+
+  clear() {
+    clearTimeout(this.retryTimer)
+    clearTimeout(this.forgetTimer)
+    this.retryTimer = null
+    this.forgetTimer = null
   }
 
   retry = () => {
-    clearTimeout(this.timer)
-    this.setState({ failed: false, tries: 0, failedAt: 0, retry: false })
+    this.clear()
+    this.setState({ failed: false, tries: 0 })
   }
 
   render() {
     if (!this.state.failed) return this.props.children
     const { mode } = this.props
     if (mode === 'panel') return <Notice text='This panel hit an error.' button='Retry' onClick={this.retry} />
-    // (before componentDidCatch has decided, `retry` is still false for a first failure: `tries` tells them apart)
-    if (mode === 'root' && !this.state.retry && this.state.tries >= RETRY_LIMIT) {
+    if (mode === 'root' && !retryDue(mode, this.state.tries)) {
       return <Notice text='The interface hit an error.' button='Reload' onClick={() => globalThis.location.reload()} />
     }
     return null

@@ -95,16 +95,21 @@ export class PlayerRemote extends Entity {
       .load('avatar', avatarUrl)
       .then(src => {
         if (!isCurrentAvatarLoad(this, load)) return
-        if (this.avatar) this.avatar.deactivate()
-        this.avatar = src.toNodes().get('avatar')
-        this.base.add(this.avatar)
-        this.nametag.position.y = this.avatar.getHeadToHeight() + 0.2
-        this.bubble.position.y = this.avatar.getHeadToHeight() + 0.2
+        // the new avatar is made and put in place before the one showing goes: one that cannot be made or placed
+        // leaves the player with the avatar they had, which avatarLoadFailed then keeps
+        const avatar = src.toNodes().get('avatar')
+        if (!avatar) throw new Error(`[avatar] no avatar in ${avatarUrl}`)
+        this.base.add(avatar)
+        const previous = this.avatar
+        this.avatar = avatar
+        this.avatarUrl = avatarUrl
+        this.nametag.position.y = avatar.getHeadToHeight() + 0.2
+        this.bubble.position.y = avatar.getHeadToHeight() + 0.2
         if (!this.bubble.active) {
           this.nametag.active = true
         }
-        this.avatarUrl = avatarUrl
         avatarSettled(this, avatarUrl)
+        previous?.deactivate()
       })
       .catch(err => {
         // a load that failed, or an avatar that could not be put in place: reported, and a player left with no

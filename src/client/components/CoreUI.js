@@ -31,16 +31,18 @@ import { NAME_MAX_LENGTH } from '../../core/extras/entityModifyPolicy'
 
 export function CoreUI({ world }) {
   const ref = useRef()
-  const [ready, setReady] = useState(false)
+  // what the world has told so far (ClientUI.latest): this interface may be made again after a render error, long after
+  // `ready` and the rest were told
+  const [ready, setReady] = useState(() => world.ui.latest.ready)
   const [player, setPlayer] = useState(() => world.entities.player)
   const [ui, setUI] = useState(world.ui.state)
   const [menu, setMenu] = useState(null)
-  const [confirm, setConfirm] = useState(null)
+  const [confirm, setConfirm] = useState(() => world.ui.latest.confirm)
   const [code, setCode] = useState(false)
-  const [avatar, setAvatar] = useState(null)
+  const [avatar, setAvatar] = useState(() => world.ui.latest.avatar)
   const [fatal, setFatal] = useState(world.fatalError)
-  const [disconnected, setDisconnected] = useState(false)
-  const [kicked, setKicked] = useState(null)
+  const [disconnected, setDisconnected] = useState(() => world.ui.latest.disconnect)
+  const [kicked, setKicked] = useState(() => world.ui.latest.kick)
   useEffect(() => {
     world.on('ready', setReady)
     world.on('player', setPlayer)
@@ -52,6 +54,14 @@ export function CoreUI({ world }) {
     world.on('kick', setKicked)
     world.on('disconnect', setDisconnected)
     world.on('fatal', setFatal)
+    // anything told between the render that read these and the listeners above
+    const latest = world.ui.latest
+    setReady(latest.ready)
+    setConfirm(latest.confirm)
+    setAvatar(latest.avatar)
+    setDisconnected(latest.disconnect)
+    setKicked(latest.kick)
+    setFatal(world.fatalError)
     return () => {
       world.off('ready', setReady)
       world.off('player', setPlayer)

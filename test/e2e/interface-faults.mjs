@@ -1,6 +1,6 @@
 // The client's own interface against data it cannot use: a player whose avatar cannot be loaded, a pane whose render
-// throws, and a world image whose URL carries CSS. The page keeps its interface, says what failed, and no rule of
-// the URL's making reaches the page's styles.
+// throws, the whole interface throwing once, and a world image whose URL carries CSS. The page keeps its interface (or
+// gets it back), says what failed, and no rule of the URL's making reaches the page's styles.
 // usage: node test/e2e/interface-faults.mjs --engine=chromium|webkit|firefox [--port=3139]
 import path from 'node:path'
 
@@ -132,6 +132,52 @@ try {
     }
   )
 
+  await step(
+    'the whole interface fails once: it comes back by itself with the sidebar and the chat, not the loading screen',
+    async () => {
+      await page.locator('.sidebar').waitFor({ state: 'visible', timeout: 15000 * TIMEOUT_SCALE })
+      const from = consoleLines.length
+      await page.evaluate(() => {
+        // the loading screen is noted if it is drawn at any moment from here on
+        window.__loadingSeen = false
+        window.__loadingWatch = new MutationObserver(() => {
+          if (document.querySelector('.loading-image')) window.__loadingSeen = true
+        })
+        window.__loadingWatch.observe(document.body, { childList: true, subtree: true })
+        // CoreUI reads ui.reticleSuppressors in its own render and nothing else reads it: one interface state whose
+        // value throws makes CoreUI itself throw, which only the boundary around the whole interface catches. The
+        // state kept on world.ui is not changed, so the interface made again renders.
+        const state = { ...window.world.ui.state }
+        Object.defineProperty(state, 'reticleSuppressors', {
+          enumerable: true,
+          get() {
+            throw new Error('E2E_ROOT_BOOM')
+          },
+        })
+        window.world.emit('ui', state)
+      })
+      await page.locator('.coreui').waitFor({ state: 'detached', timeout: 15000 * TIMEOUT_SCALE })
+      ok(
+        consoleLines.slice(from).some(line => /\[ui\] the interface failed to render/.test(line)),
+        'the failure is reported by the boundary around the whole interface'
+      )
+      const before = await page.evaluate(() => window.world.frame)
+      // tried again after RETRY_DELAY_MS (3 s)
+      await page.locator('.sidebar').waitFor({ state: 'visible', timeout: 20000 * TIMEOUT_SCALE })
+      ok((await page.evaluate(() => window.world.frame)) > before, 'the world kept drawing')
+      eq(await page.locator('.mainchat').count(), 1, 'the chat is back')
+      eq(await page.locator('.ui-error').count(), 0, 'no Reload message')
+      await sleep(500)
+      const seen = await page.evaluate(() => {
+        window.__loadingWatch.disconnect()
+        return window.__loadingSeen || !!document.querySelector('.loading-image')
+      })
+      ok(!seen, 'the loading screen did not come back')
+      ok(await page.locator('.sidebar').isVisible(), 'the sidebar stays')
+      pageErrors.splice(0, pageErrors.length, ...pageErrors.filter(line => !line.includes('E2E_ROOT_BOOM')))
+    }
+  )
+
   await step('a world image whose URL carries CSS styles nothing but its own element', async () => {
     await page.evaluate(url => {
       window.world.settings.set('image', { type: 'image', name: 'x.png', url }, true)
@@ -167,18 +213,37 @@ try {
         }
       }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] })
     })
-    // The loading screen draws again as each preloaded file arrives; with every file served at once from this
-    // machine they can all arrive, and the screen go, before it has drawn with the world's settings. The files are
-    // held back a little, each longer than the one before, as a network would.
-    let held = 0
-    await second.route(/\/assets\//, async route => {
-      await sleep(Math.min(250 * ++held, 2500))
-      await route.continue()
+    // The loading screen stays until every preloaded file has arrived. Served from this machine they can all arrive,
+    // and the screen go, before it has drawn with the world's settings (its updates may be drawn together on a slow
+    // renderer). One file every visitor preloads (the idle emote) is held until the page has drawn the image, then
+    // let go; a page that never draws it fails after a bound instead of waiting for ever.
+    let held = false
+    let release
+    const released = new Promise(resolve => (release = resolve))
+    await second.route(/\/assets\/mp-idle\.glb(\?|$)/, async route => {
+      held = true
+      await released
+      await route.continue().catch(() => {})
     })
     try {
       await second.goto(server.url, { waitUntil: 'domcontentloaded' })
-      // until the loading screen has come and gone
-      await second.waitForFunction(() => window.__loadingImages.length > 0, null, { timeout: 180000 * TIMEOUT_SCALE })
+      await waitUntil(() => held, { timeout: 120000, message: 'the idle emote to be asked for (held)' })
+      const drawn = await second
+        .waitForFunction(() => window.__loadingImages.some(image => image.style !== 'none'), null, {
+          timeout: 60000 * TIMEOUT_SCALE,
+        })
+        .then(
+          () => true,
+          () => false
+        )
+      release()
+      ok(
+        drawn,
+        `the loading screen did not draw the world's image while a preloaded file was held: ${JSON.stringify(
+          await second.evaluate(() => window.__loadingImages)
+        )}`
+      )
+      // until the loading screen has gone
       await second.waitForFunction(() => !document.querySelector('.loading-image'), null, {
         timeout: 180000 * TIMEOUT_SCALE,
       })
@@ -220,6 +285,7 @@ try {
       eq(errors.length, 0, `page errors: ${errors.slice(0, 2).join(' | ')}`)
       return shown[0].style.slice(0, 90)
     } finally {
+      release()
       await context.close().catch(() => {})
     }
   })

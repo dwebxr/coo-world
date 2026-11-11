@@ -21,6 +21,7 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 0))
 function avatarNode(url) {
   return {
     url,
+    visible: true, // the Avatar node's default
     deactivated: false,
     deactivate() {
       this.deactivated = true
@@ -31,17 +32,25 @@ function avatarNode(url) {
   }
 }
 
-// a player of the given class with the state applyAvatar uses; loads[url] finishes that load
+// a player of the given class with the state applyAvatar uses; loads[url] finishes that load (`with`: as this
+// loaded file), started[url] counts the loads asked for
 function player(Cls, avatar) {
   const loads = {}
+  const started = {}
   const p = Object.create(Cls.prototype)
   Object.assign(p, {
     data: { id: 'p', avatar, sessionAvatar: null },
     world: {
+      emit() {},
       loader: {
         load: (_type, url) =>
           new Promise((resolve, reject) => {
-            loads[url] = { finish: () => resolve({ toNodes: () => ({ get: () => avatarNode(url) }) }), fail: reject }
+            started[url] = (started[url] || 0) + 1
+            loads[url] = {
+              finish: () => resolve({ toNodes: () => ({ get: () => avatarNode(url) }) }),
+              with: resolve,
+              fail: reject,
+            }
           }),
       },
     },
@@ -49,7 +58,34 @@ function player(Cls, avatar) {
     nametag: { position: {}, active: false },
     bubble: { position: {}, active: false },
   })
-  return { p, loads }
+  return { p, loads, started }
+}
+
+const busyError = () => Object.assign(new Error('too many downloads'), { code: m.LOADER_BUSY })
+
+// errors the code reports are expected here; `timers` collects the avatar retries
+function quiet(t) {
+  const original = console.error
+  const realSetTimeout = globalThis.setTimeout
+  const timers = []
+  console.error = () => {}
+  globalThis.setTimeout = (fn, ms) => (ms === m.AVATAR_RETRY_MS ? timers.push(fn) : realSetTimeout(fn, ms))
+  t.after(() => {
+    console.error = original
+    globalThis.setTimeout = realSetTimeout
+  })
+  return timers
+}
+
+// a player of the given class who shows avatar A
+async function showing(Cls) {
+  const shown = player(Cls, 'https://example.com/a.vrm')
+  shown.p.applyAvatar()
+  shown.loads['https://example.com/a.vrm'].finish()
+  await tick()
+  shown.a = shown.p.installed
+  assert.equal(shown.p.avatar, shown.a)
+  return shown
 }
 
 for (const name of ['PlayerRemote', 'PlayerLocal']) {
@@ -256,4 +292,84 @@ for (const name of ['PlayerRemote', 'PlayerLocal']) {
       console.error = original
     }
   })
+
+  test(`${name}: a player who shows an avatar keeps it when the next one is turned away as busy, and it is asked for again`, async t => {
+    const timers = quiet(t)
+    const { p, loads, a } = await showing(m[name])
+    p.modify({ avatar: 'https://example.com/b.vrm' })
+    loads['https://example.com/b.vrm'].fail(busyError())
+    await tick()
+    assert.equal(p.avatar, a, 'A stays meanwhile')
+    assert.equal(a.deactivated, false)
+    assert.equal(loads[m.BUILTIN_AVATAR_URL], undefined, 'no fallback: an avatar shows')
+    assert.equal(timers.length, 1, 'B is asked for again later')
+    delete loads['https://example.com/b.vrm']
+    timers.shift()()
+    loads['https://example.com/b.vrm'].finish()
+    await tick()
+    assert.equal(p.installed.url, 'https://example.com/b.vrm')
+    assert.equal(p.avatar, p.installed)
+    assert.equal(a.deactivated, true, 'A goes once B is in place')
+  })
+
+  test(`${name}: A, B, then A again, each turned away as busy: only the last choice is asked for again`, async t => {
+    const timers = quiet(t)
+    const { p, loads, started } = await showing(m[name])
+    for (const url of ['https://example.com/c.vrm', 'https://example.com/d.vrm', 'https://example.com/c.vrm']) {
+      p.modify({ avatar: url })
+      loads[url].fail(busyError())
+      await tick()
+    }
+    assert.equal(timers.length, 3, 'each choice has its retry')
+    assert.equal(started['https://example.com/c.vrm'], 2)
+    while (timers.length) timers.shift()()
+    assert.equal(started['https://example.com/c.vrm'], 3, 'C is asked for once more, not twice')
+    assert.equal(started['https://example.com/d.vrm'], 1)
+  })
+
+  test(`${name}: a new avatar that cannot be made or put in place leaves the avatar showing in place`, async t => {
+    quiet(t)
+    const broken = {
+      'https://example.com/throws.vrm': {
+        toNodes() {
+          throw new Error('no avatar node')
+        },
+      },
+      'https://example.com/empty.vrm': { toNodes: () => ({ get: () => undefined }) },
+      'https://example.com/unplaceable.vrm': { toNodes: () => ({ get: () => avatarNode('unplaceable') }) },
+    }
+    for (const [url, src] of Object.entries(broken)) {
+      const { p, loads, a } = await showing(m[name])
+      if (url.includes('unplaceable')) {
+        p.base.add = () => {
+          throw new Error('cannot be added')
+        }
+      }
+      p.modify({ avatar: url })
+      loads[url].with(src)
+      await tick()
+      await tick()
+      assert.equal(p.avatar, a, `${url}: A is still the player's avatar`)
+      assert.equal(a.deactivated, false, `${url}: and still shown`)
+      assert.equal(p.avatarUrl, 'https://example.com/a.vrm')
+      assert.equal(p.avatarFallback, null, `${url}: no fallback over it`)
+      assert.equal(loads[m.BUILTIN_AVATAR_URL], undefined)
+    }
+  })
 }
+
+test('PlayerLocal: an avatar that arrives while the view is in first person is hidden from it', async () => {
+  const { p, loads } = player(m.PlayerLocal, 'https://example.com/a.vrm')
+  p.firstPerson = true
+  p.applyAvatar()
+  loads['https://example.com/a.vrm'].finish()
+  await tick()
+  assert.equal(p.installed.url, 'https://example.com/a.vrm')
+  assert.equal(p.installed.visible, false)
+  // a later avatar in third person shows
+  p.firstPerson = false
+  p.modify({ avatar: 'https://example.com/b.vrm' })
+  loads['https://example.com/b.vrm'].finish()
+  await tick()
+  assert.equal(p.installed.visible, true)
+})

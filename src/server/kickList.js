@@ -8,7 +8,8 @@
 // admin make such an entry, and it refuses only a connection that arrives without a valid session token (the way
 // around the id entry). Everyone else who is new behind that address waits with them: a household, a venue's Wi-Fi,
 // and behind a proxy that does not pass client addresses, every new visitor. That is why it is off unless asked for.
-// Nothing is stored: a restart forgets the list, and an entry cannot be lifted otherwise.
+// Nothing is stored: a restart forgets the list. At most MAX_ENTRIES user ids and as many addresses are listed: a kick
+// that finds that many still waiting ends the oldest one's wait early. Nothing else lifts an entry.
 
 export const KICK_LIMIT_DEFAULTS = Object.freeze({ minutes: 10, byAddress: false })
 

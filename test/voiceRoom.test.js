@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+// the installed SDK's own event names (it loads without a browser): a handler wired under another name fails here
+import { ParticipantEvent, RoomEvent } from 'livekit-client'
 import { loadClient } from './lib/clientHarness.mjs'
 import { SCREEN_TARGET_MAX_LENGTH, screenTarget } from '../src/core/extras/screenShare.js'
 
@@ -31,8 +33,42 @@ test('a share names its screen in metadata anyone can write: read as untrusted t
   }
 })
 
-// ClientLiveKit with stand-ins for the room, the voices' audio and the screens' video elements
-function client({ Room = class {} } = {}) {
+// The voice room as the installed SDK presents it (livekit-client 2.9.9, src/room/Room.ts): TrackSubscribed and
+// TrackUnsubscribed carry (track, publication, participant); LocalTrackPublished and LocalTrackUnpublished
+// (publication, localParticipant), the publication still holding its track; TrackMuted and TrackUnmuted (publication,
+// participant); ParticipantMetadataChanged (previous metadata, participant), this client's own participant included.
+// The system is reached only through what it wired in deserialize, under the SDK's own event names.
+class FakeRoom extends EventEmitter {
+  constructor(options) {
+    super()
+    this.options = options
+    this.connects = []
+    this.disconnects = 0
+    // what this client asked the room for, in order; `answer` gives setMetadata's outcome
+    const local = Object.assign(new EventEmitter(), { identity: 'me', metadata: undefined, asked: [] })
+    local.setMetadata = metadata => {
+      local.asked.push(['metadata', metadata])
+      return local.answer?.() ?? Promise.resolve()
+    }
+    local.setScreenShareEnabled = on => (local.asked.push(['screen', on]), Promise.resolve())
+    local.setMicrophoneEnabled = on => (local.asked.push(['mic', on]), Promise.resolve())
+    this.localParticipant = local
+  }
+  connect(...args) {
+    this.connects.push(args)
+    return new Promise(resolve => (this.connected = resolve))
+  }
+  // settled at once unless a test holds it (leave does not wait for it)
+  disconnect() {
+    this.disconnects++
+    return this.disconnecting ?? Promise.resolve()
+  }
+}
+
+const shareTo = target => JSON.stringify({ screenTargetId: target })
+
+// ClientLiveKit with a stand-in room and stand-ins for the voices' audio nodes and the screens' video elements
+function client() {
   const textures = []
   class VideoTexture {
     constructor(elem) {
@@ -44,11 +80,17 @@ function client({ Room = class {} } = {}) {
       this.disposed = true
     }
   }
-  const voices = []
+  const rooms = []
+  class Room extends FakeRoom {
+    constructor(options) {
+      super(options)
+      rooms.push(this)
+    }
+  }
   const deps = {
-    ParticipantEvent: { IsSpeakingChanged: 'isSpeakingChanged' },
+    ParticipantEvent,
     Room,
-    RoomEvent: {},
+    RoomEvent,
     ScreenSharePresets: { h1080fps30: {} },
     THREE: { Vector3: class {}, Quaternion: class {}, VideoTexture, SRGBColorSpace: 'srgb', LinearFilter: 'linear' },
     System: class extends EventEmitter {
@@ -74,138 +116,172 @@ function client({ Room = class {} } = {}) {
   world.settings = Object.assign(new EventEmitter(), { voice: 'spatial' })
   world.network = { id: 'me' }
   world.graphics = { maxAnisotropy: 1 }
-  world.entities = { getPlayer: id => players.get(id) }
-  world.audio = { ready: fn => (world.audio.go = fn) }
+  world.entities = {
+    getPlayer: id => players.get(id),
+    get player() {
+      return players.get('me')
+    },
+  }
+  const audioNode = () => ({ gain: { value: 1 }, connect() {}, disconnect() {} })
+  world.audio = {
+    ctx: { createGain: audioNode, createPanner: audioNode },
+    groupGains: { voice: audioNode() },
+    ready: fn => (world.audio.go = fn),
+  }
   const livekit = new ClientLiveKit(world)
   world.livekit = livekit
   livekit.start()
-  // voices are stand-ins: what matters here is which exist and that they are destroyed
-  const voice = id => {
-    const v = { id, destroyed: false, muted: null, destroy: () => (v.destroyed = true), setMuted: m => (v.muted = m) }
-    voices.push(v)
-    livekit.voices.set(id, v)
-    return v
+  // the join snapshot's voice options: the room is made and its events wired
+  const join = async ({ muted = [] } = {}) => {
+    await livekit.deserialize({ wsUrl: 'wss://voice.example', token: 'signed', muted: new Set(muted), levels: {} })
+    return rooms.at(-1)
   }
-  const track = () => {
+  const screenTrack = () => {
     const t = { source: 'screen_share', attached: [], detached: [] }
     t.attach = elem => t.attached.push(elem)
     t.detach = elem => t.detached.push(elem)
     return t
   }
-  const participant = (identity, target) => ({
-    identity,
-    metadata: target === undefined ? undefined : JSON.stringify({ screenTargetId: target }),
-  })
+  const micTrack = () => {
+    const t = { source: 'microphone', attached: 0, detached: 0, setAudioContext() {}, setWebAudioPlugins() {} }
+    t.attach = () => t.attached++
+    t.detach = () => t.detached++
+    return t
+  }
+  const participant = (identity, target) =>
+    Object.assign(new EventEmitter(), { identity, metadata: target === undefined ? undefined : shareTo(target) })
   const node = screenId => {
     const n = { _screenId: screenId, dirty: 0, needsRebuild: false, setDirty: () => n.dirty++ }
     livekit.screenNodes.add(n)
     return n
   }
   const shown = () => livekit.screens.map(s => [s.playerId, s.targetId])
-  return { livekit, world, player, voice, track, participant, node, shown, textures }
+  const statuses = []
+  livekit.on('status', status => statuses.push({ ...status }))
+  return { livekit, world, join, players, player, screenTrack, micTrack, participant, node, shown, textures, statuses }
 }
 
 test('voice room: a kick or a lost connection leaves the room, for good', async () => {
   for (const event of ['kick', 'disconnect']) {
     const c = client()
     c.player('p1')
-    const room = { disconnects: 0, connects: 0 }
-    room.disconnect = async () => void room.disconnects++
-    room.connect = async () => void room.connects++
-    c.livekit.room = room
-    const v = c.voice('p1')
-    const t = c.track()
-    c.livekit.onTrackSubscribed(t, {}, c.participant('p1', 'stage'))
+    const room = await c.join()
+    const mic = c.micTrack()
+    const screen = c.screenTrack()
+    const who = c.participant('p1', 'stage')
+    room.emit(RoomEvent.TrackSubscribed, mic, {}, who)
+    room.emit(RoomEvent.TrackSubscribed, screen, {}, who)
+    assert.equal(c.livekit.voices.size, 1)
     assert.deepEqual(c.shown(), [['p1', 'stage']])
     c.livekit.status.connected = true
     c.livekit.status.mic = true
-    const statuses = []
-    c.livekit.on('status', status => statuses.push({ ...status }))
+    c.statuses.length = 0
     c.world.emit(event, 'moderation')
     assert.equal(room.disconnects, 1, event)
-    assert.equal(v.destroyed, true)
     assert.equal(c.livekit.voices.size, 0)
+    assert.equal(mic.detached, 1, 'the voice let go of its track')
     assert.deepEqual(c.shown(), [])
-    assert.equal(t.detached.length, 1, 'the screen let go of its track')
+    assert.equal(screen.detached.length, 1, 'the screen let go of its track')
     assert.equal(c.textures[0].disposed, true)
     assert.equal(c.livekit.shares.size, 0)
     assert.deepEqual(
-      statuses.map(s => [s.connected, s.mic, s.screenshare]),
+      c.statuses.map(s => [s.connected, s.mic, s.screenshare]),
       [[false, false, null]]
     )
     // the other event follows a kick: once is enough
     c.world.emit('disconnect', true)
     c.world.emit('kick', 'moderation')
     assert.equal(room.disconnects, 1)
-    assert.equal(statuses.length, 1)
+    assert.equal(c.statuses.length, 1)
   }
+})
+
+test('voice room: what the room reports while it is being left brings nothing back', async () => {
+  const c = client()
+  c.player('me')
+  c.player('p1')
+  const room = await c.join()
+  const local = room.localParticipant
+  // the disconnect does not finish here: the room keeps reporting meanwhile
+  room.disconnecting = new Promise(() => {})
+  c.world.emit('kick', 'moderation')
+  assert.equal(room.disconnects, 1)
+  assert.deepEqual(room.eventNames(), [], 'nothing the room says is followed any more')
+  c.statuses.length = 0
+  const who = c.participant('p1', 'stage')
+  local.metadata = shareTo('wall')
+  room.emit(RoomEvent.TrackSubscribed, c.micTrack(), {}, who)
+  room.emit(RoomEvent.TrackSubscribed, c.screenTrack(), {}, who)
+  room.emit(RoomEvent.ParticipantMetadataChanged, undefined, who)
+  room.emit(RoomEvent.LocalTrackPublished, { source: 'screen_share', track: c.screenTrack() }, local)
+  room.emit(RoomEvent.LocalTrackPublished, { source: 'microphone', track: c.micTrack() }, local)
+  room.emit(RoomEvent.ParticipantMetadataChanged, undefined, local)
+  room.emit(RoomEvent.TrackUnmuted, { isLocal: true, source: 'microphone' }, local)
+  assert.equal(c.livekit.voices.size, 0)
+  assert.equal(c.livekit.shares.size, 0)
+  assert.deepEqual(c.shown(), [])
+  assert.equal(c.textures.length, 0)
+  assert.deepEqual(c.statuses, [])
+  const { connected, mic, screenshare } = c.livekit.status
+  assert.deepEqual([connected, mic, screenshare], [false, false, null])
+  // and nothing is published into it again
+  local.asked.length = 0
+  c.livekit.setScreenShareTarget('stage')
+  c.livekit.setMicrophoneEnabled(true)
+  assert.deepEqual(local.asked, [])
 })
 
 test('voice room: out of the world before the room is joined, it is never joined (or left at once)', async () => {
   // audio becomes ready on the player's first touch; the world's connection may have ended by then
-  const rooms = []
-  class Room extends EventEmitter {
-    constructor() {
-      super()
-      this.localParticipant = new EventEmitter()
-      this.connects = []
-      this.disconnects = 0
-      rooms.push(this)
-    }
-    connect(...args) {
-      this.connects.push(args)
-      return new Promise(resolve => (this.connected = resolve))
-    }
-    async disconnect() {
-      this.disconnects++
-    }
-  }
-  const options = { wsUrl: 'wss://voice.example', token: 'signed', muted: new Set(), levels: {} }
   {
-    const c = client({ Room })
-    await c.livekit.deserialize(options)
+    const c = client()
+    const room = await c.join()
     c.world.emit('kick', 'moderation')
     await c.world.audio.go()
-    assert.deepEqual(rooms[0].connects, [], 'kicked before the first touch')
+    assert.deepEqual(room.connects, [], 'kicked before the first touch')
     assert.equal(c.livekit.status.connected, false)
   }
   {
-    const c = client({ Room })
-    await c.livekit.deserialize(options)
+    const c = client()
+    const room = await c.join()
     const joining = c.world.audio.go()
-    assert.deepEqual(rooms[1].connects, [['wss://voice.example', 'signed']])
+    assert.deepEqual(room.connects, [['wss://voice.example', 'signed']])
     c.world.emit('disconnect', true)
-    assert.equal(rooms[1].disconnects, 1)
-    rooms[1].connected()
+    assert.equal(room.disconnects, 1)
+    room.connected()
     await joining
-    assert.equal(rooms[1].disconnects, 2, 'the connection that completed after leaving is closed')
+    assert.equal(room.disconnects, 2, 'the connection that completed after leaving is closed')
     assert.equal(c.livekit.status.connected, false)
   }
   {
     // the ordinary case still joins
-    const c = client({ Room })
-    await c.livekit.deserialize(options)
+    const c = client()
+    const room = await c.join()
     const joining = c.world.audio.go()
-    rooms[2].connected()
+    room.connected()
     await joining
     assert.equal(c.livekit.status.connected, true)
-    assert.equal(rooms[2].disconnects, 0)
+    assert.equal(room.disconnects, 0)
   }
 })
 
-test('voice room: a player who leaves the world is no longer heard or shown, whatever the room says', () => {
+test('voice room: a player who leaves the world is no longer heard or shown, whatever the room says', async t => {
+  t.mock.method(console, 'error', () => {})
   const c = client()
   c.player('p1')
   c.player('p2')
-  const v1 = c.voice('p1')
-  const v2 = c.voice('p2')
+  const room = await c.join()
   const stage = c.node('stage')
-  c.livekit.onTrackSubscribed(c.track(), {}, c.participant('p1', 'stage'))
-  c.livekit.onTrackSubscribed(c.track(), {}, c.participant('p2', 'wall'))
+  const one = c.participant('p1', 'stage')
+  const two = c.participant('p2', 'wall')
+  const mic = c.micTrack()
+  room.emit(RoomEvent.TrackSubscribed, mic, {}, one)
+  room.emit(RoomEvent.TrackSubscribed, c.micTrack(), {}, two)
+  room.emit(RoomEvent.TrackSubscribed, c.screenTrack(), {}, one)
+  room.emit(RoomEvent.TrackSubscribed, c.screenTrack(), {}, two)
   const dirty = stage.dirty
   c.livekit.dropPlayer('p1')
-  assert.equal(v1.destroyed, true)
-  assert.equal(v2.destroyed, false)
+  assert.equal(mic.detached, 1)
   assert.deepEqual([...c.livekit.voices.keys()], ['p2'])
   assert.deepEqual(c.shown(), [['p2', 'wall']])
   assert.equal(stage.dirty, dirty + 1, 'the screen node it was on is rebuilt')
@@ -214,21 +290,34 @@ test('voice room: a player who leaves the world is no longer heard or shown, wha
   c.livekit.dropPlayer('p3')
   c.livekit.dropPlayer('p1')
   assert.deepEqual(c.shown(), [['p2', 'wall']])
+  // what the room says of them afterwards changes nothing: they are nobody's player here
+  c.players.delete('p1')
+  room.emit(RoomEvent.ParticipantMetadataChanged, undefined, Object.assign(one, { metadata: shareTo('wall') }))
+  room.emit(RoomEvent.TrackUnsubscribed, mic, {}, one)
+  room.emit(RoomEvent.TrackSubscribed, c.micTrack(), {}, one)
+  room.emit(RoomEvent.TrackSubscribed, c.screenTrack(), {}, one)
+  assert.deepEqual([...c.livekit.voices.keys()], ['p2'])
+  assert.deepEqual(c.shown(), [['p2', 'wall']])
 })
 
-test("voice room: a mute hides the player's screen share too, and lifting it shows it again", () => {
+test("voice room: a mute hides the player's screen share too, and lifting it shows it again", async () => {
   const c = client()
   const p1 = c.player('p1')
-  const v = c.voice('p1')
-  const t = c.track()
-  c.livekit.onTrackSubscribed(t, {}, c.participant('p1', 'stage'))
+  const room = await c.join()
+  const who = c.participant('p1', 'stage')
+  room.emit(RoomEvent.TrackSubscribed, c.micTrack(), {}, who)
+  const voice = c.livekit.voices.get('p1')
+  const t = c.screenTrack()
+  room.emit(RoomEvent.TrackSubscribed, t, {}, who)
   assert.deepEqual(c.shown(), [['p1', 'stage']])
+  p1.speaking.length = 0
   c.livekit.setMuted('p1', true)
-  assert.equal(v.muted, true)
+  assert.equal(voice.muted, true)
   assert.deepEqual(c.shown(), [], 'hidden')
   assert.deepEqual(p1.speaking, [false], 'a speaking state that was on ends')
   assert.equal(c.livekit.shares.has('p1'), true, 'the track is kept for when the mute is lifted')
   c.livekit.setMuted('p1', false)
+  assert.equal(voice.muted, false)
   assert.deepEqual(c.shown(), [['p1', 'stage']])
   assert.equal(c.livekit.screens[0].track, t)
   assert.deepEqual(p1.speaking, [false], 'lifting a mute says nothing about speaking')
@@ -237,8 +326,8 @@ test("voice room: a mute hides the player's screen share too, and lifting it sho
   c.livekit.syncScreen('p1')
   assert.equal(c.textures.length, 2, 'one for each time it was shown')
   // the same player's share comes again on a new track (a re-subscribe): the screen is made from the new one
-  const t2 = c.track()
-  c.livekit.onTrackSubscribed(t2, {}, c.participant('p1', 'stage'))
+  const t2 = c.screenTrack()
+  room.emit(RoomEvent.TrackSubscribed, t2, {}, who)
   assert.deepEqual(c.shown(), [['p1', 'stage']])
   assert.equal(c.livekit.screens[0].track, t2)
   assert.equal(c.textures.length, 3)
@@ -247,7 +336,8 @@ test("voice room: a mute hides the player's screen share too, and lifting it sho
   // a share that starts while its player is muted is not shown until the mute is lifted
   c.player('p2')
   c.livekit.setMuted('p2', true)
-  c.livekit.onTrackSubscribed(c.track(), {}, c.participant('p2', 'wall'))
+  const wall = c.screenTrack()
+  room.emit(RoomEvent.TrackSubscribed, wall, {}, c.participant('p2', 'wall'))
   assert.deepEqual(c.shown(), [['p1', 'stage']])
   c.livekit.setMuted('p2', false)
   assert.deepEqual(c.shown(), [
@@ -256,47 +346,237 @@ test("voice room: a mute hides the player's screen share too, and lifting it sho
   ])
   // one that ended while muted does not come back
   c.livekit.setMuted('p2', true)
-  c.livekit.onTrackUnsubscribed({ source: 'screen_share' }, {}, c.participant('p2', 'wall'))
+  room.emit(RoomEvent.TrackUnsubscribed, wall, {}, c.participant('p2', 'wall'))
   c.livekit.setMuted('p2', false)
   assert.deepEqual(c.shown(), [['p1', 'stage']])
 })
 
-test('voice room: a share without a readable target is not shown; the target may arrive or change later', () => {
+test('voice room: a share without a readable target is not shown; the target may arrive or change later', async () => {
   const c = client()
   c.player('p1')
-  const t = c.track()
-  const who = { identity: 'p1', metadata: '{broken' }
-  c.livekit.onTrackSubscribed(t, {}, who)
+  const room = await c.join()
+  const t = c.screenTrack()
+  const who = Object.assign(c.participant('p1'), { metadata: '{broken' })
+  room.emit(RoomEvent.TrackSubscribed, t, {}, who)
   assert.deepEqual(c.shown(), [])
-  // an unsubscribe for a share that was never shown is nothing (it used to throw)
-  c.livekit.onTrackUnsubscribed({ source: 'screen_share' }, {}, who)
+  // its end, never shown, is nothing (it used to throw)
+  room.emit(RoomEvent.TrackUnsubscribed, t, {}, who)
   assert.equal(c.livekit.shares.size, 0)
 
-  c.livekit.onTrackSubscribed(t, {}, who)
-  who.metadata = JSON.stringify({ screenTargetId: 'stage' })
-  c.livekit.onMetadataChanged('{broken', who)
+  room.emit(RoomEvent.TrackSubscribed, t, {}, who)
+  who.metadata = shareTo('stage')
+  room.emit(RoomEvent.ParticipantMetadataChanged, '{broken', who)
   assert.deepEqual(c.shown(), [['p1', 'stage']])
-  c.livekit.onMetadataChanged(who.metadata, who)
+  room.emit(RoomEvent.ParticipantMetadataChanged, who.metadata, who)
   assert.equal(c.textures.length, 1, 'the same target again builds nothing')
-  who.metadata = JSON.stringify({ screenTargetId: 'wall' })
-  c.livekit.onMetadataChanged('', who)
+  who.metadata = shareTo('wall')
+  room.emit(RoomEvent.ParticipantMetadataChanged, '', who)
   assert.deepEqual(c.shown(), [['p1', 'wall']])
   assert.equal(c.textures[0].disposed, true)
   who.metadata = 'null'
-  c.livekit.onMetadataChanged('', who)
+  room.emit(RoomEvent.ParticipantMetadataChanged, '', who)
   assert.deepEqual(c.shown(), [])
-  // metadata of someone who shares nothing, or of nobody, is nothing
-  c.livekit.onMetadataChanged('', { identity: 'p9', metadata: who.metadata })
-  c.livekit.onMetadataChanged('', undefined)
+  // metadata of someone who shares nothing is nothing
+  room.emit(RoomEvent.ParticipantMetadataChanged, '', c.participant('p9', 'stage'))
   assert.deepEqual(c.shown(), [])
 })
 
-test('voice room: a track of someone who is not a player here is ignored', t => {
+test("voice room: this client's share status follows what is shared; a stop or a change of screen is never skipped", async () => {
+  const c = client()
+  c.player('me')
+  const room = await c.join()
+  const local = room.localParticipant
+  const status = () => c.livekit.status.screenshare
+  const screens = () => c.statuses.map(s => s.screenshare).filter((s, i, all) => i === 0 || s !== all[i - 1])
+  const confirm = target => {
+    local.metadata = shareTo(target)
+    room.emit(RoomEvent.ParticipantMetadataChanged, undefined, local)
+  }
+
+  // the metadata is confirmed before the share is published
+  c.livekit.setScreenShareTarget('stage')
+  assert.deepEqual(local.asked, [
+    ['metadata', shareTo('stage')],
+    ['screen', true],
+  ])
+  confirm('stage')
+  assert.equal(status(), null, 'nothing is shared yet')
+  const first = c.screenTrack()
+  room.emit(RoomEvent.LocalTrackPublished, { source: 'screen_share', track: first }, local)
+  assert.equal(status(), 'stage')
+  assert.deepEqual(c.shown(), [['me', 'stage']])
+  local.asked.length = 0
+  c.livekit.setScreenShareTarget('stage')
+  assert.deepEqual(local.asked, [], 'asked again: nothing to do')
+  // to another screen and back, each confirmed before the next: the status follows, and the way back is asked
+  c.livekit.setScreenShareTarget('wall')
+  confirm('wall')
+  assert.equal(status(), 'wall')
+  assert.deepEqual(c.shown(), [['me', 'wall']])
+  c.livekit.setScreenShareTarget('stage')
+  confirm('stage')
+  assert.equal(status(), 'stage')
+  // and again before the voice server has confirmed the first change: both are asked, in order
+  c.livekit.setScreenShareTarget('wall')
+  c.livekit.setScreenShareTarget('stage')
+  assert.deepEqual(local.asked, [
+    ['metadata', shareTo('wall')],
+    ['screen', true],
+    ['metadata', shareTo('stage')],
+    ['screen', true],
+    ['metadata', shareTo('wall')],
+    ['screen', true],
+    ['metadata', shareTo('stage')],
+    ['screen', true],
+  ])
+  confirm('wall')
+  confirm('stage')
+  assert.deepEqual(screens(), ['stage', 'wall', 'stage', 'wall', 'stage'])
+  // a stop unpublishes; the status says so when the share is gone
+  local.asked.length = 0
+  c.livekit.setScreenShareTarget(null)
+  assert.deepEqual(local.asked, [
+    ['metadata', shareTo(null)],
+    ['screen', false],
+  ])
+  room.emit(RoomEvent.LocalTrackUnpublished, { source: 'screen_share', track: first }, local)
+  confirm(null)
+  assert.equal(status(), null)
+  assert.deepEqual(c.shown(), [])
+  local.asked.length = 0
+  c.livekit.setScreenShareTarget(null)
+  assert.deepEqual(local.asked, [], 'nothing shared, nothing asked: nothing to do')
+
+  // the share is published before the metadata is confirmed: on no screen until it is, then on it
+  c.livekit.setScreenShareTarget('stage')
+  const second = c.screenTrack()
+  room.emit(RoomEvent.LocalTrackPublished, { source: 'screen_share', track: second }, local)
+  assert.equal(status(), null)
+  assert.deepEqual(c.shown(), [])
+  confirm('stage')
+  assert.equal(status(), 'stage')
+  assert.deepEqual(c.shown(), [['me', 'stage']])
+  c.livekit.setScreenShareTarget(null)
+  room.emit(RoomEvent.LocalTrackUnpublished, { source: 'screen_share', track: second }, local)
+  confirm(null)
+  // and a stop asked before the metadata is confirmed still stops it
+  c.livekit.setScreenShareTarget('stage')
+  const third = c.screenTrack()
+  room.emit(RoomEvent.LocalTrackPublished, { source: 'screen_share', track: third }, local)
+  assert.equal(status(), null)
+  local.asked.length = 0
+  c.livekit.setScreenShareTarget(null)
+  assert.deepEqual(local.asked, [
+    ['metadata', shareTo(null)],
+    ['screen', false],
+  ])
+  room.emit(RoomEvent.LocalTrackUnpublished, { source: 'screen_share', track: third }, local)
+  assert.equal(c.livekit.shares.size, 0)
+
+  // a metadata change the voice server did not confirm is asked again
+  local.answer = () => Promise.reject(new Error('timed out'))
+  local.asked.length = 0
+  c.livekit.setScreenShareTarget('stage')
+  await new Promise(resolve => setImmediate(resolve))
+  local.answer = null
+  c.livekit.setScreenShareTarget('stage')
+  assert.deepEqual(local.asked, [
+    ['metadata', shareTo('stage')],
+    ['screen', true],
+    ['metadata', shareTo('stage')],
+    ['screen', true],
+  ])
+  // asked for and not published (the screen picker was closed): asked again, the share is asked for again
+  local.asked.length = 0
+  c.livekit.setScreenShareTarget('stage')
+  assert.deepEqual(local.asked, [['screen', true]])
+  // a stop asked again while the share is still published asks again for it to end
+  room.emit(RoomEvent.LocalTrackPublished, { source: 'screen_share', track: c.screenTrack() }, local)
+  local.asked.length = 0
+  c.livekit.setScreenShareTarget(null)
+  c.livekit.setScreenShareTarget(null)
+  assert.deepEqual(local.asked, [
+    ['metadata', shareTo(null)],
+    ['screen', false],
+    ['screen', false],
+  ])
+})
+
+test('voice room: the end of an older track leaves the newer one of the same player', async () => {
+  const c = client()
+  c.player('p1')
+  c.player('me')
+  const room = await c.join()
+  const who = c.participant('p1', 'stage')
+  // a screen
+  const [a, b] = [c.screenTrack(), c.screenTrack()]
+  room.emit(RoomEvent.TrackSubscribed, a, {}, who)
+  room.emit(RoomEvent.TrackSubscribed, b, {}, who)
+  assert.equal(c.livekit.screens.length, 1)
+  assert.equal(c.livekit.status.screenshare, null, "another player's share is not this client's")
+  room.emit(RoomEvent.TrackUnsubscribed, a, {}, who)
+  assert.deepEqual(c.shown(), [['p1', 'stage']])
+  assert.equal(c.livekit.screens[0].track, b)
+  room.emit(RoomEvent.TrackUnsubscribed, b, {}, who)
+  assert.deepEqual(c.shown(), [])
+  // a microphone
+  const [m1, m2] = [c.micTrack(), c.micTrack()]
+  room.emit(RoomEvent.TrackSubscribed, m1, {}, who)
+  room.emit(RoomEvent.TrackSubscribed, m2, {}, who)
+  const voice = c.livekit.voices.get('p1')
+  assert.equal(voice.track, m2)
+  assert.equal(m1.detached, 1, 'the older voice was replaced')
+  room.emit(RoomEvent.TrackUnsubscribed, m1, {}, who)
+  assert.equal(c.livekit.voices.get('p1'), voice)
+  assert.equal(m2.detached, 0)
+  room.emit(RoomEvent.TrackUnsubscribed, m2, {}, who)
+  assert.equal(c.livekit.voices.size, 0)
+  assert.equal(m2.detached, 1)
+  // this client's own share
+  const local = room.localParticipant
+  local.metadata = shareTo('wall')
+  const [la, lb] = [c.screenTrack(), c.screenTrack()]
+  room.emit(RoomEvent.LocalTrackPublished, { source: 'screen_share', track: la }, local)
+  room.emit(RoomEvent.LocalTrackPublished, { source: 'screen_share', track: lb }, local)
+  room.emit(RoomEvent.LocalTrackUnpublished, { source: 'screen_share', track: la }, local)
+  assert.deepEqual(c.shown(), [['me', 'wall']])
+  assert.equal(c.livekit.screens[0].track, lb)
+  assert.equal(c.livekit.status.screenshare, 'wall')
+  room.emit(RoomEvent.LocalTrackUnpublished, { source: 'screen_share', track: lb }, local)
+  assert.deepEqual(c.shown(), [])
+  assert.equal(c.livekit.status.screenshare, null)
+})
+
+test("voice room: this client's microphone status and speaking follow the room", async () => {
+  const c = client()
+  const me = c.player('me')
+  const room = await c.join()
+  const local = room.localParticipant
+  const mic = () => c.livekit.status.mic
+  room.emit(RoomEvent.LocalTrackPublished, { source: 'microphone', track: c.micTrack() }, local)
+  assert.equal(mic(), true)
+  room.emit(RoomEvent.TrackMuted, { isLocal: true, source: 'microphone' }, local)
+  assert.equal(mic(), false)
+  room.emit(RoomEvent.TrackUnmuted, { isLocal: true, source: 'microphone' }, local)
+  assert.equal(mic(), true)
+  // another player's microphone is not this client's
+  room.emit(RoomEvent.TrackMuted, { isLocal: false, source: 'microphone' }, c.participant('p1'))
+  assert.equal(mic(), true)
+  room.emit(RoomEvent.LocalTrackUnpublished, { source: 'microphone', track: null }, local)
+  assert.equal(mic(), false)
+  local.emit(ParticipantEvent.IsSpeakingChanged, true)
+  assert.deepEqual(me.speaking, [true])
+})
+
+test('voice room: a track of someone who is not a player here is ignored', async t => {
   t.mock.method(console, 'error', () => {})
   const c = client()
-  c.livekit.onTrackSubscribed(c.track(), {}, c.participant('ghost', 'stage'))
+  const room = await c.join()
+  room.emit(RoomEvent.TrackSubscribed, c.screenTrack(), {}, c.participant('ghost', 'stage'))
+  room.emit(RoomEvent.TrackSubscribed, c.micTrack(), {}, c.participant('ghost', 'stage'))
   assert.deepEqual(c.shown(), [])
   assert.equal(c.livekit.shares.size, 0)
+  assert.equal(c.livekit.voices.size, 0)
 })
 
 test('voice room: a level of null is no entry (the world default), as the server keeps it', () => {

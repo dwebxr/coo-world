@@ -24,8 +24,9 @@ from the players pane. In a world where everyone is an admin (no admin code), no
   default; `0`: only disconnected). This is a delay, not a ban: a player who clears their browser's storage comes
   back as a new user. With `KICK_BY_ADDRESS=true`, after an admin's kick new users from that player's network address
   wait too. So does everyone else who is new behind that address, and behind a proxy that does not pass client
-  addresses that is every new user. Returning users are not affected. A restart forgets who was kicked, and there is
-  no other way to lift a kick.
+  addresses that is every new user. Returning users are not affected. At most 4,096 kicked users and 4,096 addresses
+  are held: a kick past that lets the oldest back in before its minutes are over. A restart forgets who was kicked,
+  and there is no other way to lift a kick.
 
 ### `/spawn set`
 

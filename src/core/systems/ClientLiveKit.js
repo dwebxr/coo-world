@@ -36,6 +36,8 @@ export class ClientLiveKit extends System {
     this.shares = new Map()
     this.screens = []
     this.screenNodes = new Set() // Video
+    // the screen this client last asked its share to be shown on (its metadata; a token carries none)
+    this.screenTargetAsked = null
     // this client is out of the world (kicked or disconnected) and so out of the voice room
     this.left = false
   }
@@ -55,6 +57,9 @@ export class ClientLiveKit extends System {
   leave = () => {
     if (this.left) return
     this.left = true
+    // disconnect() takes a while, and the room keeps reporting tracks and metadata until it is done: what arrives
+    // meanwhile must not bring back what is ended here
+    if (this.room) this.stopListening()
     this.voices.forEach(voice => voice.destroy())
     this.voices.clear()
     this.shares.clear()
@@ -70,6 +75,9 @@ export class ClientLiveKit extends System {
   // A player left the world (PlayerRemote.destroy): what they say and show ends here, whatever the voice room says.
   // A kicked player whose client stays in the room, or comes back into it with its voice token, is in nobody's
   // world: its tracks are dropped here and ignored when they arrive (onTrackSubscribed).
+  // A player who joins the world again while the room still holds the tracks dropped here is silent, and their share
+  // is not shown, until their client publishes again. A client running this code leaves the room with the world
+  // (leave) and a page that joins again publishes new tracks; only a client that stayed in the room keeps old ones.
   dropPlayer(playerId) {
     const voice = this.voices.get(playerId)
     if (voice) {
@@ -136,6 +144,17 @@ export class ClientLiveKit extends System {
     })
   }
 
+  // the room's events followed since deserialize, no longer followed (leave, destroy)
+  stopListening() {
+    this.room.off(RoomEvent.TrackMuted, this.onTrackMuted)
+    this.room.off(RoomEvent.TrackUnmuted, this.onTrackUnmuted)
+    this.room.off(RoomEvent.LocalTrackPublished, this.onLocalTrackPublished)
+    this.room.off(RoomEvent.LocalTrackUnpublished, this.onLocalTrackUnpublished)
+    this.room.off(RoomEvent.TrackSubscribed, this.onTrackSubscribed)
+    this.room.off(RoomEvent.TrackUnsubscribed, this.onTrackUnsubscribed)
+    this.room.off(RoomEvent.ParticipantMetadataChanged, this.onMetadataChanged)
+  }
+
   setMuted(playerId, muted) {
     if (muted && this.muted.has(playerId)) return
     if (!muted && !this.muted.has(playerId)) return
@@ -184,6 +203,8 @@ export class ClientLiveKit extends System {
 
   setMicrophoneEnabled(value) {
     if (!this.room) return console.error('[livekit] setMicrophoneEnabled failed (not connected)')
+    // out of the room for good (leave): nothing is published again
+    if (this.left) return
     value = isBoolean(value) ? value : !this.room.localParticipant.isMicrophoneEnabled
     if (this.status.mic === value) return
     this.room.localParticipant.setMicrophoneEnabled(value)
@@ -191,11 +212,20 @@ export class ClientLiveKit extends System {
 
   setScreenShareTarget(targetId = null) {
     if (!this.room) return console.error('[livekit] setScreenShareTarget failed (not connected)')
-    if (this.status.screenshare === targetId) return
-    const metadata = JSON.stringify({
-      screenTargetId: targetId,
-    })
-    this.room.localParticipant.setMetadata(metadata)
+    if (this.left) return
+    // Nothing to do when the screen asked for last is this one and a share is published exactly when one is named.
+    // Not decided by the status: that follows the published share and the metadata the voice server has confirmed,
+    // which come after the ask and in either order, so a stop or a change asked meanwhile would be skipped
+    const sharing = this.shares.has(this.world.network.id)
+    if (targetId === this.screenTargetAsked && sharing === (targetId !== null)) return
+    if (targetId !== this.screenTargetAsked) {
+      this.screenTargetAsked = targetId
+      this.room.localParticipant.setMetadata(JSON.stringify({ screenTargetId: targetId })).catch(() => {
+        // not confirmed: the next ask writes it again
+        if (this.screenTargetAsked === targetId) this.screenTargetAsked = undefined
+      })
+    }
+    // with a share published, true keeps it and false unpublishes it; one still being published is waited for
     this.room.localParticipant.setScreenShareEnabled(!!targetId, {
       // audio: true,
       // systemAudio: 'include',
@@ -227,10 +257,7 @@ export class ClientLiveKit extends System {
       this.emit('status', this.status)
     }
     if (publication.source === 'screen_share') {
-      const targetId = screenTarget(this.room.localParticipant.metadata)
-      this.status.screenshare = targetId
-      this.setShare(playerId, { targetId, track })
-      this.emit('status', this.status)
+      this.setShare(playerId, { targetId: screenTarget(this.room.localParticipant.metadata), track })
     }
   }
 
@@ -241,10 +268,9 @@ export class ClientLiveKit extends System {
       this.status.mic = false
       this.emit('status', this.status)
     }
-    if (publication.source === 'screen_share') {
+    // (the publication still holds its track here; it lets go of it afterwards)
+    if (publication.source === 'screen_share' && this.shares.get(playerId)?.track === publication.track) {
       this.setShare(playerId, null)
-      this.status.screenshare = null
-      this.emit('status', this.status)
     }
   }
 
@@ -277,11 +303,18 @@ export class ClientLiveKit extends System {
     this.setShare(participant.identity, { ...share, targetId })
   }
 
-  // What a player shares (null: nothing), and the screen made from it
+  // What a player shares (null: nothing), and the screen made from it. For this client's own share the status says
+  // the screen it is on: the track and the metadata naming the screen arrive in either order, and a change of
+  // screen changes only the metadata
   setShare(playerId, share) {
     if (share) this.shares.set(playerId, share)
     else this.shares.delete(playerId)
     this.syncScreen(playerId)
+    const targetId = share?.targetId ?? null
+    if (playerId === this.world.network.id && this.status.screenshare !== targetId) {
+      this.status.screenshare = targetId
+      this.emit('status', this.status)
+    }
   }
 
   // One screen for a player, when they share to a screen and are not muted: a mute hides the share on every
@@ -295,15 +328,17 @@ export class ClientLiveKit extends System {
     if (wanted) this.addScreen(createPlayerScreen({ world: this.world, playerId, ...share }))
   }
 
+  // Only the track that is played or shown ends what it made: a participant can publish two tracks of one source
+  // (the newer replaces the older here), and the older one's end must not take the newer with it. An older track
+  // still subscribed when the newer one ends is not brought back.
   onTrackUnsubscribed = (track, publication, participant) => {
-    // console.log('onTrackUnsubscribed todo')
     const playerId = participant.identity
-    if (track.source === 'microphone') {
-      const voice = this.voices.get(playerId)
-      voice?.destroy()
+    const voice = this.voices.get(playerId)
+    if (track.source === 'microphone' && voice?.track === track) {
+      voice.destroy()
       this.voices.delete(playerId)
     }
-    if (track.source === 'screen_share') {
+    if (track.source === 'screen_share' && this.shares.get(playerId)?.track === track) {
       this.setShare(playerId, null)
     }
   }
@@ -360,13 +395,7 @@ export class ClientLiveKit extends System {
     this.screens = []
     this.screenNodes.clear()
     if (this.room) {
-      this.room.off(RoomEvent.TrackMuted, this.onTrackMuted)
-      this.room.off(RoomEvent.TrackUnmuted, this.onTrackUnmuted)
-      this.room.off(RoomEvent.LocalTrackPublished, this.onLocalTrackPublished)
-      this.room.off(RoomEvent.LocalTrackUnpublished, this.onLocalTrackUnpublished)
-      this.room.off(RoomEvent.TrackSubscribed, this.onTrackSubscribed)
-      this.room.off(RoomEvent.TrackUnsubscribed, this.onTrackUnsubscribed)
-      this.room.off(RoomEvent.ParticipantMetadataChanged, this.onMetadataChanged)
+      this.stopListening()
       if (this.room.localParticipant) {
         this.room.localParticipant.off(ParticipantEvent.IsSpeakingChanged)
       }

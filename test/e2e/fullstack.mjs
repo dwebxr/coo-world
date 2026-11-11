@@ -994,6 +994,24 @@ async function probes(admin, watcher) {
         visitor.send('kick', bystander.id)
         visitor.send('kick', admin.id)
         admin.send('kick', 'nobody-here')
+        // A ping is answered once the server has handled what its socket sent before it (in order). The admin's kick
+        // below goes on another socket, and the kicked socket's packets still waiting are dropped: without this the
+        // visitor's kicks might never be looked at. Each of the three is then asked on its own socket whether it is
+        // still connected; one that the visitor's kicks had closed answers with a kick or not at all.
+        let token = 0
+        const answer = async client => {
+          const from = client.mark()
+          const sent = ++token
+          client.send('ping', sent)
+          const reply = await client.waitFor(m => (m.method === 'onPong' && m.data === sent) || m.method === 'onKick', {
+            from,
+            timeout: 10000 * TIMEOUT_SCALE,
+          })
+          return reply.method
+        }
+        for (const client of [visitor, admin, bystander]) {
+          eq(await answer(client), 'onPong', `${client.label}: still connected after the visitor's kicks were handled`)
+        }
         let closeCode
         visitor.closed.then(value => (closeCode = value))
         const fromBystander = bystander.mark()
@@ -1002,7 +1020,10 @@ async function probes(admin, watcher) {
         eq(kick.data, 'moderation', 'the kicked player is told why')
         await waitUntil(() => closeCode !== undefined, { message: 'the kicked socket to close' })
         await bystander.waitFor(m => m.method === 'onEntityRemoved' && m.data === visitor.id, { from: fromBystander })
-        ok(!bystander.inbox.some(m => m.method === 'onKick'), "the visitor's kicks did nothing")
+        ok(
+          ![admin, bystander].some(client => client.inbox.some(m => m.method === 'onKick')),
+          "the visitor's kicks did nothing"
+        )
         // the same user comes back at once with its session token
         eq(await refusal('visitor-again', { authToken: visitor.authToken }), 'kicked', 'the kicked user id waits')
         // a new user from the same address (this machine) waits too, since an admin kicked and the server asks for it

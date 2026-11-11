@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { Ranks } from '../src/core/extras/ranks.js'
 import { readPacket } from '../src/core/packets.js'
 import { createKickList } from '../src/server/kickList.js'
-import { fixture, settle } from './lib/joinFixture.mjs'
+import { fixture } from './lib/joinFixture.mjs'
 
 const MINUTE = 60 * 1000
 
@@ -203,17 +203,24 @@ test('kick: one that lands while the same user reconnects is not passed by the n
   t.mock.method(console, 'log', () => {})
   const { f, enter, kickCode } = await stage()
   const admin = await enter('admin', Ranks.ADMIN)
-  await enter('visitor', Ranks.VISITOR)
+  const old = await enter('visitor', Ranks.VISITOR)
   // The same user connects again (a reload). The id is not listed yet, so the new connection passes the first
-  // check and waits while the old connection is asked whether it is alive
-  f.network.takeoverPingMs = 200
-  f.network.takeoverCloseMs = 1
+  // check and waits while the old connection is asked whether it is alive. The question is held here until the
+  // kick has landed, so no deadline decides which comes first
+  let answer
+  const asked = new Promise(resolve => {
+    f.network.answersPing = socket => {
+      resolve(socket)
+      return new Promise(settle => (answer = settle))
+    }
+  })
   const pending = f.join({ authToken: 'visitor' })
-  await settle()
+  assert.equal(await asked, old.socket, 'the old connection is asked')
   assert.equal(f.network.connecting.has('visitor'), true, 'the new connection is waiting')
-  // the kick lands on the old connection meanwhile: it closes, which lets the new one go on
+  // the kick lands on the old connection meanwhile; closed, it answers no, which lets the new one go on
   f.send('kick', 'visitor', admin.socket)
   assert.equal(f.network.sockets.has('visitor'), false)
+  answer(false)
   assert.equal(kickCode(await pending), 'kicked')
   assert.equal(f.network.sockets.has('visitor'), false)
   assert.equal(f.world.entities.getPlayer('visitor'), undefined)

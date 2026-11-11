@@ -98,7 +98,9 @@ export class App extends Entity {
   }
 
   async build(crashed) {
-    if (this.halted()) return
+    // a removed app is not built again by a caller that still holds it (a builder's selection): its model would be
+    // mounted for an app the world no longer has
+    if (this.destroyed || this.halted()) return
     // asked for while this app's teardown is on the stack (a host listener of an event its script emitted from
     // destroy): it waits until the teardown has finished (unbuild)
     if (this.tearingDown) return this.deferTransition('build', crashed)

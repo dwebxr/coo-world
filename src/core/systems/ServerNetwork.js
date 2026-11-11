@@ -272,12 +272,12 @@ export class ServerNetwork extends System {
     return socket ? socket.send(name, data) : false
   }
 
-  // players in the world for the limit: the registered ones, plus those being replaced whose old connection is
-  // already gone (each id once)
+  // The places taken, for the player limit: one per user who is registered or has a join being set up (`joining`:
+  // user id -> how many of that user's joins hold its place), each id once, and one for every join being set up
+  // whose user is not known (`arriving`). See onConnection.
   playersPresent() {
-    // `arriving`: joins that passed the limit and are still being set up (onConnection): each holds a place
     let count = this.sockets.size + (this.arriving ?? 0)
-    for (const id of this.replacing ?? []) if (!this.sockets.has(id)) count++
+    for (const id of this.joining?.keys() ?? []) if (!this.sockets.has(id)) count++
     return count
   }
 
@@ -795,39 +795,64 @@ export class ServerNetwork extends System {
     let cancelled = false
     // a wait that ends early when this connection closes (the takeover ping)
     let stopWaiting = null
+    // What the join holds while it is set up:
+    // - `place`, its place under the player limit (playersPresent): `{ user: id }` when its session token names a
+    //   user, whose one place it shares with that user's other connections (registered, being replaced, or joining
+    //   too), or `{ user: null }`, a place of its own. A join is counted as a socket only once registered, after waits
+    //   on the database and the voice token: without a place held meanwhile, joins arriving together all found room.
+    // - `reserved`, its user id against a second join of the same user (`connecting`).
+    let place = null
+    let reserved = null
+    const releasePlace = () => {
+      if (!place) return
+      const id = place.user
+      place = null
+      if (id === null) this.arriving--
+      else if (this.joining.get(id) > 1) this.joining.set(id, this.joining.get(id) - 1)
+      else this.joining.delete(id)
+    }
+    // Takes the place of user `id` (null: a place of its own), giving back the one held before. A user who has a
+    // place already shares it, whatever the limit; otherwise the limit is asked here, with no wait between the
+    // question and the taking. The limit is asked only when a place is taken: a limit lowered while joins are being
+    // set up does not turn away those that hold one.
+    const takePlace = id => {
+      releasePlace()
+      const shared = id !== null && (this.sockets.has(id) || !!this.joining?.has(id))
+      const limit = this.world.settings.playerLimit
+      if (!shared && isNumber(limit) && limit > 0 && this.playersPresent() >= limit) return false
+      if (id === null) this.arriving = (this.arriving ?? 0) + 1
+      else (this.joining ??= new Map()).set(id, (this.joining.get(id) ?? 0) + 1)
+      place = { user: id }
+      return true
+    }
+    // Run when the join ends (the finally below: registered, refused or failed) and when its connection closes, which
+    // can come while a wait (the database, the voice token) has not settled, or never will: the first gives back what
+    // the join holds and the second finds nothing. Nothing is taken after a close: the join checks `cancelled` after
+    // every wait before it takes anything.
+    const release = () => {
+      releasePlace()
+      if (reserved) this.connecting.delete(reserved)
+      reserved = null
+    }
     ws.once('close', () => {
       cancelled = true
       stopWaiting?.()
+      release()
     })
-    let reserved = null
-    let replacing = null
-    let arriving = false
     let carriedRankWrites = []
     let socket = null
     try {
       let authToken = params.authToken
-      let auth
-      // check player limit. A player who is already here (a stale connection about to be replaced) does not
-      // count twice; telling that needs only the token, not the database
-      const playerLimit = this.world.settings.playerLimit
-      // a player being replaced (takeover below) keeps its place while the old connection is closed and the new
-      // one is set up, so nobody else can take it in between
-      if (isNumber(playerLimit) && playerLimit > 0 && this.playersPresent() >= playerLimit) {
-        auth = authToken ? await readJWT(authToken) : null
-        if (cancelled) return
-        if (!auth || !this.sockets.has(auth.userId)) {
-          const packet = writePacket('kick', 'player_limit')
-          this.write(ws, packet, { name: 'kick' })
-          ws.close()
-          return
-        }
-      } else {
-        // A place is held from here until the player is registered or the join ends. A join waits on the database
-        // and the voice token before it registers, and the limit was only asked here: any number of joins that
-        // arrived together all found room. (A join let in above is of a player who is here: it has its place.)
-        this.arriving = (this.arriving ?? 0) + 1
-        arriving = true
+      // The session token says whose join this is, so it is read before a place is taken: a player who is here and
+      // connects again (a reload) shares the place they have. Reading it is local work (its signature), no wait on
+      // the database or the network.
+      const auth = authToken ? await readJWT(authToken) : null
+      if (cancelled) return
+      const refuseFull = () => {
+        this.write(ws, writePacket('kick', 'player_limit'), { name: 'kick' })
+        ws.close()
       }
+      if (!takePlace(auth?.userId ?? null)) return refuseFull()
 
       // A kicked user waits (kickList.js): told so and closed, with nothing added or announced. Asked where the
       // user is first known, and once more after the join's last wait (below)
@@ -842,40 +867,39 @@ export class ServerNetwork extends System {
 
       // get or create user
       let user
-      if (authToken) {
-        if (auth === undefined) auth = await readJWT(authToken)
+      if (auth) {
+        user = await this.db('users').where('id', auth.userId).first()
+        if (user) this.userIds.add(user.id)
         if (cancelled) return
-        if (auth) {
-          user = await this.db('users').where('id', auth.userId).first()
-          if (user) this.userIds.add(user.id)
+        // A token due for renewal (older than a day, without an end, or signed with the previous secret:
+        // utils-server.js) is replaced; the snapshot carries the new one and the client keeps what it carries.
+        if (user && auth.renew) {
+          authToken = await createJWT({ userId: user.id })
           if (cancelled) return
-          // A token due for renewal (older than a day, without an end, or signed with the previous secret:
-          // utils-server.js) is replaced; the snapshot carries the new one and the client keeps what it carries.
-          if (user && auth.renew) {
-            authToken = await createJWT({ userId: user.id })
-            if (cancelled) return
-          }
-        } else {
-          // A genuine token past its end: its user starts again as a new visitor, below. When that user had a rank
-          // it is gone with the session, and only the operator can give it back: said in the log.
-          const lapsed = await expiredSessionUser(authToken)
+        }
+      } else if (authToken) {
+        // A genuine token past its end: its user starts again as a new visitor, below. When that user had a rank
+        // it is gone with the session, and only the operator can give it back: said in the log.
+        const lapsed = await expiredSessionUser(authToken)
+        if (cancelled) return
+        if (lapsed) {
+          const row = await this.db('users').where('id', lapsed).first()
           if (cancelled) return
-          if (lapsed) {
-            const row = await this.db('users').where('id', lapsed).first()
-            if (cancelled) return
-            if (row?.rank > 0) {
-              // once per user for as long as the server runs: the same expired token can be presented again and
-              // again, and only tokens that were really signed here get this far, so the keys are no more than the
-              // ranked users
-              this.logOnce(
-                this,
-                `session-ended:${lapsed}`,
-                `[auth] the session of a ranked user ended unused: ${previewValue(lapsed, 64)} (rank ${row.rank}); they join as a new visitor`
-              )
-            }
+          if (row?.rank > 0) {
+            // once per user for as long as the server runs: the same expired token can be presented again and
+            // again, and only tokens that were really signed here get this far, so the keys are no more than the
+            // ranked users
+            this.logOnce(
+              this,
+              `session-ended:${lapsed}`,
+              `[auth] the session of a ranked user ended unused: ${previewValue(lapsed, 64)} (rank ${row.rank}); they join as a new visitor`
+            )
           }
         }
       }
+      // A token whose user row is gone makes a new user (below), not the one the token names: the place held so far is
+      // that user's, and the new one needs a place of its own (the limit is asked again)
+      if (place.user !== (user?.id ?? null) && !takePlace(user?.id ?? null)) return refuseFull()
       if (!user) {
         // no valid session token: a new user. Where an admin's kick holds new users at this address, it waits
         // before a row is made for it
@@ -909,20 +933,15 @@ export class ServerNetwork extends System {
       // gives way: a phone that switched to a wallet app often comes back as a reload while its old socket still
       // looks open here (iOS suspends or discards the tab without closing it), and the regular ping check takes
       // up to 2 x PING_RATE to notice.
+      // (The place of a player being replaced is the one this join holds, its token having named that user: nobody
+      // else takes it while the old connection is closed and this one is set up.)
       const existing = this.sockets.get(user.id)
       if (existing) {
-        // this player is here already: its place is the one it has, not a second one
-        if (arriving) {
-          this.arriving--
-          arriving = false
-        }
         const alive = await this.answersPing(existing, undefined, stop => (stopWaiting = stop))
         stopWaiting = null
         if (cancelled) return
         if (alive && this.sockets.get(user.id) === existing) return refuseDuplicate()
         const oldPlayer = existing.player
-        ;(this.replacing ??= new Set()).add(user.id)
-        replacing = user.id
         if (this.sockets.get(user.id) === existing) await this.retireSocket(existing)
         if (cancelled) return
         if (this.sockets.has(user.id)) return refuseDuplicate()
@@ -1076,10 +1095,8 @@ export class ServerNetwork extends System {
         ws.close(1011)
       }
     } finally {
-      if (reserved) this.connecting.delete(reserved)
-      if (replacing) this.replacing.delete(replacing)
-      // registered (it counts as a socket now) or refused: either way the held place is given back
-      if (arriving) this.arriving--
+      // registered (counted as a socket from here on) or not, the join gives back what it held
+      release()
     }
   }
 

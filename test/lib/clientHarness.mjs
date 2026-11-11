@@ -45,7 +45,7 @@ import { isPrimitive } from '../../src/core/extras/scriptPrimitives.js'
 import { jsonCopy } from '../../src/core/extras/scriptText.js'
 import * as joinBudget from '../../src/core/extras/joinBudget.js'
 import { resolveAssetFile } from '../../src/core/extras/resolveAssetFile.js'
-import { createOutboundFetch } from '../../src/core/extras/outboundFetch.js'
+import { createOutboundFetch, OutboundError } from '../../src/core/extras/outboundFetch.js'
 import { LoadingManager } from 'three'
 import * as gltfLimits from '../../src/core/extras/gltfLimits.js'
 
@@ -128,6 +128,7 @@ export function loadClient(file, name, context = {}) {
     ...joinBudget,
     resolveAssetFile,
     createOutboundFetch,
+    OutboundError,
     LoadingManager,
     ...gltfLimits,
     ...context,

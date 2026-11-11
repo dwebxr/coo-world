@@ -333,6 +333,38 @@ const withoutHeaders = (headers, drop) => {
   return kept
 }
 
+const TypedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype)
+const bufferByteLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get
+const viewParts = [TypedArrayPrototype, DataView.prototype].map(proto => ({
+  buffer: Object.getOwnPropertyDescriptor(proto, 'buffer').get,
+  byteOffset: Object.getOwnPropertyDescriptor(proto, 'byteOffset').get,
+  byteLength: Object.getOwnPropertyDescriptor(proto, 'byteLength').get,
+}))
+
+// The bytes of an ArrayBuffer, a typed array or a DataView as a view over them (nothing is copied), or null for
+// anything else. The view is over what the object holds, found with the built-ins' own getters: its length is the
+// length that is checked and the length that is sent, whatever `byteLength`, `byteOffset` or `buffer` properties
+// the object carries or inherits
+function byteView(body) {
+  if (body === null || typeof body !== 'object') return null
+  if (ArrayBuffer.isView(body)) {
+    for (const part of viewParts) {
+      try {
+        return new Uint8Array(part.buffer.call(body), part.byteOffset.call(body), part.byteLength.call(body))
+      } catch {
+        // the other kind of view
+      }
+    }
+    return null
+  }
+  try {
+    // (the getter throws for anything but an ArrayBuffer, so an array-like or an iterable is never read as one)
+    return new Uint8Array(body, 0, bufferByteLength.call(body))
+  } catch {
+    return null
+  }
+}
+
 // the request body as bytes, and the Content-Type fetch infers for it. Sizes are checked before anything is
 // converted or copied
 async function prepareBody(body, limit) {
@@ -342,11 +374,9 @@ async function prepareBody(body, limit) {
     if (body.length > limit || Buffer.byteLength(body) > limit) throw tooLarge()
     return { bytes: Buffer.from(body), type: 'text/plain;charset=UTF-8' }
   }
-  if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) {
-    if (body.byteLength > limit) throw tooLarge()
-    const view = ArrayBuffer.isView(body)
-      ? new Uint8Array(body.buffer, body.byteOffset, body.byteLength)
-      : new Uint8Array(body)
+  const view = byteView(body)
+  if (view) {
+    if (view.length > limit) throw tooLarge()
     return { bytes: Buffer.from(view), type: null } // a copy, as fetch takes one
   }
   if (body instanceof Blob) {

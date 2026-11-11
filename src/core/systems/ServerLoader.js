@@ -12,7 +12,7 @@ import { createNode } from '../extras/createNode'
 import { createEmoteFactory } from '../extras/createEmoteFactory'
 import { ASSET_PROTOCOL, assetName, assetRefusal, loaderReference } from '../extras/assetURL'
 import { resolveAssetFile } from '../extras/resolveAssetFile'
-import { createOutboundFetch } from '../extras/outboundFetch'
+import { createOutboundFetch, OutboundError } from '../extras/outboundFetch'
 import { checkGLTF, createGLTFBudget, GLTF_LIMITS, isDataURI } from '../extras/gltfLimits'
 import { LoadingManager } from 'three'
 
@@ -162,8 +162,16 @@ export class ServerLoader extends System {
 
   // An app script's fetch (App.fetchFor, with the app as the caller its requests are counted against): scripts
   // that keep every slot busy leave the loads above theirs, and a burst of loads leaves scripts theirs
+  // A request the policy refuses or cannot complete rejects as fetch's do, with a TypeError (the policy's message
+  // says why)
   get scriptFetch() {
-    if (!this.scriptOutbound) this.scriptOutbound = createOutboundFetch({ trustedOrigins: this.trustedOrigins() })
+    if (!this.scriptOutbound) {
+      const policy = createOutboundFetch({ trustedOrigins: this.trustedOrigins() })
+      this.scriptOutbound = (url, init, caller) =>
+        policy(url, init, caller).catch(err => {
+          throw err instanceof OutboundError ? new TypeError(err.message) : err
+        })
+    }
     return this.scriptOutbound
   }
 

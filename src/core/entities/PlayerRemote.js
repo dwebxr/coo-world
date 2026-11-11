@@ -7,6 +7,15 @@ import { BufferedLerpVector3 } from '../extras/BufferedLerpVector3'
 import { BufferedLerpQuaternion } from '../extras/BufferedLerpQuaternion'
 import { isEmoteUrl } from '../extras/entityModifyPolicy'
 import { readAnchorPose } from '../extras/anchorPose'
+import {
+  avatarChosen,
+  avatarSettled,
+  beginAvatarLoad,
+  isCurrentAvatarLoad,
+  playerAvatarUrl,
+  switchToBuiltinAvatar,
+} from '../extras/playerAvatarFallback'
+import { eventPayload } from '../extras/eventPayload.js'
 
 const anchorPosition = new THREE.Vector3()
 const anchorQuaternion = new THREE.Quaternion()
@@ -78,19 +87,34 @@ export class PlayerRemote extends Entity {
   }
 
   applyAvatar() {
-    const avatarUrl = this.data.sessionAvatar || this.data.avatar || 'asset://avatar.vrm'
+    const avatarUrl = playerAvatarUrl(this)
+    const load = beginAvatarLoad(this)
     if (this.avatarUrl === avatarUrl) return
-    this.world.loader.load('avatar', avatarUrl).then(src => {
-      if (this.avatar) this.avatar.deactivate()
-      this.avatar = src.toNodes().get('avatar')
-      this.base.add(this.avatar)
-      this.nametag.position.y = this.avatar.getHeadToHeight() + 0.2
-      this.bubble.position.y = this.avatar.getHeadToHeight() + 0.2
-      if (!this.bubble.active) {
-        this.nametag.active = true
+    this.world.loader.load('avatar', avatarUrl).then(
+      src => {
+        if (!isCurrentAvatarLoad(this, load)) return
+        if (this.avatar) this.avatar.deactivate()
+        this.avatar = src.toNodes().get('avatar')
+        this.base.add(this.avatar)
+        this.nametag.position.y = this.avatar.getHeadToHeight() + 0.2
+        this.bubble.position.y = this.avatar.getHeadToHeight() + 0.2
+        if (!this.bubble.active) {
+          this.nametag.active = true
+        }
+        this.avatarUrl = avatarUrl
+        avatarSettled(this, avatarUrl)
+      },
+      err => {
+        // reported like the local player's, instead of an unhandled rejection
+        if (isCurrentAvatarLoad(this, load)) avatarSettled(this, avatarUrl)
+        console.error(err)
       }
-      this.avatarUrl = avatarUrl
-    })
+    )
+  }
+
+  // World.hotFailed: this player (or its avatar) threw in the frame loop
+  fallBackToDefaultAvatar() {
+    return switchToBuiltinAvatar(this)
   }
 
   getAnchorMatrix() {
@@ -200,7 +224,7 @@ export class PlayerRemote extends Entity {
     if (Object.prototype.hasOwnProperty.call(data, 'health')) {
       this.data.health = data.health
       this.nametag.health = data.health
-      this.world.events.emit('health', { playerId: this.data.id, health: data.health })
+      this.world.events.emit('health', eventPayload({ playerId: this.data.id, health: data.health }))
     }
     if (Object.prototype.hasOwnProperty.call(data, 'avatar')) {
       this.data.avatar = data.avatar
@@ -220,6 +244,7 @@ export class PlayerRemote extends Entity {
       this.world.emit('evmTips', { playerId: this.data.id, evmTips: this.data.evmTips })
     }
     if (avatarChanged) {
+      avatarChosen(this)
       this.applyAvatar()
     }
   }
@@ -236,7 +261,7 @@ export class PlayerRemote extends Entity {
     this.base.deactivate()
     this.avatar = null
     this.world.setHot(this, false)
-    this.world.events.emit('leave', { playerId: this.data.id })
+    this.world.events.emit('leave', eventPayload({ playerId: this.data.id }))
     this.aura.deactivate()
     this.aura = null
 

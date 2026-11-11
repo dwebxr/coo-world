@@ -37,6 +37,22 @@ Here is a list of available button properties:
 
 `keyA` to `keyZ`, `digit0` to `digit9`, `minus`, `equal`, `bracketLeft`, `bracketRight`, `backslash`, `semicolon`, `quote`, `backquote`, `comma`, `period`, `slash`, `arrowUp`, `arrowDown`, `arrowLeft`, `arrowRight`, `home`, `end`, `pageUp`, `pageDown`, `tab`, `capsLock`, `shiftLeft`, `shiftRight`, `controlLeft`, `controlRight`, `altLeft`, `altRight`, `enter`, `space`, `backspace`, `delete`, `escape`, `mouseLeft`, `mouseRight`, `metaLeft`.
 
+### Action hints
+
+`control.setActions(actions)` shows a list of hints (an icon and a label) in the top left of the screen while the
+control is bound; `null` clears it. Each action is `{ type, label, btn }`: `type` is a button name (eg `keyE`,
+`mouseLeft`) or `'custom'`, in which case `btn` is the text shown in the key pill. The list is copied when you call
+`setActions`: only string values are shown (numbers become text, anything else shows nothing), labels are cut to 128
+characters and at most 64 actions are kept. Later changes to your array or objects are not shown until you call
+`setActions` again, and your objects are not modified.
+
+```javascript
+control.setActions([
+  { type: 'keyE', label: 'Open' },
+  { type: 'custom', btn: '1-4', label: 'Choose' },
+])
+```
+
 ### Pointer
 
 Access pointer (mouse) information.
@@ -57,6 +73,13 @@ app.on('update', () => {
 *   `pointer.locked` (Boolean): `true` if the pointer is currently locked.
 *   `pointer.lock()`: Requests to lock the pointer to the screen.
 *   `pointer.unlock()`: Releases the pointer lock.
+
+`coords`, `position` and `delta` are new vectors on every read (changing one changes nothing else). `lock()`
+and `unlock()` do nothing once the control is released, except that the control's own `onRelease` callback can
+still call `unlock()` for a lock the control still holds. A pointer lock a control took ends with it: releasing the
+control (or the app stopping or being rebuilt) unlocks the pointer if that control locked it last, and leaves a lock
+another control took alone. Calling `app.control()` again keeps the lock: the app's new control holds it from then
+on (so the previous control's `onRelease` no longer unlocks it).
 
 ### Scroll
 
@@ -86,6 +109,32 @@ control.camera.position.y = 4
 *   `camera.rotation` (Euler): The euler rotation (radians) of the camera in world space.
 *   `camera.zoom` (Number): Third person zoom value, eg how far back the camera is from its position.
 *   `camera.write` (Boolean): Set this to `true` if you want to modify the camera in any way.
+
+While `write` is on, the camera moves only to finite numbers: a position, rotation or zoom that is not a finite
+number leaves the camera where it is for that frame.
+
+### Releasing
+
+`control.release()` ends the control. Its action hints leave the screen and a hidden reticle comes back, and a
+pointer lock it took ends. After that (also when the app stops or is rebuilt, which releases its control) the
+control still answers, but changes nothing: `setActions` and `hideReticle` do nothing, and its buttons no longer
+fire. A touch object kept from `onTouch`/`onTouchEnd` answers with the touch's last values once the touch has
+ended or the control was released.
+
+The engine releases every control an app run made when the run ends, whatever was done to the control object. Once
+the app's teardown has started (its `destroy` handlers, and the callbacks the teardown runs, such as `onRelease` or
+an effect's `onEnd`), `app.control()` throws `[app] this app has stopped`.
+
+A control's entries (`camera`, the buttons, `scrollDelta`, the poses and sticks, `pointer`, `screen`) are sealed. You
+write their fields as above (`camera.write`, `camera.zoom`, a button's `capture`, `onPress` and `onRelease`), but
+adding, deleting or redefining a property throws a `TypeError` (no field can become a getter), and so does replacing
+one of the engine's parts: the camera's `position`, `quaternion` and `rotation`, a pose's vectors, a stick's `value`,
+the pointer's and the screen's properties. Change their values instead (`control.camera.position.set(…)`). The engine
+reads a field you wrote without converting it: a `zoom` that is not a number leaves the camera where it is for that
+frame, and `write` and `capture` count as on when they are truthy.
+
+If a control's per-frame values still make the engine fail, the app crashes like any other script error and the
+frame goes on for everyone else.
 
 
 ### Screen

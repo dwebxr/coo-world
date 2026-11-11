@@ -26,6 +26,20 @@ Apps have a global `props` variable for you to read back the values entered in c
 props.name
 ```
 
+`props` (also `app.props`) is this app's own copy of the values, made each time the app is built (when its script
+starts, and again after every change to its blueprint). Changing it changes nothing for other copies of the app, the
+builder's fields or what is saved; to change a value for good, the builder edits the field.
+
+A field's `initial` value is what `props[key]` holds while the builder has not set that field. It is not saved into
+the app until the builder edits the field, so a later change to `initial` in your script applies to every copy that
+still uses it. Exported `.hyp` files contain the values the fields show, initial values included.
+
+The field list is copied when `configure` runs; later changes to your field objects are not shown. Each field needs a
+`key` that is a string of 1-64 characters other than `__proto__`, `constructor` and `prototype` (a `section` or
+`button` may have none); a field with any other key is left out, with one warning in the console. Labels, hints,
+placeholders and option labels are shown as text (numbers become text, other values show nothing); properties not
+listed below are ignored; at most 256 fields are shown.
+
 ## Fields
 
 ### Text

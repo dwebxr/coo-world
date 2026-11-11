@@ -12,8 +12,19 @@ import { CurvePane } from './CurvePane'
 import { isArray } from 'lodash-es'
 import { downloadFile } from '../../core/extras/downloadFile'
 import { HexColorPicker } from 'react-colorful'
+import { toNumber, toText } from '../../core/extras/scriptText'
+
+// Field values come from blueprint props (any JSON a builder stored, or a field's initial value) and labels from
+// app.configure: every field renders host strings and numbers only, and a mistyped stored value shows as empty
+// (or the field's default) instead of throwing. TEXT_VALUE_MAX bounds nothing a builder can store; it only keeps
+// the conversion a string.
+const TEXT_VALUE_MAX = Infinity
+const toDigits = dp => (Number.isInteger(dp) && dp >= 0 && dp <= 100 ? dp : 0)
+// an unset value stays unset (a blur must not write '' over it); any other non-text value shows as ''
+const toTextValue = value => (value == null ? value : toText(value, TEXT_VALUE_MAX))
 
 export function FieldText({ label, hint, placeholder, value, onChange }) {
+  value = toTextValue(value)
   const hintProps = useHintProps(hint)
   const [localValue, setLocalValue] = useState(value)
   useEffect(() => {
@@ -55,12 +66,12 @@ export function FieldText({ label, hint, placeholder, value, onChange }) {
       `}
       {...hintProps}
     >
-      <div className='fieldtext-label'>{label}</div>
+      <div className='fieldtext-label'>{toText(label)}</div>
       <div className='fieldtext-field'>
         <input
           type='text'
           value={localValue || ''}
-          placeholder={placeholder}
+          placeholder={toText(placeholder)}
           onFocus={e => e.target.select()}
           onChange={e => setLocalValue(e.target.value)}
           onKeyDown={e => {
@@ -81,6 +92,7 @@ export function FieldText({ label, hint, placeholder, value, onChange }) {
 }
 
 export function FieldTextarea({ label, hint, placeholder, value, onChange }) {
+  value = toTextValue(value)
   const hintProps = useHintProps(hint)
   const textareaRef = useRef()
   const [localValue, setLocalValue] = useState(value)
@@ -142,12 +154,12 @@ export function FieldTextarea({ label, hint, placeholder, value, onChange }) {
       `}
       {...hintProps}
     >
-      <div className='fieldtextarea-label'>{label}</div>
+      <div className='fieldtextarea-label'>{toText(label)}</div>
       <div className='fieldtextarea-field'>
         <textarea
           ref={textareaRef}
           value={localValue || ''}
-          placeholder={placeholder}
+          placeholder={toText(placeholder)}
           onFocus={e => e.target.select()}
           onChange={e => setLocalValue(e.target.value)}
           onKeyDown={e => {
@@ -167,7 +179,7 @@ export function FieldTextarea({ label, hint, placeholder, value, onChange }) {
 }
 
 export function FieldSwitch({ label, hint, options, value, onChange }) {
-  options = options || []
+  options = Array.isArray(options) ? options : []
   const hintProps = useHintProps(hint)
   const idx = options.findIndex(o => o.value === value)
   const selected = options[idx]
@@ -224,11 +236,11 @@ export function FieldSwitch({ label, hint, options, value, onChange }) {
       `}
       {...hintProps}
     >
-      <div className='fieldswitch-label'>{label}</div>
+      <div className='fieldswitch-label'>{toText(label)}</div>
       <div className='fieldswitch-btn left' onClick={prev}>
         <ChevronLeftIcon size='1.5rem' />
       </div>
-      <div className='fieldswitch-text'>{selected?.label || '???'}</div>
+      <div className='fieldswitch-text'>{toText(selected?.label) || '???'}</div>
       <div className='fieldswitch-btn right' onClick={next}>
         <ChevronRightIcon size='1.5rem' />
       </div>
@@ -266,8 +278,8 @@ export function FieldToggle({ label, hint, trueLabel = 'Yes', falseLabel = 'No',
       {...hintProps}
       onClick={() => onChange(!value)}
     >
-      <div className='fieldtoggle-label'>{label}</div>
-      <div className='fieldtoggle-text'>{value ? trueLabel : falseLabel}</div>
+      <div className='fieldtoggle-label'>{toText(label)}</div>
+      <div className='fieldtoggle-text'>{toText(value ? trueLabel : falseLabel)}</div>
     </div>
   )
 }
@@ -275,9 +287,7 @@ export function FieldToggle({ label, hint, trueLabel = 'Yes', falseLabel = 'No',
 export function FieldRange({ label, hint, min = 0, max = 1, step = 0.05, instant, value, onChange }) {
   const hintProps = useHintProps(hint)
   const trackRef = useRef()
-  if (value === undefined || value === null) {
-    value = 0
-  }
+  value = toNumber(value, 0)
   const [local, setLocal] = useState(value)
   const [sliding, setSliding] = useState(false)
   useEffect(() => {
@@ -386,7 +396,7 @@ export function FieldRange({ label, hint, min = 0, max = 1, step = 0.05, instant
       `}
       {...hintProps}
     >
-      <div className='fieldrange-label'>{label}</div>
+      <div className='fieldrange-label'>{toText(label)}</div>
       <div className='fieldrange-text'>{text}</div>
       <div className='fieldrange-track' ref={trackRef}>
         <div className='fieldrange-bar' />
@@ -451,7 +461,7 @@ export function FieldFile({ world, label, hint, kind: kindName, value, onChange,
   const nRef = useRef(0)
   const update = useUpdate()
   const [loading, setLoading] = useState(null)
-  const kind = fileKinds[kindName]
+  const kind = Object.prototype.hasOwnProperty.call(fileKinds, kindName) ? fileKinds[kindName] : null
   if (!kind) return null // invalid?
   const set = async e => {
     // trigger input rebuild
@@ -506,7 +516,7 @@ export function FieldFile({ world, label, hint, kind: kindName, value, onChange,
     onChange(null)
   }
   const handleDownload = async e => {
-    if (e.shiftKey && value?.url) {
+    if (e.shiftKey && typeof value?.url === 'string' && value.url) {
       e.preventDefault()
       // the loader does not keep every file it hands back (one from elsewhere above its bound): use the returned one
       const file =
@@ -517,7 +527,7 @@ export function FieldFile({ world, label, hint, kind: kindName, value, onChange,
     }
   }
   const n = nRef.current
-  const name = loading?.name || value?.name
+  const name = toText(loading?.name) || toText(value?.name)
   return (
     <label
       className='fieldfile'
@@ -589,7 +599,7 @@ export function FieldFile({ world, label, hint, kind: kindName, value, onChange,
       {...hintProps}
       onClick={handleDownload}
     >
-      <div className='fieldfile-label'>{label}</div>
+      <div className='fieldfile-label'>{toText(label)}</div>
       {!value && !loading && <div className='fieldfile-placeholder'>{kind.placeholder}</div>}
       {name && <div className='fieldfile-name'>{name}</div>}
       {value && !loading && (
@@ -619,9 +629,8 @@ export function FieldNumber({
   onChange,
 }) {
   const hintProps = useHintProps(hint)
-  if (value === undefined || value === null) {
-    value = 0
-  }
+  value = toNumber(value, 0)
+  dp = toDigits(dp)
   const [local, setLocal] = useState(value.toFixed(dp))
   const [focused, setFocused] = useState(false)
   useEffect(() => {
@@ -684,7 +693,7 @@ export function FieldNumber({
       `}
       {...hintProps}
     >
-      <div className='fieldnumber-label'>{label}</div>
+      <div className='fieldnumber-label'>{toText(label)}</div>
       <div className='fieldnumber-field'>
         <input
           type='text'
@@ -738,9 +747,10 @@ export function FieldVec3({
   onChange,
 }) {
   const hintProps = useHintProps(hint)
-  let valueX = value?.[0] || 0
-  let valueY = value?.[1] || 0
-  let valueZ = value?.[2] || 0
+  dp = toDigits(dp)
+  let valueX = toNumber(value?.[0], 0)
+  let valueY = toNumber(value?.[1], 0)
+  let valueZ = toNumber(value?.[2], 0)
   const [localX, setLocalX] = useState(valueX.toFixed(dp))
   const [localY, setLocalY] = useState(valueY.toFixed(dp))
   const [localZ, setLocalZ] = useState(valueZ.toFixed(dp))
@@ -811,7 +821,7 @@ export function FieldVec3({
       `}
       {...hintProps}
     >
-      <div className='fieldvec3-label'>{label}</div>
+      <div className='fieldvec3-label'>{toText(label)}</div>
       <div className='fieldvec3-field'>
         {[
           { value: valueX, local: localX, setLocal: setLocalX, build: v => [v, valueY, valueZ] },
@@ -867,6 +877,7 @@ export function FieldVec3({
 
 export function FieldCurve({ label, hint, x, xRange, y, yMin, yMax, value, onChange }) {
   const hintProps = useHintProps(hint)
+  value = toText(value, TEXT_VALUE_MAX)
   const curve = useMemo(() => new Curve().deserialize(value || '0,0.5,0,0|1,0.5,0,0'), [value])
   const [edit, setEdit] = useState(false)
   return (
@@ -910,7 +921,7 @@ export function FieldCurve({ label, hint, x, xRange, y, yMin, yMax, value, onCha
         }}
         {...hintProps}
       >
-        <div className='fieldcurve-label'>{label}</div>
+        <div className='fieldcurve-label'>{toText(label)}</div>
         <div className='fieldcurve-curve'>
           <CurvePreview curve={curve} yMin={yMin} yMax={yMax} />
         </div>
@@ -919,7 +930,7 @@ export function FieldCurve({ label, hint, x, xRange, y, yMin, yMax, value, onCha
         <Portal>
           <CurvePane
             curve={edit}
-            title={label}
+            title={toText(label)}
             xLabel={x}
             xRange={xRange}
             yLabel={y}
@@ -969,14 +980,15 @@ export function FieldBtn({ label, note, hint, nav, onClick }) {
       {...hintProps}
       onClick={onClick}
     >
-      <div className='fieldbtn-label'>{label}</div>
-      {note && <div className='fieldbtn-note'>{note}</div>}
+      <div className='fieldbtn-label'>{toText(label)}</div>
+      {note && <div className='fieldbtn-note'>{toText(note)}</div>}
       {nav && <ChevronRightIcon size='1.5rem' />}
     </div>
   )
 }
 
 export function FieldColor({ label, hint, value, onChange }) {
+  value = toText(value, 64)
   const hintProps = useHintProps(hint)
   const [showPicker, setShowPicker] = useState(false)
   const [localValue, setLocalValue] = useState(value || '#ffffff')
@@ -1214,7 +1226,7 @@ export function FieldColor({ label, hint, value, onChange }) {
       {...hintProps}
     >
       <div ref={controlRef} className='fieldcolor-control' onClick={handleControlClick}>
-        <div className='fieldcolor-label'>{label}</div>
+        <div className='fieldcolor-label'>{toText(label)}</div>
         <div className='fieldcolor-preview'>
           <div className='fieldcolor-text'>{localValue}</div>
           <div className='fieldcolor-swatch' style={{ backgroundColor: localValue }} />

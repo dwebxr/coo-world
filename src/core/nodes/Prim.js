@@ -1,7 +1,8 @@
 import { handlePhysicsFailure } from '../extras/physicsFailure.js'
 import * as THREE from '../extras/three'
 import { vec3ToPxPos, quatToPxRot, warnOnce } from '../extras/physxConvert.js'
-import { isBoolean, isNumber, isString, isArray, isObject, isFunction, isEqual } from 'lodash-es'
+import { isArray, isObject, isFunction, isEqual } from 'lodash-es'
+import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
 
 import { Node, secureRef } from './Node'
 import { getTrianglesFromGeometry } from '../extras/getTrianglesFromGeometry'
@@ -628,8 +629,7 @@ export class Prim extends Node {
 
   commit(didMove) {
     if (this.needsRebuild) {
-      this.unmount()
-      this.mount()
+      this.remount()
       return
     }
     if (didMove) {

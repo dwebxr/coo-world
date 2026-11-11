@@ -36,16 +36,71 @@ export function sanitizeChatMessage(msg) {
   return { body: text }
 }
 
+// Who produced a message, assigned by the host, never by a script or a client packet:
+// - player: a player's own chat (the server stamps it, with the sender's id and name, on every client packet)
+// - app: a script's world.chat(); never carries a player id, names the app it came from
+// - system: a line the server or this client wrote (command replies, notices)
+// - tip: the server's confirmation of an on-chain tip
+// A message without a kind (an older server) shows as a plain line and never as a system or tip line.
+export const CHAT_KINDS = ['player', 'app', 'system', 'tip']
+export const CHAT_APP_NAME_MAX_LENGTH = 64
+
 export function chatEnvelope(msg) {
   if (!isPlainObject(msg)) return null
   const body = msg.body
   const safe = sanitizeChatMessage({ body: typeof body === 'number' ? String(body) : body })
   if (!safe) return null
+  const kind = msg.kind
+  if (CHAT_KINDS.includes(kind)) safe.kind = kind
   for (const key of ['id', 'fromId', 'createdAt']) {
     const value = msg[key]
     if (typeof value === 'string') safe[key] = cutText(value, 64)
   }
+  // only a player's own message names a player
+  if (safe.kind && safe.kind !== 'player') delete safe.fromId
   const from = sanitizeName(msg.from)
   if (from !== undefined) safe.from = from
+  if (safe.kind === 'app') {
+    const app = msg.app
+    if (typeof app === 'string') safe.app = cutText(app, CHAT_APP_NAME_MAX_LENGTH)
+  }
   return safe
+}
+
+// world.chat(msg) from a script: the script chooses the text and a display name (each read once); the host sets
+// the rest, so a script cannot speak as a player (no fromId, no bubble, no per-player chat event) or as the
+// server (kind is always 'app' and the message carries the app's name)
+export function scriptChatMessage(msg, appName) {
+  try {
+    if (!isPlainObject(msg)) return null
+  } catch {
+    return null // a Proxy whose getPrototypeOf trap throws
+  }
+  let body
+  let from
+  try {
+    body = msg.body
+  } catch {
+    return null
+  }
+  try {
+    from = msg.from
+  } catch {
+    from = undefined
+  }
+  return appChatLine(body, from, appName)
+}
+
+// an app's chat line from values already read (a script's message, or an appChat packet relayed by the server)
+export function appChatLine(body, from, appName) {
+  const safe = sanitizeChatMessage({ body: typeof body === 'number' ? String(body) : body })
+  if (!safe) return null
+  const name = sanitizeName(from)
+  return {
+    kind: 'app',
+    app: typeof appName === 'string' ? cutText(appName, CHAT_APP_NAME_MAX_LENGTH) : '',
+    from: name === undefined ? null : name,
+    fromId: null,
+    body: safe.body,
+  }
 }

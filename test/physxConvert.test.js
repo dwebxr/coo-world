@@ -152,9 +152,13 @@ test('invalid components leave read outputs unchanged and produce only numeric n
   const invalid = [NaN, Infinity, -Infinity, 1e39, -1e39, '1', undefined, null, 1n, object]
   for (const bad of invalid) {
     assert.equal(isFiniteF32(bad), false)
+    // (through a setter a string, a boolean or null is a number, by the engine's number rule: engineNumber.js; so
+    // those are written past the setter, as a script can)
+    const viaSetter = typeof bad !== 'string' && bad !== null
     for (const key of ['x', 'y', 'z']) {
       const value = new Vector3Enhanced(1, 2, 3)
-      value[key] = bad
+      if (viaSetter) value[key] = bad
+      else value[`_${key}`] = bad
       const out = new Vector3(4, 5, 6)
       assert.equal(readVec3(value, out, 'required'), false)
       assert.deepEqual(components(out), [4, 5, 6])
@@ -168,7 +172,8 @@ test('invalid components leave read outputs unchanged and produce only numeric n
     }
     for (const key of ['x', 'y', 'z', 'w']) {
       const value = new Quaternion(1, 2, 3, 4)
-      value[key] = bad
+      if (viaSetter) value[key] = bad
+      else value[`_${key}`] = bad
       const out = new Quaternion(5, 6, 7, 8)
       assert.equal(readQuat(value, out, 'required'), false)
       assert.deepEqual(out.toArray(), [5, 6, 7, 8])
@@ -180,6 +185,14 @@ test('invalid components leave read outputs unchanged and produce only numeric n
   }
   assert.equal(coerced, false)
   for (const value of [0, -0, 1, -1, 1e-45, 3.4028234663852886e38]) assert.equal(isFiniteF32(value), true)
+  // a numeric string, a boolean or null given to a setter is that number
+  for (const [given, number] of [['1', 1], [true, 1], [null, 0]]) {
+    const value = new Vector3Enhanced(1, 2, 3)
+    value.y = given
+    const out = new Vector3()
+    assert.equal(readVec3(value, out, 'required'), true)
+    assert.deepEqual(components(out), [1, number, 3])
+  }
 })
 
 test('native writers read every source component and transform member once', () => {

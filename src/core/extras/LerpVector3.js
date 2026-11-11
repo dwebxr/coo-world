@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import * as THREE from './three'
 
 export class LerpVector3 {
   constructor(value, rate) {

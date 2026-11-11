@@ -2,7 +2,7 @@
 // Each sanitizer returns a new object holding only the permitted, well-formed fields
 // (plus `id`), or null when nothing usable remains.
 
-const NAME_MAX_LENGTH = 64
+export const NAME_MAX_LENGTH = 64
 export const TRANSFORM_LIMIT = 1e6
 export const QUATERNION_NORM_TOLERANCE = 0.1
 const JSON_MAX_BYTES = 8 * 1024

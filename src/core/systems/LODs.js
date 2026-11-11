@@ -1,4 +1,5 @@
 import { System } from './System'
+import { nodeFailed } from '../extras/nodeFailure'
 
 const BATCH_SIZE = 1000
 
@@ -33,10 +34,16 @@ export class LODs extends System {
       const idx = (this.cursor + i) % this.nodes.length
       const node = this.nodes[idx]
       if (!node) continue
-      node.check()
+      try {
+        node.check()
+      } catch (err) {
+        // one LOD must not stop the frame (nodeFailure.js): it stops switching and its app crashes
+        nodeFailed(node, 'lods', err)
+        this.unregister(node)
+      }
     }
     if (size) {
-      this.cursor = (this.cursor + size) % this.nodes.length
+      this.cursor = (this.cursor + size) % (this.nodes.length || 1)
     }
   }
 

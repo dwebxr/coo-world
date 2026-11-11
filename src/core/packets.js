@@ -49,6 +49,8 @@ const names = [
   'evmTipIntent',
   'evmTip',
   'evmTipStatus',
+  // client -> server: a client script's broadcast world.chat(); the server relays it as an app line (kind 'app')
+  'appChat',
 ]
 
 const byName = {}
@@ -89,18 +91,36 @@ export function packetMethodById(id) {
   return byId[id]?.method
 }
 
+// msgpackr cannot be entered twice: its packers share one buffer and one write position, and each keeps where its
+// message began. A pack begun inside another (from code that runs while a value is read: a getter, a toJSON, a Proxy
+// trap) left the outer one's bytes wrong, could come out unreadable itself (a record the outer one had already
+// defined is only referred to), and, when it moved the buffer on, made the outer one write outside it and the next
+// message of anyone throw. What a script hands the engine to send is therefore read before it is packed, by our own
+// reader (extras/scriptData.js), and what is packed here is host data, whose packing runs no script code. Should a
+// pack still begin inside another, it is refused before the packer is touched, and the outer one goes on untouched.
+export const PACK_NESTED = 'a message cannot be packed while another one is being packed'
+let packing = false
+
+function packOnce(packer, value) {
+  if (packing) throw new Error(PACK_NESTED)
+  packing = true
+  try {
+    return packer.pack(value)
+  } finally {
+    packing = false
+  }
+}
+
 export function writePacket(name, data) {
   const info = byName[name]
   if (!info) throw new Error(`writePacket failed: ${name} (name not found)`)
-  const packet = packr.pack([info.id, data])
-  return packet
+  return packOnce(packr, [info.id, data])
 }
 
 export function writeClientPacket(name, data) {
   const info = byName[name]
   if (!info) throw new Error(`writeClientPacket failed: ${name} (name not found)`)
-  const packet = clientPackr.pack([info.id, data])
-  return packet
+  return packOnce(clientPackr, [info.id, data])
 }
 
 export function readPacket(packet) {

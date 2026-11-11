@@ -1,4 +1,5 @@
 import { Quaternion, MathUtils } from 'three'
+import { toEngineNumber } from './engineNumber.js'
 
 /**
  * This is an enhanced version of THREE.Vector3 to add the _onChange function
@@ -7,15 +8,22 @@ import { Quaternion, MathUtils } from 'three'
  * Current version is from THREE v167
  * 
  * The initial unmodified version was committed so you can diff what changed.
+ *
+ * A component is always a number: every method that stores a value it was given or read from another object (the
+ * constructor, the x/y/z setters, set, setScalar, setX/Y/Z, setComponent, copy, fromArray, setFromMatrixPosition,
+ * setFromEuler, setFromColor) stores it by the engine's number rule (engineNumber.js): a string, a boolean or null is
+ * converted, anything else that is not a number (an object, a boxed primitive, undefined, a Symbol, a BigInt) is NaN,
+ * without being converted, so no valueOf or toString a script defined runs when the engine later does arithmetic
+ * with the component, and the change callback only ever sees numbers.
  */
 
 export class Vector3Enhanced {
 
 	constructor( x = 0, y = 0, z = 0 ) {
 
-		this._x = x;
-		this._y = y;
-		this._z = z;
+		this._x = toEngineNumber( x );
+		this._y = toEngineNumber( y );
+		this._z = toEngineNumber( z );
 
 	}
 
@@ -27,7 +35,7 @@ export class Vector3Enhanced {
 
 	set x( value ) {
 
-		this._x = value;
+		this._x = toEngineNumber( value );
 		this._onChangeCallback();
 
 	}
@@ -40,7 +48,7 @@ export class Vector3Enhanced {
 
 	set y( value ) {
 
-		this._y = value;
+		this._y = toEngineNumber( value );
 		this._onChangeCallback();
 
 	}
@@ -53,7 +61,7 @@ export class Vector3Enhanced {
 
 	set z( value ) {
 
-		this._z = value;
+		this._z = toEngineNumber( value );
 		this._onChangeCallback();
 
 	}
@@ -62,9 +70,9 @@ export class Vector3Enhanced {
 
 		if ( z === undefined ) z = this._z; // sprite.scale.set(x,y)
 
-		this._x = x;
-		this._y = y;
-		this._z = z;
+		this._x = toEngineNumber( x );
+		this._y = toEngineNumber( y );
+		this._z = toEngineNumber( z );
 
         this._onChangeCallback();
 
@@ -74,6 +82,7 @@ export class Vector3Enhanced {
 
 	setScalar( scalar ) {
 
+		scalar = toEngineNumber( scalar );
 		this._x = scalar;
 		this._y = scalar;
 		this._z = scalar;
@@ -86,7 +95,7 @@ export class Vector3Enhanced {
 
 	setX( x ) {
 
-		this._x = x;
+		this._x = toEngineNumber( x );
 
         this._onChangeCallback();
 
@@ -96,7 +105,7 @@ export class Vector3Enhanced {
 
 	setY( y ) {
 
-		this._y = y;
+		this._y = toEngineNumber( y );
 
         this._onChangeCallback();
 
@@ -106,7 +115,7 @@ export class Vector3Enhanced {
 
 	setZ( z ) {
 
-		this._z = z;
+		this._z = toEngineNumber( z );
 
         this._onChangeCallback();
 
@@ -118,9 +127,9 @@ export class Vector3Enhanced {
 
 		switch ( index ) {
 
-			case 0: this._x = value; break;
-			case 1: this._y = value; break;
-			case 2: this._z = value; break;
+			case 0: this._x = toEngineNumber( value ); break;
+			case 1: this._y = toEngineNumber( value ); break;
+			case 2: this._z = toEngineNumber( value ); break;
 			default: throw new Error( 'index is out of range: ' + index );
 
 		}
@@ -152,9 +161,9 @@ export class Vector3Enhanced {
 
 	copy( v ) {
 
-		this._x = v.x;
-		this._y = v.y;
-		this._z = v.z;
+		this._x = toEngineNumber( v.x );
+		this._y = toEngineNumber( v.y );
+		this._z = toEngineNumber( v.z );
 
         this._onChangeCallback();
 
@@ -710,9 +719,9 @@ export class Vector3Enhanced {
 
 		const e = m.elements;
 
-		this._x = e[ 12 ];
-		this._y = e[ 13 ];
-		this._z = e[ 14 ];
+		this._x = toEngineNumber( e[ 12 ] );
+		this._y = toEngineNumber( e[ 13 ] );
+		this._z = toEngineNumber( e[ 14 ] );
 
         this._onChangeCallback();
 
@@ -750,9 +759,9 @@ export class Vector3Enhanced {
 
 	setFromEuler( e ) {
 
-		this._x = e._x;
-		this._y = e._y;
-		this._z = e._z;
+		this._x = toEngineNumber( e._x );
+		this._y = toEngineNumber( e._y );
+		this._z = toEngineNumber( e._z );
 
         this._onChangeCallback();
 
@@ -762,9 +771,9 @@ export class Vector3Enhanced {
 
 	setFromColor( c ) {
 
-		this._x = c.r;
-		this._y = c.g;
-		this._z = c.b;
+		this._x = toEngineNumber( c.r );
+		this._y = toEngineNumber( c.g );
+		this._z = toEngineNumber( c.b );
 
         this._onChangeCallback();
 
@@ -780,9 +789,9 @@ export class Vector3Enhanced {
 
 	fromArray( array, offset = 0 ) {
 
-		this._x = array[ offset ];
-		this._y = array[ offset + 1 ];
-		this._z = array[ offset + 2 ];
+		this._x = toEngineNumber( array[ offset ] );
+		this._y = toEngineNumber( array[ offset + 1 ] );
+		this._z = toEngineNumber( array[ offset + 2 ] );
 
         this._onChangeCallback();
 

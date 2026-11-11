@@ -28,6 +28,12 @@ when a native trap caused the latch. During the destroy event, world/app reads, 
 Native queries, creation and other native-capable calls remain blocked. A legitimate replacement
 script can run again after cleanup of the old run.
 
+Each build of an app (when its blueprint changes, after a crash, or when it is removed) ends the script's run. The
+`world`, `app` and player objects and the control a run was given belong to that run: once it has ended, using them
+throws `[app] this app has stopped` (a control answers but changes nothing), a pending `fetch` or body read never
+settles, and a node of the old run cannot be mounted again by setting `active`. The run's own `destroy` handler
+still works as before; a promise or timer it starts does not.
+
 A separate simulation health probe checks PhysX after a native trap. If it fails, or an exception
 interrupts the main scene's simulation/fetch, the world stops ticking. The server refuses further
 mutations and attempts to save settled edits, deletions and changed, loaded settings/spawn values before
@@ -57,6 +63,9 @@ Whether the script is currently executing on the client.
 ### `.add(node)`
 
 Adds a node into world-space, outside of the apps local hierarchy.
+
+Another app's root (the node its `app` stands for) cannot be added, to world space or under a node: `world.add`,
+`world.attach` and `node.add` throw `[…] cannot add another app's root node`. An app can still move its own root.
 
 ### `.remove(node)`
 
@@ -121,7 +130,8 @@ Unsubscribes from world events.
 ### `.raycast(origin: Vector3, direction: Vector3, maxDistance: ?Number, layerMask: ?Number)`
 
 Raycasts the physics scene.
-Returns the nearest hit (`point`, `normal`, `distance`, `tag`, `playerId`), or `null`.
+Returns the nearest hit (`point`, `normal`, `distance`, `tag`, `playerId`), or `null`. Each call returns a new
+object with new vectors, so keeping or changing a result affects nothing else.
 If `maxDistance` is omitted or `null`, max distance is infinite. Zero is allowed; negative values,
 NaN and non-numbers throw. `origin` and `direction` accept endowed and stock THREE `Vector3`
 instances; lookalike objects throw. A component that is non-finite or overflows float32 returns
@@ -132,8 +142,8 @@ An omitted or `null` `layerMask` means `0` (unfiltered). Explicit masks must be 
 
 ### `.overlapSphere(radius: Number, origin: Vector3, layerMask: ?Number)`
 
-Returns an array of overlapping physics hits, each exposing `tag` and `playerId` (which may be
-`null`). No hits returns `[]`.
+Returns an array of overlapping physics hits, each a new plain object `{ tag, playerId }` (either may be
+`null`). No hits returns `[]`. A hit's `tag` is reported only when it is a string, here and in `raycast`.
 
 `radius` must be positive and remain finite and positive after conversion to float32; invalid
 radii throw. `origin` accepts endowed and stock THREE `Vector3` instances; lookalike objects
@@ -146,9 +156,28 @@ Changing query radii reuses one native sphere geometry rather than growing a rad
 Creates a bitmask to be used in `world.raycast()`.
 Currently the only groups available are `environment` and `player`.
 
+### `.chat(msg: { body, from? }, broadcast: ?Boolean)`
+
+Posts a line in the chat. `body` is the text (a number is converted; other values are refused; trimmed and cut to
+500 characters). `from` is an optional display name shown next to the app's name. With `broadcast` on the server the
+line goes to every client. With `broadcast` on a client the line goes to the server as this app's line (not as the
+visitor's chat) and the server relays it to the other clients; the visitor's own client shows it at once.
+
+The line is always shown as an app's message, with the app's name: a script cannot post as a player or as the
+world. Any `fromId`, `id`, `kind` or other field in `msg` is ignored, a script's line never pops a player's chat
+bubble, and the `chat` event it fires (on the server too, for a relayed client line) has `kind: 'app'` and no
+`fromId`. Tip confirmations and world notices carry a marker in the chat that app lines cannot show, so a line that
+reads like a tip announcement but has no marker is never one; only the `tip` event is proof of a tip.
+
+App lines are untrusted text. The server names the app from its own blueprint, but it cannot tell an app's client
+script from a modified client: anyone in the world can post a line under the name of an app that exists in it. Such
+a line still shows as an app line and never carries the system or tip marker.
+
 ### `.getPlayer(playerId)`: Player
 
-Returns a player. If no `playerId` is provided it returns the local player.
+Returns a player. If no `playerId` is provided it returns the local player. A player that is leaving (in a `leave`
+listener, say) is not returned (`null`), nor listed by `world.getPlayers()`; a handle kept from before still reads its
+last values, but starts no effect or voice level any more (`[player] this player has left`).
 
 ### `.getPlayers()`: [...Player]
 
@@ -159,7 +188,9 @@ Returns an array of all players.
 A small key-value store for the whole world, kept in the world folder (`storage.json`) and shared by every app's
 server script. On a client both do nothing (`get` returns `undefined`).
 
-- `set(key, value)` stores a JSON value. `set(key, undefined)` deletes the key.
+- `set(key, value)` stores a JSON value. `set(key, undefined)` deletes the key. The value is read once, as JSON,
+  when `set` is called (its `toJSON` and getters run then); if reading it ends the app's run, nothing is stored and
+  the call throws `[app] this app has stopped`.
 - `get(key)` returns a copy of the stored value, so changing what you got does not change the store: call `set`
   again to save a change.
 - Limits: a key is a string of 1 to 128 characters; a value is at most 64 KiB as JSON; at most 1,024 keys; and

@@ -1,5 +1,5 @@
 import * as THREE from '../extras/three'
-import { isFunction, isNumber, isString } from 'lodash-es'
+import { isFunction } from 'lodash-es'
 
 import { Node } from './Node'
 
@@ -7,9 +7,11 @@ const defaults = {
   label: 'Interact',
   distance: 3,
   duration: 0.5,
-  onStart: () => {},
-  onTrigger: () => {},
-  onCancel: () => {},
+  // one function per default, shared by every action node of every app: frozen, so a script cannot hang a property
+  // (eg its own `call`) on it for another app's action
+  onStart: Object.freeze(() => {}),
+  onTrigger: Object.freeze(() => {}),
+  onCancel: Object.freeze(() => {}),
 }
 
 export class Action extends Node {
@@ -59,15 +61,19 @@ export class Action extends Node {
   }
 
   set label(value) {
-    this._label = isString(value) ? value : isNumber(value) ? value + '' : defaults.label
+    // drawn on the action prompt every frame: kept as a primitive string (a boxed String or an object with its own
+    // toString would run script code inside the client's frame loop)
+    this._label = typeof value === 'string' ? value : typeof value === 'number' ? value + '' : defaults.label
   }
 
   get distance() {
     return this._distance
   }
 
+  // read by the client's action system every frame: a primitive finite number only (a boxed Number's valueOf
+  // would run script code there)
   set distance(value = defaults.distance) {
-    if (!isNumber(value)) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
       throw new Error('[action] distance not a number')
     }
     this._distance = value
@@ -78,7 +84,7 @@ export class Action extends Node {
   }
 
   set duration(value = defaults.duration) {
-    if (!isNumber(value)) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
       throw new Error('[action] duration not a number')
     }
     this._duration = value

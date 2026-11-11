@@ -1,5 +1,7 @@
-// e2e probe: a throwing change callback on a dynamic body's transform. The host runs it while
-// interpolating physics (Physics.preUpdate), outside of any script callback; only this app may crash.
+// e2e probe: a change callback of its own on a dynamic body's transform, which the host would run while
+// interpolating physics (Physics.preUpdate), outside of any script callback. The transform a handle gives out is a
+// view of the engine's object (sealMath.js): replacing its change callback throws in the script's own update, so this
+// app crashes there, and nothing of it runs inside the physics step.
 // The body starts high up so it is still falling (awake) when the callback is installed, which happens on
 // the first update after one physics step (a frame-counted delay would scale with the renderer's speed).
 // With props.destroyThrows the script also leaves a pending timer and a destroy listener that throws:
@@ -17,7 +19,13 @@ let armed = false
 app.on('update', () => {
   if (armed) return
   armed = true
-  body.position._onChangeCallback = () => {
-    throw new Error('P1_PHYSICS_BOOM')
+  try {
+    body.position._onChangeCallback = () => {
+      throw new Error('P1_PHYSICS_BOOM')
+    }
+  } catch (err) {
+    throw new Error('P1_PHYSICS_REFUSED ' + err.message)
   }
+  // (never reached: the assignment is refused)
+  throw new Error('P1_PHYSICS_BOOM installed')
 })

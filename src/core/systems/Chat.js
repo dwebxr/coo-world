@@ -2,6 +2,7 @@ import moment from 'moment'
 import { uuid } from '../utils'
 import { CHAT_BODY_MAX_LENGTH, chatEnvelope, cutText, sanitizeChatMessage } from '../extras/chatPolicy'
 import { System } from './System'
+import { eventPayload } from '../extras/eventPayload.js'
 
 /**
  * Chat System
@@ -36,7 +37,8 @@ export class Chat extends System {
       callback(this.msgs)
     }
     const body = msg.body
-    if (msg.fromId) {
+    // only a player's own message pops that player's bubble (an app or system line has no fromId)
+    if (msg.kind === 'player' && msg.fromId) {
       const player = this.world.entities.getPlayer(msg.fromId)
       player?.chat(body)
     }
@@ -65,7 +67,7 @@ export class Chat extends System {
       return callback({ playerId, cmd, value, args })
     }
     if (cmd !== 'admin') {
-      this.world.events.emit('command', { playerId, cmd, value, args })
+      this.world.events.emit('command', eventPayload({ playerId, cmd, value, args }))
     }
     this.world.network.send('command', { cmd, value, args })
   }
@@ -89,6 +91,7 @@ export class Chat extends System {
     const player = this.world.entities.player
     const data = {
       id: uuid(),
+      kind: 'player',
       from: player.data.name,
       fromId: player.data.id,
       body: safe.body,

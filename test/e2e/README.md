@@ -251,6 +251,21 @@ clamps `performance.now()` to 0.1 ms, so compare the means as well as the median
 - server (`--monitor`): tick median <= head + 1.0 ms (absolute bound only, no ratio); CPU <= head + 1 pp
 - cumulative against the pre-sandbox baseline: JS mean <= x 1.25 and <= +0.5 ms, p90 <= x 1.30, commit <= +0.3 ms, tick median <= +1.5 ms (absolute only), CPU <= +2 pp
 
+### Recorded exceptions
+
+A change that goes in over a budget is listed here, with its numbers and the reason, by the owner's decision; the
+budgets themselves stay as they are for the changes that follow.
+
+- **P1, the script-host boundary (2026-11-12).** Client JS mean 1.185 ms against main's 1.023 (x 1.158, limit x 1.15)
+  and median 1.18 against 1.00 (limit 1.15); per-pair mean ratios 1.116, 1.209, 1.163, 1.123, 1.181, and 1.134 to
+  1.230 in a second run on a busier machine. The absolute limit (+0.3 ms) holds at +0.16 ms, and so do p90, commit,
+  server tick and CPU. The time is in the apps' update loop and appears only in real frames (the same loop run 400
+  times in a row shows none); no single check accounts for it, and of everything tried only removing the binding of
+  node handles to their app run (Node.js, bindProxyToRun) brought it back to main's level. The mechanism was not
+  identified. Winning it back means building the handles of the node classes differently (the run check inside each
+  class's own methods, or shared accessors on a per-class prototype); that is left to the refactoring phase, which
+  is to measure against the pre-P1 figures above.
+
 ## Probe apps (`apps/`)
 
 Small scripts installed as app blueprints during a run. `crasher.js`, `stage-crash.js`,

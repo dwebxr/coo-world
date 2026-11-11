@@ -12,7 +12,7 @@ import { BufferedLerpVector3 } from '../extras/BufferedLerpVector3'
 import { BufferedLerpQuaternion } from '../extras/BufferedLerpQuaternion'
 import { createScriptCompartment, wrapRawCode } from '../extras/scriptCompartment'
 import { hardenForScripts, hardenScriptClasses } from '../extras/scriptHardening'
-import { createScriptObjectURL } from '../extras/scriptBlob'
+import { createScriptObjectURL, revokeScriptObjectURL } from '../extras/scriptBlob'
 import { createScriptConsole, hostInspect } from '../extras/scriptConsole'
 
 /**
@@ -74,6 +74,7 @@ export class Scripts extends System {
       }),
       URL: hardenForScripts({
         createObjectURL: blob => createScriptObjectURL(blob),
+        revokeObjectURL: url => revokeScriptObjectURL(url),
       }),
       Math,
       eval: undefined,

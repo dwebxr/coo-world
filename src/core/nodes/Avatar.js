@@ -1,4 +1,4 @@
-import { isBoolean, isString } from 'lodash-es'
+import { isBoolean, isString } from '../extras/scriptPrimitives.js'
 import { Node } from './Node'
 import * as THREE from 'three'
 
@@ -37,6 +37,8 @@ export class Avatar extends Node {
     }
     if (this.factory) {
       this.instance = this.factory.create(this.matrixWorld, this.hooks, this)
+      // the instance is a hot item: World.hotFailed finds the app or player it belongs to through this node
+      this.instance.hotOwner = this
       this.instance.setEmote(this._emote)
       this.instance.setVisible(this._visible)
       if (this._disableRateCheck) {
@@ -45,14 +47,13 @@ export class Avatar extends Node {
       }
       this.ctx.world?.setHot(this.instance, true)
       this.ctx.world?.avatars.add(this.instance)
-      this.onLoad?.call(undefined) // script callbacks run without a receiver
+      if (typeof this.onLoad === 'function') Reflect.apply(this.onLoad, undefined, []) // no receiver
     }
   }
 
   commit(didMove) {
     if (this.needsRebuild) {
-      this.unmount()
-      this.mount()
+      this.remount()
     }
     if (didMove) {
       this.instance?.move(this.matrixWorld)
@@ -202,7 +203,9 @@ export class Avatar extends Node {
           return self.getHeadToHeight()
         },
         getBoneTransform(boneName) {
-          return self.getBoneTransform(boneName)
+          // a copy: the instance's matrix is the one the engine aims this avatar with
+          const matrix = self.getBoneTransform(boneName)
+          return matrix ? new THREE.Matrix4().copy(matrix) : matrix
         },
         setLocomotion(mode, axis, gazeDir) {
           self.setLocomotion(mode, axis, gazeDir)

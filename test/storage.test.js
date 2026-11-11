@@ -438,3 +438,34 @@ test('storage: an unchanged value is not written again; deleting a key writes on
   assert.deepEqual(onDisk(file), {})
   assert.ok(isEqual(storage.get('score'), undefined))
 })
+
+// (the branch's review noted that world.set('__proto__', v) replaced the prototype of the store's data object; the
+// store keeps its values in a Map now, so the key is an ordinary key, in memory and in the file)
+test("storage: '__proto__', 'constructor' and other Object.prototype names are ordinary keys", async t => {
+  quiet(t)
+  const { file } = tempWorld(t)
+  const storage = new Storage(file, { intervalMs: 0 })
+  const world = scriptWorld(storage)
+  for (const key of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) {
+    assert.equal(world.get(key), undefined, `${key} is not inherited`)
+  }
+  world.set('__proto__', { polluted: true })
+  world.set('constructor', 'plain')
+  world.set('score', 1)
+  assert.deepEqual(world.get('__proto__'), { polluted: true })
+  assert.equal(world.get('constructor'), 'plain')
+  assert.equal({}.polluted, undefined, 'nothing reached Object.prototype')
+  assert.equal(world.get('polluted'), undefined, "the stored value is not the store's prototype")
+  assert.equal(world.get('toString'), undefined)
+  assert.ok(await storage.flush())
+  const text = fs.readFileSync(file, 'utf8')
+  assert.ok(text.includes('"__proto__"'), 'written as a key')
+  // loaded again, the key is still a key and the store's other keys are as they were
+  const again = new Storage(file, { intervalMs: 0 })
+  assert.deepEqual(again.get('__proto__'), { polluted: true })
+  assert.equal(again.get('constructor'), 'plain')
+  assert.equal(again.get('score'), 1)
+  assert.equal(again.get('polluted'), undefined)
+  again.set('__proto__', undefined)
+  assert.equal(again.get('__proto__'), undefined, 'and it can be deleted')
+})

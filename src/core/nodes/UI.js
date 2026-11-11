@@ -1,8 +1,10 @@
 import * as THREE from '../extras/three'
-import { every, isArray, isBoolean, isNumber, isString } from 'lodash-es'
+import { scriptView, sealMath } from '../extras/sealMath.js'
+import { every, isArray } from 'lodash-es'
+import { isBoolean, isNumber, isPrimitive, isString } from '../extras/scriptPrimitives.js'
 import Yoga from 'yoga-layout'
 
-import { Node } from './Node'
+import { guardTransform, Node } from './Node'
 import { fillRoundRect } from '../extras/roundRect'
 import {
   AlignContent,
@@ -116,6 +118,8 @@ export class UI extends Node {
     this.ui = this
 
     this._offset._onChange(() => this.rebuild())
+    // scripts hold it through the UI's handle (sealMath.js)
+    sealMath(this._offset)
   }
 
   build() {
@@ -156,6 +160,7 @@ export class UI extends Node {
       this.ctx.world.setHot(this, true)
     } else {
       // screen-space
+      guardTransform(this)
       this.canvas.style.position = 'absolute'
       this.canvas.style.width = this._width + 'px'
       this.canvas.style.height = this._height + 'px'
@@ -417,7 +422,7 @@ export class UI extends Node {
     this._borderWidth = source._borderWidth
     this._borderColor = source._borderColor
     this._borderRadius = source._borderRadius
-    this._padding = source._padding
+    this._padding = isArray(source._padding) ? Object.freeze([...source._padding]) : source._padding
     this._flexDirection = source._flexDirection
     this._justifyContent = source._justifyContent
     this._alignItems = source._alignItems
@@ -614,10 +619,13 @@ export class UI extends Node {
   }
 
   set scaler(value = defaults.scaler) {
-    if (value !== null && !isScaler(value)) {
+    // the node's own frozen copy of numbers: it is read every frame (the script's array, or an object in it, would run
+    // its code there)
+    const scaler = isArray(value) ? Object.freeze(Array.from(value)) : value
+    if (scaler !== null && !isScaler(scaler)) {
       throw new Error('[ui] scaler invalid')
     }
-    this._scaler = value
+    this._scaler = scaler
     this.rebuild()
   }
 
@@ -704,11 +712,13 @@ export class UI extends Node {
   }
 
   set padding(value = defaults.padding) {
-    if (!isEdge(value)) {
+    // the node keeps its own copy of an array (read once, then checked), never the script's array
+    const edge = isArray(value) ? Object.freeze(Array.from(value)) : value
+    if (!isEdge(edge)) {
       throw new Error(`[ui] padding not a number or array of numbers`)
     }
-    if (this._padding === value) return
-    this._padding = value
+    if (this._padding === edge) return
+    this._padding = edge
     if (isArray(this._padding)) {
       const [top, right, bottom, left] = this._padding
       this.yogaNode?.setPadding(Yoga.EDGE_TOP, top * this._res)
@@ -864,7 +874,7 @@ export class UI extends Node {
           self.pivot = value
         },
         get offset() {
-          return self.offset
+          return scriptView(self.offset)
         },
         set offset(value) {
           self.offset = value
@@ -1108,5 +1118,5 @@ function isEdge(value) {
 }
 
 function isScaler(value) {
-  return isArray(value) && isNumber(value[0]) && isNumber(value[1])
+  return isArray(value) && isNumber(value[0]) && isNumber(value[1]) && value.every(isPrimitive)
 }

@@ -466,6 +466,7 @@ try {
       { timeout: 30000 * TIMEOUT_SCALE }
     )
     eq(announced.data.fromId ?? null, null, 'system message')
+    eq(announced.data.kind, 'tip', 'a tip line, which no script can produce')
     await recipient.waitFor(m => m.method === 'onChatAdded' && m.data?.body === 'Alice tipped Bob 100 JPYC', {
       timeout: 30000 * TIMEOUT_SCALE,
     })

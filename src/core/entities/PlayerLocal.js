@@ -15,6 +15,14 @@ import { createPlayerAura, chatBubble } from '../extras/playerAura'
 import { isEmoteUrl, sanitizeName, sanitizePlayerSelfModify } from '../extras/entityModifyPolicy'
 import { readAnchorPose } from '../extras/anchorPose'
 import {
+  avatarChosen,
+  avatarSettled,
+  beginAvatarLoad,
+  isCurrentAvatarLoad,
+  playerAvatarUrl,
+  switchToBuiltinAvatar,
+} from '../extras/playerAvatarFallback'
+import {
   readVec3,
   writeVec3,
   warnOnce,
@@ -25,6 +33,7 @@ import {
   pxToQuat,
   scratchPxVec3,
 } from '../extras/physxConvert.js'
+import { eventPayload } from '../extras/eventPayload.js'
 
 const teleportPosition = new THREE.Vector3()
 const anchorPosition = new THREE.Vector3()
@@ -170,15 +179,22 @@ export class PlayerLocal extends Entity {
   }
 
   getAvatarUrl() {
-    return this.data.sessionAvatar || this.data.avatar || 'asset://avatar.vrm'
+    return playerAvatarUrl(this)
+  }
+
+  // World.hotFailed: this player (or its avatar) threw in the frame loop
+  fallBackToDefaultAvatar() {
+    return switchToBuiltinAvatar(this)
   }
 
   applyAvatar() {
     const avatarUrl = this.getAvatarUrl()
+    const load = beginAvatarLoad(this)
     if (this.avatarUrl === avatarUrl) return
     this.world.loader
       .load('avatar', avatarUrl)
       .then(src => {
+        if (!isCurrentAvatarLoad(this, load)) return
         if (this.avatar) this.avatar.deactivate()
         this.avatar = src.toNodes().get('avatar')
         this.avatar.disableRateCheck() // max fps for local player
@@ -190,8 +206,10 @@ export class PlayerLocal extends Entity {
         }
         this.avatarUrl = avatarUrl
         this.camHeight = this.avatar.height * 0.9
+        avatarSettled(this, avatarUrl)
       })
       .catch(err => {
+        if (isCurrentAvatarLoad(this, load)) avatarSettled(this, avatarUrl)
         console.error(err)
       })
   }
@@ -1227,6 +1245,7 @@ export class PlayerLocal extends Entity {
 
   setSessionAvatar(avatar) {
     this.data.sessionAvatar = avatar
+    avatarChosen(this)
     this.applyAvatar()
     this.world.network.send('entityModified', {
       id: this.data.id,
@@ -1249,7 +1268,7 @@ export class PlayerLocal extends Entity {
     if (Object.prototype.hasOwnProperty.call(data, 'health')) {
       this.data.health = data.health
       this.nametag.health = data.health
-      this.world.events.emit('health', { playerId: this.data.id, health: data.health })
+      this.world.events.emit('health', eventPayload({ playerId: this.data.id, health: data.health }))
       // changed = true
     }
     if (Object.prototype.hasOwnProperty.call(data, 'avatar')) {
@@ -1281,6 +1300,7 @@ export class PlayerLocal extends Entity {
       changed = true
     }
     if (avatarChanged) {
+      avatarChosen(this)
       this.applyAvatar()
     }
     if (changed) {

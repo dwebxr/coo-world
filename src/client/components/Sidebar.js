@@ -67,6 +67,9 @@ import { useRank } from './useRank'
 import { Ranks } from '../../core/extras/ranks'
 import { callScript } from '../../core/extras/callScript'
 import { TipForm } from './TipForm'
+import { toText } from '../../core/extras/scriptText'
+import { fieldValues } from '../../core/extras/appFields'
+import { guardTransform } from '../../core/nodes/Node'
 
 const e1 = new THREE.Euler(0, 0, 0, 'YXZ')
 const q1 = new THREE.Quaternion()
@@ -400,7 +403,7 @@ function Hint() {
         font-size: 0.9375rem;
       `}
     >
-      <span>{hint}</span>
+      <span>{toText(hint, 1024)}</span>
     </div>
   )
 }
@@ -424,7 +427,7 @@ function Group({ label }) {
             margin-top: -0.6rem;
           `}
         >
-          {label}
+          {toText(label)}
         </div>
       )}
     </>
@@ -998,7 +1001,7 @@ function Add({ world, hidden }) {
                     background-image: url(${world.resolveURL(blueprint.image?.url)});
                   `}
                 ></div>
-                <div className='add-item-name'>{blueprint.name}</div>
+                <div className='add-item-name'>{toText(blueprint.name)}</div>
               </div>
             ))}
           </div>
@@ -1043,7 +1046,11 @@ function App({ world, hidden }) {
   const frozen = blueprint.frozen // TODO: disable code editor, model change, metadata editing, flag editing etc
   const download = async () => {
     try {
-      const file = await exportApp(app.blueprint, world.loader.loadFile)
+      // the file carries the values the sidebar shows: set props plus each field's initial for the unset ones
+      const file = await exportApp(
+        { ...app.blueprint, props: fieldValues(app.fields, app.blueprint.props) },
+        world.loader.loadFile
+      )
       downloadFile(file)
     } catch (err) {
       console.error(err)
@@ -1177,7 +1184,7 @@ function App({ world, hidden }) {
         `}
       >
         <div className='app-head'>
-          <div className='app-title'>{app.blueprint.name}</div>
+          <div className='app-title'>{toText(app.blueprint.name)}</div>
           <div className='app-btn' onClick={download} {...downloadHintProps}>
             <DownloadIcon size='1.125rem' />
           </div>
@@ -1247,6 +1254,8 @@ function App({ world, hidden }) {
 }
 
 function AppTransformFields({ app }) {
+  // (the root's transform is the app's own: its components are read through the guard, Node.js)
+  guardTransform(app.root)
   const [position, setPosition] = useState(app.root.position.toArray())
   const [rotation, setRotation] = useState(app.root.rotation.toArray().map(n => n * RAD2DEG))
   const [scale, setScale] = useState(app.root.scale.toArray())
@@ -1342,9 +1351,12 @@ function AppModelBtn({ world, value, onChange, children }) {
   )
 }
 
-function AppFields({ world, app, blueprint }) {
+export function AppFields({ world, app, blueprint }) {
   const [fields, setFields] = useState(() => app.fields)
   const props = blueprint.props
+  // a key the blueprint does not set shows the field's initial value (configure no longer writes initial values
+  // into the shared blueprint, only into each app's own props copy)
+  const values = fieldValues(fields, props)
   useEffect(() => {
     app.onFields = setFields
     return () => {
@@ -1365,9 +1377,9 @@ function AppFields({ world, app, blueprint }) {
     <AppField
       key={field.key}
       world={world}
-      props={props}
+      props={values}
       field={field}
-      value={props?.[field.key]}
+      value={values[field.key]}
       modify={modify}
       preflight={preflight}
       getProps={() => world.blueprints.get(blueprint.id).props}
@@ -1592,7 +1604,7 @@ function Script({ world, hidden }) {
       `}
     >
       <div className='script-head'>
-        <div className='script-title'>Script: {app.blueprint?.name}</div>
+        <div className='script-title'>Script: {toText(app.blueprint?.name)}</div>
         <div className='script-btn' onClick={() => handle?.save()}>
           <SaveIcon size='1.125rem' />
         </div>
@@ -1887,7 +1899,7 @@ function Players({ world, hidden }) {
             <Fragment key={player.data.id}>
               <div className='players-item'>
                 <div className='players-name'>
-                  <span>{player.data.name}</span>
+                  <span>{toText(player.data.name)}</span>
                   {player.speaking && <Volume2Icon size='1rem' />}
                   {player.isMuted() && <MicOffIcon size='1rem' />}
                 </div>

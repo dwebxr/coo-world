@@ -1,10 +1,11 @@
 import * as THREE from '../extras/three'
 import { vec3ToPxPos, quatToPxRot } from '../extras/physxConvert.js'
-import { isBoolean, isNumber } from 'lodash-es'
+import { isBoolean, isNumber, isPrimitive } from '../extras/scriptPrimitives.js'
 
 import { Node, getNodeRef } from './Node'
 import { Layers } from '../extras/Layers'
 import { bindRotations } from '../extras/bindRotations'
+import { scriptView, sealAll } from '../extras/sealMath.js'
 import { DEG2RAD, RAD2DEG } from '../extras/general'
 import { finiteNumber, normalizeQuat, positionOk, warnPhysicsOnce } from '../extras/physicsValidate.js'
 
@@ -33,6 +34,12 @@ function breakValue(value) {
   return typeof value === 'number' && value >= 0 ? value : Infinity
 }
 
+// a limit or the collide flag: a primitive, kept as it is (the mount only uses a finite number, or the flag's truth);
+// an object is refused, so the node never keeps one for host code to convert later
+function plainValue(value, key) {
+  if (!isPrimitive(value)) throw new Error(`[joint] ${key} must be a number, a boolean or null`)
+}
+
 export class Joint extends Node {
   constructor(data = {}) {
     super(data)
@@ -52,6 +59,8 @@ export class Joint extends Node {
     this.breakForce = isNumber(data.breakForce) ? data.breakForce : defaults.breakForce
     this.breakTorque = isNumber(data.breakTorque) ? data.breakTorque : defaults.breakTorque
     this.axis = new THREE.Vector3(0, 1, 0)
+    // scripts hold these through the joint's handle (sealMath.js)
+    sealAll(this.offset0, this.quaternion0, this.rotation0, this.offset1, this.quaternion1, this.rotation1, this.axis)
     this.limitY = isNumber(data.limitY) ? data.limitY : defaults.limitY
     this.limitZ = isNumber(data.limitZ) ? data.limitZ : defaults.limitZ
     this.limitMin = isNumber(data.limitMin) ? data.limitMin : defaults.limitMin
@@ -238,8 +247,7 @@ export class Joint extends Node {
 
   commit(didMove) {
     if (this.needsRebuild) {
-      this.unmount()
-      this.mount()
+      this.remount()
       return
     }
     if (didMove) {
@@ -304,13 +312,13 @@ export class Joint extends Node {
           self.setDirty()
         },
         get offset0() {
-          return self.offset0
+          return scriptView(self.offset0)
         },
         get quaternion0() {
-          return self.quaternion0
+          return scriptView(self.quaternion0)
         },
         get rotation0() {
-          return self.rotation0
+          return scriptView(self.rotation0)
         },
         get body1() {
           return self.body1?.getProxy() ?? null
@@ -326,13 +334,13 @@ export class Joint extends Node {
           self.setDirty()
         },
         get offset1() {
-          return self.offset1
+          return scriptView(self.offset1)
         },
         get quaternion1() {
-          return self.quaternion1
+          return scriptView(self.quaternion1)
         },
         get rotation1() {
-          return self.rotation1
+          return scriptView(self.rotation1)
         },
         get breakForce() {
           return self.breakForce
@@ -358,18 +366,20 @@ export class Joint extends Node {
           return self.limitY
         },
         set limitY(value) {
+          plainValue(value, 'limitY')
           if (self.limitY === value) return
           self.limitY = value
           self.needsRebuild = true
           self.setDirty()
         },
         get axis() {
-          return self.axis
+          return scriptView(self.axis)
         },
         get limitZ() {
           return self.limitZ
         },
         set limitZ(value) {
+          plainValue(value, 'limitZ')
           if (self.limitZ === value) return
           self.limitZ = value
           self.needsRebuild = true
@@ -379,6 +389,7 @@ export class Joint extends Node {
           return self.limitMin
         },
         set limitMin(value) {
+          plainValue(value, 'limitMin')
           if (self.limitMin === value) return
           self.limitMin = value
           self.needsRebuild = true
@@ -388,6 +399,7 @@ export class Joint extends Node {
           return self.limitMax
         },
         set limitMax(value) {
+          plainValue(value, 'limitMax')
           if (self.limitMax === value) return
           self.limitMax = value
           self.needsRebuild = true
@@ -397,6 +409,7 @@ export class Joint extends Node {
           return self.limitStiffness
         },
         set limitStiffness(value) {
+          plainValue(value, 'limitStiffness')
           if (self.limitStiffness === value) return
           self.limitStiffness = value
           self.needsRebuild = true
@@ -406,6 +419,7 @@ export class Joint extends Node {
           return self.limitDamping
         },
         set limitDamping(value) {
+          plainValue(value, 'limitDamping')
           if (self.limitDamping === value) return
           self.limitDamping = value
           self.needsRebuild = true
@@ -415,6 +429,7 @@ export class Joint extends Node {
           return self.collide
         },
         set collide(value) {
+          plainValue(value, 'collide')
           if (self.collide === value) return
           self.collide = value
           self.needsRebuild = true

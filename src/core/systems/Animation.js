@@ -1,4 +1,5 @@
 import { System } from './System'
+import { guardVector } from '../nodes/Node'
 import * as THREE from 'three'
 
 const v1 = new THREE.Vector3()
@@ -45,7 +46,9 @@ export class Animation extends System {
         this.cursor++
         continue
       }
+      // (the root's position is the app's own: its components are read through the guard, Node.js)
       const appPos = app.root.position
+      guardVector(appPos)
       const distance = camPos.distanceTo(appPos)
       if (distance < 30) {
         app.animateRate = 0.001 // max fps

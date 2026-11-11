@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { Packr, Unpackr } from 'msgpackr'
 
 import {
+  PACK_NESTED,
   packetMethodById,
   packetNameById,
   peekPacketId,
@@ -58,6 +59,7 @@ const names = [
   'evmTipIntent',
   'evmTip',
   'evmTipStatus',
+  'appChat',
 ]
 
 function capitalize(str) {
@@ -169,4 +171,68 @@ test('peekPacketId: anything that is not a 2-element fixarray with a known fixin
   assert.equal(peekPacketId(undefined), -1)
   assert.equal(packetNameById(-1), undefined)
   assert.equal(packetMethodById(999), undefined)
+})
+
+// msgpackr cannot be entered twice (its packers share one buffer and write position). What scripts send is read
+// before it is packed (extras/scriptData.js, test/scriptData.test.js), so no pack reads a script's value; this is
+// the backstop for one that would: a pack begun inside another is refused before the packer is touched, and the
+// outer message is whole
+const WRITERS = [
+  ['writePacket', data => writePacket('entityEvent', ['app', 0, 'probe', data])],
+  ['writeClientPacket', data => writeClientPacket('entityEvent', ['app', 0, 'probe', data])],
+]
+// (a client packet is read by the server's packer here: its objects come back as maps)
+const plainObject = value => (value instanceof Map ? Object.fromEntries(value) : value)
+const sound = label => {
+  const packet = Uint8Array.prototype.slice.call(writePacket('chatAdded', { body: 'later', id: 'x' }))
+  assert.deepEqual(
+    readPacket(packet),
+    ['onChatAdded', { body: 'later', id: 'x' }],
+    `${label}: the next message is whole`
+  )
+}
+
+test('a pack begun while another one is in progress is refused; the outer message is whole', () => {
+  // the inner message has the shape of a part the outer has already written (Opus: the inner one came out
+  // unreadable, a reference to a record only the outer message defined)
+  const inners = [
+    ['writePacket', () => writePacket('chatAdded', { body: 'inner' })],
+    ['writeClientPacket', () => writeClientPacket('chatAdded', { body: 'inner' })],
+  ]
+  for (const [label, write] of WRITERS) {
+    for (const [innerLabel, inner] of inners) {
+      const which = `${label} with ${innerLabel} inside`
+      // the code that asked catches the refusal: the outer message goes on, and nothing of the inner one is in it
+      let refusal
+      const data = {
+        first: { body: 'x'.repeat(40) },
+        get nested() {
+          try {
+            inner()
+          } catch (err) {
+            refusal = err
+          }
+          return 1
+        },
+        after: 'y'.repeat(40),
+      }
+      const plain = { first: { body: 'x'.repeat(40) }, nested: 1, after: 'y'.repeat(40) }
+      const back = plainObject(readPacket(write(data))[1][3])
+      back.first = plainObject(back.first)
+      assert.equal(refusal?.message, PACK_NESTED, which)
+      assert.deepEqual(back, plain, which)
+      sound(which)
+      // it does not catch it: the outer call throws that refusal, and the packer is sound for the next message
+      const thrower = {
+        first: { body: 'x'.repeat(40) },
+        get nested() {
+          return inner()
+        },
+      }
+      assert.throws(() => write(thrower), { message: PACK_NESTED }, which)
+      sound(which)
+      // (and a pack is possible again: the refusal did not leave "a pack is in progress" behind)
+      assert.deepEqual(plainObject(readPacket(write({ nested: 1 }))[1][3]), { nested: 1 }, which)
+    }
+  }
 })

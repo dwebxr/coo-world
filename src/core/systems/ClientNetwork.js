@@ -347,6 +347,7 @@ export class ClientNetwork extends System {
     this.disposeWallet('close')
     this.world.chat.add({
       id: uuid(),
+      kind: 'system',
       from: null,
       fromId: null,
       body: `You have been disconnected.`,

@@ -1,13 +1,18 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
+import { resolveObjectURL } from 'node:buffer'
 import {
+  OBJECT_URL_LIMIT,
   createScriptBlob,
   createScriptObjectURL,
   isScriptBlob,
+  revokeRunObjectURLs,
+  revokeScriptObjectURL,
   safeBlobType,
   toHostBlob,
 } from '../src/core/extras/scriptBlob.js'
+import { Teardown, beginTeardown } from '../src/core/extras/runTeardown.js'
 
 const bytes = new TextEncoder().encode('hello blob world')
 const hostBlob = type => new Blob([bytes], { type })
@@ -110,4 +115,47 @@ test('createScriptBlob: a failing host read rejects with an intrinsic Error with
   assert.equal(err.name, 'AbortError')
   assert.equal(err.message, 'The operation was aborted.')
   assert.equal('cause' in err, false)
+})
+
+// an app run as the object URLs see it (App.fetchFor hands the blob its run)
+function appRun() {
+  const run = { dead: false }
+  return { entity: { deadHook: run }, run }
+}
+
+test('object URLs belong to the run whose fetch made the blob: revoked with it, refused after it', async () => {
+  const owner = appRun()
+  const blob = await createScriptBlob(hostBlob('image/png'), owner)
+  const slice = blob.slice(0, 4)
+  const urls = [createScriptObjectURL(blob), createScriptObjectURL(slice)]
+  assert.ok(urls.every(url => resolveObjectURL(url)))
+  // a script revokes its own; an engine URL (any other) is not revocable through it
+  revokeScriptObjectURL(urls[0])
+  assert.equal(resolveObjectURL(urls[0]), undefined)
+  const engineURL = URL.createObjectURL(new Blob(['engine']))
+  revokeScriptObjectURL(engineURL)
+  assert.ok(resolveObjectURL(engineURL), 'only URLs minted for scripts are revoked')
+  URL.revokeObjectURL(engineURL)
+  // the teardown revokes what is left, and from its object-URL stage on the run makes none
+  beginTeardown(owner.run, Teardown.OBJECT_URLS)
+  revokeRunObjectURLs(owner.run)
+  assert.equal(resolveObjectURL(urls[1]), undefined)
+  assert.throws(() => createScriptObjectURL(blob), /this app has stopped/)
+  // and once the run has ended
+  const later = appRun()
+  const other = await createScriptBlob(hostBlob('image/png'), later)
+  later.entity.deadHook = { dead: false }
+  assert.throws(() => createScriptObjectURL(other), /this app has stopped/)
+})
+
+test('object URLs: at most OBJECT_URL_LIMIT live ones per run; revoking frees a slot', async () => {
+  const owner = appRun()
+  const blob = await createScriptBlob(hostBlob('image/png'), owner)
+  const urls = []
+  for (let i = 0; i < OBJECT_URL_LIMIT; i++) urls.push(createScriptObjectURL(blob))
+  assert.throws(() => createScriptObjectURL(blob), /more than 256 object URLs/)
+  revokeScriptObjectURL(urls.pop())
+  urls.push(createScriptObjectURL(blob))
+  revokeRunObjectURLs(owner.run)
+  assert.ok(urls.every(url => !resolveObjectURL(url)))
 })

@@ -1,7 +1,16 @@
 import * as THREE from '../extras/three'
-import { every, isArray, isBoolean, isFunction, isNumber, isString } from 'lodash-es'
+import { every, isArray, isFunction } from 'lodash-es'
+import { isBoolean, isNumber, isPrimitive, isString } from '../extras/scriptPrimitives.js'
 
 import { Node } from './Node'
+import { scriptView, sealMath } from '../extras/sealMath.js'
+
+// a vector the node owns: a script's values read once into a sealed engine vector, by the engine's number rule (the
+// vector's constructor applies it, engineNumber.js; null stays null)
+function ownVector(value) {
+  if (!value) return null
+  return sealMath(new THREE.Vector3(value.x, value.y, value.z))
+}
 
 const shapeTypes = ['point', 'sphere', 'hemisphere', 'cone', 'box', 'circle', 'rectangle']
 const spaces = ['local', 'world']
@@ -130,8 +139,7 @@ export class Particles extends Node {
 
   commit(didMove) {
     if (this.needsRebuild) {
-      this.unmount()
-      this.mount()
+      this.remount()
       return
     }
     if (didMove) {
@@ -148,10 +156,10 @@ export class Particles extends Node {
     super.copy(source, recursive)
 
     this._emitting = source._emitting
-    this._shape = source._shape
+    this._shape = Object.freeze([...source._shape])
     this._direction = source._direction
     this._rate = source._rate
-    this._bursts = source._bursts
+    this._bursts = Object.freeze(source._bursts.map(burst => Object.freeze({ ...burst })))
     this._duration = source._duration
     this._loop = source._loop
     this._max = source._max
@@ -172,9 +180,9 @@ export class Particles extends Node {
     this._billboard = source._billboard
     this._space = source._space
 
-    this._force = source._force
-    this._velocityLinear = source._velocityLinear
-    this._velocityOrbital = source._velocityOrbital
+    this._force = ownVector(source._force)
+    this._velocityLinear = ownVector(source._velocityLinear)
+    this._velocityOrbital = ownVector(source._velocityOrbital)
     this._velocityRadial = source._velocityRadial
 
     this._rateOverDistance = source._rateOverDistance
@@ -248,11 +256,15 @@ export class Particles extends Node {
     return this._shape
   }
 
+  // shape, bursts and the spritesheet are kept as the node's own frozen copies of plain values (the defaults were one
+  // array shared by every particles node of every app; the emitter's config is cloned into a worker, which would read
+  // a getter, or fail on a function, in the middle of a mount); each value is read once, then checked
   set shape(value = defaults.shape) {
-    if (!isShape(value)) {
+    const shape = isArray(value) ? Object.freeze(Array.from(value)) : value
+    if (!isShape(shape)) {
       throw new Error('[particles] shape invalid')
     }
-    this._shape = value
+    this._shape = shape
     this.needsRebuild = true
     this.setDirty()
   }
@@ -288,10 +300,13 @@ export class Particles extends Node {
   }
 
   set bursts(value = defaults.bursts) {
-    if (!isBursts(value)) {
+    const bursts = isArray(value)
+      ? Object.freeze(Array.from(value, item => Object.freeze({ time: item?.time, count: item?.count })))
+      : value
+    if (!isBursts(bursts)) {
       throw new Error('[particles] bursts invalid')
     }
-    this._bursts = value
+    this._bursts = bursts
     this.needsRebuild = true
     this.setDirty()
   }
@@ -457,10 +472,11 @@ export class Particles extends Node {
   }
 
   set spritesheet(value = defaults.spritesheet) {
-    if (value !== null && !isSpritesheet(value)) {
+    const spritesheet = isArray(value) ? Object.freeze(Array.from(value)) : value
+    if (spritesheet !== null && !isSpritesheet(spritesheet)) {
       throw new Error('[particles] spritesheet invalid')
     }
-    this._spritesheet = value
+    this._spritesheet = spritesheet
     this.needsRebuild = true
     this.setDirty()
   }
@@ -525,7 +541,8 @@ export class Particles extends Node {
     if (value !== null && !value.isVector3) {
       throw new Error('[particles] force not a Vector3')
     }
-    this._force = value
+    // the engine keeps its own copy of the values (read now, once), not the script's vector
+    this._force = ownVector(value)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -538,7 +555,7 @@ export class Particles extends Node {
     if (value !== null && !value.isVector3) {
       throw new Error('[particles] velocityLinear not a Vector3')
     }
-    this._velocityLinear = value
+    this._velocityLinear = ownVector(value)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -551,7 +568,7 @@ export class Particles extends Node {
     if (value !== null && !value.isVector3) {
       throw new Error('[particles] velocityOrbital not a Vector3')
     }
-    this._velocityOrbital = value
+    this._velocityOrbital = ownVector(value)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -792,19 +809,19 @@ export class Particles extends Node {
           self.space = value
         },
         get force() {
-          return self.force
+          return scriptView(self.force)
         },
         set force(value) {
           self.force = value
         },
         get velocityLinear() {
-          return self.velocityLinear
+          return scriptView(self.velocityLinear)
         },
         set velocityLinear(value) {
           self.velocityLinear = value
         },
         get velocityOrbital() {
-          return self.velocityOrbital
+          return scriptView(self.velocityOrbital)
         },
         set velocityOrbital(value) {
           self.velocityOrbital = value
@@ -866,7 +883,7 @@ export class Particles extends Node {
 }
 
 function isShape(value) {
-  return isArray(value) && shapeTypes.includes(value[0])
+  return isArray(value) && shapeTypes.includes(value[0]) && value.every(isPrimitive)
 }
 
 function isBursts(value) {
@@ -882,7 +899,7 @@ function isStartColor(value) {
 }
 
 function isSpritesheet(value) {
-  return isArray(value) && value.length === 4
+  return isArray(value) && value.length === 4 && value.every(isPrimitive)
 }
 
 function isBlending(value) {

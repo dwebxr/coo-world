@@ -1,9 +1,10 @@
 import * as THREE from '../extras/three'
-import { isBoolean } from 'lodash-es'
+import { isBoolean } from '../extras/scriptPrimitives.js'
 
 import { Node, resolveValueRef, secureRef } from './Node'
 import { getTrianglesFromGeometry } from '../extras/getTrianglesFromGeometry'
 import { getTextureBytesFromMaterial } from '../extras/getTextureBytesFromMaterial'
+import { materialForScript } from '../extras/scriptMaterial'
 
 const _v1 = new THREE.Vector3()
 const _v2 = new THREE.Vector3()
@@ -143,8 +144,7 @@ export class Mesh extends Node {
 
   commit(didMove) {
     if (this.needsRebuild) {
-      this.unmount()
-      this.mount()
+      this.remount()
       return
     }
     if (didMove) {
@@ -157,14 +157,21 @@ export class Mesh extends Node {
     }
   }
 
+  // every part goes even if one throws (taking a linked instance out can run script code, see Stage Model.destroy)
   unmount() {
-    this.handle?.destroy()
-    if (this.sItem) {
-      this.ctx.world.stage.octree.remove(this.sItem)
-      this.sItem = null
-    }
+    const handle = this.handle
+    const sItem = this.sItem
     this.handle = null
-    this.releaseShared()
+    this.sItem = null
+    try {
+      handle?.destroy()
+    } finally {
+      try {
+        if (sItem) this.ctx.world.stage.octree.remove(sItem)
+      } finally {
+        this.releaseShared()
+      }
+    }
   }
 
   releaseShared() {
@@ -427,8 +434,9 @@ export class Mesh extends Node {
           }
           self.geometry = value
         },
+        // bound to the run of the app this mesh is mounted for (a linked material is shared by every app using it)
         get material() {
-          return self.material
+          return materialForScript(self, self.material)
         },
         set material(value) {
           throw new Error('[mesh] set material not supported')

@@ -1,14 +1,20 @@
-import { assertScriptActive, handlePhysicsFailure } from '../extras/physicsFailure.js'
+import { assertScriptActive, handlePhysicsFailure, stoppedError } from '../extras/physicsFailure.js'
 import { Entity } from './Entity'
 import { createNode } from '../extras/createNode'
 import { LerpVector3 } from '../extras/LerpVector3'
 import { LerpQuaternion } from '../extras/LerpQuaternion'
-import { createPlayerProxy } from '../extras/createPlayerProxy'
+import { cleanupPlayerProxy, createPlayerProxy, isPlayerProxyCurrent } from '../extras/createPlayerProxy'
 import { createEntityProxy } from '../extras/createEntityProxy'
 import { serializeError } from '../extras/serializeError'
 import { registerAppProxy } from '../nodes/refs'
+import { guardTransform } from '../nodes/Node'
 import { createScriptTimers } from '../extras/scriptTimers'
 import { createScriptResponse, toHostFetchOptions } from '../extras/scriptFetch'
+import { revokeRunObjectURLs } from '../extras/scriptBlob'
+import { toScriptError } from '../extras/scriptValues'
+import { copyProps } from '../extras/appFields'
+import { NodeLimitError } from '../extras/nodeLimits.js'
+import { Teardown, beginTeardown, tornDown } from '../extras/runTeardown.js'
 import { createEventQueue } from '../extras/appEventQueue'
 import { briefError, createLogOnce } from '../extras/logOnce'
 
@@ -16,6 +22,8 @@ const hotEventNames = ['fixedUpdate', 'update', 'animate', 'lateUpdate']
 
 // an app says once per reason that it is dropping events; the count is kept on the app
 const logDroppedEvent = createLogOnce()
+// a teardown stage that throws is reported once per app and stage
+const logTeardown = createLogOnce(message => console.error(message))
 
 const Modes = {
   ACTIVE: 'active',
@@ -27,6 +35,12 @@ const Modes = {
 let safeMode = false
 if (typeof window !== 'undefined') {
   safeMode = new URLSearchParams(window.location.search).get('safemode')
+}
+
+// the controls an app run made (app.control), released by unbuild (admission: runTeardown.js)
+function runControlsOf(entity) {
+  if (entity.runControls?.run !== entity.deadHook) entity.runControls = { run: entity.deadHook, controls: new Set() }
+  return entity.runControls
 }
 
 export class App extends Entity {
@@ -49,12 +63,18 @@ export class App extends Entity {
     this.snaps = []
     this.root = createNode('group')
     this.fields = []
+    // this instance's own copy of the blueprint props (rebuilt with every build)
+    this.props = {}
+    // live mounted nodes counted against the node budget (Node.js)
+    this.liveNodes = 0
     this.target = null
     this.projectLimit = Infinity
     this.resetOnMove = false
     this.animateDelta = 0
     this.animateRate = 0.001
-    this.playerProxies = new Map()
+    // the player handles of the current run: { run, cache: id -> proxy, owned: every proxy made in the run }; the
+    // owned set (not the cache, which a lookup can replace) is what unbuild cleans up
+    this.players = null
     this.hitResultsPool = []
     this.hitResults = []
     this.deadHook = { dead: false }
@@ -62,8 +82,13 @@ export class App extends Entity {
     this.build()
   }
 
-  createNode(name, data) {
+  // (app.create) the node belongs to this run until it is mounted (its proxy is bound to that run: Node.js)
+  // a node for `run` (app.create: the run that asked, captured before its arguments were read; constructing can read
+  // script values too): refused once another run is current
+  createNode(name, data, run = this.deadHook) {
     const node = createNode(name, data)
+    if (run !== this.deadHook) throw stoppedError(this)
+    node._created = { entity: this, run }
     return node
   }
 
@@ -74,6 +99,9 @@ export class App extends Entity {
 
   async build(crashed) {
     if (this.halted()) return
+    // asked for while this app's teardown is on the stack (a host listener of an event its script emitted from
+    // destroy): it waits until the teardown has finished (unbuild)
+    if (this.tearingDown) return this.deferTransition('build', crashed)
     this.building = true
     const n = ++this.n
     const failureVersion = this.physicsFailureVersion
@@ -83,6 +111,7 @@ export class App extends Entity {
     if (blueprint.disabled) {
       this.unbuild()
       this.blueprint = blueprint
+      this.props = copyProps(blueprint.props)
       this.eventQueue.clear() // a disabled app runs no script; nothing queued can be delivered
       this.building = false
       return
@@ -124,7 +153,18 @@ export class App extends Entity {
     // if script crashed (or failed to load model), show crash-block
     if (crashed) {
       let glb = this.world.loader.get('model', 'asset://crash-block.glb')
-      if (!glb) glb = await this.world.loader.load('model', 'asset://crash-block.glb')
+      if (!glb) {
+        try {
+          glb = await this.world.loader.load('model', 'asset://crash-block.glb')
+        } catch (err) {
+          // nothing to show: the build ends here, reported, instead of rejecting where nobody waits on it (a blueprint
+          // or app change starts a build without waiting). A run it would have replaced keeps running; a crashed run
+          // was torn down by crash()
+          console.error(`[app] crash block unavailable (entity ${String(this.data.id).slice(0, 64)})`)
+          if (this.n === n) this.building = false
+          return
+        }
+      }
       root = glb.toNodes()
     }
     // if a new build happened while we were fetching, stop here
@@ -137,14 +177,29 @@ export class App extends Entity {
     if (this.data.uploader && this.data.uploader !== this.world.network.id) this.mode = Modes.LOADING
     // setup
     this.blueprint = blueprint
+    // scripts change this copy, never the shared blueprint (other instances, the snapshot and the sidebar read that)
+    this.props = copyProps(blueprint.props)
     this.root = root
+    // what the app proxy stands for: no other app can move it into its own tree or world space (nodeLimits.js)
+    root._appRoot = this
     if (!blueprint.scene) {
       this.root.position.fromArray(this.data.position)
       this.root.quaternion.fromArray(this.data.quaternion)
       this.root.scale.fromArray(this.data.scale)
     }
     // activate
-    this.root.activate({ world: this.world, entity: this, moving: !!this.data.mover })
+    try {
+      this.root.activate({ world: this.world, entity: this, moving: !!this.data.mover, run: this.deadHook })
+    } catch (err) {
+      if (!(err instanceof NodeLimitError)) throw err
+      // the model alone is over the node budget: this run shows the crash block instead (crash() below queues it,
+      // also when the app was already crashed before this build)
+      if (!crashed) {
+        crashed = true
+        this.crashed = false
+        this.crash()
+      }
+    }
     // execute script
     this.script = script
     this.onScript?.(script)
@@ -165,7 +220,13 @@ export class App extends Entity {
       this.nativeFailure = false
       this.abortController = new AbortController()
       try {
-        this.script.exec(this.getWorldProxy(), this.getAppProxy(), this.fetch, blueprint.props, this.setTimeout)
+        // the fetch and setTimeout this run gets are bound to it (and to its request controller): kept and called
+        // after a rebuild, they act for nobody
+        const run = this.deadHook
+        const controller = this.abortController
+        const runFetch = (url, options) => this.fetchFor(run, controller, url, options)
+        const runSetTimeout = (fn, ms) => this.setTimeoutFor(run, fn, ms)
+        this.script.exec(this.getWorldProxy(), this.getAppProxy(), runFetch, this.props, runSetTimeout)
         if (this.n !== n || this.crashed || this.world.fatalError) return
         this.scriptError = null
       } catch (err) {
@@ -186,7 +247,10 @@ export class App extends Entity {
         }
       })
     }
-    // if remote is moving, set up to receive network updates
+    // if remote is moving, set up to receive network updates (the root's transform is the app's own, which its script
+    // has just run with: its components are read through the guard, Node.js, and the interpolators copy them by the
+    // engine's number rule)
+    guardTransform(root)
     this.networkPos = new LerpVector3(root.position, this.world.networkRate)
     this.networkQuat = new LerpQuaternion(root.quaternion, this.world.networkRate)
     this.networkSca = new LerpVector3(root.scale, this.world.networkRate)
@@ -205,7 +269,72 @@ export class App extends Entity {
     this.building = false
   }
 
+  // Transitions are serialised: a teardown runs to its end on the run it captured. A build or destroy asked for while
+  // it is on the stack (from a host listener of an event the script emits from destroy) waits until it has finished,
+  // coalesced (a destroy wins over a build, a crash rebuild over a plain one), and a re-entrant unbuild does nothing.
   unbuild() {
+    if (this.tearingDown) return
+    this.tearingDown = true
+    try {
+      App.prototype.teardownRun.call(this)
+    } finally {
+      this.tearingDown = false
+      App.prototype.runDeferredTransition.call(this)
+    }
+  }
+
+  // A build asked for during a teardown takes its place in the build order when it is asked for (its sequence number):
+  // a newer build (one asked for after the teardown, a blueprint update) supersedes it, and so does any build that
+  // starts before the deferred one runs. A destroy wins over builds.
+  deferTransition(kind, arg) {
+    const pending = this.pendingTransition
+    if (kind === 'destroy') {
+      this.pendingTransition = { kind, arg }
+      return
+    }
+    if (pending?.kind === 'destroy') return
+    const seq = ++this.n
+    this.pendingTransition = { kind, arg: (pending && pending.arg) || arg, seq }
+  }
+
+  runDeferredTransition() {
+    const pending = this.pendingTransition
+    if (!pending) return
+    this.pendingTransition = null
+    queueMicrotask(() => {
+      if (pending.kind === 'destroy') return this.destroy(pending.arg)
+      if (this.n !== pending.seq || this.destroyed || this.world.fatalError) return
+      const promise = this.build(pending.arg)
+      const build = this.n
+      promise.catch(err => {
+        handlePhysicsFailure(err, { entity: this, phase: 'deferred build' })
+        console.error(`[app] deferred build failed (entity ${this.data.id})`)
+        // (only the build that still owns the sequence: a newer one keeps its own state)
+        if (this.n === build) this.building = false
+      })
+    })
+  }
+
+  // Every stage runs even when an earlier one throws (a script's destroy listener, a script callback reached
+  // from a cleanup, a node's unmount), so the nodes are unmounted and release their budget, listeners, timers
+  // and requests are gone, and the run is latched dead whatever the script did.
+  teardownRun() {
+    const stage = (name, fn) => {
+      try {
+        fn()
+      } catch (err) {
+        logTeardown(
+          this,
+          name,
+          `[app] ${String(this.data.id).slice(0, 64)}: teardown (${name}) failed: ${briefError(err)}`
+        )
+      }
+    }
+    // The run's teardown state moves forward stage by stage (runTeardown.js): once a stage below has started, the kind
+    // it releases is refused for this run on every path (a lookup, a kept handle, a callback), so script code that
+    // runs during a later stage cannot leave one behind. Controls close first, before any callback runs.
+    const run = this.deadHook
+    beginTeardown(run, Teardown.CONTROLS)
     // notify any running script; a throwing listener must not skip the teardown below
     this.destroying = true
     try {
@@ -216,35 +345,75 @@ export class App extends Entity {
     } finally {
       this.destroying = false
     }
-    // cancel any control
-    this.control?.release()
+    // release every control the run made, through the host (ClientControls.releaseControl): never through the
+    // proxy a script holds, which a script can make throw on any read
+    const runControls = this.runControls
+    if (runControls?.run === run) {
+      while (runControls.controls.size) {
+        const [control] = runControls.controls
+        runControls.controls.delete(control)
+        stage('control', () => this.world.controls.releaseControl(control))
+      }
+    }
     this.control = null
-    // cancel any effects
-    this.playerProxies.forEach(player => {
-      player.$cleanup()
+    // cancel any effects; the cleanups are host-private (createPlayerProxy) and each runs on its own. From here on a
+    // lookup gets the stopped error instead of a handle (with or without a registry), and no handle of the run, new or
+    // kept, starts an effect or a voice modifier: a cleanup callback (an effect's onEnd) can end things only
+    beginTeardown(run, Teardown.PLAYERS)
+    const players = this.players
+    if (players && players.run === run) {
+      players.cache.clear()
+      while (players.owned.size) {
+        const [proxy] = players.owned
+        players.owned.delete(proxy)
+        stage('player', () => cleanupPlayerProxy(proxy))
+      }
+    }
+    this.players = null
+    // deactivate local node (unless another app now holds it: one that took over a world-space node of this app's
+    // with this app's root moved under it). From here on nothing mounts for this run, and nothing is placed in world
+    // space for it, so the world-node list can only shrink: its size now bounds the drain below
+    beginTeardown(run, Teardown.NODES)
+    const worldNodeCount = this.worldNodes.size
+    stage('root', () => {
+      const root = this.root
+      if (root?.mounted && root._nodeOwner !== this) return
+      root?.deactivate()
     })
-    // deactivate local node
-    this.root?.deactivate()
     // deactivate world nodes
-    for (const node of this.worldNodes) {
-      node.deactivate()
+    // (only nodes this app still owns: one another app took over left this list when it moved). Every registered node
+    // is drained, active or not; the list is read again after every step (an unmount can run script code)
+    for (let steps = 0; this.worldNodes.size && steps < worldNodeCount; steps++) {
+      const [node] = this.worldNodes
+      this.worldNodes.delete(node)
+      if (node._worldOwner !== this) continue
+      stage('world nodes', () => {
+        node._worldOwner = null
+        node.deactivate()
+      })
     }
     this.worldNodes.clear()
     // clear script event listeners
-    this.clearEventListeners()
+    beginTeardown(run, Teardown.LISTENERS)
+    stage('listeners', () => this.clearEventListeners())
     this.hotEvents = 0
     // cancel update tracking
-    this.world.setHot(this, false)
+    stage('hot', () => this.world.setHot(this, false))
     // abort fetch's etc
-    this.abortController?.abort()
+    beginTeardown(run, Teardown.REQUESTS)
+    stage('requests', () => this.abortController?.abort())
     this.abortController = null
+    // revoke the object URLs the run made
+    beginTeardown(run, Teardown.OBJECT_URLS)
+    stage('object urls', () => revokeRunObjectURLs(run))
     // cancel script timers
-    this.timers.clear()
-    // mark dead and re-create hook (async etc)
-    this.deadHook.dead = true
-    this.deadHook = { dead: false }
+    beginTeardown(run, Teardown.TIMERS)
+    stage('timers', () => this.timers.clear())
+    // mark dead and re-create hook (async etc): proxies, nodes and player handles of this run stop working
+    run.dead = true
+    if (this.deadHook === run) this.deadHook = { dead: false }
     // clear fields
-    this.onFields?.([])
+    stage('fields', () => this.onFields?.([]))
   }
 
   fixedUpdate(delta) {
@@ -363,11 +532,22 @@ export class App extends Entity {
   crash() {
     if (this.crashed || this.destroyed) return
     this.crashed = true
-    this.deadHook.dead = true
+    const run = this.deadHook
+    run.dead = true
     this.timers.clear()
     this.world.setHot(this, false)
     const n = ++this.n // invalidate builds already waiting on assets
     queueMicrotask(() => {
+      // (once the apps are stopped for good, App.halted, no destroy handler runs again: the server is shutting down)
+      if (this.destroyed || this.world.fatalError || this.halted()) return
+      // the crashed run is torn down now, through the same teardown as a removal, whether or not the crash block can
+      // be loaded (it is shown by the build below, which can fail on its own), and also when a build was asked for
+      // since (a blueprint change in the same task): that build tears the current run down only once its assets have
+      // loaded, so not at all while they are pending or if they fail. As soon as the current task's own code has
+      // returned: a crash can be reported from inside a host loop (a physics step, the stage's clean pass) that must
+      // not see its nodes and actors released under it. A run that is no longer the app's (a build that finished
+      // first replaced it) has been torn down already.
+      if (this.deadHook === run) this.unbuild()
       if (this.n !== n || this.destroyed || this.world.fatalError) return
       const promise = this.build(true)
       const build = this.n
@@ -381,6 +561,8 @@ export class App extends Entity {
 
   destroy(local) {
     if (this.destroyed) return
+    // (asked for during this app's teardown: it runs once that has finished, see unbuild)
+    if (this.tearingDown) return this.deferTransition('destroy', local)
     this.destroyed = true
     this.n++
     this.eventQueue.clear()
@@ -489,29 +671,64 @@ export class App extends Entity {
     )
   }
 
-  // scripts get a whitelisted request init and a response of plain values (see scriptFetch.js)
-  fetch = async (url, options = {}) => {
-    try {
-      const resp = await fetch(url, {
-        ...toHostFetchOptions(options),
-        signal: this.abortController.signal,
-      })
-      return createScriptResponse(resp)
-    } catch (err) {
-      console.error(err)
-      // this.crash()
-    }
+  // scripts get a whitelisted request init and a response of plain values (see scriptFetch.js). A failed request
+  // rejects with a script-safe error, like the standard fetch. Once the run that made the request has ended
+  // (rebuild, crash, removal: unbuild aborts the request) the promise stays pending, so nothing reaches a stopped
+  // script and the abort is not reported; a fetch called by a run that has ended starts nothing and stays pending too
+  fetchFor(run, controller, url, options = {}) {
+    const signal = controller?.signal
+    const isDead = () =>
+      run !== this.deadHook ||
+      run.dead ||
+      tornDown(run, Teardown.REQUESTS) ||
+      this.crashed ||
+      this.destroyed ||
+      !!this.world.fatalError
+    return new Promise((resolve, reject) => {
+      if (!signal || isDead()) return
+      // the url and the options are read once, into host values, before the request is admitted (reading them can run
+      // script code, which may end the run: it is checked again right before the request starts)
+      let href
+      let init
+      try {
+        href = typeof url === 'string' ? url : String(url)
+        init = { ...toHostFetchOptions(options), signal }
+      } catch (err) {
+        return reject(toScriptError(err))
+      }
+      if (isDead() || signal.aborted) return
+      let request
+      try {
+        request = fetch(href, init)
+      } catch (err) {
+        return reject(toScriptError(err))
+      }
+      Promise.resolve(request).then(
+        resp => {
+          if (isDead()) return
+          resolve(createScriptResponse(resp, isDead, { entity: this, run }))
+        },
+        err => {
+          if (isDead() || signal.aborted) return
+          reject(toScriptError(err))
+        }
+      )
+    })
   }
 
-  // scripts get an opaque handle; the timer itself stays host-private
-  setTimeout = (fn, ms) => {
+  // scripts get an opaque handle; the timer itself stays host-private. A run that has ended gets the stopped error
+  setTimeoutFor(run, fn, ms) {
+    if (run !== this.deadHook || tornDown(run, Teardown.TIMERS)) throw stoppedError(this)
     assertScriptActive(this)
-    const run = this.deadHook
     return this.timers.set(() => {
       if (this.crashed || this.world.fatalError || run.dead) return
       fn()
     }, ms)
   }
+
+  // the current run's (host code and tests; scripts get the run-bound ones from build)
+  fetch = (url, options) => this.fetchFor(this.deadHook, this.abortController, url, options)
+  setTimeout = (fn, ms) => this.setTimeoutFor(this.deadHook, fn, ms)
 
   getDeadHook = () => {
     return this.deadHook
@@ -527,35 +744,63 @@ export class App extends Entity {
     return glb.toNodes()
   }
 
-  getPlayerProxy(playerId) {
+  // the controls the current run makes (Apps.control); app.control() throws once the run's teardown has started
+  getRunControls() {
+    if (tornDown(this.deadHook, Teardown.CONTROLS)) throw stoppedError(this)
+    return runControlsOf(this).controls
+  }
+
+  // player handles belong to the current run (the cache is emptied by unbuild); none once its players stage started
+  // `run` is the run that asks (world.getPlayer/getPlayers capture it on entry, before anything can end it)
+  getPlayerProxy(playerId, run = this.deadHook) {
+    if (run !== this.deadHook || tornDown(run, Teardown.PLAYERS)) throw stoppedError(this)
     if (playerId === undefined) playerId = this.world.entities.player?.data.id
-    let proxy = this.playerProxies.get(playerId)
-    if (!proxy || proxy.destroyed) {
+    if (this.players?.run !== run) this.players = { run, cache: new Map(), owned: new Set() }
+    const players = this.players
+    let proxy = players.cache.get(playerId)
+    if (!proxy || !isPlayerProxyCurrent(proxy)) {
+      // a proxy whose player left is retired (it starts nothing more) and cleaned up now (it stays owned until then,
+      // whatever the cache holds)
+      if (proxy) players.cache.delete(playerId)
+      if (proxy && players.owned.delete(proxy)) cleanupPlayerProxy(proxy)
+      // the cleanup can run script code (an effect's onEnd) that ends this run: a handle is only made for the run that
+      // asked, into that run's registry, while both are still current
+      if (run !== this.deadHook || tornDown(run, Teardown.PLAYERS) || this.players !== players) {
+        throw stoppedError(this)
+      }
       const player = this.world.entities.getPlayer(playerId)
-      if (!player) return null
+      // no handle for a player that has left (it may still be listed while it leaves)
+      if (!player || player.destroyed) return null
       proxy = createPlayerProxy(this, player)
-      this.playerProxies.set(playerId, proxy)
+      players.cache.set(playerId, proxy)
+      players.owned.add(proxy)
     }
     return proxy
   }
 
+  // the world and app proxies are made per run (see createEntityProxy): an old run's proxy stops working
   getWorldProxy() {
-    if (!this.worldProxy) {
+    if (!this.worldProxy || this.worldProxyRun !== this.deadHook) {
       const entity = this
+      this.worldProxyRun = this.deadHook
       this.worldProxy = createEntityProxy(entity, {
         getters: this.world.apps.worldGetters,
         setters: this.world.apps.worldSetters,
         methods: this.world.apps.worldMethods,
         destroyMethods: ['off', 'remove'],
+        run: this.deadHook,
       })
     }
     return this.worldProxy
   }
 
   getAppProxy() {
-    if (!this.appProxy) {
+    if (!this.appProxy || this.appProxyRun !== this.deadHook) {
       const entity = this
+      const run = this.deadHook
+      this.appProxyRun = run
       this.appProxy = createEntityProxy(entity, {
+        run,
         getters: this.world.apps.appGetters,
         setters: this.world.apps.appSetters,
         methods: this.world.apps.appMethods,
@@ -570,8 +815,8 @@ export class App extends Entity {
           return true
         },
       })
-      // lets world.add(app) etc resolve to the app's root node
-      registerAppProxy(this.appProxy, () => entity.root.getProxy())
+      // lets world.add(app) etc resolve to the app's root node, for as long as its run lasts
+      registerAppProxy(this.appProxy, () => (run === entity.deadHook ? entity.root.getProxy() : null))
     }
     return this.appProxy
   }

@@ -5,9 +5,51 @@ import { isNumber } from 'lodash-es'
 import { System } from './System'
 import { LooseOctree } from '../extras/LooseOctree'
 import { serializeError } from '../extras/serializeError'
+import { NODE_CLIMB_LIMIT } from '../extras/nodeLimits.js'
 import { hardenForScripts } from '../extras/scriptHardening'
 
 const vec2 = new THREE.Vector2()
+
+// A linked instance's matrix is its node's own matrixWorld, which scripts hold. InstancedMesh.setMatrixAt would call
+// that object's toArray (a script could define one) and hand it the shared instance buffer. Instead the host reads
+// the sixteen entries of the matrix's own elements array itself into an array of its own (scripts get node matrices
+// only as views, which neither replace that array nor put an accessor on an entry, and keep numbers in it:
+// sealMath.js), keeps each entry that is a number and reads any other as NaN, without converting it (a Symbol or a
+// BigInt would throw in the Float64Array, an object would run script code there), and writes them into the buffer:
+// a read neither runs script code nor throws for what an entry holds. Every read that is outstanding at once still
+// uses its own array (a read nested inside another, should one ever run code, cannot overwrite the values the outer
+// one has), and callers still check their bookkeeping after the read.
+const copyMatrix = THREE.Matrix4.prototype.copy
+const matrixArrays = [] // one per nesting depth, made on first use
+let matrixDepth = 0
+
+function readMatrix(matrix) {
+  const values = (matrixArrays[matrixDepth] ??= new Float64Array(16))
+  matrixDepth++
+  try {
+    const elements = matrix.elements
+    for (let i = 0; i < 16; i++) {
+      const value = elements[i]
+      values[i] = typeof value === 'number' ? value : NaN
+    }
+  } finally {
+    matrixDepth--
+  }
+  return values
+}
+
+function writeMatrix(iMesh, idx, values) {
+  const array = iMesh.instanceMatrix.array
+  // (a slot past the buffer is written when clean() grows it)
+  if (idx * 16 + 16 <= array.length) array.set(values, idx * 16)
+}
+
+// what a material facade passes to the renderer, which reads it every frame for every app: primitives only (a boxed
+// Number or an object with its own valueOf would run script code inside the renderer)
+function materialNumber(value, name) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`[material] ${name} not a number`)
+  return value
+}
 const CLEAN_RETRY_CAP = 10
 // a Model with no instances is released after this long (world time), so a visible toggle or an LOD switch keeps it
 const MODEL_IDLE_SECONDS = 10
@@ -117,9 +159,15 @@ export class Stage extends System {
         if (!trapped) owner.crash()
         continue
       }
-      // the traversal that failed started at the top of the dirty chain, like Node.clean()
+      // the traversal that failed started at the top of the dirty chain, like Node.clean(); the climb is bounded
+      // (a parent chain that long can only be a corrupted, cyclic graph, and then the node itself is the top)
       let top = node
+      let steps = 0
       while (top.parent && top.parent.isDirty) {
+        if (++steps > NODE_CLIMB_LIMIT) {
+          top = node
+          break
+        }
         top = top.parent
       }
       node._cleanFailures = (node._cleanFailures || 0) + 1
@@ -131,23 +179,31 @@ export class Stage extends System {
           )
         }
         node._cleanFailures = 0
-        top.traverse(child => {
-          try {
-            child.updateTransform()
-          } catch {
-            // stays stale until its next write
-          }
-          child.isDirty = false
-          child.isTransformed = false
-          this.dirtyNodes.delete(child)
-        })
+        try {
+          top.traverse(child => {
+            try {
+              child.updateTransform()
+            } catch {
+              // stays stale until its next write
+            }
+            child.isDirty = false
+            child.isTransformed = false
+            this.dirtyNodes.delete(child)
+          })
+        } catch {
+          // a cyclic subtree overflows the walk; what was reached is released
+        }
         continue
       }
-      top.traverse(child => {
-        child.isTransformed = true
-        child.isDirty = true
-        this.dirtyNodes.delete(child)
-      })
+      try {
+        top.traverse(child => {
+          child.isTransformed = true
+          child.isDirty = true
+          this.dirtyNodes.delete(child)
+        })
+      } catch {
+        // a cyclic subtree overflows the walk; the retry below fails again and counts towards giving up
+      }
       this.dirtyNodes.add(top)
     }
   }
@@ -302,6 +358,7 @@ export class Stage extends System {
         return textures[0]?.offset.x
       },
       set textureX(val) {
+        val = materialNumber(val, 'textureX')
         for (const tex of textures) {
           tex.offset.x = val
         }
@@ -311,13 +368,16 @@ export class Stage extends System {
         return textures[0]?.offset.y
       },
       set textureY(val) {
+        val = materialNumber(val, 'textureY')
         for (const tex of textures) {
           tex.offset.y = val
         }
         raw.needsUpdate = true
       },
+      // a new Color with the material's numbers: the renderer's own Color stays private (it is read every frame, and
+      // a linked material is shared by every app that uses it); change the colour by assigning a string
       get color() {
-        return raw.color
+        return new THREE.Color(raw.color.r, raw.color.g, raw.color.b)
       },
       set color(val) {
         if (typeof val !== 'string') {
@@ -330,16 +390,14 @@ export class Stage extends System {
         return raw.emissiveIntensity
       },
       set emissiveIntensity(value) {
-        if (!isNumber(value)) {
-          throw new Error('[material] emissiveIntensity not a number')
-        }
-        raw.emissiveIntensity = value
+        raw.emissiveIntensity = materialNumber(value, 'emissiveIntensity')
         raw.needsUpdate = true
       },
       get fog() {
         return raw.fog
       },
       set fog(value) {
+        if (typeof value !== 'boolean') throw new Error('[material] fog not a boolean')
         raw.fog = value
         raw.needsUpdate = true
       },
@@ -446,6 +504,8 @@ class Model {
 
   create(node, matrix) {
     this.idleSince = null
+    // the values first (reading them can run script code), then the instance and its slot
+    const values = readMatrix(matrix)
     const item = {
       idx: this.items.length,
       node,
@@ -456,7 +516,7 @@ class Model {
       // octree
     }
     this.items.push(item)
-    this.iMesh.setMatrixAt(item.idx, item.matrix) // silently fails if too small, gets increased in clean()
+    writeMatrix(this.iMesh, item.idx, values) // a slot past the buffer is written when clean() grows it
     this.dirty = true
     const sItem = {
       matrix,
@@ -496,16 +556,22 @@ class Model {
         this.iMesh.setEmissiveIntensityAt(item.idx, item.emissiveIntensity)
         this.iMesh.instanceEmissiveIntensity.needsUpdate = true
       },
+      // (the octree entry goes even if taking the instance out throws, so a raycast never hits a removed node)
       destroy: () => {
-        this.destroy(item)
-        this.stage.octree.remove(sItem)
+        try {
+          this.destroy(item)
+        } finally {
+          this.stage.octree.remove(sItem)
+        }
       },
     }
   }
 
+  // (the values are read first; they go to the instance's slot only if it is still there after that)
   move(item, matrix) {
-    item.matrix.copy(matrix)
-    this.iMesh.setMatrixAt(item.idx, matrix)
+    if (item.matrix !== matrix) copyMatrix.call(item.matrix, matrix)
+    const values = readMatrix(matrix)
+    if (this.items[item.idx] === item) writeMatrix(this.iMesh, item.idx, values)
     this.dirty = true
   }
 
@@ -521,17 +587,29 @@ class Model {
       this.items.pop()
       this.dirty = true
     } else {
-      // there are other instances after this one in the buffer, swap it with the last one and pop it off the end
-      this.iMesh.setMatrixAt(item.idx, last.matrix)
-      if (last.color) this.iMesh.setColorAt(item.idx, last.color)
-      if (last.emissive) this.iMesh.setEmissiveAt(item.idx, last.emissive)
-      if (last.emissiveIntensity || last.emissiveIntensity === 0) {
-        this.iMesh.setEmissiveIntensityAt(item.idx, last.emissiveIntensity)
-      }
-      last.idx = item.idx
-      this.items[item.idx] = last
+      // there are other instances after this one in the buffer, swap it with the last one and pop it off the end. The
+      // list is updated first; the moved instance's values are read after that (reading can run script code, which
+      // can take more instances out or move this one) and written only if it is still the instance in that slot
+      const idx = item.idx
+      last.idx = idx
+      this.items[idx] = last
       this.items.pop()
       this.dirty = true
+      let values
+      try {
+        values = readMatrix(last.matrix)
+      } catch (err) {
+        // the slot must not keep showing the removed instance: it shows nothing until the moved one moves again
+        if (this.items[idx] === last) this.iMesh.instanceMatrix.array.fill(0, idx * 16, idx * 16 + 16)
+        throw err
+      }
+      if (this.items[idx] !== last) return
+      writeMatrix(this.iMesh, idx, values)
+      if (last.color) this.iMesh.setColorAt(idx, last.color)
+      if (last.emissive) this.iMesh.setEmissiveAt(idx, last.emissive)
+      if (last.emissiveIntensity || last.emissiveIntensity === 0) {
+        this.iMesh.setEmissiveIntensityAt(idx, last.emissiveIntensity)
+      }
     }
   }
 
@@ -548,9 +626,12 @@ class Model {
       const newSize = count + 100
       // console.log('increase', this.mesh.name, 'from', size, 'to', newSize)
       this.iMesh.resize(newSize)
-      for (let i = size; i < count; i++) {
+      // (the list is read again after every read of a matrix, which can run script code)
+      for (let i = size; i < this.items.length && i < newSize; i++) {
         const item = this.items[i]
-        this.iMesh.setMatrixAt(i, item.matrix)
+        const values = readMatrix(item.matrix)
+        if (this.items[i] !== item) continue
+        writeMatrix(this.iMesh, i, values)
         if (item.color) this.iMesh.setColorAt(i, item.color)
         if (item.emissive) this.iMesh.setEmissiveAt(i, item.emissive)
         if (item.emissiveIntensity || item.emissiveIntensity === 0) {
@@ -558,8 +639,8 @@ class Model {
         }
       }
     }
-    this.iMesh.count = count
-    if (this.iMesh.parent && !count) {
+    this.iMesh.count = this.items.length
+    if (this.iMesh.parent && !this.items.length) {
       this.stage.scene.remove(this.iMesh)
       this.dirty = false
       return

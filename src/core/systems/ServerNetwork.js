@@ -22,7 +22,7 @@ import {
   sanitizeSpawn,
 } from '../extras/entityModifyPolicy'
 import { createRelayDrop } from '../extras/playerRelayPolicy'
-import { sanitizeChatMessage } from '../extras/chatPolicy'
+import { appChatLine, sanitizeChatMessage } from '../extras/chatPolicy'
 import { sanitizeBlueprintAdd, sanitizeBlueprintModify, WORLD_BLUEPRINT_BYTES } from '../extras/blueprintPolicy'
 import { previewValue } from '../extras/assetURL'
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../extras/settingsPolicy'
@@ -55,6 +55,7 @@ import { formatUnits, isTxHash } from '../extras/evmAbi'
 import { createSolanaRpc } from '../../server/solanaRpc'
 import { createTokenBalanceService } from '../../server/tokenBalance'
 import { grantTokenRank, persistRank, revokeTokenRank } from '../../server/rankGrants'
+import { eventPayload } from '../extras/eventPayload.js'
 
 const SAVE_INTERVAL = parseInt(process.env.SAVE_INTERVAL || '60') // seconds
 const PING_RATE = 10 // seconds
@@ -972,7 +973,7 @@ export class ServerNetwork extends System {
 
       // enter events on the server are sent after the snapshot.
       // on the client these are sent during PlayerRemote.js entity instantiation!
-      this.world.events.emit('enter', { playerId: socket.player.data.id })
+      this.world.events.emit('enter', eventPayload({ playerId: socket.player.data.id }))
     } catch (err) {
       this.logOnce(ws, 'connection', `onConnection: ${briefError(err)}`)
       try {
@@ -1006,11 +1007,44 @@ export class ServerNetwork extends System {
     }
     const message = {
       id: uuid(),
+      kind: 'player',
       from: socket.player.data.name,
       fromId: socket.player.data.id,
       body: safe.body,
       createdAt: moment().toISOString(),
     }
+    this.world.chat.add(message, false)
+    this.send('chatAdded', message, socket.id)
+  }
+
+  // a client script's broadcast world.chat(): relayed as that app's line. Only the text and a display name come
+  // from the packet (through the script chat rules); the kind, the missing player id and the app's name (from the
+  // server's blueprint) are the server's. Any visitor may send it, since client scripts run in visitors' browsers
+  onAppChat = async (socket, data) => {
+    if (!isObject(data) || Array.isArray(data) || typeof data.id !== 'string') {
+      return this.logOnce(
+        socket,
+        'appChat-invalid',
+        `onAppChat: invalid message from ${socket.id} (further ones are not logged)`
+      )
+    }
+    const entity = this.world.entities.get(data.id)
+    if (!entity?.isApp) {
+      return this.logOnce(
+        socket,
+        'appChat-app',
+        `onAppChat: no such app from ${socket.id} (further ones are not logged)`
+      )
+    }
+    const line = appChatLine(data.body, data.from, entity.blueprint?.name)
+    if (!line) {
+      return this.logOnce(
+        socket,
+        'appChat-invalid',
+        `onAppChat: invalid message from ${socket.id} (further ones are not logged)`
+      )
+    }
+    const message = { id: uuid(), ...line, createdAt: moment().toISOString() }
     this.world.chat.add(message, false)
     this.send('chatAdded', message, socket.id)
   }
@@ -1040,6 +1074,7 @@ export class ServerNetwork extends System {
         this.send('entityModified', { id, rank })
         socket.send('chatAdded', {
           id: uuid(),
+          kind: 'system',
           from: null,
           fromId: null,
           body: granted ? 'Admin granted!' : 'Admin revoked!',
@@ -1079,6 +1114,7 @@ export class ServerNetwork extends System {
         this.send('entityModified', { id, name })
         socket.send('chatAdded', {
           id: uuid(),
+          kind: 'system',
           from: null,
           fromId: null,
           body: `Name set to ${name}!`,
@@ -1108,6 +1144,7 @@ export class ServerNetwork extends System {
         const send = body => {
           socket.send('chatAdded', {
             id: uuid(),
+            kind: 'system',
             from: null,
             fromId: null,
             body,
@@ -1123,7 +1160,7 @@ export class ServerNetwork extends System {
     }
     // emit event for all except admin
     if (cmd !== 'admin') {
-      this.world.events.emit('command', { playerId, args })
+      this.world.events.emit('command', eventPayload({ playerId, args }))
     }
   }
 
@@ -1257,6 +1294,7 @@ export class ServerNetwork extends System {
       socket.send('walletStatus', { verified: false, attempt })
       socket.send('chatAdded', {
         id: uuid(),
+        kind: 'system',
         body: 'Wallet verification failed.',
         createdAt: moment().toISOString(),
       })
@@ -1297,7 +1335,7 @@ export class ServerNetwork extends System {
     } else {
       body = 'Could not check your balance. Press refresh in a moment.'
     }
-    socket.send('chatAdded', { id: uuid(), body, createdAt: moment().toISOString() })
+    socket.send('chatAdded', { id: uuid(), kind: 'system', body, createdAt: moment().toISOString() })
   }
 
   onRequestBuilderRecheck = async (socket, data) => {
@@ -1372,6 +1410,7 @@ export class ServerNetwork extends System {
       this.send('entityModified', { id: player.data.id, rank })
       socket.send('chatAdded', {
         id: uuid(),
+        kind: 'system',
         body: 'Wallet disconnected: builder access removed.',
         createdAt: moment().toISOString(),
       })
@@ -1739,6 +1778,7 @@ export class ServerNetwork extends System {
     if (socket && !socket.disconnected) {
       socket.send('chatAdded', {
         id: uuid(),
+        kind: 'tip',
         from: null,
         fromId: null,
         body: privateBody,
@@ -1759,7 +1799,10 @@ export class ServerNetwork extends System {
     while (announce.queue.length && announce.tokens >= 1) {
       announce.tokens--
       const body = announce.queue.shift()
-      this.world.chat.add({ id: uuid(), from: null, fromId: null, body, createdAt: moment().toISOString() }, true)
+      this.world.chat.add(
+        { id: uuid(), kind: 'tip', from: null, fromId: null, body, createdAt: moment().toISOString() },
+        true
+      )
     }
     if (announce.queue.length) {
       announce.timer = setTimeout(() => {
@@ -2096,6 +2139,7 @@ export class ServerNetwork extends System {
       if (!spawn) {
         socket.send('chatAdded', {
           id: uuid(),
+          kind: 'system',
           from: null,
           fromId: null,
           body: 'Spawn not updated: invalid player transform',
@@ -2112,6 +2156,7 @@ export class ServerNetwork extends System {
     await this.saveConfig('spawn', this.spawn)
     socket.send('chatAdded', {
       id: uuid(),
+      kind: 'system',
       from: null,
       fromId: null,
       body: op === 'set' ? 'Spawn updated' : 'Spawn cleared',

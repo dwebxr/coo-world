@@ -1,9 +1,11 @@
-import { isBoolean, isNumber, isString } from 'lodash-es'
+import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
 import CustomShaderMaterial from '../libs/three-custom-shader-material'
 import * as THREE from '../extras/three'
 
 import { getRef, Node, resolveValueRef, secureRef } from './Node'
 import { uuid } from '../utils'
+import { materialForScript } from '../extras/scriptMaterial'
+import { hardenForScripts } from '../extras/scriptHardening'
 
 const v1 = new THREE.Vector3()
 const v2 = new THREE.Vector3()
@@ -363,7 +365,7 @@ export class Video extends Node {
       material.needsUpdate = true
 
       this._loading = false
-      this._onLoad?.call(undefined) // script callbacks run without a receiver
+      if (typeof this._onLoad === 'function') Reflect.apply(this._onLoad, undefined, []) // no receiver
 
       if (this.shouldPlay) {
         this.instance.play()
@@ -374,8 +376,7 @@ export class Video extends Node {
 
   commit(didMove) {
     if (this.needsRebuild) {
-      this.unmount()
-      this.mount()
+      this.remount()
       return
     }
     if (didMove) {
@@ -406,6 +407,9 @@ export class Video extends Node {
       } else {
         this.instance.audio?.disconnect(this.gain)
       }
+      // (the gain feeds the music output: it is taken off it, or every mount would leave one connected there)
+      this.panner?.disconnect()
+      this.gain?.disconnect()
       this.panner = null
       this.gain = null
       this.instance.release()
@@ -864,23 +868,29 @@ export class Video extends Node {
     }
   }
 
+  // the material of the mounted video's mesh: none before it is mounted (or once unmounted), as for a Mesh, so a script
+  // only ever gets it bound to the app run the video is mounted for (Video's proxy, scriptMaterial.js)
   get material() {
+    if (!this.mesh) return undefined
     if (!this._materialProxy) {
       const self = this
-      this._materialProxy = {
+      this._materialProxy = hardenForScripts({
         get textureX() {
-          return self.mesh.material.uniforms.uOffset.value.x
+          return self.mesh?.material.uniforms.uOffset.value.x
         },
+        // read by the renderer every frame: a primitive finite number only
         set textureX(value) {
-          self.mesh.material.uniforms.uOffset.value.x = value
+          if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error('[video] textureX not a number')
+          if (self.mesh) self.mesh.material.uniforms.uOffset.value.x = value
         },
         get textureY() {
-          return self.mesh.material.uniforms.uOffset.value.y
+          return self.mesh?.material.uniforms.uOffset.value.y
         },
         set textureY(value) {
-          self.mesh.material.uniforms.uOffset.value.y = value
+          if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error('[video] textureY not a number')
+          if (self.mesh) self.mesh.material.uniforms.uOffset.value.y = value
         },
-      }
+      })
     }
     return this._materialProxy
   }
@@ -1110,8 +1120,9 @@ export class Video extends Node {
           // deprecated (use .time)
           self.time = value
         },
+        // as a mesh's: bound to the run of the app this video is mounted for
         get material() {
-          return self.material
+          return materialForScript(self, self.material)
         },
         set material(value) {
           self.material = value

@@ -1,8 +1,15 @@
 import { callForScript } from '../src/core/extras/scriptValues.js'
-import { chatEnvelope } from '../src/core/extras/chatPolicy.js'
+import * as runTeardown from '../src/core/extras/runTeardown.js'
+import { stoppedError } from '../src/core/extras/physicsFailure.js'
+import { chatEnvelope, scriptChatMessage } from '../src/core/extras/chatPolicy.js'
+import { applyInitials, copyFields } from '../src/core/extras/appFields.js'
+import { createLogOnce } from '../src/core/extras/logOnce.js'
+import { NODE_CLIMB_LIMIT, placeWorldNode, unplaceWorldNode } from '../src/core/extras/nodeLimits.js'
+import { eventPayload } from '../src/core/extras/eventPayload.js'
 import { sanitizePlayerSelfModify } from '../src/core/extras/entityModifyPolicy.js'
 import { readVec3, warnOnce } from '../src/core/extras/physxConvert.js'
 import { createEventLedger } from '../src/core/extras/appEventQueue.js'
+import { isPrimitive } from '../src/core/extras/scriptPrimitives.js'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -19,6 +26,8 @@ import {
 } from '../src/core/extras/writeLedger.js'
 import { fakeWs, makeNetwork, Socket, connectionMethod } from './lib/networkHarness.mjs'
 import { readPacket } from '../src/core/packets.js'
+import { readScriptData } from '../src/core/extras/scriptData.js'
+import { toEngineNumber } from '../src/core/extras/engineNumber.js'
 
 const bytes = n => new Uint8Array(n)
 const addSocket = (network, id = 'player') => {
@@ -253,6 +262,15 @@ const loadClass = (file, name, context = {}) => {
     moment: () => ({ toISOString: () => 'now' }),
     chatEnvelope: msg => chatEnvelope({ ...msg }),
     createEventLedger,
+    scriptChatMessage,
+    applyInitials,
+    copyFields,
+    createLogOnce,
+    NODE_CLIMB_LIMIT,
+    placeWorldNode,
+    unplaceWorldNode,
+    eventPayload,
+    readScriptData,
     ...context,
   })
 }
@@ -277,13 +295,17 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
   const apps = new Apps(world)
   const entity = { data: { id: 'app' }, blueprint: { version: 0 } }
   const proxySource = fs.readFileSync(new URL('../src/core/extras/createPlayerProxy.js', import.meta.url), 'utf8')
-  const createProxy = vm.runInNewContext(
-    `${proxySource.replace(/^import .*\n/gm, '').replace('export function', 'function')}\ncreatePlayerProxy`,
+  const { createPlayerProxy: createProxy, cleanupPlayerProxy } = vm.runInNewContext(
+    `${proxySource.replace(/^import .*\n/gm, '').replace(/^export function/gm, 'function')}\n({ createPlayerProxy, cleanupPlayerProxy })`,
     {
       THREE,
       readVec3,
       warnOnce,
       callForScript,
+      stoppedError,
+      ...runTeardown,
+      isPrimitive,
+      toEngineNumber,
       console,
       clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v)),
       sanitizePlayerSelfModify: (data, id) => sanitizePlayerSelfModify({ ef: { ...data.ef } }, id),
@@ -310,12 +332,54 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
   assert.equal(socket.ws.packets.length, 0)
   // Engine teardown must undo voice overrides even when scripts exhausted their tick budget.
   proxy.setVoiceLevel('global')
-  proxy.$cleanup()
+  cleanupPlayerProxy(proxy)
   assert.equal(socket.ws.packets.length, 1)
   assert.equal(network.writer.state(socket.ws).queued > 0, true)
   assert.equal(network.send('chatAdded', { body: 'system' }), true)
   assert.equal(socket.ws.packets.length, 2)
   assert.equal(socket.ws.terminations, 0)
+})
+
+// a getter in app.send data that sends: the data is read before anything is packed (extras/scriptData.js), so the
+// inner message goes out first, whole, and the outer one after it, whole (packed inside the reading of the outer
+// one it could come out unreadable, and the outer one with its bytes in it)
+test('Apps: a send from a getter in the data of another send delivers both messages whole, the inner one first', () => {
+  const network = makeNetwork()
+  const socket = addSocket(network)
+  const world = { network, events: { emit() {} }, entities: { get: () => ({ data: { id: socket.id } }) } }
+  const Apps = loadClass('systems/Apps.js', 'Apps')
+  const apps = new Apps(world)
+  const entity = { data: { id: 'app' }, blueprint: { version: 3 } }
+  for (const inner of [
+    () => apps.appMethods.send(entity, 'inner', { body: 'x', n: 2 }),
+    () => apps.appMethods.sendTo(entity, socket.id, 'inner', { body: 'x', n: 2 }),
+  ]) {
+    for (const outer of [
+      data => apps.appMethods.send(entity, 'outer', data),
+      data => apps.appMethods.sendTo(entity, socket.id, 'outer', data),
+    ]) {
+      socket.ws.packets.length = 0
+      let innerResult
+      const data = {
+        // (the shape the inner message has: the outer one has written it before the getter runs)
+        a: { body: 'x', n: 1 },
+        get g() {
+          innerResult = inner()
+          return 1
+        },
+        after: 'y'.repeat(9000),
+      }
+      assert.equal(outer(data), true)
+      assert.equal(innerResult, true)
+      assert.deepEqual(
+        socket.ws.packets.map(packet => readPacket(packet)),
+        [
+          ['onEntityEvent', ['app', 3, 'inner', { body: 'x', n: 2 }]],
+          ['onEntityEvent', ['app', 3, 'outer', { a: { body: 'x', n: 1 }, g: 1, after: 'y'.repeat(9000) }]],
+        ]
+      )
+    }
+  }
 })
 
 test('Apps: unknown players and internal-event refusals return false without sending', () => {

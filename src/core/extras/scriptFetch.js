@@ -80,23 +80,32 @@ function copyBytes(value) {
   return null
 }
 
-async function guarded(fn) {
+// A reader of a run that has ended (rebuild, crash, removal) never settles: not when it is called after the end,
+// not when the read finishes after it (successfully or not), so a continuation of the old run cannot resume, even
+// into the app's next run. `isDead` is the request's run check (App.fetch).
+const PENDING = () => new Promise(() => {})
+async function guarded(fn, isDead) {
+  if (isDead?.()) return PENDING()
+  let value
   try {
-    return await fn()
+    value = await fn()
   } catch (err) {
+    if (isDead?.()) return PENDING()
     throw toScriptError(err)
   }
+  if (isDead?.()) return PENDING()
+  return value
 }
 
-export function createScriptResponse(resp) {
+export function createScriptResponse(resp, isDead, owner = null) {
   return {
     ok: resp.ok,
     status: resp.status,
     statusText: resp.statusText,
     headers: Object.fromEntries(resp.headers.entries()),
-    json: () => guarded(() => resp.json()),
-    text: () => guarded(() => resp.text()),
-    blob: () => guarded(async () => createScriptBlob(await resp.blob())),
-    arrayBuffer: () => guarded(() => resp.arrayBuffer()),
+    json: () => guarded(() => resp.json(), isDead),
+    text: () => guarded(() => resp.text(), isDead),
+    blob: () => guarded(async () => createScriptBlob(await resp.blob(), owner), isDead),
+    arrayBuffer: () => guarded(() => resp.arrayBuffer(), isDead),
   }
 }

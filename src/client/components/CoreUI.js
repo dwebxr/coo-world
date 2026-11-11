@@ -1,6 +1,14 @@
 import { css } from '@firebolt-dev/css'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronUpIcon, LoaderIcon, MessageSquareTextIcon, RefreshCwIcon, SendHorizonalIcon } from 'lucide-react'
+import {
+  ChevronUpIcon,
+  HandCoinsIcon,
+  InfoIcon,
+  LoaderIcon,
+  MessageSquareTextIcon,
+  RefreshCwIcon,
+  SendHorizonalIcon,
+} from 'lucide-react'
 import moment from 'moment'
 
 import { AvatarPane } from './AvatarPane'
@@ -15,6 +23,9 @@ import { ControlPriorities } from '../../core/extras/ControlPriorities'
 import { ChevronDoubleUpIcon, HandIcon } from './Icons'
 import { Sidebar } from './Sidebar'
 import { WalletButton } from './WalletButton'
+import { toText } from '../../core/extras/scriptText'
+import { CHAT_APP_NAME_MAX_LENGTH, CHAT_BODY_MAX_LENGTH } from '../../core/extras/chatPolicy'
+import { NAME_MAX_LENGTH } from '../../core/extras/entityModifyPolicy'
 
 export function CoreUI({ world }) {
   const ref = useRef()
@@ -390,26 +401,42 @@ function Messages({ world, active }) {
   )
 }
 
-function Message({ msg, now }) {
-  // a body that is not text (a script-made message) shows as nothing instead of breaking the list
-  const body = typeof msg.body === 'object' ? null : msg.body
-  // const timeAgo = useMemo(() => {
-  //   const createdAt = moment(msg.createdAt)
-  //   const age = now.diff(createdAt, 'seconds')
-  //   // up to 10s ago show now
-  //   if (age < 10) return 'now'
-  //   // under a minute show seconds
-  //   if (age < 60) return `${age}s ago`
-  //   // under an hour show minutes
-  //   if (age < 3600) return Math.floor(age / 60) + 'm ago'
-  //   // under a day show hours
-  //   if (age < 86400) return Math.floor(age / 3600) + 'h ago'
-  //   // otherwise show days
-  //   return Math.floor(age / 86400) + 'd ago'
-  // }, [now])
+// A chat line. Text is rendered only as host strings (toText). The kind is set by the host (chatPolicy.js): system
+// and tip lines carry an icon and a colour no other line can show, an app's line always shows the app's name, and
+// a player's line always shows the sender. A line without a kind (an older server) is a plain line.
+export function Message({ msg }) {
+  const kind = msg?.kind
+  const body = toText(msg?.body, CHAT_BODY_MAX_LENGTH)
+  const from = toText(msg?.from, NAME_MAX_LENGTH)
+  let head = null
+  if (kind === 'tip') {
+    head = (
+      <span className='message-marker tip' title='Tip confirmed by the world'>
+        <HandCoinsIcon size='0.9375rem' />
+      </span>
+    )
+  } else if (kind === 'system') {
+    head = (
+      <span className='message-marker system' title='World notice'>
+        <InfoIcon size='0.9375rem' />
+      </span>
+    )
+  } else if (kind === 'app') {
+    head = (
+      <>
+        <span className='message-app'>{toText(msg.app, CHAT_APP_NAME_MAX_LENGTH) || 'App'}</span>
+        {from && <span className='message-from'>[{from}]</span>}
+      </>
+    )
+  } else if (kind === 'player' || msg?.fromId != null) {
+    // players' lines always name the sender, even when the name is empty
+    head = <span className='message-from'>[{from || 'Anonymous'}]</span>
+  } else if (from) {
+    head = <span className='message-from'>[{from}]</span>
+  }
   return (
     <div
-      className='message'
+      className={cls('message', { tip: kind === 'tip', system: kind === 'system', app: kind === 'app' })}
       css={css`
         padding: 0.25rem 0;
         line-height: 1.4;
@@ -419,20 +446,32 @@ function Message({ msg, now }) {
         .message-from {
           margin-right: 0.25rem;
         }
-        .message-body {
-          // ...
+        .message-marker {
+          display: inline-flex;
+          vertical-align: -0.125rem;
+          margin-right: 0.375rem;
+          -webkit-text-stroke: 0;
+        }
+        .message-app {
+          display: inline-block;
+          margin-right: 0.375rem;
+          padding: 0 0.375rem;
+          border-radius: 0.375rem;
+          background: rgba(255, 255, 255, 0.14);
+          font-size: 0.8125rem;
+          -webkit-text-stroke: 0;
+        }
+        &.tip {
+          color: #ffd36b;
+        }
+        &.system .message-body {
+          color: rgba(255, 255, 255, 0.75);
+          font-style: italic;
         }
       `}
     >
-      {/* システムメッセージはサーバーかこのクライアントが作ったもの (fromId が無い)。利用者の発言は名前が
-          空でも必ず名前欄を出し、システムメッセージに見せかけられないようにする */}
-      {msg.fromId == null ? (
-        msg.from && <span className='message-from'>[{msg.from}]</span>
-      ) : (
-        <span className='message-from'>[{msg.from || 'Anonymous'}]</span>
-      )}
+      {head}
       <span className='message-body'>{body}</span>
-      {/* <span>{timeAgo}</span> */}
     </div>
   )
 }
@@ -496,7 +535,7 @@ function Disconnected({ message }) {
   )
 }
 
-function LoadingOverlay({ world }) {
+export function LoadingOverlay({ world }) {
   const [progress, setProgress] = useState(0)
   const { title, desc, image } = world.settings
   useEffect(() => {
@@ -530,7 +569,9 @@ function LoadingOverlay({ world }) {
           background-position: center;
           background-size: cover;
           background-repeat: no-repeat;
-          background-image: ${image ? `url(${world.resolveURL(image.url)})` : 'none'};
+          background-image: ${typeof image?.url === 'string' && image.url
+            ? `url(${world.resolveURL(image.url)})`
+            : 'none'};
           animation: pulse 5s ease-in-out infinite;
         }
         .loading-shade {
@@ -578,8 +619,8 @@ function LoadingOverlay({ world }) {
       <div className='loading-image' />
       <div className='loading-shade' />
       <div className='loading-info'>
-        {title && <div className='loading-title'>{title}</div>}
-        {desc && <div className='loading-desc'>{desc}</div>}
+        {toText(title) && <div className='loading-title'>{toText(title)}</div>}
+        {toText(desc, 4096) && <div className='loading-desc'>{toText(desc, 4096)}</div>}
         <div className='loading-track'>
           <div className='loading-bar' />
         </div>
@@ -658,7 +699,7 @@ function ActionsBlock({ world }) {
   )
 }
 
-function Actions({ world }) {
+export function Actions({ world }) {
   const [actions, setActions] = useState(() => world.controls.actions)
   useEffect(() => {
     world.on('actions', setActions)
@@ -690,7 +731,7 @@ function Actions({ world }) {
       {actions.map(action => (
         <div className='actions-item' key={action.id}>
           <div className='actions-item-icon'>{getActionIcon(action)}</div>
-          <div className='actions-item-label'>{action.label}</div>
+          <div className='actions-item-label'>{toText(action.label, 128)}</div>
         </div>
       ))}
     </div>
@@ -699,7 +740,7 @@ function Actions({ world }) {
 
 function getActionIcon(action) {
   if (action.type === 'custom') {
-    return <ActionPill label={action.btn} />
+    return <ActionPill label={toText(action.btn, 16)} />
   }
   if (action.type === 'controlLeft') {
     return <ActionPill label='Ctrl' />
@@ -856,7 +897,7 @@ function ToastMsg({ text }) {
   useEffect(() => {
     setTimeout(() => setVisible(false), 1000)
   }, [])
-  return <div className={cls('toast-msg', { visible })}>{text}</div>
+  return <div className={cls('toast-msg', { visible })}>{toText(text, 512)}</div>
 }
 
 function TouchBtns({ world }) {

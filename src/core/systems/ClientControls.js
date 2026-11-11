@@ -1,10 +1,13 @@
 import { isTouch } from '../../client/utils'
 import { bindRotations } from '../extras/bindRotations'
+import { scriptView, sealAll } from '../extras/sealMath'
 import { buttons, codeToProp } from '../extras/buttons'
 import * as THREE from '../extras/three'
 import { System } from './System'
 import { createControlProxy } from './controlProxy'
 import { callEntry, callScript } from '../extras/callScript'
+import { readOnce, toText } from '../extras/scriptText'
+import { briefError, createLogOnce } from '../extras/logOnce'
 import { setQuaternionFromPoint, setVectorFromPoint } from '../extras/xrPose'
 
 const LMB = 1 // bitmask
@@ -22,10 +25,94 @@ const v1 = new THREE.Vector3()
 const v2 = new THREE.Vector3()
 const q1 = new THREE.Quaternion()
 const q2 = new THREE.Quaternion()
+const s1 = new THREE.Vector3()
 
 const captured = new Set()
 
+// what bind() returned -> { control, release }, for the host only: the host releases a control and hands its pointer
+// lock over by this lookup, never by reading the object a script holds (a script can make any property read on it
+// throw, eg by defining a non-configurable `release` on it)
+const controlsByProxy = new WeakMap()
+
 let actionIds = 0
+
+// a control whose script-held entries make per-frame work throw is reported once per control and phase
+const logControlFailure = createLogOnce(message => console.error(message))
+
+// Per-frame work writes into and reads from entries a script holds (accessors and own methods are possible).
+// A control that throws there must not stop the frame: an app's control crashes its app (and is skipped from
+// then on, see `active`); any other control is reported.
+function controlFailed(control, phase, err) {
+  const owner = control.options.object
+  const label = owner?.isApp ? `app ${String(owner.data?.id).slice(0, 64)}` : 'host'
+  logControlFailure(control, phase, `[controls] ${phase} failed (${label}): ${briefError(err)}`)
+  if (owner?.isApp && !owner.crashed) {
+    owner.scriptError = { name: 'Error', message: `[controls] ${phase} failed` }
+    owner.crash?.()
+  }
+}
+
+// A touch as an app's control sees it: one frozen object per control and touch, the same at onTouch and onTouchEnd
+// (so it can be kept and compared), whose getters read the host's live record and return new vectors made from
+// its numbers. The live record itself stays with the host and the player's stick. The host lists the facades per
+// touch (ClientControls.touchFacades) and drops them when the touch ends or their control is released; a facade kept
+// after that answers with the touch's last values and holds nothing of the host's (no record, control or app).
+function createTouchFacade(info) {
+  let source = info
+  const facade = Object.freeze({
+    get id() {
+      return source.id
+    },
+    get position() {
+      return new THREE.Vector3(source.position.x, source.position.y, 0)
+    },
+    get prevPosition() {
+      return new THREE.Vector3(source.prevPosition.x, source.prevPosition.y, 0)
+    },
+    get delta() {
+      return new THREE.Vector3(source.delta.x, source.delta.y, 0)
+    },
+    get pointerType() {
+      return source.pointerType
+    },
+  })
+  const detach = () => {
+    const { id, position, prevPosition, delta, pointerType } = source
+    source = {
+      id,
+      position: { x: position.x, y: position.y },
+      prevPosition: { x: prevPosition.x, y: prevPosition.y },
+      delta: { x: delta.x, y: delta.y },
+      pointerType,
+    }
+  }
+  return { facade, detach }
+}
+
+// the action hints a control shows in the HUD (CoreUI Actions): host objects built from the given list, reading
+// each property once and keeping only strings (a script's objects, getters or forged React elements never reach
+// the renderer, and nothing is written back onto them)
+export const ACTIONS_LIMIT = 64
+const ACTION_TYPE_MAX = 64
+const ACTION_LABEL_MAX = 128
+const ACTION_BTN_MAX = 16
+
+export function copyActions(list) {
+  const length = readOnce(list, 'length')
+  const count = typeof length === 'number' && length > 0 ? Math.min(length, ACTIONS_LIMIT) : 0
+  const actions = []
+  for (let i = 0; i < count; i++) {
+    const action = readOnce(list, i)
+    if (action === null || typeof action !== 'object') continue
+    actions.push({
+      id: ++actionIds,
+      type: toText(readOnce(action, 'type'), ACTION_TYPE_MAX),
+      label: toText(readOnce(action, 'label'), ACTION_LABEL_MAX),
+      btn: toText(readOnce(action, 'btn'), ACTION_BTN_MAX),
+    })
+  }
+  return actions
+}
 
 /**
  * Control System
@@ -80,6 +167,13 @@ export class ClientControls extends System {
       delta: new THREE.Vector3(), // position delta (pixels)
     }
     this.touches = new Map() // id -> { id, position, delta, prevPosition }
+    // host touch record -> Map(control -> { facade, detach }): the touch facades handed to app controls (above)
+    this.touchFacades = new Map()
+    // XR tremor smoothing state per ray pose entry: the engine's own vectors, never on the entry a script holds (a
+    // script could replace a method there and be handed the engine's shared temporaries); removed with its control
+    this.raySmoothing = new Map()
+    // the control that locked the pointer: its release (by its script, or when its app run ends) unlocks it
+    this.pointerOwner = null
     this.screen = {
       width: 0,
       height: 0,
@@ -97,22 +191,26 @@ export class ClientControls extends System {
   applyXRRig(xrRig) {
     for (const control of this.controls) {
       if (!control.active) continue
-      if (control.entries.xrLeftRayPose) {
-        const pose = control.entries.xrLeftRayPose
-        const scale = v1.set(1, 1, 1)
-        m1.compose(pose.lPosition, pose.lQuaternion, scale)
-        m2.compose(xrRig.position, xrRig.quaternion, scale)
-        m1.premultiply(m2)
-        m1.decompose(pose.position, pose.quaternion, scale)
+      try {
+        this.applyXRRigTo(control, xrRig)
+      } catch (err) {
+        controlFailed(control, 'xr rig', err)
       }
-      if (control.entries.xrRightRayPose) {
-        const pose = control.entries.xrRightRayPose
-        const scale = v1.set(1, 1, 1)
-        m1.compose(pose.lPosition, pose.lQuaternion, scale)
-        m2.compose(xrRig.position, xrRig.quaternion, scale)
-        m1.premultiply(m2)
-        m1.decompose(pose.position, pose.quaternion, scale)
-      }
+    }
+  }
+
+  // the ray poses in world space: computed in the engine's own objects, written to the script's pose as numbers
+  applyXRRigTo(control, xrRig) {
+    for (const pose of [control.entries.xrLeftRayPose, control.entries.xrRightRayPose]) {
+      const smooth = pose && this.raySmoothing.get(pose)
+      if (!smooth) continue
+      const scale = v1.set(1, 1, 1)
+      m1.compose(smooth.position, smooth.quaternion, scale)
+      m2.compose(xrRig.position, xrRig.quaternion, scale)
+      m1.premultiply(m2)
+      m1.decompose(v2, q2, s1)
+      pose.position.set(v2.x, v2.y, v2.z)
+      pose.quaternion.set(q2.x, q2.y, q2.z, q2.w)
     }
   }
 
@@ -120,10 +218,16 @@ export class ClientControls extends System {
     // mouse wheel delta
     for (const control of this.controls) {
       if (!control.active) continue
-      if (control.entries.scrollDelta) {
-        control.entries.scrollDelta.value = this.scroll.delta
-        if (control.entries.scrollDelta.capture) break
+      let captured = false
+      try {
+        if (control.entries.scrollDelta) {
+          control.entries.scrollDelta.value = this.scroll.delta
+          captured = !!control.entries.scrollDelta.capture
+        }
+      } catch (err) {
+        controlFailed(control, 'scroll', err)
       }
+      if (captured) break
     }
     // xr
     if (this.xrSession) {
@@ -149,28 +253,43 @@ export class ClientControls extends System {
     // clear buttons
     for (const control of this.controls) {
       if (!control.active) continue
-      for (const key in control.entries) {
-        const value = control.entries[key]
-        if (value.$button) {
-          value.pressed = false
-          value.released = false
+      try {
+        for (const key in control.entries) {
+          const value = control.entries[key]
+          if (value.$button) {
+            value.pressed = false
+            value.released = false
+          }
         }
+      } catch (err) {
+        controlFailed(control, 'buttons', err)
       }
     }
-    // update camera
+    // update camera: only numbers move between the rig and a control's camera, so no host object reaches a method
+    // of an object a script holds, and a value that is not a finite number never reaches the rig
     let written
+    const rig = this.world.rig
     for (const control of this.controls) {
       if (!control.active) continue
-      const camera = control.entries.camera
-      if (camera?.write && !written) {
-        this.world.rig.position.copy(camera.position)
-        this.world.rig.quaternion.copy(camera.quaternion)
-        this.world.camera.position.z = camera.zoom
-        written = true
-      } else if (camera) {
-        camera.position.copy(this.world.rig.position)
-        camera.quaternion.copy(this.world.rig.quaternion)
-        camera.zoom = this.world.camera.position.z
+      try {
+        const camera = control.entries.camera
+        if (camera?.write && !written) {
+          written = true
+          const p = camera.position
+          const q = camera.quaternion
+          const values = [p.x, p.y, p.z, q.x, q.y, q.z, q.w, camera.zoom]
+          if (values.every(Number.isFinite)) {
+            rig.position.set(values[0], values[1], values[2])
+            rig.quaternion.set(values[3], values[4], values[5], values[6])
+            this.world.camera.position.z = values[7]
+          }
+        } else if (camera) {
+          camera.position.set(rig.position.x, rig.position.y, rig.position.z)
+          camera.quaternion.set(rig.quaternion.x, rig.quaternion.y, rig.quaternion.z, rig.quaternion.w)
+          camera.zoom = this.world.camera.position.z
+        }
+      } catch (err) {
+        controlFailed(control, 'camera', err)
       }
     }
     // clear touch deltas
@@ -199,19 +318,27 @@ export class ClientControls extends System {
     window.addEventListener('blur', this.onBlur)
   }
 
-  bind(options = {}) {
+  // `owner` (host-only, from Apps.control) is the app run the control belongs to: once that run has ended the control
+  // is inert, whatever its script did to the object it holds
+  bind(options = {}, owner = null) {
     const self = this
     const entries = {}
     let reticleSupressor
+    // a released control (by its script, or when its app run ended) keeps answering, but changes nothing
+    let released = false
+    const runEnded = () => !!owner && owner.run !== owner.entity.deadHook
     const control = {
       options,
       get active() {
-        return !self.world.fatalError && !options.object?.crashed
+        return !released && !runEnded() && !self.world.fatalError && !options.object?.crashed
       },
+      // true while its onRelease callback runs
+      releasing: false,
       entries,
       actions: null,
       api: {
         hideReticle(value = true) {
+          if (released || runEnded()) return
           if (reticleSupressor && value) return
           if (!reticleSupressor && !value) return
           if (reticleSupressor) {
@@ -225,21 +352,38 @@ export class ClientControls extends System {
           if (value !== null && !Array.isArray(value)) {
             throw new Error('[control] actions must be null or array')
           }
-          control.actions = value
-          if (value) {
-            for (const action of value) {
-              action.id = ++actionIds
-            }
-          }
+          // read the list first (its entries can be script getters), then check the control is still there
+          const actions = value ? copyActions(value) : null
+          if (released) return
+          control.actions = actions
           self.buildActions()
         },
         release: () => {
+          if (released) return
+          // the onRelease callback runs as before: only for a control whose app did not crash
+          const wasActive = control.active
+          released = true
           reticleSupressor?.()
+          reticleSupressor = null
           const idx = this.controls.indexOf(control)
           if (idx === -1) return
           this.controls.splice(idx, 1)
-          // the options object is host-owned, so its callbacks run without a receiver
-          if (control.active) callScript(options.onRelease)
+          // nothing the host keeps for it (touch facades, XR smoothing) outlives it
+          self.dropControlState(control)
+          // its hints leave the HUD with it
+          if (control.actions) self.buildActions()
+          // the options object is host-owned, so its callbacks run without a receiver. The control's own callback
+          // may still unlock the pointer (control.releasing)
+          if (wasActive) {
+            control.releasing = true
+            try {
+              callScript(options.onRelease)
+            } finally {
+              control.releasing = false
+            }
+          }
+          // a pointer lock it took (and its callback did not end) ends with it
+          if (self.pointerOwner === control) self.unlockPointer()
         },
       },
     }
@@ -254,7 +398,7 @@ export class ClientControls extends System {
       this.controls.splice(idx, 0, control)
     }
     // return proxy api (over an empty target so the control itself stays unreachable)
-    return createControlProxy(prop => {
+    const proxy = createControlProxy(prop => {
       // internal property
       if (prop in control.api) {
         return control.api[prop]
@@ -276,6 +420,49 @@ export class ClientControls extends System {
       }
       return undefined
     })
+    controlsByProxy.set(proxy, { control, release: control.api.release })
+    return proxy
+  }
+
+  // releases the control bind() returned as `proxy` (the host's own release, whatever the proxy now answers)
+  releaseControl(proxy) {
+    controlsByProxy.get(proxy)?.release()
+  }
+
+  // an app that replaces its control (app.control() again) keeps the pointer lock its previous control took: the new
+  // control holds it from now on, so releasing the previous one does not unlock the pointer
+  handOverPointer(fromProxy, toProxy) {
+    const from = controlsByProxy.get(fromProxy)?.control
+    const to = controlsByProxy.get(toProxy)?.control
+    if (from && to && this.pointerOwner === from) this.pointerOwner = to
+  }
+
+  dropControlState(control) {
+    for (const facades of this.touchFacades.values()) {
+      facades.get(control)?.detach()
+      facades.delete(control)
+    }
+    for (const prop of ['xrLeftRayPose', 'xrRightRayPose']) {
+      const pose = control.entries[prop]
+      if (pose) this.raySmoothing.delete(pose)
+    }
+  }
+
+  // the stable facade of a touch for an app's control (createTouchFacade)
+  touchFacade(control, info) {
+    let facades = this.touchFacades.get(info)
+    if (!facades) this.touchFacades.set(info, (facades = new Map()))
+    let entry = facades.get(control)
+    if (!entry) facades.set(control, (entry = createTouchFacade(info)))
+    return entry.facade
+  }
+
+  // a touch that ended: its facades keep its last values and the host lets go of them
+  dropTouchFacades(info) {
+    const facades = this.touchFacades.get(info)
+    if (!facades) return
+    this.touchFacades.delete(info)
+    for (const entry of facades.values()) entry.detach()
   }
 
   releaseAllButtons() {
@@ -432,7 +619,8 @@ export class ClientControls extends System {
       this.touches.set(e.pointerId, info)
       for (const control of this.controls) {
         if (!control.active) continue
-        const consume = control.active && callScript(control.options.onTouch, info)
+        const touch = control.options.object?.isApp ? this.touchFacade(control, info) : info
+        const consume = control.active && callScript(control.options.onTouch, touch)
         if (consume) break
       }
     }
@@ -471,10 +659,12 @@ export class ClientControls extends System {
       if (info) {
         for (const control of this.controls) {
           if (!control.active) continue
-          const consume = control.active && callScript(control.options.onTouchEnd, info)
+          const touch = control.options.object?.isApp ? this.touchFacade(control, info) : info
+          const consume = control.active && callScript(control.options.onTouchEnd, touch)
           if (consume) break
         }
         this.touches.delete(e.pointerId)
+        this.dropTouchFacades(info)
       }
     }
     this.checkPointerChanges(e)
@@ -556,6 +746,7 @@ export class ClientControls extends System {
   }
 
   unlockPointer() {
+    this.pointerOwner = null
     this.pointer.shouldLock = false
     if (!this.pointer.locked) return
     document.exitPointerLock()
@@ -582,6 +773,8 @@ export class ClientControls extends System {
   onPointerLockEnd() {
     if (!this.pointer.locked) return
     this.pointer.locked = false
+    // (ended by the user, eg Escape): no control holds it now
+    this.pointerOwner = null
     this.world.emit('pointer-lock', false)
   }
 
@@ -624,6 +817,11 @@ export class ClientControls extends System {
   }
 
   destroy() {
+    // what the host keeps per touch, control and pose goes with the world
+    for (const info of [...this.touchFacades.keys()]) this.dropTouchFacades(info)
+    this.touches.clear()
+    this.raySmoothing.clear()
+    this.pointerOwner = null
     if (!isBrowser) return
     window.removeEventListener('keydown', this.onKeyDown)
     window.removeEventListener('keyup', this.onKeyUp)
@@ -656,111 +854,130 @@ function updateXRHand(controls, src, frame, referenceSpace, side) {
   captured.clear()
   for (const control of controls.controls) {
     if (!control.active) continue
-    if (control.entries[rayPoseProp]) {
-      if (src.targetRaySpace) {
-        const ray = frame.getPose(src.targetRaySpace, referenceSpace)
-        if (ray) {
-          const pose = control.entries[rayPoseProp]
-          // apply tremor smoothing to local change
-          if (!pose.lPosition) {
-            pose.lPosition = setVectorFromPoint(new THREE.Vector3(), ray.transform.position)
-            pose.lQuaternion = setQuaternionFromPoint(new THREE.Quaternion(), ray.transform.orientation)
+    try {
+      if (control.entries[rayPoseProp]) {
+        if (src.targetRaySpace) {
+          const ray = frame.getPose(src.targetRaySpace, referenceSpace)
+          if (ray) {
+            const pose = control.entries[rayPoseProp]
+            // apply tremor smoothing to local change
+            let smooth = controls.raySmoothing.get(pose)
+            if (!smooth) {
+              smooth = {
+                position: setVectorFromPoint(new THREE.Vector3(), ray.transform.position),
+                quaternion: setQuaternionFromPoint(new THREE.Quaternion(), ray.transform.orientation),
+              }
+              controls.raySmoothing.set(pose, smooth)
+            }
+            // the browser's pose objects never reach a method of an object a script may hold (xrPose.js)
+            setVectorFromPoint(v1, ray.transform.position)
+            setQuaternionFromPoint(q1, ray.transform.orientation)
+            smooth.position.lerp(v1, 1 - XR_TREMOR_SMOOTHING_FACTOR)
+            smooth.quaternion.slerp(q1, 1 - XR_TREMOR_SMOOTHING_FACTOR)
+            // world transform is applied above in this.applyXRRig()
           }
-          // the browser's pose objects never reach a method of an object a script may hold (xrPose.js)
-          setVectorFromPoint(v1, ray.transform.position)
-          setQuaternionFromPoint(q1, ray.transform.orientation)
-          pose.lPosition.lerp(v1, 1 - XR_TREMOR_SMOOTHING_FACTOR)
-          pose.lQuaternion.slerp(q1, 1 - XR_TREMOR_SMOOTHING_FACTOR)
-          // world transform is applied above in this.applyXRRig()
         }
       }
-    }
-    if (control.entries[gripPoseProp]) {
-      if (src.gripSpace) {
-        const grip = frame.getPose(src.gripSpace, referenceSpace)
-        if (grip) {
-          const pose = control.entries[gripPoseProp]
-          // todo: tremor smoothing?
-          setVectorFromPoint(pose.position, grip.transform.position)
-          setQuaternionFromPoint(pose.quaternion, grip.transform.orientation)
-          // pose.matrix.fromArray(grip.transform.matrix)
+      if (control.entries[gripPoseProp]) {
+        if (src.gripSpace) {
+          const grip = frame.getPose(src.gripSpace, referenceSpace)
+          if (grip) {
+            const pose = control.entries[gripPoseProp]
+            // todo: tremor smoothing?
+            setVectorFromPoint(pose.position, grip.transform.position)
+            setQuaternionFromPoint(pose.quaternion, grip.transform.orientation)
+            // pose.matrix.fromArray(grip.transform.matrix)
+          }
         }
       }
-    }
-    if (control.entries[stickProp]) {
-      if (captured.has(stickProp)) {
-        control.entries[stickProp].value.x = 0
-        control.entries[stickProp].value.z = 0
-      } else {
-        control.entries[stickProp].value.x = src.gamepad.axes[2]
-        control.entries[stickProp].value.z = src.gamepad.axes[3]
-        if (control.entries[stickProp].capture) {
-          captured.add(stickProp)
+      if (control.entries[stickProp]) {
+        if (captured.has(stickProp)) {
+          control.entries[stickProp].value.x = 0
+          control.entries[stickProp].value.z = 0
+        } else {
+          control.entries[stickProp].value.x = src.gamepad.axes[2]
+          control.entries[stickProp].value.z = src.gamepad.axes[3]
+          if (control.entries[stickProp].capture) {
+            captured.add(stickProp)
+          }
         }
       }
-    }
-    if (control.entries[triggerProp]) {
-      const button = control.entries[triggerProp]
-      const down = src.gamepad.buttons[0].value > 0.9
-      if (down && !button.down) {
-        button.pressed = true
-        callControlEntry(control, button, 'onPress')
+      if (control.entries[triggerProp]) {
+        const button = control.entries[triggerProp]
+        const down = src.gamepad.buttons[0].value > 0.9
+        if (down && !button.down) {
+          button.pressed = true
+          callControlEntry(control, button, 'onPress')
+        }
+        if (!down && button.down) {
+          button.released = true
+          callControlEntry(control, button, 'onRelease')
+        }
+        button.down = down
+        button.value = src.gamepad.buttons[0].value
       }
-      if (!down && button.down) {
-        button.released = true
-        callControlEntry(control, button, 'onRelease')
+      if (control.entries[gripProp]) {
+        const button = control.entries[gripProp]
+        const down = src.gamepad.buttons[1].pressed
+        if (down && !button.down) {
+          button.pressed = true
+          callControlEntry(control, button, 'onPress')
+        }
+        if (!down && button.down) {
+          button.released = true
+          callControlEntry(control, button, 'onRelease')
+        }
+        button.down = down
+        button.value = src.gamepad.buttons[1].value
       }
-      button.down = down
-      button.value = src.gamepad.buttons[0].value
-    }
-    if (control.entries[gripProp]) {
-      const button = control.entries[gripProp]
-      const down = src.gamepad.buttons[1].pressed
-      if (down && !button.down) {
-        button.pressed = true
-        callControlEntry(control, button, 'onPress')
+      if (control.entries[btn1Prop]) {
+        const button = control.entries[btn1Prop]
+        const down = src.gamepad.buttons[4].pressed
+        if (down && !button.down) {
+          button.pressed = true
+          callControlEntry(control, button, 'onPress')
+        }
+        if (!down && button.down) {
+          button.released = true
+          callControlEntry(control, button, 'onRelease')
+        }
+        button.down = down
       }
-      if (!down && button.down) {
-        button.released = true
-        callControlEntry(control, button, 'onRelease')
+      if (control.entries[btn2Prop]) {
+        const button = control.entries[btn2Prop]
+        const down = src.gamepad.buttons[5].pressed
+        if (down && !button.down) {
+          button.pressed = true
+          callControlEntry(control, button, 'onPress')
+        }
+        if (!down && button.down) {
+          button.released = true
+          callControlEntry(control, button, 'onRelease')
+        }
+        button.down = down
       }
-      button.down = down
-      button.value = src.gamepad.buttons[1].value
-    }
-    if (control.entries[btn1Prop]) {
-      const button = control.entries[btn1Prop]
-      const down = src.gamepad.buttons[4].pressed
-      if (down && !button.down) {
-        button.pressed = true
-        callControlEntry(control, button, 'onPress')
-      }
-      if (!down && button.down) {
-        button.released = true
-        callControlEntry(control, button, 'onRelease')
-      }
-      button.down = down
-    }
-    if (control.entries[btn2Prop]) {
-      const button = control.entries[btn2Prop]
-      const down = src.gamepad.buttons[5].pressed
-      if (down && !button.down) {
-        button.pressed = true
-        callControlEntry(control, button, 'onPress')
-      }
-      if (!down && button.down) {
-        button.released = true
-        callControlEntry(control, button, 'onRelease')
-      }
-      button.down = down
+    } catch (err) {
+      controlFailed(control, 'xr input', err)
     }
   }
+}
+
+// A control's entries are handed to its script as they are: the script writes some of their fields (a button's
+// capture, onPress and onRelease, a camera's zoom and write), the engine reads and writes them every frame. Each entry
+// is sealed where it is made, so no field can be added, deleted or turned into an accessor (a getter the engine would
+// run), and the engine's own parts (the kind marker, the vectors, quaternions and eulers, a pointer's and a screen's
+// getters and methods) cannot be replaced either: what the engine reads from an entry is always its own object, and a
+// field a script writes is read without being converted (a truthiness test, Number.isFinite, a typeof check).
+function fixEntry(entry, ...fixed) {
+  for (const key of fixed) Object.defineProperty(entry, key, { writable: false })
+  return Object.seal(entry)
 }
 
 function createButton(controls, control, prop) {
   const down = controls.buttonsDown.has(prop)
   const pressed = down
   const released = false
-  return {
+  const entry = {
     $button: true,
     value: 0, // eg xr triggers
     down,
@@ -770,62 +987,74 @@ function createButton(controls, control, prop) {
     onPress: null,
     onRelease: null,
   }
+  return fixEntry(entry, '$button')
 }
 
+// (the vectors, quaternions and eulers of a control's entries are the engine's, written every frame: scripts get their
+// views, sealMath.js)
 function createVector(controls, control, prop) {
-  return {
+  const entry = {
     $vector: true,
-    value: new THREE.Vector3(),
+    value: scriptView(new THREE.Vector3()),
     capture: false,
   }
+  return fixEntry(entry, '$vector', 'value')
 }
 
 function createPose(controls, control, prop) {
-  return {
+  return Object.freeze({
     $pose: true,
-    position: new THREE.Vector3(),
-    quaternion: new THREE.Quaternion(),
+    position: scriptView(new THREE.Vector3()),
+    quaternion: scriptView(new THREE.Quaternion()),
     // matrix: new THREE.Matrix4(),
     // capture: false,
-  }
+  })
 }
 
 function createValue(controls, control, prop) {
-  return {
+  const entry = {
     $value: true,
     value: null,
     capture: false,
   }
+  return fixEntry(entry, '$value')
+}
+
+// a new vector per read, made from the host's numbers: no host vector reaches an object a script holds
+function snapshot(vector) {
+  return new THREE.Vector3(vector.x, vector.y, vector.z)
 }
 
 function createPointer(controls, control, prop) {
-  const coords = new THREE.Vector3() // [0,0] to [1,1]
-  const position = new THREE.Vector3() // [0,0] to [viewportWidth,viewportHeight]
-  const delta = new THREE.Vector3() // position delta (pixels)
-  return {
+  return Object.freeze({
     get coords() {
-      return coords.copy(controls.pointer.coords)
+      return snapshot(controls.pointer.coords) // [0,0] to [1,1]
     },
     get position() {
-      return position.copy(controls.pointer.position)
+      return snapshot(controls.pointer.position) // [0,0] to [viewportWidth,viewportHeight]
     },
     get delta() {
-      return delta.copy(controls.pointer.delta)
+      return snapshot(controls.pointer.delta) // position delta (pixels)
     },
     get locked() {
       return controls.pointer.locked
     },
+    // a released control (or one of a stopped app) changes nothing; its own onRelease callback may still unlock a
+    // lock it holds (not one another control took since, or that went to its app's new control)
     lock() {
+      if (!control.active) return
+      controls.pointerOwner = control
       controls.lockPointer()
     },
     unlock() {
+      if (!control.active && !(control.releasing && controls.pointerOwner === control)) return
       controls.unlockPointer()
     },
-  }
+  })
 }
 
 function createScreen(controls, control) {
-  return {
+  return Object.freeze({
     $screen: true,
     get width() {
       return controls.screen.width
@@ -833,7 +1062,7 @@ function createScreen(controls, control) {
     get height() {
       return controls.screen.height
     },
-  }
+  })
 }
 
 function createCamera(controls, control) {
@@ -842,13 +1071,15 @@ function createCamera(controls, control) {
   const quaternion = new THREE.Quaternion().copy(world.rig.quaternion)
   const rotation = new THREE.Euler(0, 0, 0, 'YXZ').copy(world.rig.rotation)
   bindRotations(quaternion, rotation)
+  sealAll(position, quaternion, rotation)
   const zoom = world.camera.position.z
-  return {
+  const entry = {
     $camera: true,
-    position,
-    quaternion,
-    rotation,
+    position: scriptView(position),
+    quaternion: scriptView(quaternion),
+    rotation: scriptView(rotation),
     zoom,
     write: false,
   }
+  return fixEntry(entry, '$camera', 'position', 'quaternion', 'rotation')
 }

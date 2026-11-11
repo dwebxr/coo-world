@@ -25,6 +25,8 @@ import {
   sanitizeSpawn,
 } from '../../src/core/extras/entityModifyPolicy.js'
 import { readInboundPacket } from '../../src/server/inboundDecode.js'
+import { appChatLine, sanitizeChatMessage } from '../../src/core/extras/chatPolicy.js'
+import { eventPayload } from '../../src/core/extras/eventPayload.js'
 import {
   isAdminOnlySettingKey,
   isKnownSettingKey,
@@ -72,6 +74,8 @@ const names = [
   'saveDirty',
   'saveExpired',
   'onDisconnect',
+  'onChatAdded',
+  'onAppChat',
   'onCommand',
   'onModifyRank',
   'invalidateWallet',
@@ -206,6 +210,9 @@ function networkClass(context) {
     sanitizeName,
     sanitizePersistedApp,
     sanitizeSpawn,
+    sanitizeChatMessage,
+    appChatLine,
+    eventPayload,
     isObject: value => value !== null && typeof value === 'object',
     ...context,
   })
@@ -314,6 +321,7 @@ export function connectionMethod(context) {
     previewValue,
     solanaGating,
     evmGating,
+    eventPayload,
     ...context,
   })
 }

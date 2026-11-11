@@ -191,22 +191,31 @@ See [Avatar](/docs/scripting/nodes/types/Avatar.md) for full details.
 
 Removes health from the player. Health cannot go below zero.
 
+- **amount**: a number. A numeric string or a boolean is converted (`'10'` is 10); any other value (an object, a
+  boxed `new Number(10)`, a value that is not finite) changes nothing.
+
 ### `.heal(amount)`
 
 Adds health to the player. Health cannot go above 100.
+
+- **amount**: a number, 100 if left out, read as `damage` reads it.
 
 ### `.applyEffect({ anchor, emote, snare, freeze, turn, duration, cancellable, onEnd })`
 
 Applies an effect to the player. If the player already has an effect, it is replaced. The returned
 handle has a `cancel()` method; `player.cancelEffect()` also ends the effect applied by this app.
 
-All options are optional.
+All options are optional, and each is read once, when `applyEffect` is called. Apart from `anchor` (a node) and
+`onEnd` (a function), an option's value is a primitive (a string, a number, a boolean, `null`): an object or a
+function as a value, a boxed one such as `new Number(1)` or `new String('asset://e.glb')` included, refuses the whole
+effect. A refused effect is not applied, locally or for
+other players: `applyEffect` returns `undefined` and the player's current effect stays. A falsy value leaves its
+option out.
 
 **anchor**: an [Anchor](/docs/scripting/nodes/types/Anchor.md) to attach the player to. Its network
-`anchorId` must be a string of at most 128 characters. A longer or non-string `anchorId` drops the
-whole effect sent to other players, including its emote, snare and duration. Scale is removed when
-deriving the player's rotation, which is normalised. A non-finite, singular or out-of-range anchor
-pose is ignored for that frame, preserving the previous pose.
+`anchorId` must be a string of at most 128 characters; any other `anchorId` refuses the whole effect, as above.
+Scale is removed when deriving the player's rotation, which is normalised. A non-finite, singular or
+out-of-range anchor pose is ignored for that frame, preserving the previous pose.
 
 **emote**: a string URL to an emote to play while this effect is active: `asset://<name>.glb`
 (optionally with a playback query, eg `?s=1.5`) or an `http(s)://` URL, up to 512 characters. Invalid
@@ -220,14 +229,20 @@ number in `[0.01, 100]`, otherwise it defaults to 1. The `l`/`g` string flags ar
 **turn**: a boolean. Only `true` makes the player continually face the direction the camera is looking in.
 
 **duration**: seconds until the effect ends as local simulation time advances. A falsy value
-(`0`, `''`, `null`, `undefined`, `NaN` or `false`) means no expiry. Other values count down as
-`Number(duration) - delta`: positive remaining time is stored, otherwise the effect ends. Negative
-values and non-numeric truthy values end on the next frame; numeric strings such as `'2'` expire
-after that many seconds. `Infinity` never expires.
+(`0`, `''`, `null`, `undefined`, `NaN` or `false`) means no expiry. A string or a boolean is converted to a number:
+`'2'` lasts two seconds, `true` one. The rest counts down: positive remaining time is stored, otherwise the effect
+ends, so a negative value and a string that is not a number (`'soon'`) end it on the next frame. `Infinity` never
+expires. An object (`new Number(2)` included) refuses the effect, as above.
 
 **cancellable**: whether any movement keys will cancel the effect. if enabled, freeze is ignored.
 
 **onEnd**: a function that should be called either at the end of the `duration` or when the player moves if `cancellable`.
+
+When the app stops or is rebuilt, its effects end and their `onEnd` runs. From there, the app's player handles can
+still end things (`cancelEffect`, `setVoiceLevel(null)`) and act (`teleport`, `damage`, ...) while the teardown runs,
+but not start new effects or voice levels: `applyEffect` and `setVoiceLevel(level)` throw `[app] this app has stopped`
+(see [App teardown](/docs/scripting/app/App.md#teardown)).
+On a handle whose player has left they throw `[player] this player has left`.
 
 ### `.screenshare(screenId)`
 

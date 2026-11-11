@@ -1,8 +1,12 @@
 import { callForScript } from './scriptValues.js'
+import { stoppedError } from './physicsFailure.js'
+import { Teardown, tornDown } from './runTeardown.js'
 import { getRef } from '../nodes/Node'
 import { clamp, uuid } from '../utils'
 import * as THREE from './three'
 import { sanitizePlayerSelfModify } from './entityModifyPolicy'
+import { isPrimitive } from './scriptPrimitives.js'
+import { toEngineNumber } from './engineNumber.js'
 
 import { readVec3, warnOnce } from './physxConvert.js'
 
@@ -28,13 +32,63 @@ function readHoldingSpec(spec) {
   return { chainId, contract, standard, tokenId: tokenId ?? undefined, minBalance: minBalance ?? 1 }
 }
 
+// the engine's teardown for each proxy, kept out of the object scripts hold (a script could replace or break a
+// method on it); App.unbuild runs it through cleanupPlayerProxy
+const cleanups = new WeakMap()
+// what the engine knows about each proxy (never read from the proxy itself, which a script can change)
+const handles = new WeakMap()
+
+// A handle starts nothing that a cleanup would have to undo (an effect, a voice modifier) once it is retired: when it
+// is evicted or cleaned up (its player left, its run ended), when its player has left, and for every handle of a run
+// whose players teardown stage has started (runTeardown.js). Those calls throw; ending what exists (cancelEffect, an
+// effect handle's cancel, setVoiceLevel(null)) still works.
+export function retirePlayerProxy(proxy) {
+  handles.get(proxy)?.retire()
+}
+
+// runs once per proxy: retired first, then cleaned up (so a callback the cleanup runs cannot start anything on it)
+export function cleanupPlayerProxy(proxy) {
+  retirePlayerProxy(proxy)
+  const cleanup = cleanups.get(proxy)
+  if (!cleanup) return
+  cleanups.delete(proxy)
+  cleanup()
+}
+
+// whether a cached proxy may still be handed out: its player is still there and its app run has not ended
+export function isPlayerProxyCurrent(proxy) {
+  const handle = handles.get(proxy)
+  return !!handle && !handle.player.destroyed && handle.run === handle.entity.deadHook
+}
+
+// a script callback run by the host: no receiver, invoked without looking anything up on the function (a script
+// can put its own `call` on it), and a throw is reported instead of escaping into host code
+function callBack(fn) {
+  if (typeof fn !== 'function') return
+  try {
+    Reflect.apply(fn, undefined, [])
+  } catch (err) {
+    console.error(err)
+  }
+}
+
+// a player handle belongs to the app run that asked for it (App.getPlayerProxy); after that run, its methods throw
 export function createPlayerProxy(entity, player) {
   const world = player.world
-  const position = new THREE.Vector3()
-  const rotation = new THREE.Euler()
-  const quaternion = new THREE.Quaternion()
+  const run = entity.deadHook
   let activeEffectConfig = null
   let voiceMod
+  let retired = false
+  // after a method has read its arguments (a getter, a toString or a Proxy trap is script code, which can end the
+  // run): nothing lands for a run that ended meanwhile
+  const assertRunAfterRead = () => {
+    if (run !== entity.deadHook) throw stoppedError(entity)
+  }
+  // what a retired handle answers for a call that would start something
+  const assertCanStart = () => {
+    if (run !== entity.deadHook || tornDown(run, Teardown.PLAYERS)) throw stoppedError(entity)
+    if (retired || player.destroyed) throw new Error('[player] this player has left')
+  }
   // a client script changes another player only through a server script: on a remote player these calls
   // do nothing here, said once per method because scripts tend to call them every frame
   const warned = new Set()
@@ -71,14 +125,16 @@ export function createPlayerProxy(entity, player) {
     get health() {
       return player.data.health
     },
+    // fresh copies on every read: a reused result would let a script that replaced its methods (eg `copy`) be
+    // handed the player's live transform the next time the host refreshes it
     get position() {
-      return position.copy(player.base.position)
+      return new THREE.Vector3().copy(player.base.position)
     },
     get rotation() {
-      return rotation.copy(player.base.rotation)
+      return new THREE.Euler().copy(player.base.rotation)
     },
     get quaternion() {
-      return quaternion.copy(player.base.quaternion)
+      return new THREE.Quaternion().copy(player.base.quaternion)
     },
     get height() {
       return player.avatar?.getHeight()
@@ -163,6 +219,7 @@ export function createPlayerProxy(entity, player) {
       }
       const payload = { position: [_v.x, _v.y, _v.z] }
       if (Number.isFinite(rotationY)) payload.rotationY = rotationY
+      assertRunAfterRead()
       if (player.data.owner === world.network.id) {
         // if player is local we can set directly
         world.network.enqueue('onPlayerTeleport', payload)
@@ -171,10 +228,15 @@ export function createPlayerProxy(entity, player) {
         world.network.sendTo(player.data.owner, 'playerTeleport', payload)
       }
     },
+    // a copy: the avatar's own matrix is shared with the engine (nametag placement, aiming) and every app
     getBoneTransform(boneName) {
-      return player.avatar?.getBoneTransform?.(boneName)
+      const matrix = player.avatar?.getBoneTransform?.(boneName)
+      return matrix ? new THREE.Matrix4().copy(matrix) : matrix
     },
     setSessionAvatar(url) {
+      // a url is a string (or nothing, which clears it); anything else is reported and changes nothing: it is not
+      // converted (an object's toString is script code) and not sent (packing an object runs its getters)
+      if (url != null && typeof url !== 'string') return console.error('[player] setSessionAvatar url must be a string')
       const avatar = url
       if (player.data.owner === world.network.id) {
         // if player is local we can set directly
@@ -186,8 +248,13 @@ export function createPlayerProxy(entity, player) {
         world.network.sendTo(player.data.owner, 'playerSessionAvatar', { avatar })
       }
     },
+    // an amount is a number, kept by the engine's number rule (engineNumber.js: a numeric string is converted, an
+    // object is not, so reading it runs no script code); one that is not finite changes nothing
     damage(amount) {
-      const health = clamp(player.data.health - amount, 0, HEALTH_MAX)
+      const value = toEngineNumber(amount)
+      if (!Number.isFinite(value)) return
+      assertRunAfterRead()
+      const health = clamp(player.data.health - value, 0, HEALTH_MAX)
       if (player.data.health === health) return
       if (world.network.isServer) {
         world.network.send('entityModified', { id: player.data.id, health })
@@ -195,7 +262,10 @@ export function createPlayerProxy(entity, player) {
       player.modify({ health })
     },
     heal(amount = HEALTH_MAX) {
-      const health = clamp(player.data.health + amount, 0, HEALTH_MAX)
+      const value = toEngineNumber(amount)
+      if (!Number.isFinite(value)) return
+      assertRunAfterRead()
+      const health = clamp(player.data.health + value, 0, HEALTH_MAX)
       if (player.data.health === health) return
       if (world.network.isServer) {
         world.network.send('entityModified', { id: player.data.id, health })
@@ -205,30 +275,66 @@ export function createPlayerProxy(entity, player) {
     hasEffect() {
       return !!player.data.effect
     },
+    // Normalise, admit, publish: the options are read once, into plain values, before anything is admitted (a getter
+    // on them is script code); the player's current effect is ended before ours is installed, since its onEnd (this
+    // app's or another's) can run script code that ends this run; the run is checked again after that, and nothing of
+    // ours is published until then.
     applyEffect(opts) {
-      if (!opts) return
+      const read = opts
+        ? {
+            anchor: opts.anchor,
+            emote: opts.emote,
+            snare: opts.snare,
+            freeze: opts.freeze,
+            turn: opts.turn,
+            duration: opts.duration,
+            cancellable: opts.cancellable,
+            onEnd: opts.onEnd,
+          }
+        : null
+      const anchorId = read?.anchor ? read.anchor.anchorId : undefined
       const effect = {}
-      // effect.id = uuid()
-      if (opts.anchor) effect.anchorId = opts.anchor.anchorId
-      if (opts.emote) effect.emote = opts.emote
-      if (opts.snare) effect.snare = opts.snare
-      if (opts.freeze) effect.freeze = opts.freeze
-      if (opts.turn) effect.turn = opts.turn
-      if (opts.duration) effect.duration = opts.duration
-      if (opts.cancellable) {
-        effect.cancellable = opts.cancellable
-        delete effect.freeze // overrides
+      // only primitive values go into the effect: it is sent to the network and the player reads (and sanitises) it
+      // every frame, so an object in it would run its own code later, outside this call. An effect with an object
+      // (or a function) as a field is refused, as any other invalid field is
+      let invalid = false
+      const put = (key, value) => {
+        if (!value) return
+        if (isPrimitive(value)) effect[key] = value
+        else invalid = true
       }
-      const safe = sanitizePlayerSelfModify({ ef: effect }, player.data.id)
+      if (read) {
+        // effect.id = uuid()
+        if (read.anchor) effect.anchorId = isPrimitive(anchorId) ? anchorId : undefined
+        put('emote', read.emote)
+        put('snare', read.snare)
+        put('freeze', read.freeze)
+        put('turn', read.turn)
+        put('duration', read.duration)
+        if (read.cancellable) {
+          put('cancellable', read.cancellable)
+          delete effect.freeze // overrides
+        }
+      }
+      const safe = read && !invalid ? sanitizePlayerSelfModify({ ef: effect }, player.data.id) : null
+      assertCanStart()
       if (!safe || !Object.prototype.hasOwnProperty.call(safe, 'ef')) return
+      // called by the host when the effect ends, which may be during teardown
+      const onEnd = read.onEnd
       const config = {
         effect: safe.ef,
         onEnd: () => {
           if (activeEffectConfig !== config) return
           activeEffectConfig = null
           player.setEffect(null)
-          if (!entity.crashed && !world.fatalError) opts.onEnd?.call(undefined)
+          if (!entity.crashed && !world.fatalError && run === entity.deadHook && !run?.dead) callBack(onEnd)
         },
+      }
+      // (a callback that applies another effect each time is not followed for ever)
+      for (let tries = 0; player.data.effect; tries++) {
+        if (tries >= 3) throw new Error('[player] the current effect could not be ended')
+        player.setEffect(null)
+        assertCanStart()
       }
       activeEffectConfig = config
       player.setEffect(config.effect, config.onEnd)
@@ -240,6 +346,7 @@ export function createPlayerProxy(entity, player) {
           return activeEffectConfig === config
         },
         cancel: () => {
+          if (run !== entity.deadHook) throw stoppedError(entity)
           config.onEnd()
         },
       }
@@ -257,6 +364,7 @@ export function createPlayerProxy(entity, player) {
         return
       }
       const values = [_v.x, _v.y, _v.z]
+      assertRunAfterRead()
       if (player.data.owner === world.network.id) {
         // if player is local we can set directly
         player.push(values)
@@ -266,8 +374,9 @@ export function createPlayerProxy(entity, player) {
       }
     },
     screenshare(targetId) {
-      if (!targetId) {
-        return console.error(`screenshare has invalid targetId: ${targetId}`)
+      // (an id is a string: anything else is not converted, an object's toString is script code)
+      if (!targetId || typeof targetId !== 'string') {
+        return console.error('screenshare has invalid targetId')
       }
       if (player.data.owner !== world.network.id) {
         return console.error('screenshare can only be called on local player')
@@ -275,6 +384,10 @@ export function createPlayerProxy(entity, player) {
       world.livekit.setScreenShareTarget(targetId)
     },
     setVoiceLevel(level) {
+      // a level is a string (anything else is reported and changes nothing: it is not converted, an object's toString
+      // is script code); removing the modifier is how a script ends it, so only a new or changed level is refused
+      if (level && typeof level !== 'string') return console.error('[setVoiceLevel] level must be a string')
+      if (level) assertCanStart()
       if (!world.network.isServer) {
         return console.error(`[setVoiceLevel] must be applied on the server`)
       }
@@ -290,17 +403,23 @@ export function createPlayerProxy(entity, player) {
         return
       }
       if (level && voiceMod) {
-        voiceMod = world.livekit.updateModifier(voiceMod, level)
+        // (a level the voice system refuses leaves the current modifier as it was, and still tracked: it ends with the
+        // run)
+        voiceMod = world.livekit.updateModifier(voiceMod, level) || voiceMod
         return
       }
     },
-    $cleanup() {
+  }
+  handles.set(proxy, { player, run, entity, retire: () => (retired = true) })
+  cleanups.set(proxy, () => {
+    try {
       activeEffectConfig?.onEnd()
+    } finally {
       if (voiceMod) {
         voiceMod = world.livekit.removeModifier(voiceMod)
       }
-    },
-  }
+    }
+  })
   if (world.network.isServer) {
     for (const name of [
       'teleport',
@@ -316,9 +435,27 @@ export function createPlayerProxy(entity, player) {
       proxy[name] = (...args) => world.network.asScript(() => method(...args), entity, name)
     }
   }
-  for (const name of ['push', 'teleport', 'getTokenBalance', 'getEvmHolding']) {
+  // every call that acts or asks: refused once the app has stopped (crashed, or removed and its teardown is over) or
+  // its run has ended; during the teardown the app's own callbacks (an effect's onEnd) can still act and end things,
+  // while starting effects and voice levels is refused from the players stage on (assertCanStart)
+  for (const name of [
+    'push',
+    'teleport',
+    'getTokenBalance',
+    'getEvmHolding',
+    'setSessionAvatar',
+    'damage',
+    'heal',
+    'applyEffect',
+    'cancelEffect',
+    'screenshare',
+    'setVoiceLevel',
+  ]) {
     const method = proxy[name]
-    proxy[name] = (...args) => callForScript(method, entity, args)
+    proxy[name] = (...args) => {
+      if (run !== entity.deadHook) throw stoppedError(entity)
+      return callForScript(method, entity, args)
+    }
   }
   return proxy
 }

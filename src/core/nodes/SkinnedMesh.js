@@ -2,7 +2,9 @@ import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js'
 
 import { Node } from './Node'
 import * as THREE from '../extras/three'
-import { isBoolean } from 'lodash-es'
+import { scriptView, sealAll } from '../extras/sealMath.js'
+import { toEngineNumber } from '../extras/engineNumber.js'
+import { isBoolean } from '../extras/scriptPrimitives.js'
 
 const defaults = {
   object3d: null,
@@ -48,6 +50,8 @@ export class SkinnedMesh extends Node {
         n.castShadow = this._castShadow
         n.receiveShadow = this._receiveShadow
       }
+      // a bone's transform is what getBone() hands scripts (sealMath.js)
+      if (n.isBone) sealAll(n.position, n.quaternion, n.rotation, n.scale, n.matrix, n.matrixWorld)
     })
     this.ctx.world.stage.scene.add(this.obj)
     for (const clip of this._animations) {
@@ -59,8 +63,7 @@ export class SkinnedMesh extends Node {
 
   commit(didMove) {
     if (this.needsRebuild) {
-      this.unmount()
-      this.mount()
+      this.remount()
     }
     if (didMove) {
       if (this.obj) {
@@ -135,7 +138,15 @@ export class SkinnedMesh extends Node {
     }
   }
 
-  play({ name, fade = 0.15, speed, loop = true }) {
+  // only a mounted skinned mesh animates (its mixer, and its place in world.hot, go with its unmount). The options are
+  // read once, into primitives, before that is checked: a getter, a toString or a valueOf on them is script code, which
+  // could end the run (an object used as a clip name would otherwise be converted after the check)
+  play(opts) {
+    const { name: rawName, fade: rawFade = 0.15, speed: rawSpeed, loop = true } = opts
+    const name = typeof rawName === 'string' ? rawName : String(rawName)
+    const fade = Number(rawFade)
+    const speed = rawSpeed === undefined ? undefined : Number(rawSpeed)
+    if (!this.mounted || !this.obj || !this.canMount()) return
     if (!this.mixer) {
       this.mixer = new THREE.AnimationMixer(this.obj)
       this.ctx.world.setHot(this, true)
@@ -146,9 +157,9 @@ export class SkinnedMesh extends Node {
     if (this.action) {
       this.action.fadeOut(fade)
     }
-    this.action = this.actions[name]
+    this.action = Object.hasOwn(this.actions, name) ? this.actions[name] : undefined
     if (!this.action) {
-      const clip = this.clips[name]
+      const clip = Object.hasOwn(this.clips, name) ? this.clips[name] : undefined
       if (!clip) return console.warn(`[skinnedmesh] animation not found: ${name}`)
       this.action = this.mixer.clipAction(clip)
       this.actions[name] = this.action
@@ -160,8 +171,9 @@ export class SkinnedMesh extends Node {
   }
 
   stop(opts = defaultStopOpts) {
+    const fade = Number(opts.fade)
     if (!this.action) return
-    this.action.fadeOut(opts.fade)
+    this.action.fadeOut(fade)
     this.action = null
   }
 
@@ -189,30 +201,35 @@ export class SkinnedMesh extends Node {
       const self = this
       handle = {
         get position() {
-          return self.readBone(name)?.position
+          return scriptView(self.readBone(name)?.position)
         },
         get quaternion() {
-          return self.readBone(name)?.quaternion
+          return scriptView(self.readBone(name)?.quaternion)
         },
         get rotation() {
-          return self.readBone(name)?.rotation
+          return scriptView(self.readBone(name)?.rotation)
         },
         get scale() {
-          return self.readBone(name)?.scale
+          return scriptView(self.readBone(name)?.scale)
         },
         get matrixWorld() {
           const bone = self.readBone(name)
           if (!bone) return null
           if (self.isDirty) self.clean()
           bone.updateMatrixWorld(true)
-          return bone.matrixWorld
+          return scriptView(bone.matrixWorld)
         },
         set matrixWorld(mat) {
+          // the entries are read once, by the engine's number rule (engineNumber.js), before the bone takes them:
+          // the bone's matrix is the engine's, read by its skinning every frame
+          const entries = []
+          const source = mat?.elements
+          for (let i = 0; i < 16; i++) entries.push(toEngineNumber(source?.[i]))
           const bone = self.readBone(name)
           if (!bone) return
           bone.matrixAutoUpdate = false
           bone.matrixWorldAutoUpdate = false
-          bone.matrixWorld.copy(mat)
+          bone.matrixWorld.fromArray(entries)
         },
       }
       this.boneHandles[name] = handle
@@ -259,7 +276,9 @@ export class SkinnedMesh extends Node {
           return self.getBone(name)
         },
         getBoneTransform(name) {
-          return self.getBoneTransform(name)
+          // a copy: the class method returns a module matrix shared by every skinned mesh of every app
+          const matrix = self.getBoneTransform(name)
+          return matrix ? new THREE.Matrix4().copy(matrix) : matrix
         },
       }
       proxy = Object.defineProperties(proxy, Object.getOwnPropertyDescriptors(super.getProxy())) // inherit Node properties

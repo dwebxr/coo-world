@@ -18,6 +18,24 @@ import { WORLD_BLUEPRINT_BYTES } from '../src/core/extras/blueprintPolicy.js'
 import { loadClient } from './lib/clientHarness.mjs'
 import { fakeWs } from './lib/networkHarness.mjs'
 import { app, apps, fillTo, fixture, long, nextId, sentTo, settle } from './lib/joinFixture.mjs'
+import { Entity } from '../src/core/entities/Entity.js'
+import { createEventQueue } from '../src/core/extras/appEventQueue.js'
+import { createScriptTimers } from '../src/core/extras/scriptTimers.js'
+import { createEntityProxy } from '../src/core/extras/createEntityProxy.js'
+import { assertScriptActive, handlePhysicsFailure } from '../src/core/extras/physicsFailure.js'
+import { createScriptResponse, toHostFetchOptions } from '../src/core/extras/scriptFetch.js'
+import { serializeError } from '../src/core/extras/serializeError.js'
+
+// an app root that mounts nothing (the props test runs the real App without a scene)
+const stubRoot = () => ({
+  position: { fromArray() {} },
+  quaternion: { fromArray() {} },
+  scale: { fromArray() {} },
+  activate() {},
+  deactivate() {},
+  traverse() {},
+  getProxy: () => ({}),
+})
 
 // The world, its accounting and the join helper are test/lib/joinFixture.mjs; the admission rules (who may join
 // when) are joinAdmission.test.js.
@@ -724,6 +742,71 @@ test('join budget: an AI change that would grow a full world is not applied', as
   ])
 })
 
-test.todo(
-  'join budget: a server script that grows its props does not change the blueprint size in the join snapshot (needs the P1 per-instance props copy)'
-)
+test('join budget: a server script that grows its props does not change the blueprint size in the join snapshot', async () => {
+  const f = fixture()
+  const { world } = f
+  // the real App and Apps (the instance's props copy is App.build's, the props handle Apps'), running a stand-in
+  // script that grows every props it is given
+  const Apps = loadClient('core/systems/Apps.js', 'Apps')
+  const App = loadClient('core/entities/App.js', 'App', {
+    Entity,
+    createEventQueue,
+    createScriptTimers,
+    createNode: stubRoot,
+    createEntityProxy,
+    registerAppProxy() {},
+    LerpVector3: class {},
+    LerpQuaternion: class {},
+    assertScriptActive,
+    handlePhysicsFailure,
+    createScriptResponse,
+    toHostFetchOptions,
+    serializeError,
+  })
+  const grown = []
+  const script = (_world, appProxy, _fetch, props) => {
+    props.note = 'changed'
+    props.big = 'x'.repeat(200_000)
+    props.list.push(...Array.from({ length: 10_000 }, (_, i) => i))
+    grown.push(appProxy.props.big.length)
+  }
+  world.setHot = () => {}
+  world.loader = { get: type => (type === 'script' ? { exec: script } : { toNodes: stubRoot }) }
+  world.apps = new Apps(world)
+  const blueprint = {
+    id: 'bp-props',
+    version: 0,
+    name: 'Shop',
+    model: 'm.glb',
+    script: 's.js',
+    props: { note: 'hi', list: [1] },
+  }
+  world.blueprints.add(blueprint)
+  const bytes = world.blueprints.bytes
+  const joinBytes = joinStateBytes(world)
+  for (const id of [nextId(), nextId()]) {
+    const instance = new App(world, {
+      id,
+      blueprint: 'bp-props',
+      position: [0, 0, 0],
+      quaternion: [0, 0, 0, 1],
+      scale: [1, 1, 1],
+      state: {},
+    })
+    world.entities.items.set(id, instance)
+    await settle()
+  }
+  assert.deepEqual(grown, [200_000, 200_000], 'each instance grew its own props')
+  assert.deepEqual(world.blueprints.get('bp-props').props, { note: 'hi', list: [1] }, 'the blueprint is untouched')
+  assert.equal(world.blueprints.bytes, bytes, 'the tracked blueprint size is unchanged')
+  assert.equal(
+    writePacket('blueprintAdded', world.blueprints.get('bp-props')).length,
+    world.blueprints.sizes.get('bp-props')
+  )
+  assert.equal(joinStateBytes(world), joinBytes)
+  const joined = await f.join()
+  assert.equal(joined.method, 'onSnapshot')
+  const sent = joined.snapshot.blueprints.find(item => item.id === 'bp-props')
+  assert.deepEqual(sent.props, { note: 'hi', list: [1] }, 'the join snapshot carries the blueprint as stored')
+  assert.ok(joined.bytes < 50_000, `the snapshot stays small (${joined.bytes} bytes)`)
+})

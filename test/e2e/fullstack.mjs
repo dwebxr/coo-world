@@ -40,7 +40,7 @@ const PNG =
 
 // console errors the probes produce on purpose
 const EXPECTED_ERROR =
-  /\[world\.open\]|\[stage\]|\[physics\]|script crashed|script destroy\(\) crashed|P1_|crasher|not extensible|readonly property|Cannot add property|does-not-exist|GLTFLoader|createObjectURL expects|Body is unusable|body used already|json|on a remote player must be called on the server|onPlayerSessionAvatar: invalid payload/i
+  /\[world\.open\]|\[stage\]|\[physics\]|script crashed|script destroy\(\) crashed|script update\(\) crashed|Cannot convert a Symbol value to a number|P1_|crasher|not extensible|readonly property|Cannot add property|does-not-exist|GLTFLoader|createObjectURL expects|Body is unusable|body used already|json|on a remote player must be called on the server|onPlayerSessionAvatar: invalid payload/i
 // the server's log line for a relay packet a client sent (once per socket and packet)
 const RELAY_DROP = /\[network\] player\w+ from client \S+ ignored/
 const RELAY_PACKET = m => /^onPlayer(Teleport|Push|SessionAvatar)$/.test(m.method)
@@ -301,14 +301,38 @@ async function probes(admin, watcher) {
     ok(/TypeError/.test(server.out), 'TypeError logged')
   })
 
-  await step('A5 a throwing valueOf in a transform crashes only its app on the Stage path (server)', async () => {
+  // what the e2e hook's compose fault throws (the stage probe's stand-in for a Stage failure, stage-crash.js), and
+  // what the physics probe's refused callback reports (the node's own transform is sealed, its callback fixed).
+  // The refusal is the engine's own TypeError for a write to a read-only property, worded by each engine: V8
+  // (the server, Chromium) names the property, JavaScriptCore (WebKit) and SpiderMonkey (Firefox) do not.
+  const STAGE_BOOM = /P1_RETRY_PROBE/
+  const PHYSICS_REFUSED = new RegExp(
+    'P1_PHYSICS_REFUSED .*(' +
+      [
+        "read only property '_onChangeCallback'",
+        'Attempted to assign to readonly property',
+        '"_onChangeCallback" is read-only',
+        'change callback cannot be replaced',
+      ].join('|') +
+      ')'
+  )
+  await step('A5 a planted non-number is read as NaN; a Stage failure crashes only its app (server)', async () => {
     const from = watcher.mark()
-    admin.installApp({ id: 's-stage', script: 'asset://stage-crash.js', model: 'asset://ai.glb' })
+    admin.installApp({
+      id: 's-stage',
+      script: 'asset://stage-crash.js',
+      model: 'asset://ai.glb',
+      props: { fault: true },
+    })
+    const guarded = await watcher.waitForReport('P1_STAGE_GUARDED', { from, timeout: 15000 })
+    eq(guarded.x, 'NaN', 'a planted Symbol is read as NaN')
+    eq(guarded.y, 'NaN', 'a planted object is read as NaN')
+    eq(server.count('P1_STAGE_VALUEOF'), 0, "the planted object's valueOf never ran")
     await waitUntil(() => server.lines(/\[stage\] node update failed .*entity s-stage\)/).length === 1, {
       timeout: 15000,
       message: 'stage containment log',
     })
-    ok(server.out.includes('P1_STAGE_BOOM'), 'error logged')
+    ok(STAGE_BOOM.test(server.out), 'error logged')
     const beat1 = await watcher.waitForReport('P1_OBSERVER_BEAT', { from, timeout: 10000 })
     const beat2 = await watcher.waitForReport('P1_OBSERVER_BEAT', { from: watcher.mark(), timeout: 10000 })
     ok(beat2.n > beat1.n, 'observer keeps ticking')
@@ -320,7 +344,7 @@ async function probes(admin, watcher) {
       id: 's-stage2',
       script: 'asset://stage-crash.js',
       model: 'asset://ai.glb',
-      props: { destroyThrows: true },
+      props: { destroyThrows: true, fault: true },
     })
     await waitUntil(() => server.lines(/\[stage\] node update failed .*entity s-stage2\)/).length === 1, {
       timeout: 15000,
@@ -337,19 +361,28 @@ async function probes(admin, watcher) {
     ok(beat2.n > beat1.n, 'observer keeps ticking')
   })
 
-  await step('A6 a throwing _onChangeCallback crashes only its app on the Physics path (server)', async () => {
-    admin.installApp({ id: 's-physics', script: 'asset://physics-crash.js', model: 'asset://ai.glb' })
-    await waitUntil(() => server.lines(/\[physics\] interpolation failed .*entity s-physics\)/).length === 1, {
-      timeout: 15000,
-      message: 'physics containment log',
-    })
-    ok(server.out.includes('P1_PHYSICS_BOOM'), 'error logged')
-    const beat1 = await watcher.waitForReport('P1_OBSERVER_BEAT', { from: watcher.mark(), timeout: 10000 })
-    const beat2 = await watcher.waitForReport('P1_OBSERVER_BEAT', { from: watcher.mark(), timeout: 10000 })
-    ok(beat2.n > beat1.n, 'observer keeps ticking')
-  })
+  await step(
+    'A6 a change callback of its own on an engine transform is refused; only its app crashes (server)',
+    async () => {
+      const before = server.count('P1_PHYSICS_REFUSED')
+      admin.installApp({ id: 's-physics', script: 'asset://physics-crash.js', model: 'asset://ai.glb' })
+      await waitUntil(() => server.count('P1_PHYSICS_REFUSED') > before, {
+        timeout: 15000,
+        message: 'refusal logged',
+      })
+      ok(PHYSICS_REFUSED.test(server.out), 'the change callback could not be replaced')
+      eq(
+        server.lines(/\[physics\] interpolation failed .*entity s-physics\)/).length,
+        0,
+        'nothing ran in the physics step'
+      )
+      const beat1 = await watcher.waitForReport('P1_OBSERVER_BEAT', { from: watcher.mark(), timeout: 10000 })
+      const beat2 = await watcher.waitForReport('P1_OBSERVER_BEAT', { from: watcher.mark(), timeout: 10000 })
+      ok(beat2.n > beat1.n, 'observer keeps ticking')
+    }
+  )
 
-  await step('A6b Physics containment completes when the destroy listener throws (server)', async () => {
+  await step("A6b the physics probe's teardown completes when the destroy listener throws (server)", async () => {
     const destroyLogs = server.lines(/script destroy\(\) crashed/).length
     admin.installApp({
       id: 's-physics2',
@@ -357,9 +390,10 @@ async function probes(admin, watcher) {
       model: 'asset://ai.glb',
       props: { destroyThrows: true },
     })
-    await waitUntil(() => server.lines(/\[physics\] interpolation failed .*entity s-physics2\)/).length === 1, {
+    const refusals = server.count('P1_PHYSICS_REFUSED')
+    await waitUntil(() => server.count('P1_PHYSICS_REFUSED') > refusals, {
       timeout: 15000,
-      message: 'physics containment log (destroy variant)',
+      message: 'refusal logged (destroy variant)',
     })
     await waitUntil(() => server.lines(/script destroy\(\) crashed/).length > destroyLogs, {
       timeout: 10000,
@@ -517,9 +551,10 @@ async function probes(admin, watcher) {
     const [accepted, long, minted, emoji1, emoji2] = got.map(m => m.data)
     eq(
       JSON.stringify(Object.keys(accepted).sort()),
-      JSON.stringify(['body', 'createdAt', 'from', 'fromId', 'id']),
+      JSON.stringify(['body', 'createdAt', 'from', 'fromId', 'id', 'kind']),
       'fields'
     )
+    eq(accepted.kind, 'player', 'a player line, stamped by the server')
     ok(
       typeof accepted.id === 'string' && accepted.id.length > 0 && accepted.id !== 'p4-chat',
       `the id is minted by the server (${accepted.id})`
@@ -1443,31 +1478,35 @@ async function probes(admin, watcher) {
     )
     eq(beat.crasher, 'undefined', 'observer sees no crasher write')
   })
-  await step('B15 Stage and Physics containment crash only the offending app (browser)', async () => {
-    await waitUntil(async () => (await appState(page, 'b-stage'))?.error === 'P1_STAGE_BOOM', {
-      timeout: 20000,
-      message: 'stage crash',
-    })
-    await waitUntil(async () => (await appState(page, 'b-physics'))?.error === 'P1_PHYSICS_BOOM', {
-      timeout: 20000,
-      message: 'physics crash',
-    })
-    ok(
-      consoleLines.some(l => l.includes('[stage] node update failed')),
-      'stage log'
-    )
-    ok(
-      consoleLines.some(l => l.includes('[physics] interpolation failed')),
-      'physics log'
-    )
-    const observer = await appState(page, 'b-observer')
-    ok(!observer.error, 'observer did not crash')
-    const n1 = observer.state?.P1_OBSERVER_BEAT?.n ?? 0
-    await waitUntil(async () => ((await appState(page, 'b-observer')).state?.P1_OBSERVER_BEAT?.n ?? 0) > n1, {
-      timeout: 30000,
-      message: 'observer heartbeat',
-    })
-  })
+  await step(
+    'B15 a planted non-number is read as NaN; the physics probe is refused and crashes alone (browser)',
+    async () => {
+      // (the page has no e2e hook: the stage probe only plants, and must not crash)
+      const stage = await waitUntil(
+        async () => {
+          const s = await appState(page, 'b-stage')
+          return s?.state?.P1_STAGE_GUARDED ? s : null
+        },
+        { timeout: 20000, message: 'stage probe report' }
+      )
+      eq(stage.state.P1_STAGE_GUARDED.x, 'NaN', 'a planted Symbol is read as NaN')
+      eq(stage.state.P1_STAGE_GUARDED.y, 'NaN', 'a planted object is read as NaN')
+      ok(!stage.error, 'the stage probe did not crash')
+      await waitUntil(async () => PHYSICS_REFUSED.test((await appState(page, 'b-physics'))?.error ?? ''), {
+        timeout: 20000,
+        message: 'physics probe refused',
+      })
+      ok(!consoleLines.some(l => l.includes('[stage] node update failed')), 'nothing failed on the Stage path')
+      ok(!consoleLines.some(l => l.includes('[physics] interpolation failed')), 'nothing ran in the physics step')
+      const observer = await appState(page, 'b-observer')
+      ok(!observer.error, 'observer did not crash')
+      const n1 = observer.state?.P1_OBSERVER_BEAT?.n ?? 0
+      await waitUntil(async () => ((await appState(page, 'b-observer')).state?.P1_OBSERVER_BEAT?.n ?? 0) > n1, {
+        timeout: 30000,
+        message: 'observer heartbeat',
+      })
+    }
+  )
 
   await installApp(page, {
     id: 'b-stage2',
@@ -1483,22 +1522,27 @@ async function probes(admin, watcher) {
     props: { destroyThrows: true },
     position: [18, 0, -3],
   })
-  await step('B15b containment teardown completes when the destroy listener throws (browser, both paths)', async () => {
-    for (const [id, boom] of [
-      ['b-stage2', 'P1_STAGE_BOOM'],
-      ['b-physics2', 'P1_PHYSICS_BOOM'],
-    ]) {
+  await step('B15b a crash teardown completes when the destroy listener throws (browser)', async () => {
+    const stage = await waitUntil(
+      async () => {
+        const s = await appState(page, 'b-stage2')
+        return s?.state?.P1_STAGE_GUARDED ? s : null
+      },
+      { timeout: 20000, message: 'stage probe report (destroy variant)' }
+    )
+    ok(!stage.error, 'the stage probe did not crash')
+    for (const [id, boom] of [['b-physics2', PHYSICS_REFUSED]]) {
       const s = await waitUntil(
         async () => {
           const s = await appState(page, id)
-          return s?.error === boom && !s.building && s.rootIsCrashBlock ? s : null
+          return boom.test(s?.error ?? '') && !s.building && s.rootIsCrashBlock ? s : null
         },
         { timeout: 30000, message: `${id} crash block` }
       )
       eq(s.timers, 0, `${id} timers cleared`)
       eq(s.rootMounted, true, `${id} crash block mounted`)
     }
-    ok(consoleLines.filter(l => l.includes('script destroy() crashed')).length >= 2, 'destroy failures logged')
+    ok(consoleLines.filter(l => l.includes('script destroy() crashed')).length >= 1, 'destroy failure logged')
     ok(!consoleLines.some(l => /crash rebuild failed/.test(l)), 'no failed rebuild')
     eq(
       pageErrors.filter(l => /P1_DESTROY_BOOM|Unhandled/i.test(l)).length,

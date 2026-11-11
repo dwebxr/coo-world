@@ -1,4 +1,6 @@
-import { getPhysicsTrapCount } from './extras/physicsFailure.js'
+import { getPhysicsTrapCount, handlePhysicsFailure } from './extras/physicsFailure.js'
+import { briefError, createLogOnce } from './extras/logOnce.js'
+import { serializeError } from './extras/serializeError'
 import { ASSET_PROTOCOL, resolveReference } from './extras/assetURL.js'
 import * as THREE from './extras/three'
 import EventEmitter from 'eventemitter3'
@@ -16,6 +18,16 @@ import { Entities } from './systems/Entities'
 import { Physics } from './systems/Physics'
 import { Stage } from './systems/Stage'
 import { Scripts } from './systems/Scripts'
+
+// a hot item that throws is reported once per item and phase
+const logHotFailure = createLogOnce(message => console.error(message))
+
+// who answers for a hot item: an app or player entity itself, the entity of a node, or of the node that owns a
+// non-node item (an avatar instance carries its Avatar node as hotOwner)
+function hotOwner(item) {
+  if (item.isApp || item.isPlayer) return item
+  return (item.ctx || item.hotOwner?.ctx)?.entity
+}
 
 export class World extends EventEmitter {
   constructor() {
@@ -147,7 +159,11 @@ export class World extends EventEmitter {
   fixedUpdate(delta) {
     for (const item of this.hot) {
       if (this.fatalError) return
-      item.fixedUpdate?.(delta)
+      try {
+        item.fixedUpdate?.(delta)
+      } catch (err) {
+        this.hotFailed(item, 'fixedUpdate', err)
+      }
     }
     for (const system of this.systems) {
       if (this.fatalError) return
@@ -172,7 +188,11 @@ export class World extends EventEmitter {
   update(delta) {
     for (const item of this.hot) {
       if (this.fatalError) return
-      item.update?.(delta)
+      try {
+        item.update?.(delta)
+      } catch (err) {
+        this.hotFailed(item, 'update', err)
+      }
     }
     for (const system of this.systems) {
       if (this.fatalError) return
@@ -190,7 +210,11 @@ export class World extends EventEmitter {
   lateUpdate(delta) {
     for (const item of this.hot) {
       if (this.fatalError) return
-      item.lateUpdate?.(delta)
+      try {
+        item.lateUpdate?.(delta)
+      } catch (err) {
+        this.hotFailed(item, 'lateUpdate', err)
+      }
     }
     for (const system of this.systems) {
       if (this.fatalError) return
@@ -201,7 +225,11 @@ export class World extends EventEmitter {
   postLateUpdate(delta) {
     for (const item of this.hot) {
       if (this.fatalError) return
-      item.postLateUpdate?.(delta)
+      try {
+        item.postLateUpdate?.(delta)
+      } catch (err) {
+        this.hotFailed(item, 'postLateUpdate', err)
+      }
     }
     for (const system of this.systems) {
       if (this.fatalError) return
@@ -247,6 +275,44 @@ export class World extends EventEmitter {
 
   setupMaterial = material => {
     this.environment.csm?.setupMaterial(material)
+  }
+
+  // One hot item that throws must not stop the others or the frame. An app's item crashes that app (its rebuild
+  // replaces it); a player stays hot and falls back to the default avatar (a hostile or broken avatar is the
+  // likely cause), and is dropped only if it throws again on the default; anything else leaves the hot set.
+  hotFailed(item, phase, err) {
+    const owner = hotOwner(item)
+    const trapped = handlePhysicsFailure(err, {
+      entity: owner?.isApp ? owner : undefined,
+      world: this,
+      phase: `hot ${phase}`,
+    })
+    const id = owner?.data?.id ?? item.id
+    const label = typeof id === 'string' || typeof id === 'number' ? String(id).slice(0, 64) : 'none'
+    const where = `${phase} (${owner?.isApp ? 'app' : owner?.isPlayer ? 'player' : 'item'} ${label})`
+    if (owner?.isApp) {
+      // out until the app's crash rebuild makes what it needs hot again
+      this.hot.delete(item)
+      if (trapped) return
+      if (!owner.crashed) {
+        try {
+          owner.scriptError = serializeError(err)
+        } catch {
+          // a hostile error object must not stop the containment
+        }
+      }
+      logHotFailure(item, phase, `[world] ${where} failed: ${briefError(err)}`)
+      owner.crash?.()
+      return
+    }
+    if (owner?.isPlayer && owner.fallBackToDefaultAvatar?.()) {
+      // the player is kept; an avatar instance that failed is replaced with the avatar
+      if (item !== owner) this.hot.delete(item)
+      logHotFailure(owner, 'avatar', `[world] ${where} failed, using the default avatar: ${briefError(err)}`)
+      return
+    }
+    this.hot.delete(item)
+    logHotFailure(item, phase, `[world] ${where} failed and stopped updating: ${briefError(err)}`)
   }
 
   setHot(item, hot) {

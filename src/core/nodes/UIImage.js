@@ -1,5 +1,6 @@
 import Yoga from 'yoga-layout'
-import { every, isArray, isBoolean, isNumber, isString } from 'lodash-es'
+import { every, isArray } from 'lodash-es'
+import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
 import { Node } from './Node'
 import { Display, isDisplay } from '../extras/yoga'
 import { fillRoundRect, imageRoundRect } from '../extras/roundRect'
@@ -177,17 +178,19 @@ export class UIImage extends Node {
     this._left = source._left
     this._objectFit = source._objectFit
     this._backgroundColor = source._backgroundColor
-    this._margin = source._margin
+    this._margin = isArray(source._margin) ? Object.freeze([...source._margin]) : source._margin
     return this
   }
 
+  // loads only for a mounted image (mount loads its src); a load that completes after the image was unmounted, or its
+  // src changed, is dropped
   async loadImage(src) {
-    if (!this.ctx?.world) return
+    if (!this.mounted || !this.canMount() || !this.ctx?.world) return
     const url = this.ctx.world.resolveURL(src)
-    this.img = this.ctx.world.loader.get('image', url)
-    if (!this.img) {
-      this.img = await this.ctx.world.loader.load('image', url)
-    }
+    let img = this.ctx.world.loader.get('image', url)
+    if (!img) img = await this.ctx.world.loader.load('image', url)
+    if (!this.mounted || this._src !== src) return
+    this.img = img
     if (!this.ui) return
     this.yogaNode?.markDirty()
     this.ui?.redraw()
@@ -430,11 +433,13 @@ export class UIImage extends Node {
   }
 
   set margin(value = defaults.margin) {
-    if (!isEdge(value)) {
+    // the node keeps its own copy of an array (read once, then checked), never the script's array
+    const edge = isArray(value) ? Object.freeze(Array.from(value)) : value
+    if (!isEdge(edge)) {
       throw new Error(`[uiimage] margin not a number or array of numbers`)
     }
-    if (this._margin === value) return
-    this._margin = value
+    if (this._margin === edge) return
+    this._margin = edge
     if (isArray(this._margin)) {
       const [top, right, bottom, left] = this._margin
       this.yogaNode?.setMargin(Yoga.EDGE_TOP, top * this.ui._res)

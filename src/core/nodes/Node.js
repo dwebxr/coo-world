@@ -5,6 +5,7 @@ import { scriptView, sealAll } from '../extras/sealMath.js'
 import { toEngineNumber } from '../extras/engineNumber.js'
 import { cursorKeyword } from '../extras/cursorKeyword.js'
 import { isBoolean, isPrimitive } from '../extras/scriptPrimitives.js'
+import { briefError } from '../extras/logOnce.js'
 import * as THREE from '../extras/three'
 import { getNodeRef, isRefAllowed, registerNodeRefGetter } from './refs'
 import {
@@ -170,10 +171,18 @@ let nodeIds = -1
 
 // A class's mount or build may be async: it waits for a file. Nothing awaits it, so a load that fails (a missing file,
 // one the loader's limits refuse) was an unhandled rejection, and before the world is ready the page counts one as a
-// failed start (the watchdog in index.html). The node stays as it is, without the file, and says so.
+// failed start (the watchdog in index.html). The node stays as it is, without the file, and says so. What is reported
+// of the reason is read without running its code (briefError: an avatar's onLoad can throw any object, a getter or a
+// Proxy included), and nothing in the handler may throw: that would be the unhandled rejection again.
 export function watchLoad(node, pending) {
   if (pending instanceof Promise) {
-    pending.catch(err => console.warn(`[${node.name}] not loaded:`, err?.message || err))
+    pending.catch(err => {
+      try {
+        console.warn(`[${node.name}] not loaded: ${typeof err === 'string' ? err.slice(0, 200) : briefError(err)}`)
+      } catch {
+        // (a console that throws: the failure stays unsaid, and still handled)
+      }
+    })
   }
 }
 

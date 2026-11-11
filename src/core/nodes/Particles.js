@@ -1,7 +1,7 @@
 import * as THREE from '../extras/three'
 import { every, isArray, isFunction } from 'lodash-es'
 import { isBoolean, isNumber, isPrimitive, isString } from '../extras/scriptPrimitives.js'
-import { boundedInteger, boundedNumber } from '../extras/boundedValue.js'
+import { boundedInteger, boundedNumber, boundedText } from '../extras/boundedValue.js'
 
 import { Node } from './Node'
 import { scriptView, sealMath } from '../extras/sealMath.js'
@@ -51,6 +51,11 @@ export const PARTICLES_MAX_BURSTS = 64
 export const PARTICLES_MIN_DURATION = 0.01 // seconds
 export const PARTICLES_MAX_TIME = 1e6 // seconds
 export const PARTICLES_MAX_TIMESCALE = 100
+// The texts the worker parses: a start value (`1~5`, `red-blue`) and an over-life curve, of which the worker reads 64
+// points. A point of two numbers as JavaScript prints them is at most 52 characters (`-0.0000012512313393425237`
+// twice, a comma and a bar), so 64 of them fit; what is past the limit is cut.
+export const PARTICLES_MAX_START_LENGTH = 256
+export const PARTICLES_MAX_CURVE_LENGTH = 4096
 
 // prettier-ignore
 const defaults = {
@@ -396,7 +401,7 @@ export class Particles extends Node {
     if (!isStartNumeric(value)) {
       throw new Error('[particles] life invalid')
     }
-    this._life = value
+    this._life = boundedText(value, PARTICLES_MAX_START_LENGTH)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -409,7 +414,7 @@ export class Particles extends Node {
     if (!isStartNumeric(value)) {
       throw new Error('[particles] speed invalid')
     }
-    this._speed = value
+    this._speed = boundedText(value, PARTICLES_MAX_START_LENGTH)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -422,7 +427,7 @@ export class Particles extends Node {
     if (!isStartNumeric(value)) {
       throw new Error('[particles] size invalid')
     }
-    this._size = value
+    this._size = boundedText(value, PARTICLES_MAX_START_LENGTH)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -435,7 +440,7 @@ export class Particles extends Node {
     if (!isStartNumeric(value)) {
       throw new Error('[particles] rotate invalid')
     }
-    this._rotate = value
+    this._rotate = boundedText(value, PARTICLES_MAX_START_LENGTH)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -448,7 +453,7 @@ export class Particles extends Node {
     if (!isStartColor(value)) {
       throw new Error('[particles] color invalid')
     }
-    this._color = value
+    this._color = boundedText(value, PARTICLES_MAX_START_LENGTH)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -461,7 +466,7 @@ export class Particles extends Node {
     if (!isStartNumeric(value)) {
       throw new Error('[particles] alpha invalid')
     }
-    this._alpha = value
+    this._alpha = boundedText(value, PARTICLES_MAX_START_LENGTH)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -474,7 +479,7 @@ export class Particles extends Node {
     if (!isStartNumeric(value)) {
       throw new Error('[particles] emissive invalid')
     }
-    this._emissive = value
+    this._emissive = boundedText(value, PARTICLES_MAX_START_LENGTH)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -630,7 +635,7 @@ export class Particles extends Node {
     if (value !== null && !isString(value)) {
       throw new Error('[particles] sizeOverLife invalid')
     }
-    this._sizeOverLife = value
+    this._sizeOverLife = value === null ? null : boundedText(value, PARTICLES_MAX_CURVE_LENGTH)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -643,7 +648,7 @@ export class Particles extends Node {
     if (value !== null && !isString(value)) {
       throw new Error('[particles] rotateOverLife invalid')
     }
-    this._rotateOverLife = value
+    this._rotateOverLife = value === null ? null : boundedText(value, PARTICLES_MAX_CURVE_LENGTH)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -656,7 +661,7 @@ export class Particles extends Node {
     if (value !== null && !isString(value)) {
       throw new Error('[particles] colorOverLife invalid')
     }
-    this._colorOverLife = value
+    this._colorOverLife = value === null ? null : boundedText(value, PARTICLES_MAX_CURVE_LENGTH)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -669,7 +674,7 @@ export class Particles extends Node {
     if (value !== null && !isString(value)) {
       throw new Error('[particles] alphaOverLife invalid')
     }
-    this._alphaOverLife = value
+    this._alphaOverLife = value === null ? null : boundedText(value, PARTICLES_MAX_CURVE_LENGTH)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -682,7 +687,7 @@ export class Particles extends Node {
     if (value !== null && !isString(value)) {
       throw new Error('[particles] emissiveOverLife invalid')
     }
-    this._emissiveOverLife = value
+    this._emissiveOverLife = value === null ? null : boundedText(value, PARTICLES_MAX_CURVE_LENGTH)
     this.needsRebuild = true
     this.setDirty()
   }

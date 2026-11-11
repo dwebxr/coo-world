@@ -17,7 +17,13 @@ before(async () => {
     export { AUDIO_BOUNDS } from './src/core/extras/audioBounds.js'
     export { canvasScale, UI_CANVAS_MAX_SIDE, UI_CANVAS_MAX_PIXELS, UI_MAX_SIDE, UI_MAX_RES } from './src/core/nodes/UI'
     export { UITEXT_MAX_LENGTH, UITEXT_MAX_FONT_SIZE } from './src/core/nodes/UIText'
-    export { PARTICLES_MAX, PARTICLES_MAX_RATE, PARTICLES_MAX_BURSTS } from './src/core/nodes/Particles'
+    export {
+      PARTICLES_MAX,
+      PARTICLES_MAX_RATE,
+      PARTICLES_MAX_BURSTS,
+      PARTICLES_MAX_START_LENGTH,
+      PARTICLES_MAX_CURVE_LENGTH,
+    } from './src/core/nodes/Particles'
     export { roundRect } from './src/core/extras/roundRect'
     export { watchLoad } from './src/core/nodes/Node'
     export { ClientAudio } from './src/core/systems/ClientAudio'
@@ -130,7 +136,9 @@ test('ui: the canvas scale is 1 within the limits and brings anything larger ins
 })
 
 // A screen-space UI is built and drawn against a stand-in document: the canvas it makes, its CSS size and what the
-// drawing context is told. The probe runs in a worker with a `window`, as the node only builds in a browser.
+// drawing context is told. The probe runs in a worker with a `window`, as the node only builds in a browser. With
+// `text`, the UI holds a text child of that value (which measures itself on a canvas of its own); `noContext` gives no
+// canvas a drawing context, `noMeasureContext` none but the UI's own (the first canvas made).
 const buildUI = (args, check) =>
   runProbe(
     bundle,
@@ -154,7 +162,8 @@ const buildUI = (args, check) =>
           const canvas = {
             tag,
             style: {},
-            getContext: () => (data.noContext ? null : context),
+            getContext: () =>
+              data.noContext || (data.noMeasureContext && canvases.indexOf(canvas) > 0) ? null : context,
             addEventListener() {},
             removeEventListener() {},
             getBoundingClientRect: () => ({ left: 0, top: 0 }),
@@ -163,7 +172,7 @@ const buildUI = (args, check) =>
           return canvas
         },
       }
-      const { noContext: _noContext, ...options } = data
+      const { noContext: _noContext, noMeasureContext: _noMeasureContext, text: value, ...options } = data
       const ui = createNode('ui', { space: 'screen', backgroundColor: 'black', ...options })
       ui.ctx = {
         world: {
@@ -174,9 +183,16 @@ const buildUI = (args, check) =>
         entity: null,
       }
       ui.setDirty = () => {}
+      const text = value === undefined ? null : createNode('uitext', { value, fontSize: 20 })
+      if (text) ui.add(text)
       ui.mount()
+      if (text) {
+        text.ctx = ui.ctx
+        text.mounted = true
+        text.mount()
+      }
       ui.draw()
-      const canvas = canvases.at(-1)
+      const canvas = canvases[0]
       const result = {
         width: canvas.width,
         height: canvas.height,
@@ -185,6 +201,8 @@ const buildUI = (args, check) =>
         transform: calls.find(call => call[0] === 'setTransform')?.slice(1),
         clear: calls.find(call => call[0] === 'clearRect')?.slice(1),
         order: calls.map(call => call[0]),
+        canvases: canvases.length,
+        textBox: text?.box ?? null,
       }
       new Function('result', 'assert', `(${check})(result, assert)`)(result, assert)
     },
@@ -226,6 +244,22 @@ test('ui: a canvas the browser gives no context for leaves the UI blank instead 
   buildUI({ width: 300, height: 200, noContext: true }, (r, assert) => {
     assert.deepEqual([r.width, r.height], [600, 400])
     assert.deepEqual(r.order, [], 'nothing was drawn')
+  }))
+
+test('ui: with a text child and no context anywhere, the UI stays blank and lays nothing out', () =>
+  // the layout measures the text on a canvas of its own, which gets no context either: the UI's check comes first
+  buildUI({ width: 300, height: 200, noContext: true, text: 'hello there' }, (r, assert) => {
+    assert.deepEqual(r.order, [], 'nothing was drawn')
+    assert.equal(r.canvases, 1, 'the text was not measured (no canvas was made for it)')
+    assert.equal(r.textBox, null)
+  }))
+
+test('ui: a text whose measuring canvas gets no context takes no room, and the UI still draws', () =>
+  buildUI({ width: 300, height: 200, noMeasureContext: true, text: 'hello there' }, (r, assert) => {
+    assert.equal(r.canvases, 2, 'the text asked for its measuring canvas')
+    assert.ok(r.order.includes('clearRect') && r.order.includes('fill'), `the UI was drawn: ${r.order}`)
+    assert.ok(r.textBox, 'the text was laid out and drawn')
+    assert.equal(r.textBox.height, 0, 'measured as nothing')
   }))
 
 test('uitext, nametag, action: texts are cut to their limits; the font size is bounded', () => {
@@ -327,6 +361,40 @@ test('particles: max, rate and bursts are bounded', () => {
   assert.throws(() => (node.max = '10'), /max not a number/)
 })
 
+test('particles: start values and over-life curves are cut to their limits; every documented form is kept', () => {
+  const starts = ['life', 'speed', 'size', 'rotate', 'color', 'alpha', 'emissive']
+  const curves = ['sizeOverLife', 'rotateOverLife', 'colorOverLife', 'alphaOverLife', 'emissiveOverLife']
+  // the forms of docs/scripting/nodes/types/Particles.md, and a curve of 64 points of the longest numbers JavaScript
+  // prints (the worker reads 64)
+  const documented = ['1', '1-5', '1~5', 'white', '#ff0000', 'red~blue', '0.1~0.30000000000000004']
+  const longest = Array.from({ length: 64 }, () => '-0.0000012512313393425237,-0.0000012512313393425237').join('|')
+  const curveForms = ['0,1|0.5,2|1,1', '0,red|1,#0000ff', longest]
+  for (const name of starts) {
+    const node = handle('particles')
+    for (const value of documented) {
+      node[name] = value
+      assert.equal(node[name], value, `${name} = '${value}' is kept`)
+    }
+    node[name] = '0-1' + '-1'.repeat(100000)
+    assert.equal(node[name].length, m.PARTICLES_MAX_START_LENGTH, `${name}: a long text is cut`)
+    assert.equal(m.createNode('particles', { [name]: 'x'.repeat(1000) })[name].length, m.PARTICLES_MAX_START_LENGTH)
+    assert.throws(() => (node[name] = 1), /invalid/, 'what is not a string is refused as before')
+  }
+  for (const name of curves) {
+    const node = handle('particles')
+    for (const value of curveForms) {
+      node[name] = value
+      assert.equal(node[name], value, `${name}: a curve of ${value.length} characters is kept`)
+    }
+    // one point of ten million values (a split of it is ten million entries)
+    node[name] = '0,1' + ',1'.repeat(10_000_000)
+    assert.equal(node[name].length, m.PARTICLES_MAX_CURVE_LENGTH, `${name}: a long curve is cut`)
+    assert.equal(m.createNode('particles', { [name]: '|'.repeat(1e5) })[name].length, m.PARTICLES_MAX_CURVE_LENGTH)
+    node[name] = null
+    assert.equal(node[name], null)
+  }
+})
+
 // the particle worker itself, with a config as the node's getConfig() gives it
 const emitterConfig = {
   op: 'create',
@@ -414,29 +482,186 @@ test('particle worker: a rate without end and particles with no life cannot hold
 test('particle worker: a burst without end and particles with no life cannot hold a step', () =>
   runEmitter({ ...emitterConfig, life: '0', bursts: [{ time: 0, count: Infinity }] }, [0.1], [0]))
 
-// The work of one step is counted through the emitter's own curve: `life` is read once per start.
-const countStarts = (config, deltas, limit) =>
+// Runs one emitter: creates it, then one update per step ({ delta, x }: the step's time, and where the emitter is
+// along x), and hands `check` what each step sent back: the particle count, the packed sizes, colours and UVs (in
+// pool order: the blending is additive, so nothing is sorted), and how many random numbers the step drew.
+const stepEmitter = (config, steps, check) =>
   runProbe(
     bundle,
-    ({ THREE }, { config, deltas, limit }) => {
-      self.postMessage = () => {}
-      // a life of '0' parses to a constant; count the starts through Math.random, which shape() calls per start
-      let starts = 0
+    ({ THREE }, { config, steps, check }) => {
+      let output
+      self.postMessage = msg => {
+        output = msg
+      }
+      let randoms = 0
       const random = Math.random
       Math.random = () => {
-        starts++
+        randoms++
         return random()
       }
       self.onmessage({ data: config })
-      const max = config.max
-      const perStep = []
-      for (const delta of deltas) {
-        starts = 0
+      const max = Math.max(1, config.max)
+      const results = []
+      for (const { delta, x = 0 } of steps) {
+        randoms = 0
+        output = null
         self.onmessage({
           data: {
             op: 'update',
-            emitterId: 'probe',
+            emitterId: config.id,
             delta,
+            camPosition: [0, 0, 0],
+            matrixWorld: new THREE.Matrix4().makeTranslation(x, 0, 0).toArray(),
+            aPosition: new Float32Array(max * 3),
+            aRotation: new Float32Array(max),
+            aDirection: new Float32Array(max * 3),
+            aSize: new Float32Array(max),
+            aColor: new Float32Array(max * 3),
+            aAlpha: new Float32Array(max),
+            aEmissive: new Float32Array(max),
+            aUV: new Float32Array(max * 4),
+          },
+        })
+        assert.equal(output?.op, 'update', 'the step is answered')
+        const n = output.n
+        results.push({
+          n,
+          randoms,
+          size: Array.from(output.aSize.subarray(0, n)),
+          color: Array.from(output.aColor.subarray(0, n * 3)),
+          uv: Array.from(output.aUV.subarray(0, n * 4)),
+        })
+      }
+      Math.random = random
+      new Function('results', 'assert', `(${check})(results, assert)`)(results, assert)
+    },
+    { config, steps, check: check.toString() }
+  )
+
+// The starts of a step are counted exactly through the random numbers it draws: a `life` of '0~0' draws one for each
+// start (and is 0, so each particle is free again at once and the pool never runs out), the point shape none, and
+// nothing else in these steps draws any.
+const startsEveryStep = { ...emitterConfig, life: '0~0' }
+
+test('particle worker: one step starts exactly as many particles as the pool holds, over its rate and all its bursts', () =>
+  // a rate of the node's largest (10,000 asked in a step of 0.1 s) and 64 bursts of the whole pool, in a cycle that
+  // starts its bursts again every step: each step starts 8 (the pool), not 10,000 + 64 x 8
+  stepEmitter(
+    {
+      ...startsEveryStep,
+      rate: 100000,
+      duration: 0.01,
+      bursts: Array.from({ length: 64 }, () => ({ time: 0, count: 8 })),
+    },
+    [{ delta: 0.1 }, { delta: 0.1 }, { delta: 0.1 }],
+    (results, assert) =>
+      assert.deepEqual(
+        results.map(step => step.randoms),
+        [8, 8, 8]
+      )
+  ))
+
+test('particle worker: emission over distance shares the step budget with the rate', () =>
+  // 64 a metre, moving a metre a step (64 distance emits of one each), and 5 a second by the rate: the first step has
+  // not moved yet (5 by the rate), then each step starts 5 by the rate and 3 by the distance, the pool's 8 in all
+  stepEmitter(
+    { ...startsEveryStep, rate: 5, rateOverDistance: 64 },
+    [
+      { delta: 1, x: 0 },
+      { delta: 1, x: 1 },
+      { delta: 1, x: 2 },
+    ],
+    (results, assert) =>
+      assert.deepEqual(
+        results.map(step => step.randoms),
+        [5, 8, 8]
+      )
+  ))
+
+test('particle worker: emission over distance alone is held to the pool too', () =>
+  // 64 a metre, moving a metre and then two: 64 and then 128 distance emits, of which each step starts 8
+  stepEmitter(
+    { ...startsEveryStep, rateOverDistance: 64 },
+    [
+      { delta: 0.1, x: 0 },
+      { delta: 0.1, x: 1 },
+      { delta: 0.1, x: 3 },
+    ],
+    (results, assert) =>
+      assert.deepEqual(
+        results.map(step => step.randoms),
+        [0, 8, 8]
+      )
+  ))
+
+test('particle worker: the step budget starts again with every step', () =>
+  // two a second into a pool of four, each living a second and a half: every step starts two (six in all by the
+  // third step, more than the pool), reusing the ones that died
+  runEmitter({ ...emitterConfig, max: 4, rate: 2, life: '1.5' }, [1, 1, 1, 1], [2, 2, 2, 2]))
+
+test('particle worker: a free particle is looked for from the start of the pool in every step, and found in order', () =>
+  // One a second into a pool of four, each living 2.5 s. The size is the step's number (linear over a cycle of 64 s,
+  // from 0 to 64), so each slot's size says in which step it was started; the packed sizes are in pool order.
+  // Step 4 starts slot 0 again (it died in step 3) while slot 2 still lives: [4, 3]. Step 5 then takes slot 1: [4, 5].
+  stepEmitter(
+    { ...emitterConfig, max: 4, rate: 1, life: '2.5', size: '0-64', duration: 64 },
+    Array.from({ length: 5 }, () => ({ delta: 1 })),
+    (results, assert) =>
+      assert.deepEqual(
+        results.map(step => step.size),
+        [[1], [1, 2], [2, 3], [4, 3], [4, 5]]
+      )
+  ))
+
+// Why the search's cost is counted through the pool itself: a search that starts again from the first particle for
+// every start finds the same particle as one that goes on from where the step's last one was found (the particles
+// before it were in use then, and nothing ages until the step's starts are done), so no output tells them apart; only
+// the work does, and time is not asserted here. The pool's particles are made inside the worker, but each is pushed
+// into the pool: the probe catches them there and makes their `age` and `life` accessors that count their reads.
+test('particle worker: a step reads each particle a fixed number of times, however many it starts', () =>
+  runProbe(
+    bundle,
+    ({ THREE }, { config }) => {
+      self.postMessage = () => {}
+      let reads = 0
+      let caught = 0
+      const push = Array.prototype.push
+      Array.prototype.push = function (...items) {
+        for (const item of items) {
+          if (item && typeof item === 'object' && 'emissionRotation' in item) {
+            caught++
+            for (const key of ['age', 'life']) {
+              let value = item[key]
+              Object.defineProperty(item, key, {
+                get() {
+                  reads++
+                  return value
+                },
+                set(next) {
+                  value = next
+                },
+              })
+            }
+          }
+        }
+        return Reflect.apply(push, this, items)
+      }
+      try {
+        self.onmessage({ data: config })
+      } finally {
+        Array.prototype.push = push
+      }
+      const max = config.max
+      assert.equal(caught, max, 'the probe reached every particle of the pool')
+      // each step starts the whole pool (the particles of the step before have all died): 2,000 starts; a search
+      // from the first particle for each start would read about 2,000 x 2,000 x 2 times
+      for (let step = 0; step < 3; step++) {
+        reads = 0
+        self.onmessage({
+          data: {
+            op: 'update',
+            emitterId: config.id,
+            delta: 1,
             camPosition: [0, 0, 0],
             matrixWorld: new THREE.Matrix4().toArray(),
             aPosition: new Float32Array(max * 3),
@@ -449,78 +674,31 @@ const countStarts = (config, deltas, limit) =>
             aUV: new Float32Array(max * 4),
           },
         })
-        perStep.push(starts)
+        assert.ok(reads >= 4 * max, `step ${step}: the probe sees the reads (${reads})`)
+        assert.ok(reads <= 12 * max, `step ${step}: ${reads} reads of age and life for a pool of ${max}`)
       }
-      Math.random = random
-      assert.ok(perStep[0] > 0, `the probe sees starts (${perStep})`)
-      for (const count of perStep) assert.ok(count <= limit, `starts in a step: ${perStep} (limit ${limit})`)
     },
-    { config, deltas, limit }
-  )
-
-test('particle worker: one step starts no more than the pool holds, over its rate and all its bursts together', () =>
-  // 64 bursts of the whole pool each, a rate without end and particles with no life, in a cycle that restarts its
-  // bursts every step: each step may start 8 (the pool), not 8 x 65. shape 'sphere' draws random numbers per start
-  // (at most 6 here: 3 for the shape's point and its retry, and 3 for the direction spread)
-  countStarts(
-    {
-      ...emitterConfig,
-      rate: Infinity,
-      life: '0',
-      duration: 0.01,
-      shape: ['sphere', 1, 1],
-      direction: 1,
-      bursts: Array.from({ length: 64 }, () => ({ time: 0, count: 8 })),
-    },
-    [0.1, 0.1, 0.1],
-    8 * 12
+    { config: { ...emitterConfig, max: 2000, rate: 100000, life: '0.5' } }
   ))
 
-test('particle worker: the step budget starts again with every step', () =>
-  // two a second into a pool of four, each living a second and a half: every step starts two (six in all by the
-  // third step, more than the pool), reusing the ones that died
-  runEmitter({ ...emitterConfig, max: 4, rate: 2, life: '1.5' }, [1, 1, 1, 1], [2, 2, 2, 2]))
-
-test('particle worker: only the first 64 points of an over-life curve count', () =>
-  runProbe(
-    bundle,
-    ({ THREE }, { config }) => {
-      let output
-      self.postMessage = msg => {
-        output = msg
-      }
-      self.onmessage({ data: config })
-      const max = config.max
-      self.onmessage({
-        data: {
-          op: 'update',
-          emitterId: 'probe',
-          delta: 0.9,
-          camPosition: [0, 0, 0],
-          matrixWorld: new THREE.Matrix4().toArray(),
-          aPosition: new Float32Array(max * 3),
-          aRotation: new Float32Array(max),
-          aDirection: new Float32Array(max * 3),
-          aSize: new Float32Array(max),
-          aColor: new Float32Array(max * 3),
-          aAlpha: new Float32Array(max),
-          aEmissive: new Float32Array(max),
-          aUV: new Float32Array(max * 4),
-        },
-      })
-      assert.ok(output.n > 0)
-      // 90% through its life: past the 64th point (at 63%), which is the last one read; the 65th and later would
-      // make it a hundred times as large
-      assert.equal(output.aSize[0], 1)
-    },
+test('particle worker: only the first 64 points of an over-life curve count, for sizes and for colours', () =>
+  // eight particles (the pool) 90% through their lives: past the 64th point (at 63%), which is the last one read. The 65th and
+  // later would make each a hundred times as large, and red.
+  stepEmitter(
     {
-      config: {
-        ...emitterConfig,
-        rate: 10,
-        life: '1',
-        size: '1',
-        sizeOverLife: Array.from({ length: 100 }, (_, i) => `${i / 100},${i < 64 ? 1 : 100}`).join('|'),
-      },
+      ...emitterConfig,
+      rate: 10,
+      life: '1',
+      size: '1',
+      sizeOverLife: Array.from({ length: 100 }, (_, i) => `${i / 100},${i < 64 ? 1 : 100}`).join('|'),
+      colorOverLife: Array.from({ length: 100 }, (_, i) => `${i / 100},${i < 64 ? 'white' : 'red'}`).join('|'),
+    },
+    [{ delta: 0.9 }],
+    (results, assert) => {
+      const [{ n, size, color }] = results
+      assert.equal(n, 8)
+      assert.deepEqual(size, Array(8).fill(1))
+      assert.deepEqual(color, Array(24).fill(1), 'white, not red')
     }
   ))
 
@@ -537,11 +715,119 @@ test('particle worker: an over-life curve is read up to 64 points', () =>
     [5, 8]
   ))
 
+// What the worker parses is a text of the node's limits at most (Particles.js). Every split it makes of one is bounded
+// too: a curve into its first 64 points, a point and a start value into the two values they hold. The probe records
+// the longest result of each kind of split while two emitters are made from texts of those limits, all separators.
+test('particle worker: no split of a start value or a curve is longer than what is read of it', () =>
+  runProbe(
+    bundle,
+    (_module, { configs }) => {
+      self.postMessage = () => {}
+      const longest = {}
+      const split = String.prototype.split
+      String.prototype.split = function (separator, limit) {
+        const parts = Reflect.apply(split, this, [separator, limit])
+        longest[separator] = Math.max(longest[separator] ?? 0, parts.length)
+        return parts
+      }
+      try {
+        for (const config of configs) self.onmessage({ data: config })
+      } finally {
+        String.prototype.split = split
+      }
+      assert.deepEqual(longest, { '-': 2, '~': 2, '|': 64, ',': 2 })
+    },
+    {
+      configs: [
+        {
+          ...emitterConfig,
+          id: 'linear',
+          life: '1' + '-1'.repeat(127), // 256 characters each
+          speed: '1' + '~1'.repeat(127),
+          color: 'red' + '-red'.repeat(63),
+          sizeOverLife: '0' + ',1'.repeat(2047), // 4,096 characters each
+          colorOverLife: '0' + ',red'.repeat(1023),
+          alphaOverLife: '0,1' + '|0,1'.repeat(1023),
+        },
+        { ...emitterConfig, id: 'random', color: 'red' + '~red'.repeat(63) },
+      ],
+    }
+  ))
+
 test('particle worker: a spritesheet of a billion rows and columns is bounded to 256 each', () =>
   runEmitter({ ...emitterConfig, rate: 10, spritesheet: [1e9, 1e9, 30, true] }, [0.5, 0.5], [5, 8]))
 
 test('particle worker: spritesheet rows and columns are read by the number rule (a string digit counts, an object does not)', () =>
   runEmitter({ ...emitterConfig, rate: 10, spritesheet: ['2', null, 30, false] }, [0.5], [5]))
+
+// one particle of a long life, started in the first step, on a sheet of one row of four frames (frame k has its u0 at
+// k / 4); a check reads the u0 of each step
+const oneParticle = { ...emitterConfig, life: '100', bursts: [{ time: 0, count: 1 }] }
+const sixSeconds = Array.from({ length: 6 }, () => ({ delta: 1 }))
+
+test('particle worker: a spritesheet frame rate that cannot animate shows the first frame, and every step is answered', () =>
+  Promise.all(
+    // ([1] is an object: not a number by the engine's rule, though it would convert to 1)
+    [NaN, -30, 0, '', 'fast', null, undefined, {}, [1]].map(rate =>
+      stepEmitter({ ...oneParticle, spritesheet: [1, 4, rate, true] }, sixSeconds, (results, assert) =>
+        assert.deepEqual(
+          results.map(step => step.uv[0]),
+          [0, 0, 0, 0, 0, 0]
+        )
+      )
+    )
+  ))
+
+test('particle worker: a spritesheet frame rate is read by the number rule and bounded; the frame is always one of the sheet', () =>
+  Promise.all([
+    // one frame a second: frames 1, 2, 3, 0, 1, 2 (it loops)
+    stepEmitter({ ...oneParticle, spritesheet: [1, 4, 1, true] }, sixSeconds, (results, assert) =>
+      assert.deepEqual(
+        results.map(step => step.uv[0]),
+        [0.25, 0.5, 0.75, 0, 0.25, 0.5]
+      )
+    ),
+    stepEmitter({ ...oneParticle, spritesheet: [1, 4, '1', true] }, sixSeconds, (results, assert) =>
+      assert.deepEqual(
+        results.map(step => step.uv[0]),
+        [0.25, 0.5, 0.75, 0, 0.25, 0.5]
+      )
+    ),
+    // a rate without end, or past the bound, is the bound (1,000 a second): on a sheet of three frames, frames 1000,
+    // 2000, 3000, ... are 1, 2, 0, ...
+    ...[Infinity, 1e300, 5000].map(rate =>
+      stepEmitter({ ...oneParticle, spritesheet: [1, 3, rate, true] }, sixSeconds, (results, assert) =>
+        assert.deepEqual(
+          results.map(step => Math.round(step.uv[0] * 3)),
+          [1, 2, 0, 1, 2, 0]
+        )
+      )
+    ),
+    // a particle that never dies (a life that is not a number) through a step whose time is not one: its frame time is
+    // NaN from then on, and its frame the first
+    stepEmitter(
+      { ...oneParticle, life: 'forever', spritesheet: [1, 4, 1, true] },
+      [{ delta: 1 }, { delta: NaN }, { delta: 1 }],
+      (results, assert) =>
+        assert.deepEqual(
+          results.map(step => step.uv[0]),
+          [0.25, 0, 0]
+        )
+    ),
+  ]))
+
+test('particle worker: a spritesheet loops only when its loop flag is true', () =>
+  Promise.all(
+    [false, 'false', 1, 'true', null].map(loop =>
+      // one frame a second, no loop: it stays on the last frame (3) from the third second on
+      stepEmitter({ ...oneParticle, spritesheet: [1, 4, 1, loop] }, sixSeconds, (results, assert) =>
+        assert.deepEqual(
+          results.map(step => step.uv[0]),
+          [0.25, 0.5, 0.75, 0.75, 0.75, 0.75]
+        )
+      )
+    )
+  ))
 
 test('audio and video: the numbers given to Web Audio stay inside the ranges it accepts', () => {
   // a panner as strict as the browser's: it throws for what Web Audio refuses
@@ -834,6 +1120,84 @@ test('a load that fails in an async mount or build is reported, not left as an u
   }
 })
 
+// runs `fn` with console.warn and unhandled rejections recorded; returns both once the rejections have settled
+async function watchFailures(fn) {
+  const unhandled = []
+  const onUnhandled = reason => unhandled.push(reason)
+  process.on('unhandledRejection', onUnhandled)
+  const warnings = []
+  const realWarn = console.warn
+  console.warn = (...line) => warnings.push(line.join(' '))
+  try {
+    fn()
+    await new Promise(resolve => setTimeout(resolve, 20))
+  } finally {
+    console.warn = realWarn
+    process.off('unhandledRejection', onUnhandled)
+  }
+  return { unhandled, warnings }
+}
+
+test('a real node whose async mount rejects is reported when it is activated and when it is remounted', async () => {
+  const world = {
+    network: { isServer: false },
+    resolveURL: url => url,
+    loader: { get: () => null, load: () => Promise.reject(new Error('asset refused')) },
+  }
+  let avatar
+  const { unhandled, warnings } = await watchFailures(() => {
+    avatar = m.createNode('avatar', { src: 'asset://missing.vrm' })
+    avatar.activate({ world, entity: null }) // Node.activate: mount() is async and its load rejects
+    assert.equal(avatar.mounted, true)
+    assert.equal(avatar.remount(), true) // Node.remount: the same, again
+  })
+  assert.deepEqual(unhandled, [])
+  assert.deepEqual(
+    warnings.filter(line => line.startsWith('[avatar]')),
+    ['[avatar] not loaded: asset refused', '[avatar] not loaded: asset refused'],
+    'one report from the activate, one from the remount'
+  )
+  assert.equal(avatar.mounted, true, 'the node stays mounted, without its file')
+})
+
+test('a failed load whose reason throws when it is read is still reported, and nothing is left unhandled', async () => {
+  // what an avatar's onLoad (a script's function) can throw: an object whose message is a getter that throws, and a
+  // Proxy that throws on every trap
+  const getterError = {
+    get name() {
+      throw new Error('name getter')
+    },
+    get message() {
+      throw new Error('message getter')
+    },
+  }
+  const trap = () => {
+    throw new Error('trap')
+  }
+  const proxyError = new Proxy({}, { get: trap, getOwnPropertyDescriptor: trap, getPrototypeOf: trap, has: trap })
+  const { unhandled, warnings } = await watchFailures(() => {
+    m.watchLoad({ name: 'probe' }, Promise.reject(getterError))
+    m.watchLoad({ name: 'probe' }, Promise.reject(proxyError))
+    m.watchLoad({ name: 'probe' }, Promise.reject('a plain text'))
+    // and a real avatar, whose script's onLoad throws such an object from inside its async mount
+    const instance = { setEmote() {}, setVisible() {}, move() {}, destroy() {} }
+    const avatar = m.createNode('avatar', {
+      factory: { create: () => instance },
+      onLoad: () => {
+        throw getterError
+      },
+    })
+    avatar.activate({ world: { setHot() {}, avatars: { add() {}, remove() {} } }, entity: null })
+  })
+  assert.deepEqual(unhandled, [])
+  assert.deepEqual(warnings, [
+    '[probe] not loaded: error',
+    '[probe] not loaded: error',
+    '[probe] not loaded: a plain text',
+    '[avatar] not loaded: error',
+  ])
+})
+
 test('audio: a start offset is finite; a panner is not given a position that is not finite', () => {
   const audio = m.createNode('audio')
   audio.ctx = { world: { audio: null } }
@@ -847,10 +1211,12 @@ test('audio: a start offset is finite; a panner is not given a position that is 
     assert.equal(audio.offset, kept, `currentTime = ${given}`)
   }
 
-  // a panner as strict as the browser's, on a node whose transform holds a NaN
+  // a panner as strict as the browser's, on a node whose transform holds a NaN or a number too large for a float: an
+  // AudioParam's ramp takes a float (WebIDL), which must be finite once it is rounded to 32 bits
   const ramps = []
   const param = {
-    linearRampToValueAtTime: value => (Number.isFinite(value) ? ramps.push(value) : assert.fail('NaN ramp')),
+    linearRampToValueAtTime: value =>
+      Number.isFinite(Math.fround(value)) ? ramps.push(value) : assert.fail(`ramp to ${value}`),
   }
   const strict = () => ({
     positionX: param,
@@ -873,6 +1239,81 @@ test('audio: a start offset is finite; a panner is not given a position that is 
     node.matrixWorld.elements[12] = NaN
     node.updatePannerPosition()
     assert.equal(ramps.length, 6, `${type}: a NaN position is not`)
+    node.matrixWorld.elements[12] = 1e100 // finite as a double, not as a float
+    node.updatePannerPosition()
+    assert.equal(ramps.length, 6, `${type}: a position past what a float holds is not`)
+    node.matrixWorld.elements[12] = 3e38 // the largest floats are still positions
+    node.updatePannerPosition()
+    assert.equal(ramps.length, 12, `${type}: a position a float holds is written`)
+  }
+})
+
+test('audio: a playback rate is a finite float; a NaN is 1, the rest is bounded; only a playing source is ramped', () => {
+  const ramps = []
+  // the source's playbackRate as strict as the browser's: its ramp takes a float, finite once rounded to 32 bits
+  const playbackRate = {
+    linearRampToValueAtTime(value, endTime) {
+      if (typeof value !== 'number' || !Number.isFinite(Math.fround(value))) throw new TypeError(`ramp to ${value}`)
+      ramps.push([value, endTime])
+    },
+  }
+  const node = m.createNode('audio')
+  node.ctx = { world: { audio: { ctx: { currentTime: 10 }, lastDelta: 0.5 } } }
+  node.source = { playbackRate }
+  const proxy = node.getProxy()
+  for (const [given, kept] of [
+    [2, 2],
+    [0.5, 0.5],
+    [0, 0],
+    [-1, -1],
+    ['1.5', 1.5], // a primitive is converted, as the ramp itself did
+    [NaN, 1],
+    [undefined, 1],
+    [{ valueOf: () => 3 }, 1], // an object is not (its valueOf is the script's code)
+    [Infinity, 1000],
+    [-Infinity, -1000],
+    [1e100, 1000],
+    [-1e100, -1000],
+  ]) {
+    ramps.length = 0
+    proxy.setPlaybackRate(given) // a playing node: the value goes straight to the ramp
+    assert.deepEqual(ramps, [[kept, 10.5]], `setPlaybackRate(${String(given)})`)
+  }
+  // a node that is not playing has nothing to ramp, on the client and on the server (which has no audio)
+  for (const ctx of [{ world: { audio: { ctx: { currentTime: 0 }, lastDelta: 0 } } }, { world: { audio: null } }]) {
+    const idle = m.createNode('audio')
+    idle.ctx = ctx
+    idle.getProxy().setPlaybackRate(2)
+  }
+})
+
+test("video: a time is finite and not negative before it reaches the element's currentTime", () => {
+  const times = []
+  const node = m.createNode('video')
+  // the element's currentTime as strict as the browser's: a double that must be finite
+  node.instance = {
+    get currentTime() {
+      return times.at(-1) ?? 0
+    },
+    set currentTime(value) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) throw new TypeError(`currentTime = ${value}`)
+      times.push(value)
+    },
+  }
+  const proxy = node.getProxy()
+  for (const [given, kept] of [
+    [12.5, 12.5],
+    [0, 0],
+    ['3', 3],
+    [NaN, 0],
+    [-1, 0],
+    [Infinity, 1e9],
+    [{}, 0],
+  ]) {
+    proxy.time = given
+    assert.equal(times.at(-1), kept, `time = ${String(given)}`)
+    proxy.currentTime = given // (the older name)
+    assert.equal(times.at(-1), kept, `currentTime = ${String(given)}`)
   }
 })
 

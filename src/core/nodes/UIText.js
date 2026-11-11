@@ -193,8 +193,11 @@ export class UIText extends Node {
   }
 
   measureTextFunc() {
-    const ctx = getOffscreenContext()
     return (width, widthMode, height, heightMode) => {
+      // asked for at each measure, not once at mount: a browser out of canvas memory gives no context (UI.js), and a
+      // text measured without one takes no room until there is one
+      const ctx = getOffscreenContext()
+      if (!ctx) return { width: 0, height: 0 }
       ctx.font = `${this._fontWeight} ${this._fontSize * this.ui._res}px ${this._fontFamily}`
       ctx.textBaseline = 'alphabetic'
       let lines

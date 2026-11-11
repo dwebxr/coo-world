@@ -3,8 +3,9 @@ import { every } from 'lodash-es'
 import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
 
 import { Node, watchLoad } from './Node'
-import { AUDIO_MAX_OFFSET, boundedAudio, isFiniteVector } from '../extras/audioBounds.js'
+import { AUDIO_MAX_OFFSET, AUDIO_MAX_PLAYBACK_RATE, boundedAudio, isFiniteVector } from '../extras/audioBounds.js'
 import { boundedNumber } from '../extras/boundedValue.js'
+import { toEngineNumber } from '../extras/engineNumber.js'
 
 const v1 = new THREE.Vector3()
 const v2 = new THREE.Vector3()
@@ -416,10 +417,15 @@ export class Audio extends Node {
     }
   }
 
+  // the rate is read by the engine's number rule and bounded: the ramp takes a float and throws for one that is not
+  // finite (NaN, Infinity, 1e100), in the middle of the script's call (audioBounds.js). Only a playing source has a
+  // rate to ramp (and the server has no audio).
   setPlaybackRate(rate) {
+    if (!this.source) return
     const audio = this.ctx.world.audio
+    const value = boundedNumber(toEngineNumber(rate), 1, -AUDIO_MAX_PLAYBACK_RATE, AUDIO_MAX_PLAYBACK_RATE)
     const endTime = audio.ctx.currentTime + audio.lastDelta
-    this.source?.playbackRate.linearRampToValueAtTime(rate, endTime)
+    this.source.playbackRate.linearRampToValueAtTime(value, endTime)
   }
 
   getProxy() {

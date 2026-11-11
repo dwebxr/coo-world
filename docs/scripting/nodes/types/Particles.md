@@ -96,6 +96,8 @@ How long a particle will live before it is released. This property is a string b
 **Linear**: Particles have a from and to range that is based on the progress of the cycle defined by `duration` eg `1-5` means the first particles will have a life of 1s and towards the end of the cycle particles will have a life of 5s
 **Random**: Particles have a min and max range and a value is randomly chosen for each particle, eg `1~5`
 
+This and the other start values below (`speed`, `size`, `rotate`, `color`, `alpha`, `emissive`) are kept to their first 256 characters.
+
 Defaults to `5`.
 
 
@@ -167,7 +169,7 @@ particles.spritesheet = [
 ]
 ```
 
-Rows and columns are whole numbers between `1` and `256`.
+Rows and columns are whole numbers between `1` and `256`, and the frame rate is between `0` and `1000`: a rate that is not a number, or is `0` or less, shows the first frame. The sheet loops only when its loop flag is `true`.
 
 ### `.blending`: String
 
@@ -223,6 +225,8 @@ particles.sizeOverLife = '0,1|0.5,2|1,1'
 ```
 
 A smooth transition is automatically created between all points.
+
+A curve is kept to its first 4,096 characters, and its first 64 points are read. This and the other over-life curves below work the same way.
 
 
 ### `.rotateOverLife`: String

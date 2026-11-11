@@ -268,12 +268,14 @@ export class UI extends Node {
 
   draw() {
     if (!isBrowser) return
-    this.yogaNode.calculateLayout(this._width * this._res, this._height * this._res, Yoga.DIRECTION_LTR)
+    // checked before the layout, which measures a text child on a canvas of its own: a UI without a context draws
+    // nothing, so it lays nothing out either
     const ctx = this.canvasCtx
     if (!ctx) {
       this.needsRedraw = false
       return
     }
+    this.yogaNode.calculateLayout(this._width * this._res, this._height * this._res, Yoga.DIRECTION_LTR)
     ctx.setTransform(this.canvasScale, 0, 0, this.canvasScale, 0, 0)
     ctx.clearRect(0, 0, this._width * this._res, this._height * this._res)
     const left = this.yogaNode.getComputedLeft()

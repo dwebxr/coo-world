@@ -4,8 +4,9 @@ import * as THREE from '../extras/three'
 
 import { getRef, Node, resolveValueRef, secureRef } from './Node'
 import { uuid } from '../utils'
-import { boundedAudio, isFiniteVector } from '../extras/audioBounds.js'
+import { AUDIO_MAX_OFFSET, boundedAudio, isFiniteVector } from '../extras/audioBounds.js'
 import { boundedNumber, SCREEN_MAX_SIDE } from '../extras/boundedValue.js'
+import { toEngineNumber } from '../extras/engineNumber.js'
 import { materialForScript } from '../extras/scriptMaterial'
 import { hardenForScripts } from '../extras/scriptHardening'
 
@@ -880,9 +881,11 @@ export class Video extends Node {
     return this.instance ? this.instance.currentTime : 0
   }
 
+  // a video element's currentTime throws for a time that is not finite: the time is read by the engine's number rule
+  // and kept finite and not negative, as an audio node's (a NaN is the start)
   set time(value) {
     if (this.instance) {
-      this.instance.currentTime = value
+      this.instance.currentTime = boundedNumber(toEngineNumber(value), 0, 0, AUDIO_MAX_OFFSET)
     }
   }
 

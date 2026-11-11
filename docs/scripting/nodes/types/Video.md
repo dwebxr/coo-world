@@ -129,7 +129,7 @@ Whether the video is currently playing. Read-only.
 
 ### `.currentTime`: Number
 
-The current time of the video. Can be used to read and update the current time of the video.
+The current time of the video. Can be used to read and update the current time of the video. A time set is kept finite and not negative (`NaN` is `0`).
 
 ### `.{...Node}`
 

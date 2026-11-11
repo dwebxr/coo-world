@@ -22,6 +22,12 @@ export function boundedAudio(name, value, fallback) {
 // where in its buffer a source may be asked to start, in seconds
 export const AUDIO_MAX_OFFSET = 1e9
 
+// A playback rate: Web Audio takes any float, and a value it is ramped to must be finite as a float. A NaN gives 1
+// (the rate a source starts with); the bound is far past any rate a sound is still a sound at.
+export const AUDIO_MAX_PLAYBACK_RATE = 1000
+
+// Whether a position can be given to a panner: its ramps and setPosition take floats (32 bits), and a component that
+// is finite as a double but not as a float (1e100) throws there as a NaN does.
 export function isFiniteVector(v) {
-  return Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z)
+  return Number.isFinite(Math.fround(v.x)) && Number.isFinite(Math.fround(v.y)) && Number.isFinite(Math.fround(v.z))
 }

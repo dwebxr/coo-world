@@ -1278,8 +1278,12 @@ export class PlayerLocal extends Entity {
       changed = true
     }
     if (Object.prototype.hasOwnProperty.call(data, 'sessionAvatar')) {
+      // The server tells this client every session avatar it takes for this player, the ones this client set
+      // included (ServerNetwork onEntityModified), so the value it already has is common: no change. The avatar
+      // shown, a load of it in progress and the built-in fallback after a failure stay as they are (asked again, a
+      // new load generation would start and a failing avatar would get another try).
+      if ((data.sessionAvatar || null) !== (this.data.sessionAvatar || null)) avatarChanged = true
       this.data.sessionAvatar = data.sessionAvatar
-      avatarChanged = true
     }
     if (Object.prototype.hasOwnProperty.call(data, 'ef')) {
       if (this.data.effect) {

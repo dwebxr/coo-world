@@ -2,7 +2,7 @@
 // Each sanitizer returns a new object holding only the permitted, well-formed fields
 // (plus `id`), or null when nothing usable remains.
 
-import { scriptSource } from './assetURL.js'
+import { loaderReference, scriptSource } from './assetURL.js'
 
 export const NAME_MAX_LENGTH = 64
 export const TRANSFORM_LIMIT = 1e6
@@ -202,17 +202,26 @@ function isHttpUrl(value) {
   }
 }
 
-// Whether an avatar or emote url (one that passed isAvatarUrl or isEmoteUrl) names a file outside this world: an
-// http(s) url, unless it is the plain address of a file in the world's own store (the file `asset://<name>` names;
-// `assetsUrl` is the world's assets url).
+// Whether an avatar or emote reference names a file outside this world, as the loaders will read it: anything that
+// is not a file of the world's own store. Every loader first takes the white space off (assetURL.js
+// loaderReference) and then maps what is left (resolveReference). A file of the store is then an asset reference
+// (`asset://<name>.vrm`, or `.glb` with the playback query an emote may carry and the store's route ignores), which
+// the loaders put under the assets url, or the plain address of a store file under the world's assets url
+// `assetsUrl` (scriptSource, which reads an http(s) url through resolveReference). Any other spelling loads from
+// wherever it resolves to, so it is outside: `//host/a.vrm` and `host/a.vrm` load from https://host, an https url
+// with white space around it loads from its host, a page path from wherever the page is served. Nothing to load
+// (null, undefined, '') is not outside, and neither is a value that is not a string (resolveReference throws on it,
+// so nothing is fetched).
 //
-// Every other client downloads and parses the file such a url names. An asset is a file a builder put in the store
-// (or, with Custom Avatars on, a VRM a visitor uploaded: size-capped, and served from here). An external url is any
+// Every other client downloads and parses the file such a reference names. An asset is a file a builder put in the
+// store (or, with Custom Avatars on, a VRM a visitor uploaded: size-capped, and served from here). Outside is any
 // host on the internet: whoever may set one learns every viewer's address and gets their parser and their bandwidth.
 // So a player may set one only as a builder, or when a server script chose that very url for them.
 export function isExternalUrl(value, assetsUrl) {
-  if (typeof value !== 'string' || !/^https?:\/\//i.test(value)) return false
-  return scriptSource(value, assetsUrl).source !== 'store'
+  if (typeof value !== 'string' || !value) return false
+  const ref = loaderReference(value)
+  if (AVATAR_ASSET_URL.test(ref) || EMOTE_ASSET_URL.test(ref)) return false
+  return scriptSource(ref, assetsUrl).source !== 'store'
 }
 
 // how many emote urls a server script chose for one player are remembered (the latest ones)
@@ -241,6 +250,9 @@ export function sanitizePlayerSelfModify(
   socketId,
   { allowAvatar = false, allowExternal = false, assetsUrl, scriptAvatar, scriptEmotes } = {}
 ) {
+  // (a value gets here only past isAvatarUrl or isEmoteUrl, which take the asset form and an url with the literal
+  // http(s):// prefix and nothing else: the loaders map the one into the store and take the other as it is, so the
+  // value classified is the value other clients load, whitespace and other spellings never reach this)
   const external = value => !allowExternal && isExternalUrl(value, assetsUrl)
   if (!isPlainObject(data)) return null
   const safe = { id: socketId }

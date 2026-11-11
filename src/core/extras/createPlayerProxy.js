@@ -260,13 +260,15 @@ export function createPlayerProxy(entity, player) {
         if (!isAvatarUrl(avatar)) return console.error('[player] setSessionAvatar url is not an avatar url')
         if (player.destroyed) return
         const sessionAvatar = avatar || null
-        // told first: a change the network does not take (this tick's budget for script writes is used up) is not
-        // made here either, so the server and the clients keep agreeing
-        const sent = world.network.send('entityModified', { id: player.data.id, sessionAvatar })
-        if (sent === false) return false
+        // Told first (ServerNetwork broadcast). A packet the network does not admit (this tick's budget for script
+        // writes is used up) reached nobody, so the change is not made here either. One admitted is a change made,
+        // even when a recipient did not get it (a socket at its backlog limit): the clients that did have the new
+        // avatar, and the server's player and every later snapshot must have it too.
+        const result = world.network.broadcast('entityModified', { id: player.data.id, sessionAvatar })
+        if (result === 'refused') return false
         player.scriptAvatar = sessionAvatar
         player.modify({ sessionAvatar })
-        return sent
+        return result === 'delivered'
       }
     },
     // an amount is a number, kept by the engine's number rule (engineNumber.js: a numeric string is converted, an

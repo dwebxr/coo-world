@@ -70,10 +70,10 @@ export const app = (id, blueprint = 'bp', extra = {}) => ({
 let counter = 0
 export const nextId = () => `id${String(++counter).padStart(8, '0')}`
 
-// `env`: the process environment the network's methods see
-export function fixture({ env = {} } = {}) {
+// `env`: the process environment the network's methods see; `context`: other names they see (solanaGating, …)
+export function fixture({ env = {}, context = {} } = {}) {
   const logs = []
-  const network = makeNetwork(line => logs.push(line), { context: { process: { env } } })
+  const network = makeNetwork(line => logs.push(line), { context: { process: { env }, ...context } })
   const world = network.world
   world.network = network
   world.entities = new Entities(world)
@@ -132,7 +132,7 @@ export function fixture({ env = {} } = {}) {
     readJWT: async token => (token ? { userId: token } : null),
     createJWT: async ({ userId }) => userId,
     uuid: nextId,
-    process: { env: {} },
+    process: { env },
   })
   // a builder connection that sends packets (its player is not in the world)
   const builder = new Socket({

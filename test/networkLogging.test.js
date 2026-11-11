@@ -5,6 +5,7 @@ import vm from 'node:vm'
 import { inspect } from 'node:util'
 import moment from 'moment'
 import {
+  isExternalUrl,
   sanitizeAppModify,
   sanitizeAppRelease,
   sanitizeEntityAdd,
@@ -35,6 +36,8 @@ const methods = [
   'admin',
   'onCommand',
   'onModifyRank',
+  'defaultAvatar',
+  'dropBuilderUrls',
   'onSpawnModified',
   'onRequestBuilderByToken',
   'onRequestBuilderNonce',
@@ -69,6 +72,7 @@ function fixture() {
   }
   const Network = vm.runInNewContext(`(class { ${methods} })`, {
     isObject: value => value !== null && typeof value === 'object',
+    isExternalUrl,
     sanitizeAppModify,
     sanitizeAppRelease,
     sanitizeEntityAdd,

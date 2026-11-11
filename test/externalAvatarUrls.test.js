@@ -7,11 +7,14 @@ import assert from 'node:assert/strict'
 
 import {
   SCRIPT_EMOTE_LIMIT,
+  isEmoteUrl,
   isExternalUrl,
   rememberScriptEmote,
   sanitizePlayerSelfModify,
 } from '../src/core/extras/entityModifyPolicy.js'
-import { Ranks } from '../src/core/extras/ranks.js'
+import { hasRank, Ranks } from '../src/core/extras/ranks.js'
+import { SCRIPT_BACKLOG_CAP, SCRIPT_TICK_CAP } from '../src/core/extras/writeLedger.js'
+import * as gating from '../src/server/solana-gating.js'
 import { fixture, nextId, sentTo } from './lib/joinFixture.mjs'
 import { loadClient } from './lib/clientHarness.mjs'
 
@@ -19,13 +22,25 @@ const ASSETS = 'https://world.example/assets'
 const me = 'socket-me'
 const EVIL_VRM = 'https://evil.example/a.vrm'
 const EVIL_GLB = 'https://evil.example/dance.glb'
+// what a stored value may hold from before these rules (or from a hand edit): each loads from evil.example as every
+// loader reads it (assetURL.js loaderReference, then resolveReference), though only the last is a url as written
+const EVIL_SPELLINGS = [
+  '//evil.example/a.vrm',
+  'evil.example/a.vrm',
+  ` ${EVIL_VRM}`,
+  `\t${EVIL_VRM}\n`,
+  'HTTPS://evil.example/a.vrm',
+]
 
-test('isExternalUrl: an asset or a plain address of a store file is not; any other http(s) url is', () => {
+test('isExternalUrl: an asset or a plain address of a store file is not; anything else that loads is', () => {
   for (const own of [
     'asset://avatar.vrm',
     'asset://emote-float.glb?s=1.5',
     `${ASSETS}/avatar.vrm`,
     `${ASSETS}/0123abcd.glb`,
+    // the loaders take the white space off first
+    ` ${ASSETS}/avatar.vrm\n`,
+    ' asset://avatar.vrm ',
     null,
     undefined,
     '',
@@ -33,6 +48,14 @@ test('isExternalUrl: an asset or a plain address of a store file is not; any oth
   ]) {
     assert.equal(isExternalUrl(own, ASSETS), false, String(own))
   }
+  // read as the loaders read them: another host, or wherever the page is served from
+  for (const other of [...EVIL_SPELLINGS, '/assets/avatar.vrm', 'blob:https://world.example/1234', 'avatar.vrm']) {
+    assert.equal(isExternalUrl(other, ASSETS), true, other)
+  }
+  // an asset is the store's whatever the assets url is
+  assert.equal(isExternalUrl('asset://avatar.vrm', undefined), false)
+  assert.equal(isExternalUrl(' asset://avatar.vrm\n', undefined), false)
+  assert.equal(isExternalUrl('asset://emote-float.glb?s=1.5', undefined), false)
   for (const other of [
     EVIL_VRM,
     'http://world.example/assets/avatar.vrm', // another scheme is another origin
@@ -129,18 +152,34 @@ test('rememberScriptEmote keeps the latest emote urls a script chose, and only e
   assert.equal(player.scriptEmotes.size, SCRIPT_EMOTE_LIMIT)
 })
 
-// The real ServerNetwork handlers, with players that joined through the real onConnection
-async function world({ customAvatars = false } = {}) {
-  const f = fixture({ env: { ASSETS_BASE_URL: ASSETS, ADMIN_CODE: 'code' } })
+// a token-gated world (solana-gating.js): a verified wallet can be a builder for the session
+const tokenGating = { ...gating, TOKEN_GATING_ENABLED: true }
+
+// The real ServerNetwork handlers, with players that joined through the real onConnection. The fixture's player
+// stands in for the server's PlayerRemote: as there, the emote it plays is kept as `data.emote`, and it is a builder
+// by its own rank or by the world's, whichever is higher (playerRanks.js isBuilder).
+async function world({ customAvatars = false, rank = null } = {}) {
+  const f = fixture({ env: { ASSETS_BASE_URL: ASSETS, ADMIN_CODE: 'code' }, context: { solanaGating: tokenGating } })
   f.world.settings.setHasAdminCode(true)
   f.world.settings.customAvatars = customAvatars
+  f.world.settings.rank = rank
   const connect = async ({ rank = Ranks.VISITOR, avatar, stored } = {}) => {
     const id = nextId()
     f.users.set(id, { id, name: id, rank, avatar: stored ?? null })
     const joined = await f.join({ authToken: id, ...(avatar === undefined ? {} : { avatar }) })
     const socket = f.network.sockets.get(id)
     socket.ws.packets.length = 0
-    return { id, socket, snapshot: joined.snapshot, player: f.world.entities.get(id) }
+    const player = f.world.entities.get(id)
+    player.isBuilder = () => hasRank(Math.max(player.data.rank, f.world.settings.effectiveRank), Ranks.BUILDER)
+    player.modify = function (change) {
+      const { e, ...rest } = change
+      Object.assign(this.data, rest)
+      if ('e' in change) this.data.emote = isEmoteUrl(e) ? e : null
+    }
+    player.setEffect = function (effect) {
+      this.data.effect = effect
+    }
+    return { id, socket, snapshot: joined.snapshot, player }
   }
   // packets a socket received since the last call
   const received = who => {
@@ -194,11 +233,57 @@ test('an asset is relayed for anyone, and a url outside the world for a builder'
     { id: visitor.id, e: 'asset://emote-float.glb', sessionAvatar: 'asset://avatar.vrm' },
     { id: builder.id, e: EVIL_GLB, sessionAvatar: EVIL_VRM },
   ])
-  assert.equal(
-    w.received(visitor).some(([, data]) => data?.id === visitor.id),
-    false,
-    'no correction for a value taken'
-  )
+  // each sender is told the session avatar the server took, and nothing else of its own change
+  for (const [who, value] of [
+    [visitor, 'asset://avatar.vrm'],
+    [builder, EVIL_VRM],
+  ]) {
+    const own = w.received(who).filter(([name, data]) => name === 'onEntityModified' && data.id === who.id)
+    assert.deepEqual(own, [['onEntityModified', { id: who.id, sessionAvatar: value }]])
+  }
+})
+
+// A server script's handle on a player of a handler-level world (createPlayerProxy on the real network)
+function scriptProxy(player) {
+  const createPlayerProxy = loadClient('core/extras/createPlayerProxy.js', 'createPlayerProxy')
+  return createPlayerProxy({ data: { id: 'app' }, deadHook: { dead: false } }, player)
+}
+
+// What a client ends on for `subject`'s session avatar: `start` (for the subject's own client, the value it set
+// itself last, since it shows each value as it sends it), then each value the server told it, in the order told
+function endsOn(w, client, subject, start) {
+  let value = start
+  for (const [name, data] of w.received(client)) {
+    if (name === 'onEntityModified' && data.id === subject.id && 'sessionAvatar' in data) value = data.sessionAvatar
+  }
+  return value
+}
+
+test('crossing packets: the sender ends on the session avatar the server ends on, as everyone else does', async () => {
+  // (a) a visitor's client sets an avatar outside the world (refused), then an asset, before the answer to the
+  // first comes back
+  {
+    const w = await world()
+    const visitor = await w.connect()
+    const watcher = await w.connect()
+    w.modify(visitor, { sessionAvatar: EVIL_VRM })
+    w.modify(visitor, { sessionAvatar: 'asset://avatar.vrm' })
+    assert.equal(visitor.player.data.sessionAvatar, 'asset://avatar.vrm', 'the server')
+    assert.equal(endsOn(w, visitor, visitor, 'asset://avatar.vrm'), 'asset://avatar.vrm', 'the visitor')
+    assert.equal(endsOn(w, watcher, visitor, null), 'asset://avatar.vrm', 'everyone else')
+  }
+  // (b) the owner's own change is on its way when a server script chooses another avatar for the player: the
+  // script's choice reaches everyone, the owner included, then the server takes the owner's change
+  {
+    const w = await world()
+    const owner = await w.connect()
+    const watcher = await w.connect()
+    scriptProxy(owner.player).setSessionAvatar(EVIL_VRM)
+    w.modify(owner, { sessionAvatar: 'asset://mine.vrm' })
+    assert.equal(owner.player.data.sessionAvatar, 'asset://mine.vrm', 'the server')
+    assert.equal(endsOn(w, owner, owner, 'asset://mine.vrm'), 'asset://mine.vrm', 'the owner')
+    assert.equal(endsOn(w, watcher, owner, null), 'asset://mine.vrm', 'everyone else')
+  }
 })
 
 test("a visitor's own effect does not make its emote one a script chose", async () => {
@@ -258,6 +343,98 @@ test('joining: an avatar outside the world, asked for or stored, is for builders
   assert.equal(w.f.logs.filter(line => /asked for an avatar outside this world/.test(line)).length, 1)
 })
 
+test('joining: a stored avatar is read as the loaders read it, whatever its spelling', async () => {
+  const w = await world({ customAvatars: true })
+  const watcher = await w.connect()
+  for (const stored of EVIL_SPELLINGS) {
+    const visitor = await w.connect({ stored })
+    assert.equal(visitor.player.data.avatar, 'asset://avatar.vrm', JSON.stringify(stored))
+    assert.equal(JSON.stringify(visitor.snapshot).includes('evil.example'), false, 'not in the snapshot')
+    assert.equal(JSON.stringify(w.received(watcher)).includes('evil.example'), false, 'not in entityAdded')
+    assert.equal(w.f.users.get(visitor.id).avatar, stored, 'the stored value is left alone')
+  }
+  // a file of the store, spelled with white space the loaders take off, is the visitor's own
+  const own = await w.connect({ stored: ` ${ASSETS}/mine.vrm` })
+  assert.equal(own.player.data.avatar, ` ${ASSETS}/mine.vrm`)
+})
+
+// the ways a player stops being a builder; `make` makes the joined player one, `lower` ends it
+const demotions = {
+  'an admin lowers the rank': {
+    rank: Ranks.BUILDER,
+    lower: (w, who) => w.f.network.onModifyRank(w.f.builder, { playerId: who.id, rank: Ranks.VISITOR }),
+  },
+  '/admin again': {
+    rank: Ranks.ADMIN,
+    lower: (w, who) => w.f.network.onCommand(who.socket, { args: ['admin', 'code'] }),
+  },
+  'the token grant ends': {
+    make: who => {
+      who.player.data.rank = Ranks.BUILDER
+      who.player.data.tokenGrantedRank = true
+    },
+    lower: (w, who) => w.f.network.onRevokeBuilderByToken(who.socket, {}),
+  },
+  "the world's rank setting is lowered": {
+    worldRank: Ranks.BUILDER,
+    lower: w => w.f.send('settingsModified', { key: 'rank', value: Ranks.VISITOR }),
+  },
+}
+
+for (const [way, { rank = Ranks.VISITOR, worldRank = null, make, lower }] of Object.entries(demotions)) {
+  test(`a builder who stops being one (${way}) keeps nothing outside the world that a script did not choose`, async () => {
+    const w = await world({ rank: worldRank })
+    const watcher = await w.connect()
+    const who = await w.connect({ rank, stored: EVIL_VRM })
+    make?.(who)
+    assert.equal(who.player.isBuilder(), true)
+    // (a token's grant comes after the join, so the stored avatar is set again here, as a builder may)
+    w.modify(who, { sessionAvatar: EVIL_VRM, e: EVIL_GLB, avatar: EVIL_VRM })
+    assert.equal(who.player.data.sessionAvatar, EVIL_VRM)
+    assert.equal(who.player.data.emote, EVIL_GLB)
+    assert.equal(who.player.data.avatar, EVIL_VRM)
+    w.received(watcher)
+    w.received(who)
+    await lower(w, who)
+    assert.equal(who.player.isBuilder(), false)
+    // the server's player, and what everyone (the player too) is told, as one change
+    assert.equal(who.player.data.sessionAvatar, null)
+    assert.equal(who.player.data.emote, null)
+    assert.equal(who.player.data.avatar, 'asset://avatar.vrm', "the world's default")
+    const told = { id: who.id, sessionAvatar: null, e: null, avatar: 'asset://avatar.vrm' }
+    for (const client of [watcher, who]) {
+      const changes = w
+        .received(client)
+        .filter(([name, data]) => name === 'onEntityModified' && data.id === who.id && !('rank' in data))
+      assert.deepEqual(changes, [['onEntityModified', told]])
+    }
+    assert.equal(w.f.users.get(who.id).avatar, EVIL_VRM, 'the stored value is left alone')
+    const late = await w.connect()
+    assert.equal(JSON.stringify(late.snapshot).includes('evil.example'), false, "a later joiner's snapshot")
+  })
+}
+
+test('a builder who stops being one keeps what a server script chose; a builder who stays one keeps everything', async () => {
+  const w = await world()
+  const watcher = await w.connect()
+  const who = await w.connect({ rank: Ranks.BUILDER })
+  const stays = await w.connect({ rank: Ranks.ADMIN })
+  const script = scriptProxy(who.player)
+  script.setSessionAvatar(EVIL_VRM)
+  script.applyEffect({ emote: EVIL_GLB, duration: 5 })
+  w.modify(who, { e: EVIL_GLB })
+  w.modify(stays, { sessionAvatar: EVIL_VRM, e: EVIL_GLB })
+  w.received(watcher)
+  await w.f.network.onModifyRank(w.f.builder, { playerId: who.id, rank: Ranks.VISITOR })
+  await w.f.network.onModifyRank(w.f.builder, { playerId: stays.id, rank: Ranks.BUILDER })
+  assert.equal(who.player.data.sessionAvatar, EVIL_VRM)
+  assert.equal(who.player.data.emote, EVIL_GLB)
+  assert.equal(stays.player.data.sessionAvatar, EVIL_VRM)
+  assert.equal(stays.player.data.emote, EVIL_GLB)
+  const changes = w.received(watcher).filter(([name, data]) => name === 'onEntityModified' && !('rank' in data))
+  assert.deepEqual(changes, [], 'nothing to tell')
+})
+
 test('in a world open to all every player is a builder, so nothing changes there', async () => {
   const f = fixture({ env: { ASSETS_BASE_URL: ASSETS } })
   f.world.settings.setHasAdminCode(false)
@@ -280,6 +457,7 @@ function serverProxy() {
       id: 'server',
       // (the real one also counts what the call wrote against the script's budget)
       asScript: fn => fn(),
+      broadcast: (name, data) => (sent.push([name, data]), 'delivered'),
       send: (name, data) => (sent.push([name, data]), true),
       sendTo: (id, name, data) => (sent.push([name, data, id]), true),
     },
@@ -326,10 +504,59 @@ test('a server script: a value that is not an avatar url, or a player who has le
 
 test('a server script: a change the network does not take is not made on the server either', () => {
   const { proxy, player, world } = serverProxy()
-  world.network.send = () => false
+  world.network.broadcast = () => 'refused'
   assert.equal(proxy.setSessionAvatar(EVIL_VRM), false)
   assert.equal(player.data.sessionAvatar, null)
   assert.equal(player.scriptAvatar, undefined)
+})
+
+test('a server script: a change some clients did not get is still made; one nobody got is not', async () => {
+  const w = await world()
+  const visitor = await w.connect()
+  const healthy = await w.connect()
+  const full = await w.connect()
+  const told = client =>
+    w.received(client).filter(([name, data]) => name === 'onEntityModified' && data.id === visitor.id)
+  // a client at its backlog limit for script writes: the others get the change, it does not
+  w.f.network.writer.state(full.socket.ws).queued = SCRIPT_BACKLOG_CAP
+  assert.equal(scriptProxy(visitor.player).setSessionAvatar(EVIL_VRM), false, 'the script is told not all got it')
+  assert.equal(visitor.player.data.sessionAvatar, EVIL_VRM, "the server's player has what the others have")
+  assert.equal(visitor.player.scriptAvatar, EVIL_VRM)
+  assert.deepEqual(told(healthy), [['onEntityModified', { id: visitor.id, sessionAvatar: EVIL_VRM }]])
+  assert.deepEqual(told(full), [])
+  const late = await w.connect()
+  assert.equal(late.snapshot.entities.find(entity => entity.id === visitor.id).sessionAvatar, EVIL_VRM)
+  // this tick's budget for script writes used up: the packet is not admitted, so nothing changes anywhere
+  w.f.network.writer.state(full.socket.ws).queued = 0
+  w.f.network.writer.resetTick()
+  assert.ok(w.f.network.writer.prepare(new Uint8Array(SCRIPT_TICK_CAP), { script: true }))
+  assert.equal(scriptProxy(visitor.player).setSessionAvatar(null), false)
+  assert.equal(visitor.player.data.sessionAvatar, EVIL_VRM)
+  assert.equal(visitor.player.scriptAvatar, EVIL_VRM)
+  assert.deepEqual(told(healthy), [])
+  assert.deepEqual(told(full), [])
+})
+
+test('ServerNetwork broadcast tells a packet nobody got from one some did not get; send is true only when all did', async () => {
+  const w = await world()
+  const healthy = await w.connect()
+  const closing = await w.connect()
+  const got = client => w.received(client).filter(([name]) => name === 'onChatAdded').length
+  assert.equal(w.f.network.broadcast('chatAdded', { body: 'a' }), 'delivered')
+  assert.equal(w.f.network.send('chatAdded', { body: 'b' }), true)
+  assert.deepEqual([got(healthy), got(closing)], [2, 2])
+  closing.socket.ws.readyState = 2
+  assert.equal(w.f.network.broadcast('chatAdded', { body: 'c' }), 'partial')
+  assert.equal(w.f.network.send('chatAdded', { body: 'd' }), false)
+  assert.deepEqual([got(healthy), got(closing)], [2, 0])
+  closing.socket.ws.readyState = 1
+  w.f.network.writer.resetTick()
+  w.f.network.writer.prepare(new Uint8Array(SCRIPT_TICK_CAP), { script: true })
+  // a script's packet over this tick's budget
+  let result
+  w.f.network.asScript(() => (result = w.f.network.broadcast('chatAdded', { body: 'e' })), { id: 'app' }, 'probe')
+  assert.equal(result, 'refused')
+  assert.deepEqual([got(healthy), got(closing)], [0, 0])
 })
 
 test("a server script's effect: its emote is remembered for that player; one that is not an emote url is left out", () => {

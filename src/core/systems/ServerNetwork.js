@@ -256,15 +256,25 @@ export class ServerNetwork extends System {
     return this.writer.write(ws, packet, { name, ...options })
   }
 
-  send(name, data, ignoreSocketId) {
+  // Sends a packet to every socket but ignoreSocketId and says what became of it. 'refused': it was not admitted (over
+  // the size cap, or a script's while this tick's budget for script writes is used up), and nobody got it.
+  // 'partial': it was admitted and one or more recipients did not get it (a socket at its backlog limit, or closing),
+  // while the others did. 'delivered': every recipient got it. A caller that changes state along with the packet
+  // tells the first apart from the others: only a refused packet left every client as it was.
+  broadcast(name, data, ignoreSocketId) {
     const packet = this.writer.prepare(writePacket(name, data), { name })
-    if (packet === false) return false
+    if (packet === false) return 'refused'
     let delivered = true
     this.sockets.forEach(socket => {
       if (socket.id === ignoreSocketId) return
       if (!this.write(socket.ws, packet, { name, prepared: true })) delivered = false
     })
-    return delivered
+    return delivered ? 'delivered' : 'partial'
+  }
+
+  // true when every recipient got the packet (broadcast)
+  send(name, data, ignoreSocketId) {
+    return this.broadcast(name, data, ignoreSocketId) === 'delivered'
   }
 
   sendTo(socketId, name, data) {
@@ -714,6 +724,30 @@ export class ServerNetwork extends System {
     }
   }
 
+  // the avatar of a player without one of their own, or with one they may not show: the world's, else the built-in one
+  defaultAvatar() {
+    return this.world.settings.avatar?.url || 'asset://avatar.vrm'
+  }
+
+  // What a player may show only as a builder goes when they stop being one, whichever way that happens (an admin
+  // lowers their rank, `/admin` again, their token grant ends, the world's rank setting is lowered): a session
+  // avatar or an emote outside this world (entityModifyPolicy.js isExternalUrl), unless a server script chose it for
+  // this player, and a stored avatar outside this world, which shows as the world's default from here on, as it
+  // does at a join (the database keeps it). Everyone, the player included, is told in an entityModified packet, as
+  // of any other change to the player. A player who is still a builder keeps everything.
+  dropBuilderUrls(player) {
+    if (!player?.isPlayer || player.destroyed || player.isBuilder()) return
+    const assetsUrl = process.env.ASSETS_BASE_URL
+    const { sessionAvatar, emote, avatar } = player.data
+    const change = {}
+    if (isExternalUrl(sessionAvatar, assetsUrl) && sessionAvatar !== player.scriptAvatar) change.sessionAvatar = null
+    if (isExternalUrl(emote, assetsUrl) && player.scriptEmotes?.has(emote) !== true) change.e = null
+    if (isExternalUrl(avatar, assetsUrl)) change.avatar = this.defaultAvatar()
+    if (!Object.keys(change).length) return
+    player.modify(change)
+    this.send('entityModified', { id: player.data.id, ...change })
+  }
+
   // The join snapshot. Every value from the environment is the one the server uses: the upload size as the number
   // index.js parsed, the URLs and AI names as given (index.js limits their length).
   snapshotState(id, { livekit, authToken, entities }) {
@@ -943,7 +977,10 @@ export class ServerNetwork extends System {
       // (PlayerRemote sets a missing emote to null).
       // A url outside this world, as the avatar a connection asks for or as the one stored with the user: only for a
       // builder (the stored rank or the world's own: a token's grant comes after the join). Anyone else gets the
-      // world's avatar; the stored value is left as it is, for the day the user is a builder.
+      // world's avatar; the stored value is left as it is, for the day the user is a builder. isExternalUrl reads a
+      // value as the loaders will, so a stored value of any spelling (written before these rules, or by hand) is
+      // kept for a visitor only when what every client would load is a file of the world's store. (The asked avatar
+      // has passed isAvatarUrl, which takes only the asset form and a literal http(s) url.)
       const mayUseExternal = hasRank(Math.max(user.rank, this.world.settings.effectiveRank), Ranks.BUILDER)
       const taken = url => (mayUseExternal || !isExternalUrl(url, process.env.ASSETS_BASE_URL) ? url : null)
       if (askedAvatar && !taken(askedAvatar)) {
@@ -951,7 +988,7 @@ export class ServerNetwork extends System {
       }
       const record = this.joinRecord(user.id, {
         name: name || sanitizeName(user.name) || 'Anonymous',
-        avatar: taken(user.avatar) || this.world.settings.avatar?.url || 'asset://avatar.vrm',
+        avatar: taken(user.avatar) || this.defaultAvatar(),
         sessionAvatar: taken(askedAvatar),
         rank: user.rank,
       })
@@ -1153,6 +1190,7 @@ export class ServerNetwork extends System {
         player.rankRevision++
         player.modify({ rank })
         this.send('entityModified', { id, rank })
+        this.dropBuilderUrls(player)
         socket.send('chatAdded', {
           id: uuid(),
           kind: 'system',
@@ -1256,6 +1294,7 @@ export class ServerNetwork extends System {
     player.rankRevision++
     player.modify({ rank })
     this.send('entityModified', { id: playerId, rank })
+    this.dropBuilderUrls(player)
     // once the rank is in the database any session-only token grant is over
     player.rankWritesPending++
     const write = persistRank({
@@ -1489,6 +1528,7 @@ export class ServerNetwork extends System {
       player.modify({ rank })
       revokeTokenRank({ socket, player, wallets: solanaGating })
       this.send('entityModified', { id: player.data.id, rank })
+      this.dropBuilderUrls(player)
       socket.send('chatAdded', {
         id: uuid(),
         kind: 'system',
@@ -2082,20 +2122,27 @@ export class ServerNetwork extends System {
         scriptAvatar: entity.scriptAvatar,
         scriptEmotes: entity.scriptEmotes,
       })
-      // The sender applied its session avatar before sending it. One that was not taken is put right for the sender
-      // too: what they see is then what everyone sees, and a client script that set it shows its builder why nobody
-      // else saw it.
-      if (
-        isObject(data) &&
-        Object.prototype.hasOwnProperty.call(data, 'sessionAvatar') &&
-        !(safe && Object.prototype.hasOwnProperty.call(safe, 'sessionAvatar'))
-      ) {
-        socket.send('entityModified', { id: entity.data.id, sessionAvatar: entity.data.sessionAvatar ?? null })
+      const namesSessionAvatar = Object.prototype.hasOwnProperty.call(data, 'sessionAvatar')
+      if (namesSessionAvatar && !(safe && Object.prototype.hasOwnProperty.call(safe, 'sessionAvatar'))) {
         this.logOnce(
           socket,
           'avatar-refused',
           'a session avatar was not taken: a url outside this world needs builder rank or a server script'
         )
+      }
+      if (safe) {
+        entity.modify(safe)
+        this.send('entityModified', safe, socket.id)
+      }
+      // The sender applied its session avatar before sending it. Whether it was taken or not, the sender is told the
+      // session avatar the server now has, after everything the server told it before. Every client, the sender
+      // included, then receives the server's session avatars in the server's order and ends on its last one. Told
+      // only when a value is refused, the sender would end elsewhere for good when packets cross: the answer to an
+      // earlier refused value arriving after a later value it set, or a server script's choice arriving after a
+      // value of its own that the server takes later. Its own client takes the value it already has as no change
+      // (PlayerLocal modify).
+      if (namesSessionAvatar) {
+        socket.send('entityModified', { id: entity.data.id, sessionAvatar: entity.data.sessionAvatar ?? null })
       }
       if (!safe) {
         return this.logOnce(
@@ -2104,8 +2151,6 @@ export class ServerNetwork extends System {
           `onEntityModified: no permitted fields: ${previewValue(data.id, 64)}`
         )
       }
-      entity.modify(safe)
-      this.send('entityModified', safe, socket.id)
       // the sender applied its name locally before sending; correct it if it was truncated
       if (Object.prototype.hasOwnProperty.call(safe, 'name') && safe.name !== data.name) {
         socket.send('entityModified', { id: entity.data.id, name: safe.name })
@@ -2225,6 +2270,8 @@ export class ServerNetwork extends System {
     this.send('settingsModified', { key, value: result.value }, socket.id)
     // the sender applied its value locally before sending; correct it if it was adjusted
     if (result.changed) socket.send('settingsModified', { key, value: result.value })
+    // the world's rank is everyone's least rank: lowered, it can end "everyone is a builder"
+    if (key === 'rank') this.sockets.forEach(other => this.dropBuilderUrls(other.player))
   }
 
   onSpawnModified = async (socket, op) => {

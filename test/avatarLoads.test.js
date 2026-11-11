@@ -269,6 +269,40 @@ for (const name of ['PlayerRemote', 'PlayerLocal']) {
     assert.equal(p.installed.url, 'https://example.com/c.vrm')
   })
 
+  if (name === 'PlayerLocal') {
+    // the server tells the player's own client every session avatar it takes, the ones that client set included
+    // (ServerNetwork onEntityModified): the value the client already has is no change
+    test('PlayerLocal: the session avatar it already has, told back, changes nothing', async () => {
+      const { p, loads } = player(m[name], 'asset://mine.vrm')
+      const started = []
+      const load = p.world.loader.load
+      p.world.loader.load = (type, url) => (started.push(url), load(type, url))
+      p.world.network = { send() {} }
+      // a load in progress keeps going and is the one installed
+      p.setSessionAvatar('https://example.com/s.vrm')
+      const first = loads['https://example.com/s.vrm']
+      p.modify({ sessionAvatar: 'https://example.com/s.vrm' })
+      first.finish()
+      await tick()
+      assert.equal(p.installed?.url, 'https://example.com/s.vrm')
+      // after a failure on the built-in avatar, the failing avatar gets no new try
+      p.fallBackToDefaultAvatar()
+      loads[m.BUILTIN_AVATAR_URL].finish()
+      await tick()
+      assert.equal(p.avatarFallback, 'ready')
+      p.modify({ sessionAvatar: 'https://example.com/s.vrm' })
+      assert.equal(p.avatarFallback, 'ready')
+      assert.equal(p.installed.url, m.BUILTIN_AVATAR_URL)
+      assert.deepEqual(started, ['https://example.com/s.vrm', m.BUILTIN_AVATAR_URL])
+      // a value it does not have is a change, and no session avatar is the same whichever way it is said
+      p.modify({ sessionAvatar: null })
+      assert.equal(p.avatarFallback, null)
+      assert.deepEqual(started.slice(2), ['asset://mine.vrm'])
+      p.modify({ sessionAvatar: '' })
+      assert.equal(started.length, 3)
+    })
+  }
+
   test(`${name}: a failed built-in load leaves the fallback with nothing more to try`, async () => {
     const { p, loads } = player(m[name], 'https://example.com/b.vrm')
     const original = console.error

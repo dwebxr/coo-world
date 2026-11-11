@@ -32,7 +32,13 @@ function loadToken() {
     return null
   }
 }
+// The token of the last snapshot, kept in memory as well: the server replaces a token that is more than a day old,
+// and the one it replaced ends 180 days after it was made. If writing the new one to disk fails, a reconnect that
+// read the file again would present the old token, and after its end the agent would be a new visitor, without its
+// stored rank.
+let latestToken = null
 function saveToken(token) {
+  latestToken = token
   try {
     fs.writeFileSync(tokenFile, JSON.stringify({ authToken: token }))
   } catch (err) {
@@ -122,7 +128,7 @@ function connect() {
     wsUrl: WS_URL,
     name: AGENT_NAME,
     avatar: AGENT_AVATAR,
-    authToken: loadToken(),
+    authToken: latestToken || loadToken(),
     onAuthToken: token => saveToken(token),
   })
 

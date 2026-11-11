@@ -164,6 +164,16 @@ export class ClientNetwork extends System {
     this.apiUrl = data.apiUrl
     this.maxUploadSize = data.maxUploadSize
     this.world.assetsUrl = data.assetsUrl
+    // The session token first, before anything below can throw: the server may have just renewed it (a token is
+    // replaced when it is a day old), and a client that kept the old one would lose its user when that one ends.
+    // Kept for authenticated api calls (uploads), whoever stores the token.
+    this.authToken = data.authToken
+    // caller がトークン管理する場合は singleton storage を汚さない
+    if (this.onAuthToken) {
+      this.onAuthToken(data.authToken)
+    } else {
+      storage.set('authToken', data.authToken)
+    }
 
     // preload environment model and avatar
     // if (this.world.environment.base) {
@@ -209,14 +219,6 @@ export class ClientNetwork extends System {
     this.world.blueprints.deserialize(data.blueprints)
     this.world.entities.deserialize(data.entities)
     this.world.livekit?.deserialize(data.livekit)
-    // kept for authenticated api calls (uploads), whoever stores the token
-    this.authToken = data.authToken
-    // caller がトークン管理する場合は singleton storage を汚さない
-    if (this.onAuthToken) {
-      this.onAuthToken(data.authToken)
-    } else {
-      storage.set('authToken', data.authToken)
-    }
   }
 
   onSettingsModified = data => {

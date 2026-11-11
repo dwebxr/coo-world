@@ -27,7 +27,9 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-function fixture({ pause, fail, existing = false, auth = { userId: 'player' } } = {}) {
+// `lapsed`: the user row of a genuine token that is past its end ({ id, rank }), for a connection whose token no
+// longer signs anyone in
+function fixture({ pause, fail, existing = false, auth = { userId: 'player' }, lapsed = null } = {}) {
   const logs = []
   const calls = []
   const players = new Map()
@@ -56,6 +58,7 @@ function fixture({ pause, fail, existing = false, auth = { userId: 'player' } } 
     return {
       where(key, id) {
         assert.equal(key, 'id')
+        if (lapsed && id === lapsed.id) return { first: () => step('lapsed lookup', lapsed) }
         assert.equal(id, user.id)
         return { first: () => step('lookup', existing ? user : undefined) }
       },
@@ -120,6 +123,7 @@ function fixture({ pause, fail, existing = false, auth = { userId: 'player' } } 
     isAvatarUrl,
     readJWT: () => step('readJWT', auth),
     createJWT: () => step('createJWT', 'new-token'),
+    expiredSessionUser: () => step('expiredSessionUser', lapsed?.id ?? null),
     uuid: () => user.id,
     moment,
     process: { env: {} },
@@ -702,5 +706,59 @@ test('onConnection: arbitrary thrown values are never inspected or stringified',
   await running
   assert.deepEqual(f.logs, ['onConnection: error'])
   assert.deepEqual(f.ws.closeCodes, [1011])
+  f.ws.finishClose()
+})
+
+test('onConnection: a token due for renewal is replaced in the snapshot, for the same user; a fresh one is kept', async () => {
+  for (const renew of [true, false]) {
+    const f = fixture({ existing: true, auth: { userId: 'player', renew } })
+    await f.run()
+    const [, snapshot] = readPacket(f.ws.packets[0])
+    assert.equal(snapshot.id, 'player')
+    assert.equal(snapshot.authToken, renew ? 'new-token' : 'token')
+    assert.equal(f.calls.includes('createJWT'), renew)
+    assert.equal(f.inserted.length, 0, 'no new user is made')
+    f.ws.finishClose()
+  }
+  // a token to renew whose user row is gone signs nobody in: a new user, with that user's own new token
+  const f = fixture({ existing: false, auth: { userId: 'player', renew: true } })
+  await f.run()
+  assert.equal(f.inserted.length, 1)
+  assert.equal(f.calls.filter(call => call === 'createJWT').length, 1)
+  f.ws.finishClose()
+})
+
+test('onConnection: a session that ended unused starts a new visitor, and says so when its user had a rank', async () => {
+  for (const [rank, said] of [
+    [2, true],
+    [1, true],
+    [0, false],
+  ]) {
+    const f = fixture({ auth: null, lapsed: { id: 'gone-admin\nforged', rank } })
+    await f.run({ authToken: 'expired-token' })
+    const warnings = f.logs
+    assert.equal(f.inserted.length, 1, 'a new anonymous user')
+    assert.equal(f.inserted[0].rank, 0, 'without the old rank')
+    assert.equal(warnings.length, said ? 1 : 0, `rank ${rank}`)
+    if (said) {
+      assert.match(warnings[0], /^\[auth\] the session of a ranked user ended unused: "gone-admin\?forged" \(rank \d\)/)
+      assert.ok(!warnings[0].includes('expired-token'), 'the token is not logged')
+    }
+    f.ws.finishClose()
+  }
+  // the same expired token presented again and again is said once
+  const again = fixture({ auth: null, lapsed: { id: 'gone-admin', rank: 2 } })
+  await again.run({ authToken: 'expired-token' })
+  again.ws.finishClose()
+  for (let i = 0; i < 3; i++) {
+    const ws = again.peer()
+    await again.run({ authToken: 'expired-token' }, ws)
+    ws.finishClose()
+  }
+  assert.equal(again.logs.filter(line => line.startsWith('[auth] the session of a ranked user')).length, 1)
+  // a token that is simply not genuine is not looked up at all
+  const f = fixture({ auth: null })
+  await f.run({ authToken: 'forged' })
+  assert.ok(!f.calls.includes('lapsed lookup'))
   f.ws.finishClose()
 })

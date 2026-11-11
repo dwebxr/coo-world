@@ -326,6 +326,9 @@ export function connectionMethod(context) {
     Socket,
     briefError,
     previewValue,
+    // a token that fails to verify is taken for a forgery here, not for an expired session (tests of expiry give
+    // their own)
+    expiredSessionUser: async () => null,
     solanaGating,
     evmGating,
     eventPayload,

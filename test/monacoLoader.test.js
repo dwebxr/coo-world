@@ -188,18 +188,48 @@ test('a loader that came but did not start, or a preparation that throws: null, 
 test('an editor being opened: a toast when Monaco cannot be had, nothing once it was closed', async () => {
   const toasts = []
   const toast = text => toasts.push(text)
-  assert.equal(await monacoFor(async () => null, { closed: () => false, toast }), null)
+  const used = []
+  const use = monaco => used.push(monaco)
+  await monacoFor(async () => null, { closed: () => false, toast, use })
   assert.deepEqual(toasts, [EDITOR_UNAVAILABLE])
   assert.equal(EDITOR_UNAVAILABLE, 'The script editor could not be loaded.')
-  assert.equal(await monacoFor(async () => null, { closed: () => true, toast }), null)
+  await monacoFor(async () => null, { closed: () => true, toast, use })
   const monaco = {}
-  assert.equal(await monacoFor(async () => monaco, { closed: () => true, toast }), null)
-  assert.equal(await monacoFor(async () => monaco, { closed: () => false, toast }), monaco)
+  await monacoFor(async () => monaco, { closed: () => true, toast, use })
+  assert.deepEqual(used, [], 'an editor that was closed meanwhile gets nothing')
+  await monacoFor(async () => monaco, { closed: () => false, toast, use })
+  assert.deepEqual(used, [monaco])
   assert.equal(toasts.length, 1)
+  // The question and the use happen in one turn (Codex: the question was asked a turn before the use; an editor
+  // closed in between was built on a node that was gone). Whatever is queued when `closed` is asked runs after `use`.
+  {
+    const order = []
+    await monacoFor(async () => monaco, {
+      closed: () => {
+        order.push('asked')
+        queueMicrotask(() => order.push('a later turn'))
+        return false
+      },
+      toast,
+      use: () => order.push('used'),
+    })
+    assert.deepEqual(order, ['asked', 'used', 'a later turn'])
+  }
+  // closed just before Monaco arrives: not used
+  {
+    let dead = false
+    let arrive
+    const pending = monacoFor(() => new Promise(resolve => (arrive = resolve)), { closed: () => dead, toast, use })
+    queueMicrotask(() => (dead = true))
+    arrive(monaco)
+    await pending
+    assert.deepEqual(used, [monaco], 'not used again')
+  }
   // through a loader that fails: the toast comes, and nothing is left unhandled
   const page = fakePage({ loader: ['fail'] })
   const { load } = loaderOf(page)
-  assert.equal(await monacoFor(load, { closed: () => false, toast }), null)
+  await monacoFor(load, { closed: () => false, toast, use })
   assert.deepEqual(toasts, [EDITOR_UNAVAILABLE, EDITOR_UNAVAILABLE])
+  assert.deepEqual(used, [monaco])
   await noUnhandled()
 })

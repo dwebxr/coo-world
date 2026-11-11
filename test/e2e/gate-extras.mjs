@@ -378,10 +378,14 @@ try {
       eq(scripts.workerControl, 'ran', 'control: the same text from a blob: URL, as a worker')
       eq(scripts.worker, 'refused', 'a store script as a worker')
       eq(retyped.join(','), 'classic,module,worker', 'the controls went through the route that retypes them')
-      const workerBy =
-        scripts.workerTyped === 'ran'
-          ? 'its type'
-          : `its type or its sandbox (typed as JavaScript: ${scripts.workerTyped})`
+      // The retyped worker says what refused the plain one: run as JavaScript, it was the type; refused as
+      // JavaScript too, the engine applies the sandbox policy to workers and either would do. No answer in time
+      // says nothing, and fails the step.
+      ok(
+        scripts.workerTyped === 'ran' || scripts.workerTyped === 'refused',
+        `the store script typed as JavaScript, as a worker: ${scripts.workerTyped}`
+      )
+      const workerBy = scripts.workerTyped === 'ran' ? 'its type' : 'its sandbox or its type'
       // only the probe page's own refusals may show as page errors (WebKit reports a refused module so)
       const unexpected = errors.filter(error => !/MIME type/i.test(error))
       eq(unexpected.length, 0, `page errors of the probe page: ${unexpected.join(' | ')}`)

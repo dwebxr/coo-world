@@ -88,8 +88,7 @@ export function ScriptEditor({ app, onHandle }) {
   }, [editor])
   useEffect(() => {
     let dead
-    monacoFor(load, { closed: () => dead, toast: text => app.world.emit('toast', text) }).then(monaco => {
-      if (!monaco) return
+    const use = monaco => {
       // only use cached if it matches this key
       const state = cached.key === key ? cached : null
       const initialCode = state?.value ?? app.script?.code ?? '// …'
@@ -135,7 +134,8 @@ export function ScriptEditor({ app, onHandle }) {
           codeRef.current = newCode
         }
       }
-    })
+    }
+    monacoFor(load, { closed: () => dead, toast: text => app.world.emit('toast', text), use })
     return () => {
       dead = true
     }

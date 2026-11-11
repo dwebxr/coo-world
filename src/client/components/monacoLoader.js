@@ -66,11 +66,13 @@ export function createMonacoLoader({
   }
 }
 
-// What an editor being opened gets: Monaco, or null with a toast that it could not be loaded. Nothing is said to an
-// editor that was closed meanwhile.
-export async function monacoFor(load, { closed, toast }) {
+// What an editor being opened gets: `use(monaco)` is called once Monaco is there, or a toast says that it could
+// not be loaded. An editor that was closed meanwhile gets neither: `closed()` is asked in the same turn that `use`
+// runs in, so nothing can close the editor between the question and the use (asked earlier, the editor could be
+// closed before its continuation ran, which then built an editor on a node that was gone).
+export async function monacoFor(load, { closed, toast, use }) {
   const monaco = await load()
-  if (closed()) return null
-  if (!monaco) toast(EDITOR_UNAVAILABLE)
-  return monaco
+  if (closed()) return
+  if (!monaco) return toast(EDITOR_UNAVAILABLE)
+  use(monaco)
 }

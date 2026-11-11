@@ -28,6 +28,21 @@ function isLocalData(url) {
   }
 }
 
+// The bytes of a data: URL or of a script's object URL, as a response of the host's making. They are read to the
+// end here and without the caller's signal: they are already in the process (there is no transfer to give up), and
+// on Node 24 (undici 7) aborting the signal of such a response while its body is unread throws from the platform's
+// own abort listener, outside any promise, which ends the process (Codex; an app that is removed or rebuilt aborts
+// its requests). Only the method is passed on. App.fetchFor settles nothing for a run that has ended
+async function readLocalData(url, init) {
+  const method = typeof init?.method === 'string' ? init.method : 'GET'
+  const response = await fetch(url, { method })
+  return new Response(await response.arrayBuffer(), {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  })
+}
+
 const isRemote = url => typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'))
 
 // a remote model or script: larger and slower than a script's own request may be (outboundFetch.js defaults)
@@ -182,7 +197,7 @@ export class ServerLoader extends System {
     if (!this.scriptOutbound) {
       const policy = createOutboundFetch({ trustedOrigins: this.trustedOrigins() })
       this.scriptOutbound = (url, init, caller) => {
-        if (isLocalData(url)) return fetch(url, init)
+        if (isLocalData(url)) return readLocalData(url, init)
         return policy(url, init, caller).catch(err => {
           throw err instanceof OutboundError ? new TypeError(err.message) : err
         })

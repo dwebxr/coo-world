@@ -278,6 +278,35 @@ test('a script reads a data: URL and its own object URLs without a request; no o
   assert.equal(requests.assets.length + requests.other.length, before, 'no request was made')
 })
 
+// Codex: on Node 24 the platform's fetch throws from its abort listener (outside any promise: the process ends)
+// when the signal of a data: or blob: response is aborted while its body is unread, which is what an app's removal
+// or rebuild does to its requests. The local read does not hand the platform the caller's signal
+test('aborting the signal of a local read with its body unread does nothing; the body can still be read', async () => {
+  const loader = makeLoader()
+  const run = { dead: false }
+  const blob = await createScriptBlob(new Blob(['held']), { entity: { deadHook: run }, run })
+  const url = createScriptObjectURL(blob)
+  const uncaught = []
+  const onUncaught = err => uncaught.push(err)
+  process.on('uncaughtException', onUncaught)
+  try {
+    for (const [local, text] of [
+      ['data:,owned', 'owned'],
+      [url, 'held'],
+    ]) {
+      const controller = new AbortController()
+      const response = await loader.scriptFetch(local, { signal: controller.signal }, { key: 'app' })
+      controller.abort()
+      await new Promise(resolve => setTimeout(resolve, 20))
+      assert.equal(await response.text(), text)
+    }
+    assert.deepEqual(uncaught, [])
+  } finally {
+    process.off('uncaughtException', onUncaught)
+    revokeScriptObjectURL(url)
+  }
+})
+
 test('600 loads finishing together leave at most 512 entries, with results for kept entries only', async () => {
   const { reads, readFile } = deferredReads()
   const loader = makeLocalLoader(readFile)

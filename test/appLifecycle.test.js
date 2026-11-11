@@ -303,6 +303,35 @@ test('app.fetch on the server: each app has its own four requests in flight; one
   assert.equal(await (await fetchB(`${local.base}/x`)).text(), 'local')
 })
 
+// Codex: an app that fetched a data: URL (or its own object URL) and left the body unread, then was removed or
+// rebuilt: its abort made the platform's fetch throw outside any promise on Node 24, which ends the server
+test('app.fetch on the server: removing an app that left a local response unread does not throw', async () => {
+  const uncaught = []
+  const onUncaught = err => uncaught.push(err)
+  process.on('uncaughtException', onUncaught)
+  try {
+    const fetches = []
+    const { world, app } = makeApp((_w, _a, fetch) => fetches.push(fetch))
+    const globals = ['self', 'window', 'document'].map(name => [
+      name,
+      Object.getOwnPropertyDescriptor(globalThis, name),
+    ])
+    const serverLoader = new ServerLoader({ assetsUrl: 'https://assets.example/assets' })
+    for (const [name, desc] of globals) {
+      if (desc) Object.defineProperty(globalThis, name, desc)
+      else delete globalThis[name]
+    }
+    Object.defineProperty(world.loader, 'scriptFetch', { get: () => serverLoader.scriptFetch })
+    const response = await fetches[0]('data:text/plain,unread')
+    assert.equal(response.status, 200)
+    app.destroy()
+    await new Promise(resolve => setTimeout(resolve, 30))
+    assert.deepEqual(uncaught, [])
+  } finally {
+    process.off('uncaughtException', onUncaught)
+  }
+})
+
 test('app.fetch: a request outliving its run is aborted silently and never settles', async () => {
   let fetchFn
   let release

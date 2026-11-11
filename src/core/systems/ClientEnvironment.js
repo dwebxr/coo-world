@@ -61,6 +61,9 @@ THREE.ShaderChunk.fog_vertex = `
 #endif
 `
 
+// failing asset urls remembered so each is reported once
+const FAILED_ASSETS_KEPT = 64
+
 /**
  * Environment System
  *
@@ -78,6 +81,7 @@ export class ClientEnvironment extends System {
     this.skyN = 0
     this.bgUrl = null
     this.hdrUrl = null
+    this.failedAssets = new Set() // `type/url` of the assets that failed, reported once; the most recent few
   }
 
   init({ baseEnvironment }) {
@@ -139,10 +143,13 @@ export class ClientEnvironment extends System {
     const fogColor = isString(node?._fogColor) ? node._fogColor : base.fogColor
 
     const n = ++this.skyN
-    let bgTexture
-    if (bgUrl) bgTexture = await this.world.loader.load('texture', bgUrl)
-    let hdrTexture
-    if (hdrUrl) hdrTexture = await this.world.loader.load('hdr', hdrUrl)
+    // each asset on its own: one that fails to load is reported and treated as not set, and the sun, fog and rotation
+    // below still apply (a refused background used to leave them all unapplied, as an unhandled rejection)
+    const [bgTexture, hdrTexture] = await Promise.all([
+      bgUrl ? this.loadAsset('texture', bgUrl) : null,
+      hdrUrl ? this.loadAsset('hdr', hdrUrl) : null,
+    ])
+    // a newer sky was asked for while these loaded: it wins
     if (n !== this.skyN) return
 
     if (bgTexture) {
@@ -154,6 +161,11 @@ export class ClientEnvironment extends System {
       this.sky.material.map = bgTexture
       this.sky.visible = true
     } else {
+      // no background (not set, or it failed): the previous sky's is let go of too
+      if (this.sky.material.map) {
+        this.sky.material.map = null
+        this.sky.material.needsUpdate = true
+      }
       this.sky.visible = false
     }
 
@@ -162,8 +174,9 @@ export class ClientEnvironment extends System {
       // hdrTexture.colorSpace = THREE.SRGBColorSpace
       // hdrTexture.colorSpace = THREE.LinearSRGBColorSpace
       hdrTexture.mapping = THREE.EquirectangularReflectionMapping
-      this.world.stage.scene.environment = hdrTexture
     }
+    // no HDR (not set, or it failed) is no environment map, three's default: the previous sky's does not stay
+    this.world.stage.scene.environment = hdrTexture ?? null
 
     this.world.stage.scene.environmentRotation.y = rotationY
     this.sky.rotation.y = rotationY
@@ -193,6 +206,30 @@ export class ClientEnvironment extends System {
       fogNear,
       fogFar,
       fogColor,
+    }
+  }
+
+  // a sky texture or HDR, or null when it cannot be loaded. A failing url is reported once (until it loads again),
+  // not on every sky update
+  async loadAsset(type, url) {
+    const key = `${type}/${url}`
+    try {
+      const asset = await this.world.loader.load(type, url)
+      this.failedAssets.delete(key)
+      return asset
+    } catch (err) {
+      if (!this.failedAssets.has(key)) {
+        this.failedAssets.add(key)
+        // a bound: a sky changing through many failing urls keeps only the most recent
+        for (const old of this.failedAssets) {
+          if (this.failedAssets.size <= FAILED_ASSETS_KEPT) break
+          this.failedAssets.delete(old)
+        }
+        console.warn(
+          `[environment] ${type} could not be loaded (${String(url).slice(0, 120)}): ${String(err?.message || err).slice(0, 160)}`
+        )
+      }
+      return null
     }
   }
 

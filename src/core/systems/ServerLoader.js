@@ -13,6 +13,7 @@ import { createEmoteFactory } from '../extras/createEmoteFactory'
 import { ASSET_PROTOCOL, assetName, assetRefusal, loaderReference } from '../extras/assetURL'
 import { resolveAssetFile } from '../extras/resolveAssetFile'
 import { createOutboundFetch } from '../extras/outboundFetch'
+import { checkGLTF, createGLTFBudget, GLTF_LIMITS, isDataURI } from '../extras/gltfLimits'
 import { LoadingManager } from 'three'
 
 const isRemote = url => typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'))
@@ -46,13 +47,14 @@ const AVATAR_KEY = 'avatar/*'
 
 // A model's own files may only come from inside it (data: and blob: URLs). A .glb or .gltf can name external
 // buffers and images by URL, and the parser would fetch them from wherever the file says, outside the outbound
-// policy; here nothing outside the file is ever requested. An external buffer fails the load (the model cannot be
-// built without it). An external image is not fetched either, and the model loads without it: GLTFLoader turns a
-// texture that fails into no texture (the server draws nothing, so it never needed one).
+// policy; here nothing outside the file is ever requested. An external buffer is refused by the check before the
+// parser runs (parseGLB below); this manager is the second layer behind it, and what refuses an external image:
+// that image is not fetched, and the model loads without it (GLTFLoader turns a texture that fails into no texture;
+// the server draws nothing, so it never needed one).
 function createEmbeddedOnlyManager() {
   const manager = new LoadingManager()
   manager.setURLModifier(url => {
-    if (typeof url === 'string' && (url.startsWith('data:') || url.startsWith('blob:'))) return url
+    if (typeof url === 'string' && (isDataURI(url) || url.startsWith('blob:'))) return url
     throw assetRefusal('a model may not load external files on the server', url)
   })
   return manager
@@ -239,15 +241,16 @@ export class ServerLoader extends System {
     }
   }
 
-  // parse settles asynchronously, so its errors need their own path
-  parseGLB(arrayBuffer) {
-    return new Promise((resolve, reject) => {
-      try {
-        this.gltfLoader.parse(arrayBuffer, '', resolve, reject)
-      } catch (err) {
-        reject(err)
-      }
-    })
+  // A model or emote is held to the limits a client applies to it (gltfLimits.js): the document is checked before
+  // the parser runs, then the parse is charged to one budget per file (what it allocates, creates and iterates, and
+  // 10 s of time). A file every client would refuse is refused here too, with the same reason; the server is never
+  // the stricter one (it draws nothing, so the morph-target textures a client is charged for are not charged here).
+  // With a budget the parser decodes the file's data: buffers and images itself and requests nothing (an image is
+  // sized and then fails to load as before, and the model is built without it).
+  async parseGLB(arrayBuffer) {
+    const budget = createGLTFBudget({ fileBytes: arrayBuffer.byteLength, renderer: false })
+    checkGLTF(arrayBuffer, GLTF_LIMITS, budget)
+    return this.gltfLoader.parseAsync(arrayBuffer, '', budget)
   }
 
   // Reads, then parses what was read, in one of MODEL_TURNS, in the order asked: until a turn is free the load

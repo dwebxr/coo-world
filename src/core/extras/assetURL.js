@@ -29,7 +29,7 @@ export function loaderReference(value) {
 export function resolveReference(url, assetsUrl) {
   if (!url) return url
   url = loaderReference(url)
-  if (url.startsWith('blob')) return url
+  if (url.startsWith('blob:')) return url
   // the assets URL put in literally: as a replacement string, `$&`, `$'`, `` $` `` or `$$` in it would be patterns
   if (url.startsWith(ASSET_PROTOCOL)) return assetsUrl ? `${assetsUrl}${url.slice(ASSET_PROTOCOL.length - 1)}` : url
   if (url.match(/^https?:\/\//i)) return url

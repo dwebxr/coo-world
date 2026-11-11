@@ -518,10 +518,10 @@ export function FieldFile({ world, label, hint, kind: kindName, value, onChange,
   const handleDownload = async e => {
     if (e.shiftKey && typeof value?.url === 'string' && value.url) {
       e.preventDefault()
-      if (!world.loader.hasFile(value.url)) {
-        await world.loader.loadFile(value.url)
-      }
-      const file = world.loader.getFile(value.url, value.name)
+      // the loader does not keep every file it hands back (one from elsewhere above its bound): use the returned one
+      const file =
+        world.loader.getFile(value.url, value.name) ||
+        (await world.loader.loadFile(value.url, { name: value.name }).catch(() => null))
       if (!file) return console.error('could not load file')
       downloadFile(file)
     }

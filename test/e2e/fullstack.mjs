@@ -1442,7 +1442,8 @@ async function probes(admin, watcher) {
     )
     eq(s.error, 'P1_THROWING_SCRIPT', 'scriptError')
     // the crash block is fetched after scriptError is set; wait for the rebuilt root
-    await waitUntil(() => page.evaluate(() => window.world.loader.results.has('model/asset://crash-block.glb')), {
+    // asked through get(): the loader files a stored asset under its resolved URL
+    await waitUntil(() => page.evaluate(() => !!window.world.loader.get('model', 'asset://crash-block.glb')), {
       timeout: 15000,
       message: 'crash block model',
     })

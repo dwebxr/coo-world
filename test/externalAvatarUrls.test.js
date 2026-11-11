@@ -85,14 +85,37 @@ test('isExternalUrl: an asset or a plain address of a store file is not; anythin
   // resolved to another place than the store: outside, whatever the spelling
   for (const near of [
     '//world.example/other/mine.vrm',
-    'world.example/assets/sub/mine.vrm',
     '//world.example:8443/assets/mine.vrm',
     'world.example.evil.example/assets/mine.vrm',
     '//world.example/assets/../mine.vrm',
-    'world.example/assets/mine.vrm?x=1',
+    'world.example/assets/sub/../../mine.vrm',
+    'world.example/assets/%2e%2e/mine.vrm',
+    'world.example/assets\\..\\mine.vrm',
+    'world.example/assetsx/mine.vrm',
+    'world.example/assets',
+    'world.example/assets/',
     '//user@world.example/assets/mine.vrm',
+    'https://user:pw@world.example/assets/mine.vrm',
+    'https://world.example@evil.example/assets/mine.vrm',
+    'https://evil.example/assets/mine.vrm#https://world.example/assets/mine.vrm',
+    'https://evil.example/?https://world.example/assets/mine.vrm',
   ]) {
     assert.equal(isExternalUrl(near, ASSETS), true, near)
+  }
+  // a request that goes to the store, however its address is written: a client's loader leaves a query and a
+  // fragment off a store address, and the URL parser folds dot segments and letter case before anything is asked.
+  // (Codex: `…/assets/avatar.vrm?v=1` was taken for outside, and its visitor joined wearing the default.)
+  for (const own of [
+    `${ASSETS}/mine.vrm?v=1`,
+    `${ASSETS}/mine.vrm#top`,
+    'world.example/assets/mine.vrm?x=1',
+    `${ASSETS}/sub/../mine.vrm`,
+    `${ASSETS}/./mine.vrm`,
+    'world.example/assets/sub/mine.vrm',
+    'HTTPS://WORLD.example/assets/mine.vrm',
+    'https://world.example:443/assets/mine.vrm',
+  ]) {
+    assert.equal(isExternalUrl(own, ASSETS), false, own)
   }
   // with an http assets url, `//host/…` and `host/…` load over https: another origin
   assert.equal(isExternalUrl('//world.example/assets/mine.vrm', 'http://world.example/assets'), true)
@@ -106,13 +129,8 @@ test('isExternalUrl: an asset or a plain address of a store file is not; anythin
     'http://world.example/assets/avatar.vrm', // another scheme is another origin
     'https://world.example:8443/assets/avatar.vrm',
     'https://world.example/assets/../secret/a.vrm',
-    'https://world.example/assets/sub/a.vrm',
-    'https://world.example/assets/avatar.vrm?x=1',
     'https://user:pw@world.example/assets/avatar.vrm',
     'https://world.example.evil.example/assets/avatar.vrm',
-    // a browser reads it as the store's file and the node agent loads nothing; a plain address takes only the
-    // lower-case scheme every loader reads alike, so this is refused to a visitor though it is not outside
-    'HTTPS://world.example/assets/avatar.vrm',
     'https://world.example/other/avatar.vrm',
   ]) {
     assert.equal(isExternalUrl(other, ASSETS), true, other)

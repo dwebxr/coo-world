@@ -165,11 +165,13 @@ test('scriptSource: every "certain store file" is exactly what the server loader
   }
 })
 
-// loadedStoreFile says "a client loads the store file X" also for spellings resolveReference rewrites, since a client
-// fetches what it makes of them (`//host/assets/x`, `host/assets/x`). The client oracle is the check: on every page,
-// for every assets base, the request is that file. Codex: the avatar rule read such a spelling as it is written, so a
-// visitor's stored `//world.example/assets/mine.vrm` was taken for a url outside the world.
-test('loadedStoreFile: every store file it names is exactly what a client loads, on every page', () => {
+// loadedStoreFile says "a client requests X under the store" also for spellings resolveReference rewrites, since a
+// client fetches what it makes of them (`//host/assets/x`, `host/assets/x`), and for a store address with a query or
+// a fragment (the client's loader leaves both off a store address). The client oracle is the check: on every page,
+// for every assets base, the request goes to the store's origin and to that path. Codex: the avatar rule read such
+// a spelling as it is written, so a visitor's stored `//world.example/assets/mine.vrm` was taken for a url outside
+// the world; then `…/assets/mine.vrm?v=1` was.
+test('loadedStoreFile: everything it names is what a client requests from the store, on every page', () => {
   let named = 0
   let certain = 0
   for (const base of BASES) {
@@ -185,11 +187,14 @@ test('loadedStoreFile: every store file it names is exactly what a client loads,
       if (name === null) continue
       named++
       for (const page of PAGES) {
+        // the address without its query and fragment: what ClientLoader resourceURL fetches for a store address
+        const request = new URL(clientRequest(spelling, base, page))
         assert.equal(
-          clientRequest(spelling, base, page),
+          `${request.origin}${request.pathname}`,
           store(name),
           `${JSON.stringify(spelling)} with ${base} on ${page}`
         )
+        assert.equal(request.username + request.password, '', JSON.stringify(spelling))
       }
     }
   }

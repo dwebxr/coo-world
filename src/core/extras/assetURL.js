@@ -122,20 +122,38 @@ function storeAddressName(href, root) {
   return assetName(ASSET_PROTOCOL + segments[segments.length - 1])
 }
 
-// The name of the store file a client loads for a reference, or null when it loads no file of the store for
-// certain. A client loads what resolveReference makes of the reference, so that is what is read, by the rules
-// storeAddressName applies: `//host/assets/x`, `host/assets/x` and asset://x, white space around them or not, load
-// the file x of a store at https://host/assets. (scriptSource, for the start-up clean-up, takes an absolute URL only
-// as it is written, never one resolveReference rewrites.) A page path such as /assets/x and a `blob:` value are left
-// for the browser to resolve against the page: whether that is the store depends on where the page is served, which
-// the server cannot know for certain (the assets URL may be another origin, or another path of the page's own, and a
-// proxy can put the page anywhere), so they load no file of the store for certain. Neither does anything without a
-// clean assets URL (assetsUrlProblem).
+// The path under the store of what a client requests for a reference, or null when the request does not go to the
+// store for certain. A client requests what resolveReference makes of the reference, as the browser's URL parser
+// reads it, so that is what is read here: an http(s) URL without userinfo whose origin is the store's and whose
+// path is under the store's. `//host/assets/x`, `host/assets/x`, `HTTPS://host/assets/x` and asset://x, white space
+// around them or not, are requests for x in a store at https://host/assets; so is `…/assets/x?v=1` or `…/assets/x#a`
+// (the client's loader leaves a query and a fragment off a store address, ClientLoader resourceURL) and
+// `…/assets/a/../x` (the parser folds the dot segments before anything is asked). This is looser than what
+// scriptSource takes for the start-up clean-up, which must know the one file a script is; here the question is only
+// whether the request goes to the world's own store or to somewhere else. A page path such as /assets/x and a
+// `blob:` value are left for the browser to resolve against the page: whether that is the store depends on where
+// the page is served, which the server cannot know for certain (the assets URL may be another origin, or another
+// path of the page's own, and a proxy can put the page anywhere), so they are not requests to the store for certain.
+// Neither is anything without a clean assets URL (assetsUrlProblem).
 export function loadedStoreFile(value, assetsUrl) {
   const ref = loaderReference(value)
   if (typeof ref !== 'string' || !ref) return null
   const root = storeRoot(assetsUrl)
-  return root ? storeAddressName(resolveReference(ref, assetsUrl), root) : null
+  if (!root) return null
+  const resolved = resolveReference(ref, assetsUrl)
+  if (!/^https?:\/\//i.test(resolved)) return null
+  let url
+  try {
+    url = new URL(resolved)
+  } catch {
+    return null
+  }
+  if (url.username || url.password || url.origin !== root.origin) return null
+  const segments = url.pathname.split('/').slice(1)
+  if (segments.length <= root.segments.length) return null
+  if (root.segments.some((segment, i) => segments[i] !== segment)) return null
+  const rest = segments.slice(root.segments.length).join('/')
+  return rest || null
 }
 
 // an http(s) URL that parses, with the literal lower-case prefix the server's loader fetches as remote

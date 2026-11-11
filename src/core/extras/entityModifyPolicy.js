@@ -207,15 +207,13 @@ function isHttpUrl(value) {
 // loaderReference) and then maps what is left (resolveReference); what that makes of the value is what is fetched.
 // A file of the store is then an asset reference (`asset://<name>.vrm`, or `.glb` with the playback query an emote
 // may carry and the store's route ignores), which the loaders put under the assets url, or any spelling that
-// resolves to the plain address of a store file under the world's assets url `assetsUrl` (loadedStoreFile): that
-// address itself, `//host/assets/a.vrm` or `host/assets/a.vrm` when https://host/assets is the assets url, white
-// space around them or not. Any other value is taken as outside. It loads from another host, or another path or
-// scheme of this one; or, as a page path such as /assets/a.vrm, from wherever the browser resolves it against the
-// page (the store only when the page is served from the assets url's origin and path, which the server cannot know
-// for certain); or, spelled with an upper-case scheme, from the store for a browser and from nowhere for the node
-// agent (a plain address takes only the literal lower-case prefix that every loader reads alike). Nothing to load
-// (null, undefined, '') is not outside, and neither is a value that is not a string (resolveReference throws on it,
-// so nothing is fetched).
+// a client requests from the store under the world's assets url `assetsUrl` (loadedStoreFile): an address under
+// it, with a query or a fragment or not, `//host/assets/a.vrm` or `host/assets/a.vrm` when https://host/assets is
+// the assets url, white space around them or not. Any other value is taken as outside. It loads from another host,
+// or another path or scheme of this one; or, as a page path such as /assets/a.vrm, from wherever the browser
+// resolves it against the page (the store only when the page is served from the assets url's origin and path,
+// which the server cannot know for certain). Nothing to load (null, undefined, '') is not outside, and neither is
+// a value that is not a string (resolveReference throws on it, so nothing is fetched).
 //
 // Every other client downloads and parses the file such a reference names. An asset is a file a builder put in the
 // store (or, with Custom Avatars on, a VRM a visitor uploaded: size-capped, and served from here). Outside is any

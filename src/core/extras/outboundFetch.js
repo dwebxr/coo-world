@@ -1,9 +1,9 @@
 // The server's fetch for URLs it did not choose itself (Node only: the server and the node agent).
 //
 // Blueprints name remote models, emotes and scripts the server loads (ServerLoader), and app scripts' fetch()
-// will be routed here as well. A builder picks those URLs, so without a policy the server can be pointed at its
-// own loopback, its private network and cloud metadata addresses, and made to download without end. This fetch
-// only reaches public addresses, and bounds time, size and concurrency:
+// requests whatever URL the script gives it (App.fetchFor). A builder picks those URLs, so without a policy the
+// server can be pointed at its own loopback, its private network and cloud metadata addresses, and made to
+// download without end. This fetch only reaches public addresses, and bounds time, size and concurrency:
 //
 //   - http and https only, no credentials in the URL
 //   - the host is resolved once, through DNS, and every address it resolves to must be public (see the address

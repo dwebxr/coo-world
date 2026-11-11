@@ -699,7 +699,10 @@ export class App extends Entity {
       if (isDead() || signal.aborted) return
       let request
       try {
-        request = fetch(href, init)
+        // the world's one fetch for URLs it did not choose (the loader's outboundFetch): on the server and the node
+        // agent, public addresses only and bounded in time, size and number, counted against this app; in a browser,
+        // the browser's own. A loader without one starts no request (the call throws, and the promise rejects)
+        request = this.world.loader.outboundFetch(href, init, { key: this.data.id })
       } catch (err) {
         return reject(toScriptError(err))
       }

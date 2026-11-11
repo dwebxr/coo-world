@@ -150,9 +150,9 @@ export class ServerLoader extends System {
   }
 
   // The world's one fetch for URLs it did not choose: remote models, emotes and scripts a blueprint names go
-  // through it, and app scripts' fetch (App.fetch) will too. Public addresses only, bounded in time, size and
-  // number (outboundFetch.js). The world's own assets origin is trusted, and so are the origins the operator lists
-  // in OUTBOUND_TRUSTED_ORIGINS.
+  // through it, and so does every request of an app script (App.fetchFor, with the app as the caller its requests
+  // are counted against). Public addresses only, bounded in time, size and number (outboundFetch.js). The world's
+  // own assets origin is trusted, and so are the origins the operator lists in OUTBOUND_TRUSTED_ORIGINS.
   get outboundFetch() {
     if (!this.outbound) {
       const listed = String(globalThis.process?.env?.OUTBOUND_TRUSTED_ORIGINS || '')

@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import http from 'node:http'
 import * as THREE from 'three'
 import { loadClient, Blueprints } from './lib/clientHarness.mjs'
 import { Entity } from '../src/core/entities/Entity.js'
@@ -9,6 +10,7 @@ import { createScriptTimers, TIMER_LIMIT } from '../src/core/extras/scriptTimers
 import { createEntityProxy } from '../src/core/extras/createEntityProxy.js'
 import { assertScriptActive, handlePhysicsFailure } from '../src/core/extras/physicsFailure.js'
 import { createScriptResponse, toHostFetchOptions } from '../src/core/extras/scriptFetch.js'
+import { createOutboundFetch, OUTBOUND_DEFAULTS } from '../src/core/extras/outboundFetch.js'
 import { callForScript } from '../src/core/extras/scriptValues.js'
 import { serializeError } from '../src/core/extras/serializeError.js'
 import { readVec3, warnOnce } from '../src/core/extras/physxConvert.js'
@@ -43,7 +45,6 @@ function makeApp(script, hostFetch = () => assert.fail('no fetch expected')) {
     createScriptResponse,
     toHostFetchOptions,
     serializeError,
-    fetch: (...args) => hostFetch(...args),
   })
   const world = Object.assign(new EventEmitter(), {
     network: { isServer: true, isClient: false, id: 0, send: () => true, asScript: fn => fn() },
@@ -55,7 +56,10 @@ function makeApp(script, hostFetch = () => assert.fail('no fetch expected')) {
     },
     events: { emit() {}, on() {}, off() {} },
     setHot() {},
-    loader: { get: type => (type === 'script' ? { exec: script } : { toNodes: root }) },
+    loader: {
+      get: type => (type === 'script' ? { exec: script } : { toNodes: root }),
+      outboundFetch: (...args) => hostFetch(...args),
+    },
   })
   world.apps = new Apps(world)
   world.blueprints = new Blueprints(world)
@@ -121,6 +125,117 @@ test('app.fetch: a successful request resolves with the whitelisted response; th
   assert.equal(seen.length, 1)
   assert.deepEqual(Object.keys(seen[0].init).sort(), ['body', 'method', 'signal'])
   assert.ok(seen[0].init.signal instanceof AbortSignal)
+})
+
+// A script's request is the world's to make: App.fetchFor asks the world's loader (ServerLoader.outboundFetch on the
+// server and the node agent: public addresses only, bounded; the browser's fetch on a client), never the global
+// fetch, and names the app as the caller.
+test('app.fetch: the request is made by the world loader, for this app; the global fetch is never called', async () => {
+  let fetchFn
+  const seen = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = () => assert.fail('the global fetch was called')
+  try {
+    makeApp(
+      (_w, _a, fetch) => (fetchFn = fetch),
+      async (...args) => {
+        seen.push(args)
+        return new Response('ok')
+      }
+    )
+    assert.equal(await (await fetchFn('https://example.com/x')).text(), 'ok')
+    assert.equal(seen.length, 1)
+    assert.equal(seen[0][0], 'https://example.com/x')
+    assert.deepEqual(seen[0][2], { key: 'a' })
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('app.fetch: a world whose loader makes no outbound requests starts none (the promise rejects)', async () => {
+  let fetchFn
+  const realFetch = globalThis.fetch
+  globalThis.fetch = () => assert.fail('the global fetch was called')
+  try {
+    const { world } = makeApp((_w, _a, fetch) => (fetchFn = fetch))
+    delete world.loader.outboundFetch
+    const err = await fetchFn('https://example.com/x').then(
+      () => assert.fail('resolved'),
+      e => e
+    )
+    assert.equal(Object.getPrototypeOf(err), TypeError.prototype)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+// with the server's real policy (outboundFetch.js) as the loader's: a script cannot reach the server's own loopback
+// (nothing connects), and one app's requests in flight are bounded without taking another app's
+test('app.fetch on the server: loopback is refused before anything connects; requests in flight are bounded per app', async () => {
+  let connections = 0
+  const waiting = []
+  const server = http.createServer((req, res) => {
+    if (req.url === '/hold') waiting.push(res)
+    else res.end('local')
+  })
+  server.on('connection', () => connections++)
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const base = `http://127.0.0.1:${server.address().port}`
+  try {
+    let fetchFn
+    const { world } = makeApp((_w, _a, fetch) => (fetchFn = fetch))
+    // the default policy: public addresses only (names are answered here, so the test asks no DNS server)
+    const resolver = () => ({
+      resolve4: (_host, done) => done(null, ['127.0.0.1']),
+      resolve6: (_host, done) => done(Object.assign(new Error('no data'), { code: 'ENODATA' })),
+      cancel() {},
+    })
+    world.loader.outboundFetch = createOutboundFetch({ resolver })
+    for (const url of [
+      `${base}/x`,
+      `http://a-name.example:${server.address().port}/x`,
+      'http://[::1]/x',
+      'http://169.254.169.254/latest/meta-data/',
+      'http://10.0.0.1/',
+      'file:///etc/hosts',
+    ]) {
+      const err = await fetchFn(url).then(
+        () => assert.fail(`${url} resolved`),
+        e => e
+      )
+      assert.equal(Object.getPrototypeOf(err), Error.prototype, url)
+      assert.equal(err.name, 'OutboundError', url)
+      assert.match(err.message, /^outbound request refused: /, url)
+      assert.deepEqual(Object.keys(err), [], 'no code or cause is handed over')
+    }
+    assert.equal(connections, 0, 'nothing connected to the local server')
+
+    // the same server made reachable (as a trusted origin is): the per-app bound of 4 requests in flight
+    const policy = createOutboundFetch({ isAllowedAddress: () => true, timeoutMs: 5000 })
+    world.loader.outboundFetch = policy
+    assert.equal(await (await fetchFn(`${base}/x`)).text(), 'local')
+    const held = Array.from({ length: OUTBOUND_DEFAULTS.perKey }, () => fetchFn(`${base}/hold`))
+    while (waiting.length < OUTBOUND_DEFAULTS.perKey) await tick()
+    const refused = await fetchFn(`${base}/x`).then(
+      () => assert.fail('a fifth request in flight was admitted'),
+      e => e
+    )
+    assert.match(refused.message, /too many requests in flight/)
+    // another caller (another app's key) is still served
+    assert.equal(await (await policy(`${base}/x`, {}, { key: 'another app' })).text(), 'local')
+    for (const res of waiting) res.end('late')
+    assert.deepEqual(await Promise.all(held.map(request => request.then(resp => resp.text()))), [
+      'late',
+      'late',
+      'late',
+      'late',
+    ])
+    // and the app's slots are free again
+    assert.equal(await (await fetchFn(`${base}/x`)).text(), 'local')
+  } finally {
+    server.closeAllConnections()
+    await new Promise(resolve => server.close(resolve))
+  }
 })
 
 test('app.fetch: a request outliving its run is aborted silently and never settles', async () => {

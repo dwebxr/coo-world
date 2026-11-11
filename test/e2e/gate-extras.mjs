@@ -500,7 +500,12 @@ try {
                 const rect = node.getBoundingClientRect()
                 window.__bootBoxes.push({
                   box: node.className,
-                  visible: node.isConnected && rect.width > 0 && rect.height > 0,
+                  // as Playwright's own "visible": a box with a size that is not hidden
+                  visible:
+                    node.isConnected &&
+                    rect.width > 0 &&
+                    rect.height > 0 &&
+                    getComputedStyle(node).visibility === 'visible',
                   drawn: !!document.getElementById('root')?.firstChild,
                 })
               }

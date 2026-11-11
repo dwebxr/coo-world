@@ -502,6 +502,156 @@ test("voice room: this client's share status follows what is shared; a stop or a
   ])
 })
 
+test('voice room: a delivery already under way when the room is left creates nothing', async () => {
+  // An emitter calls the listeners it had when the event began: taking them off in leave() does not stop the one
+  // about to run. Here another listener of the same event leaves first (Codex: the voice and the screen came back).
+  for (const source of ['microphone', 'screen_share']) {
+    const c = client()
+    c.player('p1')
+    const room = await c.join()
+    room.prependListener(RoomEvent.TrackSubscribed, () => c.world.emit('kick', 'moderation'))
+    const track = source === 'microphone' ? c.micTrack() : c.screenTrack()
+    room.emit(RoomEvent.TrackSubscribed, track, {}, c.participant('p1', 'stage'))
+    assert.equal(c.livekit.left, true)
+    assert.equal(c.livekit.voices.size, 0, source)
+    assert.equal(c.livekit.shares.size, 0, source)
+    assert.deepEqual(c.shown(), [], source)
+  }
+  // the same for every other handler: called after leaving, each does nothing
+  const c = client()
+  const me = c.player('me')
+  c.player('p1')
+  const room = await c.join()
+  const local = room.localParticipant
+  const handlers = [
+    ['onTrackSubscribed', [c.micTrack(), {}, c.participant('p1', 'stage')]],
+    ['onTrackSubscribed', [c.screenTrack(), {}, c.participant('p1', 'stage')]],
+    ['onTrackUnsubscribed', [c.micTrack(), {}, c.participant('p1', 'stage')]],
+    ['onLocalTrackPublished', [{ source: 'screen_share', track: c.screenTrack() }, local]],
+    ['onLocalTrackPublished', [{ source: 'microphone', track: c.micTrack() }, local]],
+    ['onLocalTrackUnpublished', [{ source: 'microphone', track: c.micTrack() }, local]],
+    ['onTrackMuted', [{ isLocal: true, source: 'microphone' }]],
+    ['onTrackUnmuted', [{ isLocal: true, source: 'microphone' }]],
+    ['onMetadataChanged', [undefined, local]],
+    ['onLocalSpeaking', [true]],
+  ]
+  c.world.emit('disconnect', true)
+  c.statuses.length = 0
+  local.asked.length = 0
+  for (const [name, args] of handlers) c.livekit[name](...args)
+  assert.equal(c.livekit.voices.size, 0)
+  assert.equal(c.livekit.shares.size, 0)
+  assert.deepEqual(c.shown(), [])
+  assert.deepEqual(c.statuses, [], 'no status after leaving')
+  assert.deepEqual(me.speaking, [], 'this client is not said to speak')
+  assert.deepEqual(local.asked, [])
+  // and this client's own speaking state is no longer followed at all
+  assert.equal(local.listenerCount(ParticipantEvent.IsSpeakingChanged), 0)
+})
+
+test('voice room: this client speaking is followed while in the room', async () => {
+  const c = client()
+  const me = c.player('me')
+  const room = await c.join()
+  const said = []
+  c.livekit.on('speaking', event => said.push(event))
+  room.localParticipant.emit(ParticipantEvent.IsSpeakingChanged, true)
+  room.localParticipant.emit(ParticipantEvent.IsSpeakingChanged, false)
+  assert.deepEqual(me.speaking, [true, false])
+  assert.deepEqual(said, [
+    { playerId: 'me', speaking: true },
+    { playerId: 'me', speaking: false },
+  ])
+  // destroy takes the listener off by name (off() without one throws in the SDK's emitter)
+  c.livekit.destroy()
+  assert.equal(room.localParticipant.listenerCount(ParticipantEvent.IsSpeakingChanged), 0)
+})
+
+test('voice room: a capture that starts after its stop was asked is ended', async () => {
+  // The player is still choosing what to share when the stop is asked. The room waits only so long for that
+  // capture, so the stop ends nothing, and the capture is published afterwards (Codex: it stayed, with a status
+  // that said nothing was shared).
+  const c = client()
+  c.player('me')
+  const room = await c.join()
+  const local = room.localParticipant
+  let chosen
+  local.setScreenShareEnabled = on => {
+    local.asked.push(['screen', on])
+    return on ? new Promise(resolve => (chosen = resolve)) : Promise.resolve()
+  }
+  c.livekit.setScreenShareTarget('stage')
+  c.livekit.setScreenShareTarget(null)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(
+    local.asked.filter(([what]) => what === 'screen'),
+    [
+      ['screen', true],
+      ['screen', false],
+    ]
+  )
+  // the player picks a window now
+  local.asked.length = 0
+  const track = c.screenTrack()
+  local.metadata = shareTo(null)
+  room.emit(RoomEvent.LocalTrackPublished, { source: 'screen_share', track }, local)
+  assert.deepEqual(local.asked, [['screen', false]], 'ended as soon as it is published')
+  chosen()
+  await new Promise(resolve => setImmediate(resolve))
+  room.emit(RoomEvent.LocalTrackUnpublished, { source: 'screen_share', track }, local)
+  assert.equal(c.livekit.shares.size, 0)
+  assert.equal(c.livekit.status.screenshare, null)
+  // a share that IS asked for is left alone when it is published
+  local.asked.length = 0
+  local.setScreenShareEnabled = on => (local.asked.push(['screen', on]), Promise.resolve())
+  c.livekit.setScreenShareTarget('stage')
+  local.metadata = shareTo('stage')
+  room.emit(RoomEvent.LocalTrackPublished, { source: 'screen_share', track: c.screenTrack() }, local)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(
+    local.asked.filter(([what]) => what === 'screen'),
+    [['screen', true]]
+  )
+  assert.equal(c.livekit.status.screenshare, 'stage')
+})
+
+test('voice room: a closed picker or a refused microphone is said, not thrown; asking again asks again', async t => {
+  const warnings = []
+  t.mock.method(console, 'warn', line => warnings.push(line))
+  const unhandled = []
+  const onUnhandled = reason => unhandled.push(reason)
+  process.on('unhandledRejection', onUnhandled)
+  t.after(() => process.off('unhandledRejection', onUnhandled))
+  const c = client()
+  c.player('me')
+  const room = await c.join()
+  const local = room.localParticipant
+  const refuse = name => Object.assign(new Error('Permission denied'), { name })
+  local.setScreenShareEnabled = on => (local.asked.push(['screen', on]), Promise.reject(refuse('NotAllowedError')))
+  local.setMicrophoneEnabled = on => (local.asked.push(['mic', on]), Promise.reject(refuse('NotAllowedError')))
+  c.livekit.setScreenShareTarget('stage')
+  c.livekit.setMicrophoneEnabled(true)
+  // a request that throws at once (the SDK validates its arguments before it returns a promise)
+  local.setMicrophoneEnabled = () => {
+    throw new Error('not connected')
+  }
+  c.livekit.setMicrophoneEnabled(true)
+  for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(unhandled, [])
+  assert.deepEqual(warnings, [
+    '[livekit] screen share: Permission denied',
+    '[livekit] microphone: Permission denied',
+    '[livekit] microphone: not connected',
+  ])
+  assert.equal(c.livekit.status.screenshare, null)
+  assert.equal(c.livekit.status.mic, false)
+  // the same screen asked again: the capture is asked for again
+  local.asked.length = 0
+  local.setScreenShareEnabled = on => (local.asked.push(['screen', on]), Promise.resolve())
+  c.livekit.setScreenShareTarget('stage')
+  assert.deepEqual(local.asked, [['screen', true]])
+})
+
 test('voice room: the end of an older track leaves the newer one of the same player', async () => {
   const c = client()
   c.player('p1')

@@ -106,6 +106,7 @@ jobs:
         id: hostile_content
         continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/hostile-content.mjs --engine=${{ matrix.engine }}
+
       - name: Interface faults (failed avatar, a pane that throws, CSS in a world image URL)
         id: interface_faults
         continue-on-error: ${{ matrix.engine == 'firefox' }}

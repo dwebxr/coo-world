@@ -25,12 +25,12 @@ import { cleaner } from './cleaner'
 import { errorHandler } from './errorHandler'
 import { checkJwtSecret, checkPreviousJwtSecret } from './jwtSecret'
 import { adminMode, adminStartupNotes } from './adminCode'
-import { readKickEnv } from './kickList'
 import { escapeHtml } from './escapeHtml'
 import { walletOf } from './solana-gating'
 import { clientIpKeys, createUploadLimits, readUploadLimitsEnv } from './uploadLimits'
 import { createConnectionLimits, readConnectionLimitsEnv } from './connectionLimits'
 import { assetRoutes, uploadRoutes } from './uploadRoutes'
+import { readKickEnv } from './kickList'
 
 const rootDir = path.join(__dirname, '../')
 const worldDir = path.join(rootDir, process.env.WORLD)

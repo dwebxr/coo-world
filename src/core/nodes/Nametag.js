@@ -1,4 +1,7 @@
 import { Node } from './Node'
+import { boundedText } from '../extras/boundedValue.js'
+
+export const NAMETAG_MAX_LENGTH = 256
 
 const defaults = {
   label: '...',
@@ -51,6 +54,8 @@ export class Nametag extends Node {
     if (typeof value !== 'string') {
       throw new Error('[nametag] label invalid')
     }
+    // fitted to the tag's width one character at a time (boundedValue.js)
+    value = boundedText(value, NAMETAG_MAX_LENGTH)
     if (this._label === value) return
     this._label = value
     this.handle?.setName(value)

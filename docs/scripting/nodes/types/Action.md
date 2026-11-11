@@ -6,7 +6,7 @@ An action is something people can interact with in the world.
 
 ### `.label`: String
 
-The label shown to the user when they are nearby. Defaults to `Interact`.
+The label shown to the user when they are nearby. Defaults to `Interact`. A label longer than 256 characters is cut to that length.
 
 ### `.distance`: Number
 

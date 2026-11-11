@@ -137,13 +137,16 @@ function createEmitter(world, system, node) {
     uBillboard: { value: billboardModeInts[node._billboard] },
     uOrientation: node._billboard === 'full' ? system.uOrientationFull : system.uOrientationY,
   }
-  world.loader.load('texture', node._image).then(texture => {
-    texture.colorSpace = THREE.SRGBColorSpace
-    uniforms.uTexture.value = texture
-    // console.log(t)
-    // texture.image = t.image
-    // texture.needsUpdate = true
-  })
+  world.loader
+    .load('texture', node._image)
+    .then(texture => {
+      texture.colorSpace = THREE.SRGBColorSpace
+      uniforms.uTexture.value = texture
+    })
+    .catch(err => {
+      // an image that is missing or refused: the particles keep the empty texture they started with
+      console.warn('[particles] image not loaded:', err?.message || err)
+    })
 
   const material = new CustomShaderMaterial({
     baseMaterial: node._lit ? THREE.MeshStandardMaterial : THREE.MeshBasicMaterial,

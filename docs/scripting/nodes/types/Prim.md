@@ -116,7 +116,7 @@ Physics material bounciness. 0 = no bounce, 1 = perfect bounce. Defaults to `0`.
 
 ### `.layer`: String
 
-Physics collision layer. Defaults to `'environment'`.
+Physics collision layer: `'environment'`, `'prop'` or `'tool'`. Defaults to `'environment'`.
 
 ### `.trigger`: Boolean
 

@@ -12,7 +12,9 @@ Currently only `mp3` files are supported.
 
 ### `.volume`: Number
 
-The audio volume. Defaults to `1`.
+The audio volume. Defaults to `1`. Kept between `0` and `100`.
+
+This and the spatial numbers below are kept inside the ranges the browser's audio engine accepts (a value outside becomes the nearest bound, `NaN` becomes the default): `refDistance` and `rolloffFactor` are not negative, `maxDistance` is above zero, the cone angles are between `0` and `360`, and `coneOuterGain` is between `0` and `1`.
 
 ### `.loop`: Boolean
 

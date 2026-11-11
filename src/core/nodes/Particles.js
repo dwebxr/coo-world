@@ -1,6 +1,7 @@
 import * as THREE from '../extras/three'
 import { every, isArray, isFunction } from 'lodash-es'
 import { isBoolean, isNumber, isPrimitive, isString } from '../extras/scriptPrimitives.js'
+import { boundedInteger, boundedNumber } from '../extras/boundedValue.js'
 
 import { Node } from './Node'
 import { scriptView, sealMath } from '../extras/sealMath.js'
@@ -40,6 +41,14 @@ const billboards = ['full', 'y', 'direction']
 // time = ratio from start of life to end (0 to 1)
 // value = size, rotate, color, alpha, emissive etc
 // eg: `0,1|0.5,2|1,1`
+
+// What a particles node keeps of its sizes (boundedValue.js): the pool and its buffers are `max` long (the client makes
+// seventeen floats a particle, twice, and the worker one object each), and `rate` and a burst's `count` are how many
+// the worker tries to start in one step.
+export const PARTICLES_MAX = 50000
+export const PARTICLES_MAX_RATE = 100000 // a second
+export const PARTICLES_MAX_BURSTS = 64
+export const PARTICLES_MAX_TIME = 1e6 // seconds
 
 // prettier-ignore
 const defaults = {
@@ -290,7 +299,7 @@ export class Particles extends Node {
     if (!isNumber(value)) {
       throw new Error('[particles] rate not a number')
     }
-    this._rate = value
+    this._rate = boundedNumber(value, defaults.rate, 0, PARTICLES_MAX_RATE)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -300,13 +309,25 @@ export class Particles extends Node {
   }
 
   set bursts(value = defaults.bursts) {
-    const bursts = isArray(value)
-      ? Object.freeze(Array.from(value, item => Object.freeze({ time: item?.time, count: item?.count })))
-      : value
+    // the first PARTICLES_MAX_BURSTS entries are read (each field once), checked, then bounded
+    let bursts = value
+    if (isArray(value)) {
+      bursts = []
+      const count = Math.min(value.length, PARTICLES_MAX_BURSTS)
+      for (let i = 0; i < count; i++) {
+        const item = value[i]
+        bursts.push({ time: item?.time, count: item?.count })
+      }
+    }
     if (!isBursts(bursts)) {
       throw new Error('[particles] bursts invalid')
     }
-    this._bursts = bursts
+    for (const burst of bursts) {
+      burst.time = boundedNumber(burst.time, 0, 0, PARTICLES_MAX_TIME)
+      burst.count = boundedInteger(burst.count, 0, 0, PARTICLES_MAX)
+      Object.freeze(burst)
+    }
+    this._bursts = Object.freeze(bursts)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -345,7 +366,7 @@ export class Particles extends Node {
     if (!isNumber(value)) {
       throw new Error('[particles] max not a number')
     }
-    this._max = value
+    this._max = boundedInteger(value, defaults.max, 0, PARTICLES_MAX)
     this.needsRebuild = true
     this.setDirty()
   }

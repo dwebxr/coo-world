@@ -2,6 +2,7 @@ import * as THREE from '../extras/three'
 import { scriptView, sealMath } from '../extras/sealMath.js'
 import { every, isArray } from 'lodash-es'
 import { isBoolean, isNumber, isPrimitive, isString } from '../extras/scriptPrimitives.js'
+import { boundedNumber } from '../extras/boundedValue.js'
 import Yoga from 'yoga-layout'
 
 import { guardTransform, Node } from './Node'
@@ -53,6 +54,26 @@ const pivots = [
   'bottom-center',
   'bottom-right',
 ]
+
+// What a UI keeps of its sizes (boundedValue.js): a NaN is the default, a value outside the range the nearest bound.
+// The canvas is bounded separately, where it is made (canvasScale).
+export const UI_MAX_SIDE = 16384 // width and height, in the UI's own units
+export const UI_MAX_RES = 16
+export const UI_MAX_SIZE = 1e6
+// The most pixels a UI's canvas has: 4096 on a side and 8,388,608 in all (1920 x 1080 at the default res of 2 fits).
+// A canvas keeps 4 bytes a pixel and its texture as many again, and a canvas over the browser's own limit cannot be
+// drawn on at all (Safari on a phone has allowed about 16.7 million pixels).
+export const UI_CANVAS_MAX_SIDE = 4096
+export const UI_CANVAS_MAX_PIXELS = 8388608
+
+// the factor a UI of this many layout units is drawn at: 1, or less when it would not fit the canvas limits
+export function canvasScale(width, height) {
+  let scale = 1
+  if (width > UI_CANVAS_MAX_SIDE) scale = UI_CANVAS_MAX_SIDE / width
+  if (height * scale > UI_CANVAS_MAX_SIDE) scale = UI_CANVAS_MAX_SIDE / height
+  if (width * scale * height * scale > UI_CANVAS_MAX_PIXELS) scale = Math.sqrt(UI_CANVAS_MAX_PIXELS / (width * height))
+  return scale
+}
 
 const defaults = {
   space: 'world',
@@ -125,9 +146,15 @@ export class UI extends Node {
   build() {
     if (!isBrowser) return
     this.unbuild()
+    // Layout, drawing and hit testing work in layout units (width x res by height x res); the canvas has that many
+    // pixels unless that is more than a canvas may have here, and then draw() scales the picture down to fit
+    const layoutWidth = this._width * this._res
+    const layoutHeight = this._height * this._res
+    this.canvasScale = canvasScale(layoutWidth, layoutHeight)
     this.canvas = document.createElement('canvas')
-    this.canvas.width = this._width * this._res
-    this.canvas.height = this._height * this._res
+    // whole pixels, rounded down as the canvas itself rounds a size it is given
+    this.canvas.width = Math.floor(layoutWidth * this.canvasScale)
+    this.canvas.height = Math.floor(layoutHeight * this.canvasScale)
     this.canvasCtx = this.canvas.getContext('2d')
     if (this._space === 'world') {
       // world-space
@@ -234,6 +261,7 @@ export class UI extends Node {
     if (!isBrowser) return
     this.yogaNode.calculateLayout(this._width * this._res, this._height * this._res, Yoga.DIRECTION_LTR)
     const ctx = this.canvasCtx
+    ctx.setTransform(this.canvasScale, 0, 0, this.canvasScale, 0, 0)
     ctx.clearRect(0, 0, this._width * this._res, this._height * this._res)
     const left = this.yogaNode.getComputedLeft()
     const top = this.yogaNode.getComputedTop()
@@ -504,6 +532,7 @@ export class UI extends Node {
     if (!isNumber(value)) {
       throw new Error('[ui] width not a number')
     }
+    value = boundedNumber(value, defaults.width, 0, UI_MAX_SIDE)
     if (this._width === value) return
     this._width = value
     this.yogaNode?.setWidth(this._width * this._res)
@@ -518,6 +547,7 @@ export class UI extends Node {
     if (!isNumber(value)) {
       throw new Error('[ui] height not a number')
     }
+    value = boundedNumber(value, defaults.height, 0, UI_MAX_SIDE)
     if (this._height === value) return
     this._height = value
     this.yogaNode?.setHeight(this._height * this._res)
@@ -532,6 +562,7 @@ export class UI extends Node {
     if (!isNumber(value)) {
       throw new Error('[ui] size not a number')
     }
+    value = boundedNumber(value, defaults.size, 0, UI_MAX_SIZE)
     if (this._size === value) return
     this._size = value
     this.rebuild()
@@ -545,6 +576,7 @@ export class UI extends Node {
     if (!isNumber(value)) {
       throw new Error('[ui] res not a number')
     }
+    value = boundedNumber(value, defaults.res, 0, UI_MAX_RES)
     if (this._res === value) return
     this._res = value
     this.rebuild()

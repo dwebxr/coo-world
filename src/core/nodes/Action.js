@@ -2,6 +2,9 @@ import * as THREE from '../extras/three'
 import { isFunction } from 'lodash-es'
 
 import { Node } from './Node'
+import { boundedText } from '../extras/boundedValue.js'
+
+export const ACTION_LABEL_MAX_LENGTH = 256
 
 const defaults = {
   label: 'Interact',
@@ -63,7 +66,9 @@ export class Action extends Node {
   set label(value) {
     // drawn on the action prompt every frame: kept as a primitive string (a boxed String or an object with its own
     // toString would run script code inside the client's frame loop)
-    this._label = typeof value === 'string' ? value : typeof value === 'number' ? value + '' : defaults.label
+    // and measured there every frame, so of a bounded length (boundedValue.js)
+    const label = typeof value === 'string' ? value : typeof value === 'number' ? value + '' : defaults.label
+    this._label = boundedText(label, ACTION_LABEL_MAX_LENGTH)
   }
 
   get distance() {

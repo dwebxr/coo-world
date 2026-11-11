@@ -34,11 +34,21 @@ const ui = app.create('ui', {
 
 ### `.width`: Number
 
-The width of the UI canvas in pixels. Defaults to `100`.
+The width of the UI canvas in pixels. Defaults to `100`. Kept between `0` and `16384` (see Limits).
 
 ### `.height`: Number
 
-The height of the UI canvas in pixels. Defaults to `100`.
+The height of the UI canvas in pixels. Defaults to `100`. Kept between `0` and `16384` (see Limits).
+
+### Limits
+
+The numbers a UI is sized by are kept inside a range: `width` and `height` between `0` and `16384`, `res` between `0`
+and `16`, `size` between `0` and `1000000`. A value outside its range becomes the nearest bound, and `NaN` becomes
+the default; nothing throws, and reading the property back gives what was kept.
+
+The canvas a UI is drawn on has at most 4096 pixels on a side and 8,388,608 pixels in all (`width` and `height` times
+`res`; 1920 by 1080 at the default `res` of 2 fits). A larger UI keeps its size, its layout and its pointer
+coordinates, and is drawn at a lower resolution.
 
 ### `.size`: Number
 

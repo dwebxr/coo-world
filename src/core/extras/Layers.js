@@ -39,4 +39,11 @@ for (const key in Groups) {
   }
 }
 
-// console.log('Layers', Layers)
+// The layers a node (collider, prim, controller) may be on. `player` is the engine's own, for the players' capsules:
+// what is on it is skipped by the checks that keep players from colliding with each other, and is taken for a player
+// by what filters on the layer. No script and no model file puts a node there.
+export const NODE_LAYERS = Object.freeze(['environment', 'prop', 'tool'])
+
+export function isNodeLayer(value) {
+  return NODE_LAYERS.includes(value)
+}

@@ -36,11 +36,11 @@ Defaults to `0`.
 
 ### `.value`: String
 
-The text to display.
+The text to display. A text longer than 10,000 characters is cut to that length.
 
 ### `.fontSize`: Number
 
-The font size in pixels.
+The font size in pixels, kept between `0` and `4096`.
 Defauls to `16`.
 
 ### `.color`: Number

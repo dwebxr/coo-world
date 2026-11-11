@@ -1,7 +1,11 @@
 const emitters = {}
 const MAX_DISTANCE_EMITS_PER_UPDATE = 1000
+// rows and columns of a spritesheet (65,536 frames at most)
+const SPRITESHEET_MAX_SIDE = 256
 
 import { DEG2RAD } from '../core/extras/general'
+import { boundedInteger } from '../core/extras/boundedValue.js'
+import { toEngineNumber } from '../core/extras/engineNumber.js'
 import { Vector3, Quaternion, Matrix4, Color } from '../core/extras/three'
 
 const v1 = new Vector3()
@@ -124,9 +128,15 @@ function createEmitter(config) {
 
   function emit({ amount, matrixWorld }) {
     const progress = elapsed / config.duration // ratio through this cycle (0 to 1)
+    // No more starts than the pool holds: a particle started with no life left is free again at once, and would be
+    // started `amount` times. The free particle is searched from where the last one was found (the ones before it
+    // were in use then), so one step costs the pool's length once, whatever the rate.
+    amount = Math.min(amount, particles.length)
+    let next = 0
     for (let i = 0; i < amount; i++) {
-      const particle = particles.find(p => p.age >= p.life)
-      if (!particle) break
+      while (next < particles.length && !(particles[next].age >= particles[next].life)) next++
+      if (next === particles.length) break
+      const particle = particles[next]
       particle.age = 0
       particle.life = life(progress)
       particle.speed = speed(progress)
@@ -1002,7 +1012,11 @@ function createSpritesheet(options) {
   if (!options) {
     return () => [0, 0, 1, 1]
   }
-  const [rows, cols, frameRate, loop] = options
+  // rows and columns are the node's own values (any primitive): numbers by the engine's rule, whole and bounded,
+  // since every frame gets an entry below
+  const rows = boundedInteger(toEngineNumber(options[0]), 1, 1, SPRITESHEET_MAX_SIDE)
+  const cols = boundedInteger(toEngineNumber(options[1]), 1, 1, SPRITESHEET_MAX_SIDE)
+  const [, , frameRate, loop] = options
   const totalFrames = rows * cols
   // pre-calculate all uv frames
   const uvFrames = []

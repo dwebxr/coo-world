@@ -4,6 +4,8 @@ import * as THREE from '../extras/three'
 
 import { getRef, Node, resolveValueRef, secureRef } from './Node'
 import { uuid } from '../utils'
+import { boundedAudio } from '../extras/audioBounds.js'
+import { boundedNumber, SCREEN_MAX_SIDE } from '../extras/boundedValue.js'
 import { materialForScript } from '../extras/scriptMaterial'
 import { hardenForScripts } from '../extras/scriptHardening'
 
@@ -25,6 +27,10 @@ const pivots = [
   'bottom-center',
   'bottom-right',
 ]
+
+// width divided by height of the screen, when only one of them is given
+const VIDEO_MIN_ASPECT = 0.001
+const VIDEO_MAX_ASPECT = 1000
 
 const defaults = {
   screenId: null,
@@ -634,6 +640,7 @@ export class Video extends Node {
     if (!isNumber(value)) {
       throw new Error('[video] aspect not a number')
     }
+    value = boundedNumber(value, defaults.aspect, VIDEO_MIN_ASPECT, VIDEO_MAX_ASPECT)
     if (this._aspect === value) return
     this._aspect = value
     this.needsRebuild = true
@@ -662,6 +669,7 @@ export class Video extends Node {
     if (value !== null && !isNumber(value)) {
       throw new Error('[video] width not null or number')
     }
+    if (value !== null) value = boundedNumber(value, null, 0, SCREEN_MAX_SIDE)
     if (this._width === value) return
     this._width = value
     this.needsRebuild = true
@@ -676,6 +684,7 @@ export class Video extends Node {
     if (value !== null && !isNumber(value)) {
       throw new Error('[video] height not null or number')
     }
+    if (value !== null) value = boundedNumber(value, null, 0, SCREEN_MAX_SIDE)
     if (this._height === value) return
     this._height = value
     this.needsRebuild = true
@@ -714,6 +723,7 @@ export class Video extends Node {
     if (!isNumber(value)) {
       throw new Error('[video] volume not number')
     }
+    value = boundedAudio('volume', value, defaults.volume)
     if (this._volume === value) return
     this._volume = value
     if (this.gain) {
@@ -770,6 +780,7 @@ export class Video extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] refDistance not a number')
     }
+    value = boundedAudio('refDistance', value, defaults.refDistance)
     this._refDistance = value
     if (this.pannerNode) {
       this.pannerNode.refDistance = this._refDistance
@@ -784,6 +795,7 @@ export class Video extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] maxDistance not a number')
     }
+    value = boundedAudio('maxDistance', value, defaults.maxDistance)
     this._maxDistance = value
     if (this.pannerNode) {
       this.pannerNode.maxDistance = this._maxDistance
@@ -798,6 +810,7 @@ export class Video extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] rolloffFactor not a number')
     }
+    value = boundedAudio('rolloffFactor', value, defaults.rolloffFactor)
     this._rolloffFactor = value
     if (this.pannerNode) {
       this.pannerNode.rolloffFactor = this._rolloffFactor
@@ -812,6 +825,7 @@ export class Video extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] coneInnerAngle not a number')
     }
+    value = boundedAudio('coneInnerAngle', value, defaults.coneInnerAngle)
     this._coneInnerAngle = value
     if (this.pannerNode) {
       this.pannerNode.coneInnerAngle = this._coneInnerAngle
@@ -826,6 +840,7 @@ export class Video extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] coneOuterAngle not a number')
     }
+    value = boundedAudio('coneOuterAngle', value, defaults.coneOuterAngle)
     this._coneOuterAngle = value
     if (this.pannerNode) {
       this.pannerNode.coneOuterAngle = this._coneOuterAngle
@@ -840,6 +855,7 @@ export class Video extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] coneOuterGain not a number')
     }
+    value = boundedAudio('coneOuterGain', value, defaults.coneOuterGain)
     this._coneOuterGain = value
     if (this.pannerNode) {
       this.pannerNode.coneOuterGain = this._coneOuterGain

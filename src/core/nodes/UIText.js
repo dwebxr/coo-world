@@ -1,6 +1,7 @@
 import Yoga from 'yoga-layout'
 import { every, isArray } from 'lodash-es'
 import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
+import { boundedNumber, boundedText } from '../extras/boundedValue.js'
 
 import { Node } from './Node'
 import { Display, isDisplay } from '../extras/yoga'
@@ -8,6 +9,9 @@ import { fillRoundRect } from '../extras/roundRect'
 import { wrapText } from '../extras/wrapText.js'
 
 const textAligns = ['left', 'center', 'right']
+
+export const UITEXT_MAX_LENGTH = 10000
+export const UITEXT_MAX_FONT_SIZE = 4096
 
 const defaults = {
   display: 'flex',
@@ -398,6 +402,8 @@ export class UIText extends Node {
     if (!isString(val)) {
       throw new Error(`[uitext] value not a string`)
     }
+    // measured word by word, and again whenever the UI is laid out (boundedValue.js)
+    val = boundedText(val, UITEXT_MAX_LENGTH)
     if (this._value === val) return
     this._value = val
     this.yogaNode?.markDirty()
@@ -412,6 +418,7 @@ export class UIText extends Node {
     if (!isNumber(value)) {
       throw new Error(`[uitext] fontSize not a number`)
     }
+    value = boundedNumber(value, defaults.fontSize, 0, UITEXT_MAX_FONT_SIZE)
     if (this._fontSize === value) return
     this._fontSize = value
     this.yogaNode?.markDirty()

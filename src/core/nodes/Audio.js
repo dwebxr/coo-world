@@ -3,6 +3,7 @@ import { every } from 'lodash-es'
 import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
 
 import { Node } from './Node'
+import { boundedAudio } from '../extras/audioBounds.js'
 
 const v1 = new THREE.Vector3()
 const v2 = new THREE.Vector3()
@@ -136,6 +137,7 @@ export class Audio extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] volume not a number')
     }
+    value = boundedAudio('volume', value, defaults.volume)
     this._volume = value
     if (this.gainNode) {
       this.gainNode.gain.value = this._volume
@@ -203,6 +205,7 @@ export class Audio extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] refDistance not a number')
     }
+    value = boundedAudio('refDistance', value, defaults.refDistance)
     this._refDistance = value
     if (this.pannerNode) {
       this.pannerNode.refDistance = this._refDistance
@@ -217,6 +220,7 @@ export class Audio extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] maxDistance not a number')
     }
+    value = boundedAudio('maxDistance', value, defaults.maxDistance)
     this._maxDistance = value
     if (this.pannerNode) {
       this.pannerNode.maxDistance = this._maxDistance
@@ -231,6 +235,7 @@ export class Audio extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] rolloffFactor not a number')
     }
+    value = boundedAudio('rolloffFactor', value, defaults.rolloffFactor)
     this._rolloffFactor = value
     if (this.pannerNode) {
       this.pannerNode.rolloffFactor = this._rolloffFactor
@@ -245,6 +250,7 @@ export class Audio extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] coneInnerAngle not a number')
     }
+    value = boundedAudio('coneInnerAngle', value, defaults.coneInnerAngle)
     this._coneInnerAngle = value
     if (this.pannerNode) {
       this.pannerNode.coneInnerAngle = this._coneInnerAngle
@@ -259,6 +265,7 @@ export class Audio extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] coneOuterAngle not a number')
     }
+    value = boundedAudio('coneOuterAngle', value, defaults.coneOuterAngle)
     this._coneOuterAngle = value
     if (this.pannerNode) {
       this.pannerNode.coneOuterAngle = this._coneOuterAngle
@@ -273,6 +280,7 @@ export class Audio extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] coneOuterGain not a number')
     }
+    value = boundedAudio('coneOuterGain', value, defaults.coneOuterGain)
     this._coneOuterGain = value
     if (this.pannerNode) {
       this.pannerNode.coneOuterGain = this._coneOuterGain

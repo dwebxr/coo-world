@@ -50,13 +50,14 @@ Defaults to `0`.
 
 ### `.rate`: Number
 
-The number of particles to emit per second.
+The number of particles to emit per second, kept between `0` and `100000`.
 
 Defaults to `10`
 
 ### `.bursts`: Array
 
 An optional list of particle bursts to run at specific times. Useful for explosions etc.
+At most 64 bursts are kept (the first ones), and a burst's `count` is a whole number of at most `50000`.
 
 The following example will immediately emit 10 particles and then half a second later emit 30 more.
 
@@ -80,6 +81,8 @@ Defaults to `true`.
 ### `.max`: Number
 
 The absolute maximum number of particles that can exist at one time. If the emitter runs out of particles it will stop emitting until more become available. Defaults to `1000`.
+
+A whole number between `0` and `50000`: a fraction is rounded down, a larger value becomes `50000`, and `NaN` becomes the default. Reading the property back gives what was kept.
 
 ### `.timescale`: Number
 
@@ -163,6 +166,8 @@ particles.spritesheet = [
   true, // loop (if disabled will stop on last frame)
 ]
 ```
+
+Rows and columns are whole numbers between `1` and `256`.
 
 ### `.blending`: String
 

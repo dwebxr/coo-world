@@ -37,8 +37,9 @@ jobs:
     # pinned Playwright has none for a release newer than itself (the label moved to 26.04 and every leg failed
     # at "Install browser"). Move this together with a Playwright upgrade.
     runs-on: ubuntu-24.04
-    # software-rendered Chromium runs the simulated-time suites far below real time (physics-boundary alone can take 20+ min)
-    timeout-minutes: 60
+    # software-rendered Chromium runs the simulated-time suites far below real time (physics-boundary alone takes 25
+    # minutes; the whole Chromium leg ran 50 with ten suites, 10 short of the limit there was)
+    timeout-minutes: 80
     strategy:
       fail-fast: false
       matrix:

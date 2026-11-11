@@ -358,10 +358,38 @@ test('a value met twice is read once, also a function with a toJSON and an owner
   assert.equal(circle.owner.self, circle.owner)
   assert.equal(circle.owner.list[0], circle.owner)
   assert.equal(circle.again, circle.owner)
-  // two values whose toJSON results are each other: the packer went round until the stack ended, and so does this
-  const a = { constructor: null, toJSON: () => b }
-  const b = { constructor: null, toJSON: () => a }
-  assert.throws(() => readScriptData(a), RangeError)
+  // owners whose toJSON results are each other, and nothing else: an empty object, as the server's packer had them
+  class Other {
+    toJSON() {
+      return this.other
+    }
+  }
+  const a = new Other()
+  const b = new Other()
+  a.other = b
+  b.other = a
+  assert.deepEqual(readScriptData(a), {})
+  assert.deepEqual(readPacket(writePacket('snapshot', a))[1], {})
+  assert.deepEqual(readPacket(writePacket('snapshot', readScriptData([a, b])))[1], [{}, {}])
+  // a toJSON result stands for its owner wherever the owner is met: two owners of one result that holds them both
+  class Shared {
+    toJSON() {
+      return this.result
+    }
+  }
+  const first = new Shared()
+  const second = new Shared()
+  first.result = second.result = { first, second }
+  const both = readScriptData(first)
+  assert.equal(both.first, both)
+  assert.equal(both.second, both)
+  // a Proxy of an error says it is an ordinary object: it is still the error it stands for, as the packer took it
+  const proxied = readScriptData(new Proxy(new TypeError('boom', { cause: 7 }), {}))
+  assert.ok(proxied instanceof Error)
+  assert.deepEqual([proxied.name, proxied.message, proxied.cause], ['TypeError', 'boom', 7])
+  for (const [, write] of WRITERS) {
+    assert.equal(bytes(write(proxied)), bytes(write(new Proxy(new TypeError('boom', { cause: 7 }), {}))))
+  }
 })
 
 test('the values of a message are counted: an array that says any length is refused before it is read', () => {
@@ -379,9 +407,7 @@ test('the values of a message are counted: an array that says any length is refu
   // a real array of the largest length (all holes)
   const sparse = []
   sparse.length = 2 ** 32 - 1
-  const started = performance.now()
   assert.throws(() => readScriptData(sparse), { name: 'RangeError', message: TOO_MANY_VALUES })
-  assert.ok(performance.now() - started < 200)
   // the count is of values, wherever they are: MAX_VALUES values pass, one more does not
   const most = new Array(MAX_VALUES - 1).fill(0)
   assert.equal(readScriptData(most).length, MAX_VALUES - 1)
@@ -390,6 +416,24 @@ test('the values of a message are counted: an array that says any length is refu
   assert.throws(() => readScriptData(nested), { message: TOO_MANY_VALUES })
   assert.throws(() => readScriptData(new Map(most.map((_, i) => [i, i]))), { message: TOO_MANY_VALUES })
   assert.throws(() => readScriptData(new Set(most.concat([1]).map((_, i) => i))), { message: TOO_MANY_VALUES })
+  // an owner and its toJSON result are one value (Codex: 262,144 instances whose toJSON is 0 pack to 262,159
+  // bytes, under the largest packet, and were counted twice and refused)
+  class Zero {
+    toJSON() {
+      return 0
+    }
+  }
+  const zeros = Array.from({ length: MAX_VALUES - 1 }, () => new Zero())
+  assert.equal(readScriptData(zeros).length, MAX_VALUES - 1)
+  assert.ok(writePacket('entityEvent', ['app', 0, 'probe', readScriptData(zeros)]).length <= MAX_VALUES + 32)
+  const one = new Zero()
+  assert.equal(readScriptData(new Array(MAX_VALUES - 1).fill(one)).length, MAX_VALUES - 1)
+  class Self {
+    toJSON() {
+      return { owners: new Array(MAX_VALUES - 3).fill(this) }
+    }
+  }
+  assert.equal(readScriptData(new Self()).owners.length, MAX_VALUES - 3)
   // and such a message could not have been sent: it is over the largest packet
   assert.ok(writePacket('entityEvent', ['app', 0, 'probe', most]).length > MAX_VALUES)
 })

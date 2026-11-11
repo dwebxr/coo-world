@@ -32,13 +32,16 @@
 //   shorter;
 // - a subclass of a built-in is copied as the built-in, with its contents (the packer wrote `class Rows extends
 //   Map` as an empty object, and tagged a subclass of a typed array with no known type).
+// - a toJSON result stands for its owner wherever the owner is met in the message, so two owners that return the
+//   same object holding both of them are both that object (the packer made one of them a second copy).
 //
 // A kind is told by what the value is, not by what it says it is (`constructor`, Symbol.toStringTag): the contents
 // of a built-in are read with the built-in's own methods, never with a method the value carries (a typed array's
 // slice consults its constructor's Symbol.species, which a script can set).
 //
-// The values of one message are counted: a message of more than MAX_VALUES could not be sent (the largest packet
-// is PACKET_CAP bytes, and a value takes at least one), and an array may say any length (a Proxy's, or
+// The values of one message are counted (an owner and its toJSON result as one): a message of more than MAX_VALUES
+// could not be sent (the largest packet is PACKET_CAP bytes, and a value takes at least one), and an array may say
+// any length (a Proxy's, or
 // `list.length = 2 ** 32 - 1`), which was read element by element until memory ran out.
 
 import { PACKET_CAP } from './writeLedger.js'
@@ -112,8 +115,19 @@ function read(value, state) {
   if (value === null || (type !== 'object' && type !== 'function')) return value
   const { seen, pending } = state
   if (seen.has(value)) return seen.get(value)
-  // met again inside its own toJSON result (`toJSON() { return { owner: this } }`): it is that result
-  if (pending.has(value)) return read(pending.get(value), state)
+  // met again inside its own toJSON result (`toJSON() { return { owner: this } }`): it is that result. Owners
+  // whose results are each other, and nothing else, are an empty object (as the server's packer had them)
+  if (pending.has(value)) {
+    const met = new Set()
+    let result = value
+    while (pending.has(result)) {
+      if (met.has(result)) return {}
+      met.add(result)
+      result = pending.get(result)
+    }
+    state.left++ // (the owner and what stands for it are one value)
+    return read(result, state)
+  }
   if (type === 'function') return readJSON(value, state, undefined)
   if (Array.isArray(value)) {
     const copy = []
@@ -146,6 +160,7 @@ function readJSON(value, state, otherwise) {
     const json = toJSON.call(value)
     if (json !== value) {
       state.pending.set(value, json)
+      state.left++ // (the owner and what stands for it are one value)
       const copy = read(json, state)
       state.pending.delete(value)
       state.seen.set(value, copy)
@@ -158,8 +173,18 @@ function readJSON(value, state, otherwise) {
 
 function readBuiltIn(value, state) {
   const { seen } = state
+  if (value instanceof Error) {
+    // what the packer writes of an error: its name, its message and its cause
+    const copy = new Error('')
+    seen.set(value, copy)
+    put(copy, 'name', read(value.name, state))
+    put(copy, 'message', read(value.message, state))
+    put(copy, 'cause', read(value.cause, state))
+    return copy
+  }
   // (what a value says it is decides nothing, but one that says it is an ordinary object is not asked further: a
-  // built-in that hides behind that tag is copied as the ordinary object it claims to be)
+  // built-in that hides behind that tag is copied as the ordinary object it claims to be. An error is asked first:
+  // a Proxy of one says it is an ordinary object, and the packer took it for the error it stands for)
   if (tagOf.call(value) === '[object Object]') return missing
   const kind = typedArrayKind.call(value)
   if (kind !== undefined) {
@@ -205,15 +230,6 @@ function readBuiltIn(value, state) {
     const flags = ask(regexFlags, value)
     const copy = new RegExp(source, flags === missing ? '' : flags)
     seen.set(value, copy)
-    return copy
-  }
-  if (value instanceof Error) {
-    // what the packer writes of an error: its name, its message and its cause
-    const copy = new Error('')
-    seen.set(value, copy)
-    put(copy, 'name', read(value.name, state))
-    put(copy, 'message', read(value.message, state))
-    put(copy, 'cause', read(value.cause, state))
     return copy
   }
   return missing

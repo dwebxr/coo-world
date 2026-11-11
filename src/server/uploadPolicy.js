@@ -12,7 +12,10 @@ const CONTENT_TYPES = {
   glb: 'model/gltf-binary',
   vrm: 'model/gltf-binary',
   hdr: 'image/vnd.radiance',
-  js: 'text/javascript',
+  // A script is text to everything that reads it (the loaders fetch it and evaluate its text in a compartment).
+  // Served as JavaScript from the page's own origin it was also a file a <script src>, a worker or an import could
+  // run with the page's rights; as plain text with nosniff a browser refuses it for all three.
+  js: 'text/plain; charset=utf-8',
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
   png: 'image/png',

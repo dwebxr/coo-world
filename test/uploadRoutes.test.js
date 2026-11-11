@@ -397,7 +397,8 @@ test('assets: nosniff + explicit type on 200/206/304; sandbox + attachment off t
     const js = await server.inject({ method: 'GET', url: '/assets/a.js' })
     assert.equal(js.statusCode, 200)
     assert.equal(inert(js.headers), true, JSON.stringify(js.headers))
-    assert.equal(js.headers['content-type'], 'text/javascript')
+    // plain text: with nosniff a browser refuses it as a script, a worker or a module; the loaders read its text
+    assert.equal(js.headers['content-type'], 'text/plain; charset=utf-8')
     assert.equal(js.body, 'app.on("update", () => {})')
     const png = await server.inject({ method: 'GET', url: '/assets/a.png' })
     assert.equal(png.statusCode, 200)

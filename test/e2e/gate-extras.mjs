@@ -181,6 +181,107 @@ try {
     })
   }
 
+  // The page's own headers, in a real engine: what the browser does with them, not only that they are sent
+  await step('page headers: the world is not framed, and a store script is text to the browser', async () => {
+    const script = smallest('.js')
+    ok(script, 'a .js asset exists')
+    const linesBefore = consoleLines.length
+    const errorsBefore = pageErrors.length
+    const r = await page.evaluate(async script => {
+      const head = async url => {
+        const res = await fetch(url)
+        const text = await res.text()
+        return {
+          status: res.status,
+          csp: res.headers.get('content-security-policy'),
+          xfo: res.headers.get('x-frame-options'),
+          permissions: res.headers.get('permissions-policy'),
+          nosniff: res.headers.get('x-content-type-options'),
+          type: res.headers.get('content-type'),
+          placeholders: /\{title\}|\{url\}|\{image\}|\{desc\}/.test(text),
+          length: text.length,
+        }
+      }
+      const pages = { root: await head('/'), index: await head('/index.html'), terms: await head('/terms.html') }
+      const asset = await head(`/assets/${script}`)
+      // The world in a frame, even of its own origin: the frame must not get the page. The page's first inline
+      // script defines window.__worldBoot at once, so a frame that got the page has it.
+      const framed = await new Promise(resolve => {
+        const frame = document.createElement('iframe')
+        frame.style.cssText = 'position:fixed;left:-9999px;width:10px;height:10px'
+        const look = () => {
+          let state
+          try {
+            state = frame.contentWindow && frame.contentWindow.__worldBoot ? 'loaded' : 'refused'
+          } catch {
+            state = 'refused'
+          }
+          frame.remove()
+          resolve(state)
+        }
+        frame.onload = () => setTimeout(look, 500)
+        frame.onerror = look
+        setTimeout(look, 8000)
+        frame.src = '/?framed=1'
+        document.body.appendChild(frame)
+      })
+      // a store script as a <script>, a module and a worker: the browser must refuse each (text/plain + nosniff)
+      const tag = type =>
+        new Promise(resolve => {
+          const el = document.createElement('script')
+          if (type) el.type = type
+          el.onload = () => resolve('ran')
+          el.onerror = () => resolve('refused')
+          setTimeout(() => resolve('timeout'), 8000)
+          el.src = `/assets/${script}?as=${type || 'classic'}`
+          document.head.appendChild(el)
+        })
+      const worker = new Promise(resolve => {
+        let w
+        try {
+          w = new Worker(`/assets/${script}?as=worker`)
+        } catch {
+          return resolve('refused')
+        }
+        w.onerror = event => {
+          event.preventDefault()
+          resolve('refused')
+        }
+        w.onmessage = () => resolve('ran')
+        setTimeout(() => resolve('timeout'), 8000)
+      })
+      return { pages, asset, framed, classic: await tag(''), module: await tag('module'), worker: await worker }
+    }, script)
+    // The refusals asked for here are reported in the console by the engines, each in its own words (a refused
+    // frame, a refused script, a worker's error event): they are what this step wants, not failures of the run.
+    // Everything logged during the step is kept in the step's own record and taken out of the run's.
+    await sleep(500)
+    const during = consoleLines.splice(linesBefore)
+    pageErrors.splice(errorsBefore)
+    ok(
+      !during.some(line => /SES_UNCAUGHT|SES_UNHANDLED/.test(line)),
+      `no script error meanwhile: ${during.join(' | ')}`
+    )
+    const CSP = "frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'"
+    for (const [name, got] of Object.entries(r.pages)) {
+      eq(got.status, 200, `${name}: status`)
+      eq(got.csp, CSP, `${name}: Content-Security-Policy`)
+      eq(got.xfo, 'DENY', `${name}: X-Frame-Options`)
+      eq(got.permissions, 'camera=(), geolocation=(), payment=(), usb=()', `${name}: Permissions-Policy`)
+      eq(got.nosniff, 'nosniff', `${name}: nosniff`)
+      eq(got.placeholders, false, `${name}: no placeholder left`)
+    }
+    eq(r.pages.index.length, r.pages.root.length, '/index.html is the page')
+    eq(r.asset.type, 'text/plain; charset=utf-8', 'a store script is served as text')
+    eq(r.asset.nosniff, 'nosniff', 'asset nosniff')
+    eq(r.framed, 'refused', 'the world in a frame')
+    eq(r.classic, 'refused', 'a store script as a classic script')
+    eq(r.module, 'refused', 'a store script as a module')
+    // a worker's refusal is not reported alike everywhere: what matters is that it never ran
+    ok(r.worker !== 'ran', `a store script as a worker: ${r.worker}`)
+    return `framed: ${r.framed}; script: ${r.classic}/${r.module}/${r.worker}`
+  })
+
   // the uploaded VRM differs from the player's current avatar (the default world only ships avatar.vrm,
   // which the player already wears, and applyAvatar() ignores an unchanged URL)
   await step('session avatar: switch to the uploaded VRM', async () => {

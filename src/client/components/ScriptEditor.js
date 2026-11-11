@@ -89,6 +89,10 @@ export function ScriptEditor({ app, onHandle }) {
     let dead
     load().then(monaco => {
       if (dead) return
+      if (!monaco) {
+        app.world.emit('toast', 'The script editor could not be loaded.')
+        return
+      }
       // only use cached if it matches this key
       const state = cached.key === key ? cached : null
       const initialCode = state?.value ?? app.script?.code ?? '// …'
@@ -178,17 +182,17 @@ const load = () => {
           },
         }
         // load loader
-        await new Promise(resolve => {
+        // a loader that cannot be fetched (offline, a blocker, a policy) ends the wait instead of holding it for good
+        await new Promise((resolve, reject) => {
           const script = document.createElement('script')
           script.src = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.49.0/min/vs/loader.js' // prettier-ignore
           script.onload = () => resolve()
+          script.onerror = () => reject(new Error('the script editor could not be loaded'))
           document.head.appendChild(script)
         })
         // load editor
-        await new Promise(resolve => {
-          window.require(['vs/editor/editor.main'], () => {
-            resolve()
-          })
+        await new Promise((resolve, reject) => {
+          window.require(['vs/editor/editor.main'], () => resolve(), reject)
         })
         monaco.editor.defineTheme('default', darkPlusTheme)
         monaco.editor.setTheme('default')
@@ -197,6 +201,11 @@ const load = () => {
         reject(e)
       }
     })()
+  }).catch(err => {
+    // said once, and the next time the editor is opened it is tried again
+    promise = null
+    console.error(err)
+    return null
   })
   return promise
 }

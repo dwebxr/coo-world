@@ -10,7 +10,6 @@ import ws from '@fastify/websocket'
 import cors from '@fastify/cors'
 import compress from '@fastify/compress'
 import { compressOptions } from './compressOptions'
-import statics from '@fastify/static'
 
 import { createServerWorld } from '../core/createServerWorld'
 import { PROTOCOL_VERSION, writePacket } from '../core/packets'
@@ -25,7 +24,7 @@ import { cleaner } from './cleaner'
 import { errorHandler } from './errorHandler'
 import { checkJwtSecret, checkPreviousJwtSecret } from './jwtSecret'
 import { adminMode, adminStartupNotes } from './adminCode'
-import { escapeHtml } from './escapeHtml'
+import { pageRoutes, readHstsEnv, securityHeaders } from './pageRoutes'
 import { walletOf } from './solana-gating'
 import { clientIpKeys, createUploadLimits, readUploadLimitsEnv } from './uploadLimits'
 import { createConnectionLimits, readConnectionLimitsEnv } from './connectionLimits'
@@ -46,6 +45,8 @@ checkJwtSecret(process.env.JWT_SECRET)
 checkPreviousJwtSecret(process.env.JWT_SECRET_PREVIOUS, process.env.JWT_SECRET)
 // the admin mode (a code, open to all, or locked: adminCode.js) and what there is to say about it
 for (const note of adminStartupNotes(process.env)) console[note.level](note.message)
+// HSTS_MAX_AGE (pageRoutes.js): a bad value stops here
+const hstsMaxAge = readHstsEnv(process.env)
 if (!process.env.SAVE_INTERVAL) {
   throw new Error('[envs] SAVE_INTERVAL not set')
 }
@@ -169,32 +170,24 @@ await world.network.ready
 // anyone can join: world growth and visitors' joins count it (joinBudget.js)
 await world.network.measureFixedBytes()
 
+const publicEnvs = buildPublicEnv(process.env)
+const envsCode = `
+  if (!globalThis.env) globalThis.env = {}
+  globalThis.env = ${JSON.stringify(publicEnvs)}
+`
 fastify.register(cors)
 fastify.register(compress, compressOptions())
-fastify.get('/', async (req, reply) => {
-  const title = world.settings.title || 'World'
-  const desc = world.settings.desc || ''
-  const image = world.resolveURL(world.settings.image?.url) || ''
-  const url = process.env.ASSETS_BASE_URL
-  const filePath = path.join(__dirname, 'public', 'index.html')
-  let html = fs.readFileSync(filePath, 'utf-8')
-  // function replacers insert the escaped text literally (no `$` pattern expansion)
-  html = html.replaceAll('{url}', () => escapeHtml(url))
-  html = html.replaceAll('{title}', () => escapeHtml(title))
-  html = html.replaceAll('{desc}', () => escapeHtml(desc))
-  html = html.replaceAll('{image}', () => escapeHtml(image))
-  reply.type('text/html').send(html)
-})
-fastify.register(statics, {
-  root: path.join(__dirname, 'public'),
-  prefix: '/',
-  decorateReply: false,
-  // Cache-Control stays @fastify/static's default (public, max-age=0: revalidate by ETag), which is what
-  // production has always served: before v10, send overwrote a Cache-Control set here
-  setHeaders: reply => {
-    reply.header('Pragma', 'no-cache')
-    reply.header('Expires', '0')
-  },
+// headers of every response and of every page (pageRoutes.js says what they do and what they do not)
+securityHeaders(fastify, { hstsMaxAge })
+fastify.register(pageRoutes, {
+  publicDir: path.join(__dirname, 'public'),
+  page: () => ({
+    title: world.settings.title || 'World',
+    desc: world.settings.desc || '',
+    image: world.resolveURL(world.settings.image?.url) || '',
+    url: process.env.ASSETS_BASE_URL,
+  }),
+  envsCode,
 })
 if (world.assetsDir) {
   fastify.register(assetRoutes, { root: world.assetsDir })
@@ -213,15 +206,6 @@ fastify.register(ws, {
 const connectionLimits = createConnectionLimits(connectionLimitsConfig)
 const kLease = Symbol('wsLease')
 fastify.register(worldNetwork)
-
-const publicEnvs = buildPublicEnv(process.env)
-const envsCode = `
-  if (!globalThis.env) globalThis.env = {}
-  globalThis.env = ${JSON.stringify(publicEnvs)}
-`
-fastify.get('/env.js', async (req, reply) => {
-  reply.type('application/javascript').send(envsCode)
-})
 
 // uploads are accepted from a connected session only: the bearer token names the user,
 // the live socket carries the rank. headers are never logged.

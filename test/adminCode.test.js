@@ -216,6 +216,27 @@ test('a refused attempt is answered once per wait on each socket: another visito
   assert.deepEqual([tell(second), tell(second)], [true, false])
 })
 
+test('two visitors held by the same address key are each told, once per wait', () => {
+  // The wait is armed by others; the two who then try are new sockets with new user ids, so the address is the only
+  // key that refuses them both. (Refused on different keys, each would be told even with one flag per key.)
+  const { g, advance } = gate()
+  const address = '203.0.113.44'
+  for (let i = 0; i < 3; i++) g.attempt({ socket: {}, user: `arming-${i}`, address, parents: [] }, 'no')
+  const first = { socket: {}, user: 'fresh-one', address, parents: [] }
+  const second = { socket: {}, user: 'fresh-two', address, parents: [] }
+  const tried = who => g.attempt(who, CODE)
+  assert.deepEqual(tried(first), { ok: false, reason: 'wait', tell: true })
+  assert.deepEqual(tried(second), { ok: false, reason: 'wait', tell: true }, 'the second is told too')
+  assert.deepEqual([tried(first).tell, tried(second).tell, tried(first).tell], [false, false, false])
+  // a third who arrives during the same wait is told as well
+  assert.equal(tried({ socket: {}, user: 'fresh-three', address, parents: [] }).tell, true)
+  // the next wait (armed by one more wrong code after this one is over) is said once to each again
+  advance(10 * SECOND)
+  g.attempt({ socket: {}, user: 'arming-again', address, parents: [] }, 'no')
+  assert.deepEqual([tried(first).tell, tried(second).tell], [true, true])
+  assert.deepEqual([tried(first).tell, tried(second).tell], [false, false])
+})
+
 test('the strictest key applies: a user id is held on a new address, an address holds a new user', () => {
   const { g } = gate()
   for (let i = 0; i < 3; i++) g.attempt({ socket: {}, user: 'mallory', address: `198.51.100.${i}` }, 'no')

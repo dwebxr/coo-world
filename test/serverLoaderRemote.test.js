@@ -4,6 +4,7 @@ import http from 'node:http'
 import path from 'node:path'
 import fs from 'fs-extra'
 import { loadClient } from './lib/clientHarness.mjs'
+import { createScriptBlob, createScriptObjectURL, revokeScriptObjectURL } from '../src/core/extras/scriptBlob.js'
 import { GLTFLoader } from '../src/core/libs/gltfloader/GLTFLoader.js'
 
 // The server loader's remote side: what it fetches, what it refuses, and what it keeps.
@@ -199,6 +200,127 @@ test('loads in progress are never dropped, and refused loads leave nothing behin
   assert.equal(loader.promises.size, 16)
   assert.equal(loader.results.size, 16)
   assert.ok(cached(loader), 'every result belongs to an entry')
+})
+
+// waits for that many held requests, for at most two seconds (a request that was refused never arrives)
+async function heldReaches(count) {
+  const deadline = Date.now() + 2000
+  while (held.length < count) {
+    if (Date.now() > deadline) assert.fail(`${held.length} of ${count} requests arrived`)
+    await tick()
+  }
+}
+
+// App scripts' requests (App.fetchFor -> loader.scriptFetch) and the loader's own remote loads have the same rules
+// but slots of their own: whichever is full, the other is still served
+test("script requests and remote loads do not take each other's slots", async () => {
+  const loader = makeLoader()
+  assert.notEqual(loader.scriptFetch, loader.outboundFetch)
+  assert.equal(loader.scriptFetch, loader.scriptFetch, 'one policy for all scripts')
+  // 16 script requests in flight (4 from each of 4 apps): the 17th is refused, a remote load is admitted
+  const scriptRequests = Array.from({ length: 16 }, (_, i) =>
+    loader.scriptFetch(`${assets}/assets/hold-script-${i}.js`, {}, { key: `app-${i % 4}` })
+  )
+  await heldReaches(16)
+  await assert.rejects(loader.scriptFetch(`${assets}/assets/script.js`, {}, { key: 'app-9' }), {
+    name: 'TypeError',
+    message: /too many requests in flight/,
+  })
+  assert.equal((await loader.load('script', 'asset://script.js')).code, '// SCRIPT')
+  // and with every load slot taken too, the loads are refused while a finished script request frees its own slot
+  const loads = Array.from({ length: 16 }, (_, i) => loader.load('script', `asset://hold-load-${i}.js`))
+  await heldReaches(32)
+  await assert.rejects(loader.load('script', 'asset://refused.js'), { code: 'busy' })
+  held[0].end('// done')
+  assert.equal(await (await scriptRequests[0]).text(), '// done')
+  assert.equal(await (await loader.scriptFetch(`${assets}/assets/script.js`, {}, { key: 'app-0' })).text(), '// SCRIPT')
+  await assert.rejects(loader.load('script', 'asset://refused-again.js'), { code: 'busy' })
+  for (const res of held.slice(1)) res.end('// late')
+  held.length = 0
+  await Promise.all([...scriptRequests.slice(1), ...loads])
+  // a private address is refused by both
+  await assert.rejects(loader.scriptFetch(`${other}/x.js`, {}, { key: 'app-0' }), {
+    name: 'TypeError',
+    message: /is not public/,
+  })
+})
+
+// e2e (sandbox-probe): a script fetches the object URL it made of a blob, and a data: URL, on the server as in a
+// browser. Those name bytes the process holds, so they are read without the policy; nothing else is
+test('a script reads a data: URL and its own object URLs without a request; no other blob: URL, no other scheme', async () => {
+  const loader = makeLoader()
+  const before = requests.assets.length + requests.other.length
+  const caller = { key: 'app' }
+  assert.equal(await (await loader.scriptFetch('data:text/plain,hi', {}, caller)).text(), 'hi')
+  const run = { dead: false }
+  const blob = await createScriptBlob(new Blob(['png bytes'], { type: 'image/png' }), {
+    entity: { deadHook: run },
+    run,
+  })
+  const url = createScriptObjectURL(blob)
+  const response = await loader.scriptFetch(url, {}, caller)
+  assert.equal(response.headers.get('content-type'), 'image/png')
+  assert.equal(await response.text(), 'png bytes')
+  // the request's other options reach the platform's fetch (Codex: a Range header gives a part, as it did)
+  const part = await loader.scriptFetch(url, { headers: { Range: 'bytes=1-2' } }, caller)
+  assert.equal(part.status, 206)
+  assert.equal(part.headers.get('content-range'), 'bytes 1-2/9')
+  // (the part is the platform's: Node 24 hands over both bytes, Node 22's fetch one byte fewer)
+  assert.ok(['ng', 'n'].includes(await part.text()))
+  await assert.rejects(loader.scriptFetch(url, { method: 'POST', body: 'x' }, caller), TypeError)
+  // once revoked it is a blob: URL like any other: refused, as the engine's own are
+  revokeScriptObjectURL(url)
+  const engineURL = URL.createObjectURL(new Blob(['engine']))
+  try {
+    for (const refused of [url, engineURL, `${engineURL}#x`, 'file:///etc/hosts', 'ftp://127.0.0.1/x']) {
+      await assert.rejects(
+        loader.scriptFetch(refused, {}, caller),
+        { name: 'TypeError', message: /only http and https are allowed/ },
+        refused
+      )
+    }
+  } finally {
+    URL.revokeObjectURL(engineURL)
+  }
+  assert.equal(requests.assets.length + requests.other.length, before, 'no request was made')
+})
+
+// Codex: on Node 24 the platform's fetch throws from its abort listener (outside any promise: the process ends)
+// when the signal of a data: or blob: response is aborted while its body is unread, which is what an app's removal
+// or rebuild does to its requests. The local read does not hand the platform the caller's signal
+test('aborting the signal of a local read with its body unread does nothing; the body can still be read', async () => {
+  const loader = makeLoader()
+  const run = { dead: false }
+  const blob = await createScriptBlob(new Blob(['held']), { entity: { deadHook: run }, run })
+  const url = createScriptObjectURL(blob)
+  const uncaught = []
+  const onUncaught = err => uncaught.push(err)
+  process.on('uncaughtException', onUncaught)
+  try {
+    for (const [local, text] of [
+      ['data:,owned', 'owned'],
+      [url, 'held'],
+    ]) {
+      const controller = new AbortController()
+      const response = await loader.scriptFetch(local, { signal: controller.signal }, { key: 'app' })
+      controller.abort()
+      await new Promise(resolve => setTimeout(resolve, 20))
+      assert.equal(await response.text(), text)
+    }
+    // and an abort at any moment of the read itself changes nothing: the platform's fetch never has the signal
+    // (the read ends by itself; what a stopped run may still see is App.fetchFor's to decide)
+    for (let turns = 0; turns < 40; turns++) {
+      const controller = new AbortController()
+      const reading = loader.scriptFetch(url, { signal: controller.signal }, { key: 'app' })
+      for (let i = 0; i < turns; i++) await Promise.resolve()
+      controller.abort()
+      assert.equal(await (await reading).text(), 'held', `aborted after ${turns} turns`)
+    }
+    assert.deepEqual(uncaught, [])
+  } finally {
+    process.off('uncaughtException', onUncaught)
+    revokeScriptObjectURL(url)
+  }
 })
 
 test('600 loads finishing together leave at most 512 entries, with results for kept entries only', async () => {

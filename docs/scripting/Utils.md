@@ -90,9 +90,21 @@ A `fetch(url, options)` function is available for making network requests. It fo
 
 - `options` may contain `method`, `headers` (a plain object of string values), `body` (a string, an `ArrayBuffer`, a typed array, or a blob returned by `fetch()`), `mode`, `credentials`, `cache` and `redirect`. Other keys are ignored.
 - The response has `ok`, `status`, `statusText`, `headers` (a plain object) and the readers `json()`, `text()`, `arrayBuffer()` and `blob()`. Each reader can be used once.
-- A request that fails (network error, refused connection, invalid URL) rejects, like the standard `fetch`, usually with a `TypeError`. An HTTP error status is not a failure: it resolves with `ok: false`.
+- A request that fails (network error, refused connection, invalid URL, a request the server refuses: see below) rejects, like the standard `fetch`, with a `TypeError`. An HTTP error status is not a failure: it resolves with `ok: false`.
 - When the app stops (its blueprint changes, it crashes or it is removed), its open requests are aborted and their promises (and those of readers still waiting on a body) never settle, so no code of the stopped run continues.
 - Errors coming from the host (a failed request or reader, a rejected `world.load()`, a `world.*`/`app.*` method that throws) arrive as fresh built-in errors of the matching class (`Error`, `TypeError`, `RangeError`, ...) with `name`, `message` and `stack` only. Custom error classes and extra properties are not preserved.
+
+A script runs on the server as well as in each browser, and `fetch` is made from where it runs:
+
+- In a browser it is the browser's `fetch`: the page's origin rules (CORS) apply.
+- On the server a `data:` URL and an object URL the script made with `URL.createObjectURL` are read as they are in a browser: they name bytes the script already holds, not a destination, and the limits below do not apply to them.
+- Any other request on the server only reaches public addresses, over `http` and `https`: a request to the server's own machine (`localhost`, `127.0.0.1`), to a private network or to a cloud metadata address is refused, also when a public host name resolves to such an address or redirects to one. The world's own assets URL, and the origins the operator lists in `OUTBOUND_TRUSTED_ORIGINS`, are exempt.
+- Such a request is bounded: 15 seconds in all, a response of at most 8 MiB (after decompression; gzip and deflate only), a request body of at most 1 MiB, at most 64 headers, at most 3 redirects, and the methods `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE` and `OPTIONS`. An app may have 4 requests in flight at once (all apps together 16): one more is refused rather than queued, so wait for a request to finish before starting a fifth.
+- Its response resolves once its whole body has arrived, so `status` and `headers` are not available before that, and an endpoint that keeps its response open (a stream, a long poll) fails at the 15 seconds.
+- Its headers `Host`, `Connection`, `Keep-Alive`, `Content-Length`, `Transfer-Encoding`, `Accept-Encoding`, `Expect`, `TE`, `Trailer`, `Upgrade`, `Proxy-Authorization` and `Proxy-Connection` are set by the server or left out, whatever the script passes; `Authorization` and `Cookie` are not carried to another origin by a redirect. A response that was compressed is handed over decompressed, without its `content-encoding` and `content-length` headers.
+- A request the server refuses or cannot complete rejects with a `TypeError`, as any failed `fetch` does; its message says why (`outbound request refused: the address is not public`, `outbound request failed: it took too long`).
+
+Use `world.isServer` to make a request from one place only.
 
 `blob()` resolves to a script-safe blob rather than a DOM `Blob`: an immutable object with `size`, `type`, `arrayBuffer()`, `text()` and `slice(start, end)`. It has no `stream()` or `bytes()`, `instanceof Blob` is false, and a slice always keeps the type of the response (a type argument is ignored). The whole body is read into memory when `blob()` resolves, so prefer `arrayBuffer()` or `text()` when you only need the bytes once.
 

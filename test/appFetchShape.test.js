@@ -58,6 +58,59 @@ test('toHostFetchOptions: bodies may be strings, buffers, views or facades; anyt
   }
 })
 
+// Codex: the copy was made with ArrayBuffer's slice, which builds its result with the constructor the buffer names
+// (Symbol.species): a script's subclass ran its code in the host's read and chose the object handed on, one with an
+// own byteLength of 1 over a megabyte of bytes, which the request-size check then read
+test('toHostFetchOptions: a body is copied by the host, whatever constructor or properties the script gave it', () => {
+  let calls = 0
+  class Body extends ArrayBuffer {
+    static get [Symbol.species]() {
+      calls++
+      return function (length) {
+        calls++
+        return Object.defineProperty(new ArrayBuffer(length), 'byteLength', { value: 1 })
+      }
+    }
+  }
+  class View extends Uint8Array {
+    static get [Symbol.species]() {
+      calls++
+      return Uint8Array
+    }
+  }
+  const big = new Body(2048)
+  new Uint8Array(big).fill(7)
+  const shadowed = Object.defineProperty(new Uint8Array([1, 2, 3, 4]).buffer, 'byteLength', { value: 1 })
+  const view = Object.defineProperties(new View([5, 6, 7, 8]), {
+    byteLength: { value: 1 },
+    byteOffset: { value: 2 },
+    buffer: { value: new ArrayBuffer(1) },
+    length: { value: 1 },
+  })
+  for (const [body, expected] of [
+    [big, new Array(2048).fill(7)],
+    [new Uint8Array(big, 2040), new Array(8).fill(7)],
+    [new DataView(big, 2040, 4), new Array(4).fill(7)],
+    [shadowed, [1, 2, 3, 4]],
+    [view, [5, 6, 7, 8]],
+  ]) {
+    const copy = toHostFetchOptions({ body }).body
+    assert.equal(Object.getPrototypeOf(copy), ArrayBuffer.prototype)
+    assert.deepEqual(Reflect.ownKeys(copy), [])
+    assert.equal(copy.byteLength, expected.length)
+    assert.deepEqual([...new Uint8Array(copy)], expected)
+  }
+  assert.equal(calls, 0, "none of the script's code ran")
+  // a detached buffer, a view over one and an object that only inherits from a buffer are not bodies
+  const gone = new ArrayBuffer(4)
+  const over = new Uint8Array(gone)
+  structuredClone(gone, { transfer: [gone] })
+  for (const bad of [gone, over, Object.create(new ArrayBuffer(4)), Object.create(new Uint8Array(4))]) {
+    const init = toHostFetchOptions({ body: bad })
+    assert.ok(!('body' in init) || init.body.byteLength === 0)
+  }
+})
+
 test('createScriptResponse: plain values and four body readers, nothing else from the host response', async () => {
   const resp = new Response('{"a":1}', {
     status: 201,

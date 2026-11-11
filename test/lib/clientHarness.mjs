@@ -40,12 +40,12 @@ import {
 } from '../../src/core/extras/nodeLimits.js'
 import * as assetURL from '../../src/core/extras/assetURL.js'
 import * as runTeardown from '../../src/core/extras/runTeardown.js'
-import { revokeRunObjectURLs } from '../../src/core/extras/scriptBlob.js'
+import { isScriptObjectURL, revokeRunObjectURLs } from '../../src/core/extras/scriptBlob.js'
 import { isPrimitive } from '../../src/core/extras/scriptPrimitives.js'
 import { jsonCopy } from '../../src/core/extras/scriptText.js'
 import * as joinBudget from '../../src/core/extras/joinBudget.js'
 import { resolveAssetFile } from '../../src/core/extras/resolveAssetFile.js'
-import { createOutboundFetch } from '../../src/core/extras/outboundFetch.js'
+import { createOutboundFetch, OutboundError } from '../../src/core/extras/outboundFetch.js'
 import { LoadingManager } from 'three'
 import * as gltfLimits from '../../src/core/extras/gltfLimits.js'
 
@@ -122,12 +122,14 @@ export function loadClient(file, name, context = {}) {
     NODE_LIMIT,
     ...runTeardown,
     revokeRunObjectURLs,
+    isScriptObjectURL,
     isPrimitive,
     jsonCopy,
     ...assetURL,
     ...joinBudget,
     resolveAssetFile,
     createOutboundFetch,
+    OutboundError,
     LoadingManager,
     ...gltfLimits,
     ...context,

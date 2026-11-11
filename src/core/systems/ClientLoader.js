@@ -287,6 +287,8 @@ function renamed(file, name) {
  * and hash are not part of it. has/get/load/insert and setFile/getFile/hasFile all use that form, while callers
  * keep passing the URL they have.
  */
+const browserFetch = (url, init) => fetch(url, init)
+
 export class ClientLoader extends System {
   constructor(world) {
     super(world)
@@ -316,6 +318,13 @@ export class ClientLoader extends System {
     if (isAppleMobile()) this.gltfLoader.register(imageElementsPlugin)
     this.gltfLoader.register(parser => new VRMLoaderPlugin(parser))
     this.preloadItems = []
+  }
+
+  // An app script's fetch in a browser (App.fetchFor asks the loader of its world, see ServerLoader.scriptFetch):
+  // the browser's own fetch, under the page's origin rules and from the user's place in the network. Only the url
+  // and the init are passed on
+  get scriptFetch() {
+    return browserFetch
   }
 
   start() {

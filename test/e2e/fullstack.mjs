@@ -304,7 +304,7 @@ async function probes(admin, watcher) {
   // what the e2e hook's compose fault throws (the stage probe's stand-in for a Stage failure, stage-crash.js), and
   // what the physics probe's refused callback reports (the node's own transform is sealed, its callback fixed).
   // The refusal is the engine's own TypeError for a write to a read-only property, worded by each engine: V8
-  // (the server, Chromium) names the property, JavaScriptCore (WebKit) and SpiderMonkey (Firefox) do not.
+  // (the server, Chromium) and SpiderMonkey (Firefox) name the property, JavaScriptCore (WebKit) does not.
   const STAGE_BOOM = /P1_RETRY_PROBE/
   const PHYSICS_REFUSED = new RegExp(
     'P1_PHYSICS_REFUSED .*(' +

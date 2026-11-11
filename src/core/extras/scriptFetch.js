@@ -52,27 +52,36 @@ export function toHostFetchOptions(options) {
 }
 
 const TypedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype)
+const bufferLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get
 const viewGetters = [TypedArrayPrototype, DataView.prototype].map(proto => ({
   buffer: Object.getOwnPropertyDescriptor(proto, 'buffer').get,
   byteOffset: Object.getOwnPropertyDescriptor(proto, 'byteOffset').get,
   byteLength: Object.getOwnPropertyDescriptor(proto, 'byteLength').get,
 }))
 
-// a brand-checked copy of a script's ArrayBuffer or view: the intrinsic slice/getters throw for anything
-// that merely inherits from the prototypes, and own properties a script added to a view are never read
+// the bytes [offset, offset + length) of a buffer in a new ArrayBuffer of the host's. Not ArrayBuffer's slice: it
+// makes its result with the constructor the buffer names (Symbol.species), so a script's subclass would run its code
+// here and choose the object handed on (Codex: one with an own byteLength of 1 over a megabyte of bytes)
+function copyRange(buffer, offset, length) {
+  const bytes = new Uint8Array(length)
+  bytes.set(new Uint8Array(buffer, offset, length))
+  return bytes.buffer
+}
+
+// a brand-checked copy of a script's ArrayBuffer or view: the intrinsic getters throw for anything that merely
+// inherits from the prototypes, own properties a script added to a buffer or a view are never read, and none of the
+// script's code runs
 function copyBytes(value) {
   if (value === null || typeof value !== 'object') return null
   try {
-    return ArrayBuffer.prototype.slice.call(value, 0)
+    return copyRange(value, 0, bufferLength.call(value))
   } catch {
-    // not an ArrayBuffer
+    // not an ArrayBuffer (or a detached one)
   }
   if (!ArrayBuffer.isView(value)) return null
   for (const getters of viewGetters) {
     try {
-      const offset = getters.byteOffset.call(value)
-      const length = getters.byteLength.call(value)
-      return ArrayBuffer.prototype.slice.call(getters.buffer.call(value), offset, offset + length)
+      return copyRange(getters.buffer.call(value), getters.byteOffset.call(value), getters.byteLength.call(value))
     } catch {
       // the other kind of view, or a detached/shared buffer
     }

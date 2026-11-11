@@ -12,9 +12,37 @@ import { createNode } from '../extras/createNode'
 import { createEmoteFactory } from '../extras/createEmoteFactory'
 import { ASSET_PROTOCOL, assetName, assetRefusal, loaderReference } from '../extras/assetURL'
 import { resolveAssetFile } from '../extras/resolveAssetFile'
-import { createOutboundFetch } from '../extras/outboundFetch'
+import { createOutboundFetch, OutboundError } from '../extras/outboundFetch'
+import { isScriptObjectURL } from '../extras/scriptBlob'
 import { checkGLTF, createGLTFBudget, GLTF_LIMITS, isDataURI } from '../extras/gltfLimits'
 import { LoadingManager } from 'three'
+
+// a script's request for bytes the process holds (see scriptFetch): read as fetch will read it, so a spelling fetch
+// takes for another scheme is not taken for one of these
+function isLocalData(url) {
+  if (isScriptObjectURL(url)) return true
+  try {
+    return typeof url === 'string' && new URL(url).protocol === 'data:'
+  } catch {
+    return false
+  }
+}
+
+// The bytes of a data: URL or of a script's object URL, as a response of the host's making. They are read to the
+// end here and without the caller's signal: they are already in the process (there is no transfer to give up), and
+// on Node 24 (undici 7) aborting the signal of such a response while its body is unread throws from the platform's
+// own abort listener, outside any promise, which ends the process (Codex; an app that is removed or rebuilt aborts
+// its requests). The other options are passed on as they are (a Range header gives a part of an object URL's
+// bytes, as before). App.fetchFor settles nothing for a run that has ended
+async function readLocalData(url, init) {
+  const { signal: _signal, ...options } = init || {}
+  const response = await fetch(url, options)
+  return new Response(await response.arrayBuffer(), {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  })
+}
 
 const isRemote = url => typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'))
 
@@ -79,6 +107,7 @@ export class ServerLoader extends System {
     this.rgbeLoader = new RGBELoader()
     this.gltfLoader = new GLTFLoader(createEmbeddedOnlyManager())
     this.outbound = null
+    this.scriptOutbound = null
     this.preloadItems = []
     // this.gltfLoader.register(parser => new VRMLoaderPlugin(parser))
 
@@ -149,19 +178,41 @@ export class ServerLoader extends System {
     }
   }
 
-  // The world's one fetch for URLs it did not choose: remote models, emotes and scripts a blueprint names go
-  // through it, and app scripts' fetch (App.fetch) will too. Public addresses only, bounded in time, size and
-  // number (outboundFetch.js). The world's own assets origin is trusted, and so are the origins the operator lists
-  // in OUTBOUND_TRUSTED_ORIGINS.
+  // The world's fetch for URLs it did not choose: public addresses only, bounded in time, size and number
+  // (outboundFetch.js). The world's own assets origin is trusted, and so are the origins the operator lists in
+  // OUTBOUND_TRUSTED_ORIGINS. There are two of it, with the same rules and each with its own slots and memory, so
+  // that neither kind of request can take the other's: this one for the remote models, emotes and scripts a
+  // blueprint names, and scriptFetch for the requests app scripts make
   get outboundFetch() {
-    if (!this.outbound) {
-      const listed = String(globalThis.process?.env?.OUTBOUND_TRUSTED_ORIGINS || '')
-        .split(',')
-        .map(origin => origin.trim())
-        .filter(Boolean)
-      this.outbound = createOutboundFetch({ trustedOrigins: [this.world.assetsUrl, ...listed].filter(Boolean) })
-    }
+    if (!this.outbound) this.outbound = createOutboundFetch({ trustedOrigins: this.trustedOrigins() })
     return this.outbound
+  }
+
+  // An app script's fetch (App.fetchFor, with the app as the caller its requests are counted against): scripts
+  // that keep every slot busy leave the loads above theirs, and a burst of loads leaves scripts theirs
+  // A request the policy refuses or cannot complete rejects as fetch's do, with a TypeError (the policy's message
+  // says why). Two kinds of URL name bytes this process already holds, not a destination, and are read by the
+  // platform's fetch as before: a `data:` URL, and an object URL made for a script (URL.createObjectURL of a blob
+  // its fetch returned; no other blob: URL of the process)
+  get scriptFetch() {
+    if (!this.scriptOutbound) {
+      const policy = createOutboundFetch({ trustedOrigins: this.trustedOrigins() })
+      this.scriptOutbound = (url, init, caller) => {
+        if (isLocalData(url)) return readLocalData(url, init)
+        return policy(url, init, caller).catch(err => {
+          throw err instanceof OutboundError ? new TypeError(err.message) : err
+        })
+      }
+    }
+    return this.scriptOutbound
+  }
+
+  trustedOrigins() {
+    const listed = String(globalThis.process?.env?.OUTBOUND_TRUSTED_ORIGINS || '')
+      .split(',')
+      .map(origin => origin.trim())
+      .filter(Boolean)
+    return [this.world.assetsUrl, ...listed].filter(Boolean)
   }
 
   async fetchRemote(url, signal) {

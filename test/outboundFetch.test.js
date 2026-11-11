@@ -865,10 +865,36 @@ test('a request body is admitted, sized and read under the deadline; only the li
     await (await fetch(local.origin, { method: 'POST', body: new CountingBlob(['0123456789']) })).text(),
     '0123456789'
   )
-  for (const body of [{ not: 'bytes' }, new URLSearchParams('a=b'), { arrayBuffer: async () => new ArrayBuffer(1) }]) {
+  for (const body of [
+    { not: 'bytes' },
+    new URLSearchParams('a=b'),
+    { arrayBuffer: async () => new ArrayBuffer(1) },
+    // read as bytes only when they are: not an array-like, an iterable, or an object that inherits from a buffer
+    { length: 3, 0: 1, 1: 2, 2: 3 },
+    [1, 2, 3],
+    Object.create(new ArrayBuffer(3)),
+    Object.create(new Uint8Array(3)),
+  ]) {
     await assert.rejects(fetch(local.origin, { method: 'POST', body }), code('body'))
   }
   assert.equal(local.connections, 1)
+  // Codex: the size checked and the bytes sent are the body's own, whatever properties it carries: a buffer or a
+  // view that says it is one byte long is still refused for its eleven, and a view's own bytes are what is sent
+  const says = (body, props) => Object.defineProperties(body, props)
+  for (const body of [
+    says(new ArrayBuffer(11), { byteLength: { value: 1 } }),
+    says(new Uint8Array(11), { byteLength: { value: 1 }, length: { value: 1 } }),
+    says(new DataView(new ArrayBuffer(11)), { byteLength: { value: 1 } }),
+    says(new Uint8Array(11), { buffer: { value: new ArrayBuffer(1) }, byteOffset: { value: 0 } }),
+  ]) {
+    await assert.rejects(fetch(local.origin, { method: 'POST', body }), code('too_large'))
+  }
+  const whole = says(new Uint8Array([104, 105, 33]), {
+    byteLength: { value: 1 },
+    byteOffset: { value: 2 },
+    buffer: { value: new Uint8Array([120]).buffer },
+  })
+  assert.equal(await (await fetch(local.origin, { method: 'POST', body: whole })).text(), 'hi!')
 
   // a body that never finishes reading holds the request's slot, and the deadline and the caller's abort end it
   class StuckBlob extends Blob {

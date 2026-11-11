@@ -20,8 +20,9 @@ import { escapeHtml } from './escapeHtml.js'
 //   A page is a response typed text/html when the hook below runs, and a static file the send library types so,
 //   whatever its status (a 304 has no type).
 // - not covered: a WebSocket upgrade (the socket plugin takes the connection over and writes its own answer, which
-//   no browser shows or runs), the 400 that Fastify writes itself for a URL it cannot decode (JSON, not a page), and
-//   HTML typed after the hook runs or sent as a native `Response` (no route here does either).
+//   no browser shows or runs), the errors the HTTP layer writes itself before any route runs (a 400 for a URL it
+//   cannot decode, a 408, a 431: none of them a page), and HTML typed after the hook runs or sent as a native
+//   `Response` (no route here does either).
 // - it is NOT a policy on scripts, styles or connections: markup that got into the page could still run a script.
 //   (A full policy needs the script host's `eval` for app scripts, and has to be tried against real wallets first.)
 // - `Strict-Transport-Security` only when HSTS_MAX_AGE is set: whether every host of the domain is served over

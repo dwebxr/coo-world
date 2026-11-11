@@ -23,7 +23,7 @@ import { assets } from './assets'
 import { collections } from './collections'
 import { cleaner } from './cleaner'
 import { errorHandler } from './errorHandler'
-import { checkJwtSecret } from './jwtSecret'
+import { checkJwtSecret, checkPreviousJwtSecret } from './jwtSecret'
 import { adminMode, adminStartupNotes } from './adminCode'
 import { escapeHtml } from './escapeHtml'
 import { walletOf } from './solana-gating'
@@ -43,6 +43,7 @@ if (!process.env.PORT) {
   throw new Error('[envs] PORT not set')
 }
 checkJwtSecret(process.env.JWT_SECRET)
+checkPreviousJwtSecret(process.env.JWT_SECRET_PREVIOUS, process.env.JWT_SECRET)
 // the admin mode (a code, open to all, or locked: adminCode.js) and what there is to say about it
 for (const note of adminStartupNotes(process.env)) console[note.level](note.message)
 if (!process.env.SAVE_INTERVAL) {
@@ -264,18 +265,11 @@ fastify.get('/status', async (request, reply) => {
       uptime: Math.round(world.time),
       // whether admin rights need something: a code, or (locked) a stored rank
       protected: adminMode(process.env) !== 'open',
-      connectedUsers: [],
+      // how many are here; who they are and where is not for an unauthenticated request from any origin
+      connectedUsers: world.network.sockets.size,
       commitHash: process.env.COMMIT_HASH,
       uploads: uploadLimits.stats(),
     }
-    for (const socket of world.network.sockets.values()) {
-      status.connectedUsers.push({
-        id: socket.player.data.userId,
-        position: socket.player.position.value.toArray(),
-        name: socket.player.data.name,
-      })
-    }
-
     return reply.code(200).send(status)
   } catch (error) {
     console.error('Status failed:', error)

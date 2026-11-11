@@ -483,6 +483,19 @@ async function probes(admin, watcher) {
     eq(status.status, 200, 'server still responsive')
   })
 
+  await step('A8b /status counts who is here and names nobody', async () => {
+    const response = await fetch(`${base}/status`)
+    const text = await response.text()
+    const status = JSON.parse(text)
+    ok(Number.isInteger(status.connectedUsers) && status.connectedUsers >= 2, `count: ${status.connectedUsers}`)
+    eq(status.protected, true, 'protected')
+    for (const client of [admin, watcher]) {
+      ok(!text.includes(client.id), 'no user id in the body')
+    }
+    ok(!/"position"|"name"/.test(text), 'no positions or names')
+    return `connectedUsers: ${status.connectedUsers}`
+  })
+
   await step('A9 server-script teleport, push and session avatar still reach the player, well-formed', async () => {
     const from = watcher.mark()
     const fromAdmin = admin.mark()
@@ -865,7 +878,7 @@ async function probes(admin, watcher) {
       await sleep(500)
       const status = await fetch(`http://localhost:${port}/status`)
       eq(status.status, 200, 'limited server still responsive')
-      eq((await status.json()).connectedUsers.length, 0, 'no sockets left behind')
+      eq((await status.json()).connectedUsers, 0, 'no sockets left behind')
       return `${admitted} admitted, ${refused} refused`
     } finally {
       await limited.stop()

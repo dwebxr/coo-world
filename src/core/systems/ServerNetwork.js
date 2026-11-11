@@ -3,7 +3,7 @@ import { packetNameById, peekPacketId, writePacket } from '../packets'
 import { Socket } from '../Socket'
 import { uuid } from '../utils'
 import { System } from './System'
-import { createJWT, readJWT } from '../utils-server'
+import { createJWT, expiredSessionUser, readJWT } from '../utils-server'
 import { isNumber } from 'lodash-es'
 import { appPersistenceData, persistenceRecord } from '../extras/persistenceRecord.js'
 import * as THREE from '../extras/three'
@@ -827,6 +827,28 @@ export class ServerNetwork extends System {
           user = await this.db('users').where('id', auth.userId).first()
           if (user) this.userIds.add(user.id)
           if (cancelled) return
+          // A token due for renewal (older than a day, without an end, or signed with the previous secret:
+          // utils-server.js) is replaced; the snapshot carries the new one and the client keeps what it carries.
+          if (user && auth.renew) {
+            authToken = await createJWT({ userId: user.id })
+            if (cancelled) return
+          }
+        } else {
+          // A genuine token past its end: its user starts again as a new visitor, below. When that user had a rank
+          // it is gone with the session, and only the operator can give it back: said in the log.
+          const lapsed = await expiredSessionUser(authToken)
+          if (cancelled) return
+          if (lapsed) {
+            const row = await this.db('users').where('id', lapsed).first()
+            if (cancelled) return
+            if (row?.rank > 0) {
+              this.logOnce(
+                ws,
+                'session-ended',
+                `[auth] the session of a ranked user ended unused: ${previewValue(lapsed, 64)} (rank ${row.rank}); they join as a new visitor`
+              )
+            }
+          }
         }
       }
       if (!user) {

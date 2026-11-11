@@ -41,12 +41,12 @@ if (!process.env.WORLD) {
 if (!process.env.PORT) {
   throw new Error('[envs] PORT not set')
 }
+// HSTS_MAX_AGE (pageRoutes.js): a bad value stops here
+const hstsMaxAge = readHstsEnv(process.env)
 checkJwtSecret(process.env.JWT_SECRET)
 checkPreviousJwtSecret(process.env.JWT_SECRET_PREVIOUS, process.env.JWT_SECRET)
 // the admin mode (a code, open to all, or locked: adminCode.js) and what there is to say about it
 for (const note of adminStartupNotes(process.env)) console[note.level](note.message)
-// HSTS_MAX_AGE (pageRoutes.js): a bad value stops here
-const hstsMaxAge = readHstsEnv(process.env)
 if (!process.env.SAVE_INTERVAL) {
   throw new Error('[envs] SAVE_INTERVAL not set')
 }

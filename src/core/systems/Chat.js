@@ -63,7 +63,8 @@ export class Chat extends System {
       this.world.network.send('command', { cmd, value, args })
       return
     }
-    const callback = this.commands[cmd]
+    // (a command bound here, not a property every object has: `/constructor` is not one)
+    const callback = Object.hasOwn(this.commands, cmd) ? this.commands[cmd] : undefined
     if (callback) {
       return callback({ playerId, cmd, value, args })
     }

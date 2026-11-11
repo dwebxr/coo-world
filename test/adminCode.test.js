@@ -445,3 +445,22 @@ test('the factor on the waits is for test harnesses: never honoured in productio
     assert.equal(adminWaitScale({ ADMIN_ATTEMPT_WAIT_SCALE: value }), 1, String(value))
   }
 })
+
+test('the addresses a summary line tells apart are bounded', () => {
+  let time = 0
+  const lines = []
+  const tasks = []
+  const g = createAdminGate({
+    code: 'a-code-long-enough-for-this',
+    now: () => time,
+    log: line => lines.push(line),
+    schedule: (fn, ms) => {
+      tasks.push(fn)
+      return () => {}
+    },
+  })
+  for (let i = 0; i < 12000; i++) g.attempt({ socket: {}, user: `u-${i}`, address: `addr-${i}`, parents: [] }, 'no')
+  g.close()
+  assert.equal(lines.length, 1)
+  assert.match(lines[0], /from 10000 addresses/)
+})

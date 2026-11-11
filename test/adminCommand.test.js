@@ -300,3 +300,16 @@ test('an address nobody could work out is not one shared key: visitors behind a 
   await f.admin(bare, CODE)
   assert.equal(bare.player.data.rank, Ranks.ADMIN)
 })
+
+test('Chat.command: a word every object has is not a bound command', () => {
+  const sent = []
+  const emitted = []
+  const Chat = loadClient('core/systems/Chat.js', 'Chat')
+  const chat = new Chat({
+    network: { isServer: false, id: 'me', send: (name, data) => sent.push([name, data]) },
+    events: { emit: (name, data) => emitted.push([name, data]) },
+  })
+  for (const word of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) chat.command(`/${word} x`)
+  assert.equal(sent.length, 4, 'each goes to the server as any unbound command does')
+  assert.equal(emitted.length, 4)
+})

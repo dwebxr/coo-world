@@ -114,6 +114,9 @@ function unrefTimeout(fn, ms) {
   return () => clearTimeout(timer)
 }
 
+// addresses told apart in one summary line
+const SUMMARY_MAX_ADDRESSES = 10000
+
 // `now`: the clock every wait and interval here is measured with, in milliseconds. Monotonic by default, so a step of
 // the wall clock neither stretches a wait nor ends one. `schedule(fn, ms)` runs `fn` later and returns what cancels
 // it (it sends the summary line). `waitScale` shortens the waits in tests (adminWaitScale).
@@ -157,7 +160,10 @@ export function createAdminGate({
       cancelSummary = schedule(sendSummary, SUMMARY_MS)
     }
     summary[kind]++
-    if (kind === 'wrong' && typeof address === 'string') summary.addresses.add(address)
+    // (counted up to a bound: the line then says that many, which is already the news)
+    if (kind === 'wrong' && typeof address === 'string' && summary.addresses.size < SUMMARY_MAX_ADDRESSES) {
+      summary.addresses.add(address)
+    }
   }
 
   // a key's entry, unless its last failure is long enough ago to be forgotten

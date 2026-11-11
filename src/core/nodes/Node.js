@@ -172,8 +172,9 @@ let nodeIds = -1
 // A class's mount or build may be async: it waits for a file. Nothing awaits it, so a load that fails (a missing file,
 // one the loader's limits refuse) was an unhandled rejection, and before the world is ready the page counts one as a
 // failed start (the watchdog in index.html). The node stays as it is, without the file, and says so. What is reported
-// of the reason is read without running its code (briefError: an avatar's onLoad can throw any object, a getter or a
-// Proxy included), and nothing in the handler may throw: that would be the unhandled rejection again.
+// of the reason is read without running its getters (briefError: an avatar's onLoad can throw any object; a Proxy's
+// traps can still run, and what they throw is caught), and nothing in the handler may throw: that would be the
+// unhandled rejection again.
 export function watchLoad(node, pending) {
   if (pending instanceof Promise) {
     pending.catch(err => {

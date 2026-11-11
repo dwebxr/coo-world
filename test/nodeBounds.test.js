@@ -484,7 +484,9 @@ test('particle worker: a burst without end and particles with no life cannot hol
 
 // Runs one emitter: creates it, then one update per step ({ delta, x }: the step's time, and where the emitter is
 // along x), and hands `check` what each step sent back: the particle count, the packed sizes, colours and UVs (in
-// pool order: the blending is additive, so nothing is sorted), and how many random numbers the step drew.
+// pool order: the blending is additive, so nothing is sorted), and how many particles the step started. A start is
+// counted where it happens: `life` is written to a particle of the pool once for each start and at no other time,
+// so the pool's particles are caught as they are made and their `life` is given a counting setter.
 const stepEmitter = (config, steps, check) =>
   runProbe(
     bundle,
@@ -493,17 +495,35 @@ const stepEmitter = (config, steps, check) =>
       self.postMessage = msg => {
         output = msg
       }
-      let randoms = 0
-      const random = Math.random
-      Math.random = () => {
-        randoms++
-        return random()
+      let starts = 0
+      let caught = 0
+      const push = Array.prototype.push
+      Array.prototype.push = function (...items) {
+        for (const item of items) {
+          if (item && typeof item === 'object' && 'emissionRotation' in item) {
+            caught++
+            let life = item.life
+            Object.defineProperty(item, 'life', {
+              get: () => life,
+              set(next) {
+                starts++
+                life = next
+              },
+            })
+          }
+        }
+        return Reflect.apply(push, this, items)
       }
-      self.onmessage({ data: config })
+      try {
+        self.onmessage({ data: config })
+      } finally {
+        Array.prototype.push = push
+      }
       const max = Math.max(1, config.max)
+      assert.equal(caught, config.max, 'the probe reached every particle of the pool')
       const results = []
       for (const { delta, x = 0 } of steps) {
-        randoms = 0
+        starts = 0
         output = null
         self.onmessage({
           data: {
@@ -526,22 +546,20 @@ const stepEmitter = (config, steps, check) =>
         const n = output.n
         results.push({
           n,
-          randoms,
+          starts,
           size: Array.from(output.aSize.subarray(0, n)),
           color: Array.from(output.aColor.subarray(0, n * 3)),
           uv: Array.from(output.aUV.subarray(0, n * 4)),
         })
       }
-      Math.random = random
       new Function('results', 'assert', `(${check})(results, assert)`)(results, assert)
     },
     { config, steps, check: check.toString() }
   )
 
-// The starts of a step are counted exactly through the random numbers it draws: a `life` of '0~0' draws one for each
-// start (and is 0, so each particle is free again at once and the pool never runs out), the point shape none, and
-// nothing else in these steps draws any.
-const startsEveryStep = { ...emitterConfig, life: '0~0' }
+// particles with no life: each is free again the moment it is started, so the pool never runs out and only the
+// step's budget ends the starts
+const startsEveryStep = { ...emitterConfig, life: '0' }
 
 test('particle worker: one step starts exactly as many particles as the pool holds, over its rate and all its bursts', () =>
   // a rate of the node's largest (10,000 asked in a step of 0.1 s) and 64 bursts of the whole pool, in a cycle that
@@ -556,7 +574,7 @@ test('particle worker: one step starts exactly as many particles as the pool hol
     [{ delta: 0.1 }, { delta: 0.1 }, { delta: 0.1 }],
     (results, assert) =>
       assert.deepEqual(
-        results.map(step => step.randoms),
+        results.map(step => step.starts),
         [8, 8, 8]
       )
   ))
@@ -573,7 +591,7 @@ test('particle worker: emission over distance shares the step budget with the ra
     ],
     (results, assert) =>
       assert.deepEqual(
-        results.map(step => step.randoms),
+        results.map(step => step.starts),
         [5, 8, 8]
       )
   ))
@@ -589,7 +607,7 @@ test('particle worker: emission over distance alone is held to the pool too', ()
     ],
     (results, assert) =>
       assert.deepEqual(
-        results.map(step => step.randoms),
+        results.map(step => step.starts),
         [0, 8, 8]
       )
   ))

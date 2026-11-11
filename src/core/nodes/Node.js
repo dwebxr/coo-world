@@ -3,7 +3,9 @@ import { stoppedError } from '../extras/physicsFailure.js'
 import { Teardown, tornDown } from '../extras/runTeardown.js'
 import { scriptView, sealAll } from '../extras/sealMath.js'
 import { toEngineNumber } from '../extras/engineNumber.js'
+import { cursorKeyword } from '../extras/cursorKeyword.js'
 import { isBoolean, isPrimitive } from '../extras/scriptPrimitives.js'
+import { briefError } from '../extras/logOnce.js'
 import * as THREE from '../extras/three'
 import { getNodeRef, isRefAllowed, registerNodeRefGetter } from './refs'
 import {
@@ -167,8 +169,27 @@ const defaults = {
 
 let nodeIds = -1
 
+// A class's mount or build may be async: it waits for a file. Nothing awaits it, so a load that fails (a missing file,
+// one the loader's limits refuse) was an unhandled rejection, and before the world is ready the page counts one as a
+// failed start (the watchdog in index.html). The node stays as it is, without the file, and says so. What is reported
+// of the reason is read without running its getters (briefError: an avatar's onLoad can throw any object; a Proxy's
+// traps can still run, and what they throw is caught), and nothing in the handler may throw: that would be the
+// unhandled rejection again.
+export function watchLoad(node, pending) {
+  if (pending instanceof Promise) {
+    pending.catch(err => {
+      try {
+        console.warn(`[${node.name}] not loaded: ${typeof err === 'string' ? err.slice(0, 200) : briefError(err)}`)
+      } catch {
+        // (a console that throws: the failure stays unsaid, and still handled)
+      }
+    })
+  }
+}
+
 const EPSILON = 0.000000001
 const CURSOR_MAX_LENGTH = 128
+let cursorWarned = false
 
 // a mounting node of an app takes one unit of its budget; past the budget the app is crashed (once) and the
 // node is not mounted
@@ -271,7 +292,7 @@ export class Node {
     this._onPointerLeave = data.onPointerLeave
     this._onPointerDown = data.onPointerDown
     this._onPointerUp = data.onPointerUp
-    this._cursor = data.cursor
+    this._cursor = data.cursor === undefined || data.cursor === null ? data.cursor : cursorKeyword(data.cursor)
     this._active = isBoolean(data.active) ? data.active : defaults.active
     // this.scale._onChange?
     this.isDirty = false
@@ -327,7 +348,7 @@ export class Node {
     const entity = this.ctx.entity
     if (entity?.isApp) chargeNode(this, entity)
     this.mounted = true
-    this.mount()
+    watchLoad(this, this.mount())
     // a mount that ran script code which unmounted this node (its run retired meanwhile) is taken back: what the mount
     // made after the unmount goes again
     if (!this.mounted) return this.rollBackMount()
@@ -350,7 +371,7 @@ export class Node {
   remount() {
     this.unmount()
     if (!this.mounted || !this.canMount()) return false
-    this.mount()
+    watchLoad(this, this.mount())
     if (!this.mounted) {
       this.rollBackMount()
       return false
@@ -683,8 +704,9 @@ export class Node {
     return this._cursor
   }
 
-  // written to the page's cursor style while the pointer is over the node: a primitive string of at most
-  // CURSOR_MAX_LENGTH characters, or nothing
+  // written to the page's cursor style while the pointer is over the node: a CSS cursor keyword, or nothing. Of an
+  // image cursor its closing keyword is kept (cursorKeyword.js); a string with no keyword is kept as nothing. Either
+  // is said once, and neither throws, since a script written before this rule may set one.
   set cursor(value) {
     if (value === undefined || value === null) {
       this._cursor = value
@@ -693,7 +715,12 @@ export class Node {
     if (typeof value !== 'string' || value.length > CURSOR_MAX_LENGTH) {
       throw new Error(`[node] cursor must be a string of at most ${CURSOR_MAX_LENGTH} characters`)
     }
-    this._cursor = value
+    const keyword = cursorKeyword(value)
+    if ((keyword === null || value.includes(',')) && !cursorWarned) {
+      cursorWarned = true
+      console.warn('[node] cursor: only CSS cursor keywords are used (pointer, grab, crosshair, ...), not images')
+    }
+    this._cursor = keyword
   }
 
   getProxy() {

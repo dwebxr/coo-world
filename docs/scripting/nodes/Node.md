@@ -44,8 +44,11 @@ The child nodes.
 
 ### `.cursor`: String
 
-The page's mouse cursor while the pointer is over the node (a CSS cursor value, at most 128 characters), or
-`null`. Anything other than a string throws.
+The page's mouse cursor while the pointer is over the node: a CSS cursor keyword (`pointer`, `grab`, `crosshair`,
+`not-allowed`, ...), or `null`. Anything other than a string throws. A string that is not a keyword, such as an image
+cursor without one, is not used: the property reads back as `null` and the default cursor shows. Of an image cursor
+with its fallback (`url(hand.png), pointer`) the closing keyword is used, and the property reads back as that
+keyword; the image is not.
 
 ## Methods
 

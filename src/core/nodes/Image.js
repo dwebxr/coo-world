@@ -1,5 +1,6 @@
 import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
-import { Node } from './Node'
+import { Node, watchLoad } from './Node'
+import { boundedNumber, SCREEN_MAX_SIDE } from '../extras/boundedValue.js'
 import * as THREE from '../extras/three'
 import CustomShaderMaterial from '../libs/three-custom-shader-material'
 
@@ -63,13 +64,13 @@ export class Image extends Node {
     return this
   }
 
-  async mount() {
-    this.build()
+  mount() {
+    watchLoad(this, this.build())
   }
 
   commit(didMove) {
     if (this.needsRebuild) {
-      this.build()
+      watchLoad(this, this.build())
       return
     }
     if (didMove) {
@@ -273,6 +274,7 @@ export class Image extends Node {
     if (value !== null && !isNumber(value)) {
       throw new Error('[image] width not null or number')
     }
+    if (value !== null) value = boundedNumber(value, null, 0, SCREEN_MAX_SIDE)
     if (this._width === value) return
     this._width = value
     this.needsRebuild = true
@@ -287,6 +289,7 @@ export class Image extends Node {
     if (value !== null && !isNumber(value)) {
       throw new Error('[image] height not null or number')
     }
+    if (value !== null) value = boundedNumber(value, null, 0, SCREEN_MAX_SIDE)
     if (this._height === value) return
     this._height = value
     this.needsRebuild = true

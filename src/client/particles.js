@@ -1,7 +1,15 @@
 const emitters = {}
 const MAX_DISTANCE_EMITS_PER_UPDATE = 1000
+// rows and columns of a spritesheet (65,536 frames at most)
+const SPRITESHEET_MAX_SIDE = 256
+// frames a second of a spritesheet
+const SPRITESHEET_MAX_FPS = 1000
+// points of an over-life curve
+const CURVE_MAX_POINTS = 64
 
 import { DEG2RAD } from '../core/extras/general'
+import { boundedInteger, boundedNumber } from '../core/extras/boundedValue.js'
+import { toEngineNumber } from '../core/extras/engineNumber.js'
 import { Vector3, Quaternion, Matrix4, Color } from '../core/extras/three'
 
 const v1 = new Vector3()
@@ -69,6 +77,9 @@ function createEmitter(config) {
   let moveDir = new Vector3()
 
   const particles = []
+  // the starts made in the current step and where its search for a free particle is (emit)
+  let stepStarts = 0
+  let stepNext = 0
 
   // initialize pool
   for (let i = 0; i < config.max; i++) {
@@ -124,9 +135,16 @@ function createEmitter(config) {
 
   function emit({ amount, matrixWorld }) {
     const progress = elapsed / config.duration // ratio through this cycle (0 to 1)
+    // One step starts at most as many particles as the pool holds, over all its emits (rate, distance, bursts): a
+    // particle started with no life left is free again at once and would be started again and again. The free
+    // particle is searched from where the step's last one was found: the ones before it were in use then, and
+    // nothing ages before the step's emits are done. So a step costs the pool's length once, whatever is asked.
     for (let i = 0; i < amount; i++) {
-      const particle = particles.find(p => p.age >= p.life)
-      if (!particle) break
+      if (stepStarts >= particles.length) break
+      while (stepNext < particles.length && !(particles[stepNext].age >= particles[stepNext].life)) stepNext++
+      if (stepNext === particles.length) break
+      stepStarts++
+      const particle = particles[stepNext]
       particle.age = 0
       particle.life = life(progress)
       particle.speed = speed(progress)
@@ -192,6 +210,8 @@ function createEmitter(config) {
     aUV,
   }) {
     delta *= config.timescale
+    stepStarts = 0
+    stepNext = 0
     // console.time('update')
     // console.log('m1', matrixWorld)
     matrixWorld = m1.fromArray(matrixWorld)
@@ -532,13 +552,14 @@ function createEmitter(config) {
   }
 }
 
+// A start value is one number or two (the node bounds the text, Particles.js): each split here keeps the two it reads
 function createNumericStarter(str) {
   if (str.includes('-')) {
-    const [start, end] = str.split('-').map(n => parseFloat(n))
+    const [start, end] = str.split('-', 2).map(n => parseFloat(n))
     return createNumericStarterLinear(start, end)
   }
   if (str.includes('~')) {
-    const [from, to] = str.split('~').map(n => parseFloat(n))
+    const [from, to] = str.split('~', 2).map(n => parseFloat(n))
     return createNumericStarterRandom(from, to)
   }
   const n = parseFloat(str)
@@ -571,11 +592,11 @@ function createNumericStarterFixed(n) {
 
 function createColorStarter(str) {
   if (str.includes('-')) {
-    const [start, end] = str.split('-').map(toRGB)
+    const [start, end] = str.split('-', 2).map(toRGB)
     return createColorStarterLinear(start, end)
   }
   if (str.includes('~')) {
-    const [from, to] = str.split('~').map(toRGB)
+    const [from, to] = str.split('~', 2).map(toRGB)
     return createColorStarterRandom(from, to)
   }
   const rgb = toRGB(str)
@@ -1002,7 +1023,14 @@ function createSpritesheet(options) {
   if (!options) {
     return () => [0, 0, 1, 1]
   }
-  const [rows, cols, frameRate, loop] = options
+  // rows and columns are the node's own values (any primitive): numbers by the engine's rule, whole and bounded,
+  // since every frame gets an entry below
+  const rows = boundedInteger(toEngineNumber(options[0]), 1, 1, SPRITESHEET_MAX_SIDE)
+  const cols = boundedInteger(toEngineNumber(options[1]), 1, 1, SPRITESHEET_MAX_SIDE)
+  // the frame rate by the same rule, bounded: a rate that is not a number, zero or below stays on the first frame. The
+  // loop flag is read as before, by its truth (any value that is not false, 0, '' or null loops).
+  const frameRate = boundedNumber(toEngineNumber(options[2]), 0, 0, SPRITESHEET_MAX_FPS)
+  const loop = !!options[3]
   const totalFrames = rows * cols
   // pre-calculate all uv frames
   const uvFrames = []
@@ -1021,12 +1049,15 @@ function createSpritesheet(options) {
   return (particle, delta) => {
     particle.frameTime += delta
     const frameDuration = 1 / frameRate
-    const rawFrame = particle.frameTime / frameDuration
+    const rawFrame = Math.floor(particle.frameTime / frameDuration)
+    // the index is always one of the frames: a missing one throws where the step is packed, and no reply is sent. A
+    // count that is not one (a time that is not finite) is the first frame.
+    const frame = rawFrame >= 0 && rawFrame < Infinity ? rawFrame : 0
     let idx
     if (loop) {
-      idx = Math.floor(rawFrame) % totalFrames
+      idx = frame % totalFrames
     } else {
-      idx = Math.min(Math.floor(rawFrame), totalFrames - 1)
+      idx = Math.min(frame, totalFrames - 1)
     }
     return uvFrames[idx]
   }
@@ -1037,10 +1068,12 @@ function createNumberCurve(str) {
   // Each point is defined by an alpha (0-1) and a corresponding value
   //
   // Split the string by '|' to get individual points
-  const pointsStr = str.split('|')
+  // (the first CURVE_MAX_POINTS of them: the curve is walked for every particle in every step)
+  const pointsStr = str.split('|', CURVE_MAX_POINTS)
   // Parse each point into [alpha, value] pairs
   const points = pointsStr.map(point => {
-    const [alpha, value] = point.split(',').map(parseFloat)
+    // (a point is two values: its split keeps those)
+    const [alpha, value] = point.split(',', 2).map(parseFloat)
     return { alpha, value }
   })
   // Sort points by alpha (just in case they're not in order)
@@ -1066,11 +1099,11 @@ function createNumberCurve(str) {
 
 function createColorCurve(str) {
   // Parse the string format: `alpha1,color1|alpha2,color2|...`
-  const pointsStr = str.split('|')
+  const pointsStr = str.split('|', CURVE_MAX_POINTS)
   const points = []
-  // Parse each point into {alpha,color} pairs
+  // Parse each point into {alpha,color} pairs (as in createNumberCurve, two values a point)
   for (const point of pointsStr) {
-    const parts = point.split(',')
+    const parts = point.split(',', 2)
     const alpha = parseFloat(parts[0])
     const color = toRGB(parts[1])
     points.push({

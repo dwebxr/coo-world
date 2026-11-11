@@ -2,7 +2,10 @@ import * as THREE from '../extras/three'
 import { every } from 'lodash-es'
 import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
 
-import { Node } from './Node'
+import { Node, watchLoad } from './Node'
+import { AUDIO_MAX_OFFSET, AUDIO_MAX_PLAYBACK_RATE, boundedAudio, isFiniteVector } from '../extras/audioBounds.js'
+import { boundedNumber } from '../extras/boundedValue.js'
+import { toEngineNumber } from '../extras/engineNumber.js'
 
 const v1 = new THREE.Vector3()
 const v2 = new THREE.Vector3()
@@ -65,7 +68,7 @@ export class Audio extends Node {
       this.needsRebuild = false
       if (this.source) {
         this.pause()
-        this.play()
+        watchLoad(this, this.play())
       }
       return
     }
@@ -84,6 +87,8 @@ export class Audio extends Node {
     const pos = v1.setFromMatrixPosition(this.matrixWorld)
     const qua = q1.setFromRotationMatrix(this.matrixWorld)
     const dir = v2.set(0, 0, -1).applyQuaternion(qua)
+    // a node whose transform is not finite keeps the panner where it was (its ramps throw for a NaN)
+    if (!isFiniteVector(pos) || !isFiniteVector(dir)) return
     if (this.pannerNode.positionX) {
       const endTime = audio.ctx.currentTime + audio.lastDelta
       this.pannerNode.positionX.linearRampToValueAtTime(pos.x, endTime)
@@ -136,6 +141,7 @@ export class Audio extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] volume not a number')
     }
+    value = boundedAudio('volume', value, defaults.volume)
     this._volume = value
     if (this.gainNode) {
       this.gainNode.gain.value = this._volume
@@ -203,6 +209,7 @@ export class Audio extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] refDistance not a number')
     }
+    value = boundedAudio('refDistance', value, defaults.refDistance)
     this._refDistance = value
     if (this.pannerNode) {
       this.pannerNode.refDistance = this._refDistance
@@ -217,6 +224,7 @@ export class Audio extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] maxDistance not a number')
     }
+    value = boundedAudio('maxDistance', value, defaults.maxDistance)
     this._maxDistance = value
     if (this.pannerNode) {
       this.pannerNode.maxDistance = this._maxDistance
@@ -231,6 +239,7 @@ export class Audio extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] rolloffFactor not a number')
     }
+    value = boundedAudio('rolloffFactor', value, defaults.rolloffFactor)
     this._rolloffFactor = value
     if (this.pannerNode) {
       this.pannerNode.rolloffFactor = this._rolloffFactor
@@ -245,6 +254,7 @@ export class Audio extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] coneInnerAngle not a number')
     }
+    value = boundedAudio('coneInnerAngle', value, defaults.coneInnerAngle)
     this._coneInnerAngle = value
     if (this.pannerNode) {
       this.pannerNode.coneInnerAngle = this._coneInnerAngle
@@ -259,6 +269,7 @@ export class Audio extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] coneOuterAngle not a number')
     }
+    value = boundedAudio('coneOuterAngle', value, defaults.coneOuterAngle)
     this._coneOuterAngle = value
     if (this.pannerNode) {
       this.pannerNode.coneOuterAngle = this._coneOuterAngle
@@ -273,6 +284,7 @@ export class Audio extends Node {
     if (!isNumber(value)) {
       throw new Error('[audio] coneOuterGain not a number')
     }
+    value = boundedAudio('coneOuterGain', value, defaults.coneOuterGain)
     this._coneOuterGain = value
     if (this.pannerNode) {
       this.pannerNode.coneOuterGain = this._coneOuterGain
@@ -294,11 +306,12 @@ export class Audio extends Node {
     if (!isNumber(time)) {
       throw new Error('[audio] currentTime not a number')
     }
-    const offset = Math.max(0, time)
+    // where the source starts: finite and not negative (start() throws for anything else, inside play())
+    const offset = boundedNumber(time, 0, 0, AUDIO_MAX_OFFSET)
     if (this.source) {
       this.stop()
       this.offset = offset
-      this.play()
+      watchLoad(this, this.play())
     } else {
       this.offset = offset
     }
@@ -404,10 +417,15 @@ export class Audio extends Node {
     }
   }
 
+  // the rate is read by the engine's number rule and bounded: the ramp takes a float and throws for one that is not
+  // finite (NaN, Infinity, 1e100), in the middle of the script's call (audioBounds.js). Only a playing source has a
+  // rate to ramp (and the server has no audio).
   setPlaybackRate(rate) {
+    if (!this.source) return
     const audio = this.ctx.world.audio
+    const value = boundedNumber(toEngineNumber(rate), 1, -AUDIO_MAX_PLAYBACK_RATE, AUDIO_MAX_PLAYBACK_RATE)
     const endTime = audio.ctx.currentTime + audio.lastDelta
-    this.source?.playbackRate.linearRampToValueAtTime(rate, endTime)
+    this.source.playbackRate.linearRampToValueAtTime(value, endTime)
   }
 
   getProxy() {
@@ -496,7 +514,7 @@ export class Audio extends Node {
           return self.isPlaying
         },
         play(restartIfPlaying) {
-          self.play(restartIfPlaying)
+          watchLoad(self, self.play(restartIfPlaying))
         },
         pause() {
           self.pause()

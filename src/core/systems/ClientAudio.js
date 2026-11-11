@@ -59,8 +59,14 @@ export class ClientAudio extends System {
       document.removeEventListener('click', unlock)
       document.removeEventListener('touchstart', unlock)
       document.removeEventListener('keydown', unlock)
+      // each waiting sound on its own: one that throws must not leave the others, of other apps, unstarted
       while (this.queue.length) {
-        this.queue.pop()()
+        const start = this.queue.pop()
+        try {
+          start()
+        } catch (err) {
+          console.error('[audio] a queued sound could not start:', err)
+        }
       }
       console.log('[audio] unlocked')
     }

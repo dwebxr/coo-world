@@ -1,6 +1,7 @@
 import Yoga from 'yoga-layout'
 import { every, isArray } from 'lodash-es'
 import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
+import { boundedNumber, boundedText } from '../extras/boundedValue.js'
 
 import { Node } from './Node'
 import { Display, isDisplay } from '../extras/yoga'
@@ -8,6 +9,10 @@ import { fillRoundRect } from '../extras/roundRect'
 import { wrapText } from '../extras/wrapText.js'
 
 const textAligns = ['left', 'center', 'right']
+
+export const UITEXT_MAX_LENGTH = 10000
+// in the UI's units; the font drawn is this times the UI's res (16 at most)
+export const UITEXT_MAX_FONT_SIZE = 1024
 
 const defaults = {
   display: 'flex',
@@ -188,8 +193,11 @@ export class UIText extends Node {
   }
 
   measureTextFunc() {
-    const ctx = getOffscreenContext()
     return (width, widthMode, height, heightMode) => {
+      // asked for at each measure, not once at mount: a browser out of canvas memory gives no context (UI.js), and a
+      // text measured without one takes no room until there is one
+      const ctx = getOffscreenContext()
+      if (!ctx) return { width: 0, height: 0 }
       ctx.font = `${this._fontWeight} ${this._fontSize * this.ui._res}px ${this._fontFamily}`
       ctx.textBaseline = 'alphabetic'
       let lines
@@ -398,6 +406,8 @@ export class UIText extends Node {
     if (!isString(val)) {
       throw new Error(`[uitext] value not a string`)
     }
+    // measured word by word, and again whenever the UI is laid out (boundedValue.js)
+    val = boundedText(val, UITEXT_MAX_LENGTH)
     if (this._value === val) return
     this._value = val
     this.yogaNode?.markDirty()
@@ -412,6 +422,7 @@ export class UIText extends Node {
     if (!isNumber(value)) {
       throw new Error(`[uitext] fontSize not a number`)
     }
+    value = boundedNumber(value, defaults.fontSize, 0, UITEXT_MAX_FONT_SIZE)
     if (this._fontSize === value) return
     this._fontSize = value
     this.yogaNode?.markDirty()

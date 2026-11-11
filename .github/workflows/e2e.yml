@@ -102,6 +102,11 @@ jobs:
         continue-on-error: ${{ matrix.engine == 'firefox' }}
         run: node test/e2e/hostile-transforms.mjs --engine=${{ matrix.engine }}
 
+      - name: Hostile content (node values that become sizes, cursors, failed loads)
+        id: hostile_content
+        continue-on-error: ${{ matrix.engine == 'firefox' }}
+        run: node test/e2e/hostile-content.mjs --engine=${{ matrix.engine }}
+
       - name: Physics boundary and native sentinel (local throwaway world)
         id: physics_boundary
         continue-on-error: ${{ matrix.engine == 'firefox' }}

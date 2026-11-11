@@ -12,7 +12,9 @@ Currently only `mp3` files are supported.
 
 ### `.volume`: Number
 
-The audio volume. Defaults to `1`.
+The audio volume. Defaults to `1`. Kept between `0` and `100`.
+
+This and the spatial numbers below are kept inside the ranges the browser's audio engine accepts (a value outside becomes the nearest bound, `NaN` becomes the default): `refDistance` and `rolloffFactor` are not negative, `maxDistance` is above zero, the cone angles are between `0` and `360`, and `coneOuterGain` is between `0` and `1`.
 
 ### `.loop`: Boolean
 
@@ -60,7 +62,7 @@ When spatial is enabled, the cone inner angle to use. Defaults to `0`.
 
 ### `.currentTime`: Number
 
-Gets and sets the current playback time, in seconds.
+Gets and sets the current playback time, in seconds. Kept finite and not negative (`NaN` is `0`).
 
 ### `.{...Node}`
 
@@ -81,3 +83,7 @@ Pauses the audio, retaining the current time.
 ### `.stop()`
 
 Stops the audio and resets the time back to zero.
+
+### `.setPlaybackRate(rate)`
+
+Ramps the playing audio's playback rate to `rate` over the next frame (`1` is normal speed). The rate is kept between `-1000` and `1000`; a value that is not a number (`NaN`, an object) is `1`. Audio that is not playing ignores it.

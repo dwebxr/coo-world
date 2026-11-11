@@ -4,6 +4,7 @@ import { ControlPriorities } from '../extras/ControlPriorities'
 import { System } from './System'
 import { nodeFailed } from '../extras/nodeFailure'
 import { NODE_CLIMB_LIMIT } from '../extras/nodeLimits.js'
+import { cursorKeyword } from '../extras/cursorKeyword.js'
 
 const v1 = new THREE.Vector3()
 
@@ -156,12 +157,12 @@ export class PointerState {
     }
 
     // set cursor - check from leaf to root for first defined cursor
-    // (Node's cursor setter keeps only primitive strings; anything else here falls back to the default)
+    // (Node's cursor setter keeps only CSS cursor keywords; anything else here falls back to the default)
     let cursor = CURSOR_DEFAULT
     if (newPath.length > 0) {
       for (let i = newPath.length - 1; i >= 0; i--) {
         if (newPath[i].cursor) {
-          if (typeof newPath[i].cursor === 'string') cursor = newPath[i].cursor
+          cursor = cursorKeyword(newPath[i].cursor) || CURSOR_DEFAULT
           break
         }
       }

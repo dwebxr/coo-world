@@ -1,4 +1,5 @@
 import { createNode } from './createNode'
+import { isNodeLayer } from './Layers'
 import * as THREE from '../extras/three'
 import CustomShaderMaterial from '../libs/three-custom-shader-material'
 
@@ -81,7 +82,8 @@ export function glbToNodes(glb, world) {
           geometry: object3d.geometry,
           convex: props.convex,
           trigger: props.trigger,
-          layer: props.layer,
+          // a model's custom property: a layer a script could set, or the default (a model with another value loads)
+          layer: isNodeLayer(props.layer) ? props.layer : undefined,
           position: object3d.position.toArray(),
           quaternion: object3d.quaternion.toArray(),
           scale: object3d.scale.toArray(),

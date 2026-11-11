@@ -1,6 +1,12 @@
 import { isNumber, isString } from '../extras/scriptPrimitives.js'
+import { boundedNumber } from '../extras/boundedValue.js'
 import { Node } from './Node'
 import * as THREE from '../extras/three'
+
+// The sky's numbers go into the renderer's lighting and fog as they are, where one NaN blacks out the scene for
+// everyone: a NaN counts as not set (null, so the environment's own default applies), the rest is bounded
+// (boundedValue.js). A negative intensity or fog distance is zero.
+export const SKY_MAX_NUMBER = 1e9
 
 // NOTE: actual defaults bubble up to ClientEnvironment.js
 const defaults = {
@@ -97,6 +103,7 @@ export class Sky extends Node {
     if (value !== null && !isNumber(value)) {
       throw new Error('[sky] rotationY not a number')
     }
+    if (value !== null) value = boundedNumber(value, null, -SKY_MAX_NUMBER, SKY_MAX_NUMBER)
     if (this._rotationY === value) return
     this._rotationY = value
     this.needsRebuild = true
@@ -135,6 +142,7 @@ export class Sky extends Node {
     if (value !== null && !isNumber(value)) {
       throw new Error('[sky] sunIntensity not a number')
     }
+    if (value !== null) value = boundedNumber(value, null, 0, SKY_MAX_NUMBER)
     if (this._sunIntensity === value) return
     this._sunIntensity = value
     this.needsRebuild = true
@@ -163,6 +171,7 @@ export class Sky extends Node {
     if (value !== null && !isNumber(value)) {
       throw new Error('[sky] fogNear not a number')
     }
+    if (value !== null) value = boundedNumber(value, null, 0, SKY_MAX_NUMBER)
     if (this._fogNear === value) return
     this._fogNear = value
     this.needsRebuild = true
@@ -177,6 +186,7 @@ export class Sky extends Node {
     if (value !== null && !isNumber(value)) {
       throw new Error('[sky] fogFar not a number')
     }
+    if (value !== null) value = boundedNumber(value, null, 0, SKY_MAX_NUMBER)
     if (this._fogFar === value) return
     this._fogFar = value
     this.needsRebuild = true

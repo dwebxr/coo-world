@@ -176,7 +176,7 @@ function readBuiltIn(value, state) {
   // What a value says it is decides nothing, but one that says it is an ordinary object is not asked whether it
   // is a Map, a Date and so on (each such question is a refused call for a class instance): a built-in that hides
   // behind that tag is copied as the ordinary object it claims to be.
-  if (tagOf.call(value) !== '[object Object]') {
+  if (!saysOrdinary(value)) {
     const built = readBranded(value, seen, state)
     if (built !== missing) return built
   }
@@ -193,6 +193,16 @@ function readBuiltIn(value, state) {
     return copy
   }
   return missing
+}
+
+// whether a value says it is an ordinary object. Asking reads its Symbol.toStringTag, which the packer never read:
+// a value whose tag cannot be read (a getter that throws) has said nothing, and is asked for the marks
+function saysOrdinary(value) {
+  try {
+    return tagOf.call(value) === '[object Object]'
+  } catch {
+    return false
+  }
 }
 
 // the built-ins that are told by a mark of their own: a typed array, a Date, an ArrayBuffer, a Map, a Set, a RegExp

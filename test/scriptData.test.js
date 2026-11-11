@@ -403,6 +403,22 @@ test('a value met twice is read once, also a function with a toJSON and an owner
   const failure = readScriptData(new Failure('failed'))
   assert.ok(failure instanceof Error)
   assert.equal(failure.message, 'failed')
+  // the tag is only a shortcut: a value whose tag cannot be read is still read (Codex: it threw)
+  class Untagged extends Error {
+    get [Symbol.toStringTag]() {
+      throw new Error('tag read')
+    }
+  }
+  assert.equal(readScriptData(new Untagged('still an error')).message, 'still an error')
+  class Plain {
+    constructor() {
+      this.a = 1
+    }
+    get [Symbol.toStringTag]() {
+      throw new Error('tag read')
+    }
+  }
+  assert.deepEqual(readScriptData(new Plain()), { a: 1 })
 })
 
 test('the values of a message are counted: an array that says any length is refused before it is read', () => {

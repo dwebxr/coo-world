@@ -17,8 +17,8 @@ import { readAnchorPose } from '../extras/anchorPose'
 import {
   avatarChosen,
   avatarLoadFailed,
-  avatarSettled,
   beginAvatarLoad,
+  installAvatar,
   isCurrentAvatarLoad,
   playerAvatarUrl,
   switchToBuiltinAvatar,
@@ -194,29 +194,19 @@ export class PlayerLocal extends Entity {
     if (this.avatarUrl === avatarUrl) return
     this.world.loader
       .load('avatar', avatarUrl)
-      .then(src => {
-        if (!isCurrentAvatarLoad(this, load)) return
-        // the new avatar is made and put in place before the one showing goes: one that cannot be made or placed
-        // leaves the player with the avatar they had, which avatarLoadFailed then keeps
-        const avatar = src.toNodes().get('avatar')
-        if (!avatar) throw new Error(`[avatar] no avatar in ${avatarUrl}`)
-        avatar.disableRateCheck() // max fps for local player
-        // in first person the camera is inside the avatar, which is hidden; the per-frame switch only acts when the
-        // view changes, so an avatar that arrives in first person starts hidden
-        avatar.visible = !this.firstPerson
-        this.base.add(avatar)
-        const previous = this.avatar
-        this.avatar = avatar
-        this.avatarUrl = avatarUrl
-        this.nametag.position.y = avatar.getHeadToHeight() + 0.2
-        this.bubble.position.y = avatar.getHeadToHeight() + 0.2
-        if (!this.bubble.active) {
-          this.nametag.active = true
-        }
-        this.camHeight = avatar.height * 0.9
-        avatarSettled(this, avatarUrl)
-        previous?.deactivate()
-      })
+      // the new avatar takes the place of the one showing only once it is mounted and set up; one that fails on the
+      // way leaves the player as they were, with the avatar they had, which avatarLoadFailed then keeps (installAvatar)
+      .then(src =>
+        installAvatar(this, load, avatarUrl, src, {
+          prepare: avatar => {
+            avatar.disableRateCheck() // max fps for local player
+            // in first person the camera is inside the avatar, which is hidden; the per-frame switch only acts when the
+            // view changes, so an avatar that arrives in first person starts hidden
+            avatar.visible = !this.firstPerson
+          },
+          takes: avatar => ({ camHeight: avatar.height * 0.9 }),
+        })
+      )
       .catch(err => {
         // a load that failed, or an avatar that could not be put in place: reported, and a player left with no
         // avatar gets the built-in one

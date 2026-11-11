@@ -11,6 +11,7 @@ before(async () => {
     export { PlayerRemote } from './src/core/entities/PlayerRemote'
     export { PlayerLocal } from './src/core/entities/PlayerLocal'
     export { BUILTIN_AVATAR_URL, LOADER_BUSY, AVATAR_RETRY_MS, avatarLoadFailed } from './src/core/extras/playerAvatarFallback'
+    export { createNode } from './src/core/extras/createNode'
   `)
   m = await import(bundle.url)
 })
@@ -18,17 +19,26 @@ after(() => bundle?.destroy())
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0))
 
+// an avatar node as the player uses it: its heights come from its instance, which it has only once it is mounted
 function avatarNode(url) {
   return {
     url,
     visible: true, // the Avatar node's default
     deactivated: false,
+    mounted: false,
+    instance: null,
     deactivate() {
       this.deactivated = true
+      this.mounted = false
+      this.instance = null
     },
-    getHeadToHeight: () => 1.6,
+    getHeadToHeight() {
+      return this.instance?.headToHeight || null
+    },
     disableRateCheck() {},
-    height: 1.8,
+    get height() {
+      return this.instance?.height || null
+    },
   }
 }
 
@@ -54,7 +64,24 @@ function player(Cls, avatar) {
           }),
       },
     },
-    base: { add: node => (p.installed = node) },
+    base: {
+      children: [],
+      // a node added is mounted at once, as an Avatar from the loader's toNodes() is (it carries its factory)
+      add(node) {
+        node.parent = this
+        this.children.push(node)
+        node.mounted = true
+        node.instance = { headToHeight: 1.6, height: 1.8 }
+        p.installed = node
+      },
+      remove(node) {
+        const index = this.children.indexOf(node)
+        if (index === -1) return
+        node.deactivate()
+        node.parent = null
+        this.children.splice(index, 1)
+      },
+    },
     nametag: { position: {}, active: false },
     bubble: { position: {}, active: false },
   })
@@ -85,7 +112,118 @@ async function showing(Cls) {
   await tick()
   shown.a = shown.p.installed
   assert.equal(shown.p.avatar, shown.a)
+  // the heights are read from the avatar once it is mounted (before that it has none)
+  assert.equal(shown.p.nametag.position.y, 1.6 + 0.2)
+  assert.equal(shown.p.bubble.position.y, 1.6 + 0.2)
+  if (Cls === m.PlayerLocal) assert.equal(shown.p.camHeight, 1.8 * 0.9)
   return shown
+}
+
+// The engine's own nodes: the player's base is a real group node, mounted in a minimal world as the player's init
+// mounts it
+function realPlayer(Cls) {
+  const shown = player(Cls, 'https://example.com/a.vrm')
+  const world = shown.p.world
+  world.stage = { dirtyNodes: new Set() }
+  world.hot = new Set()
+  world.setHot = (item, hot) => (hot ? world.hot.add(item) : world.hot.delete(item))
+  world.avatars = new Set()
+  world.avatars.remove = world.avatars.delete
+  shown.p.base = m.createNode('group')
+  shown.p.base.activate({ world, entity: shown.p })
+  shown.world = world
+  // the avatars mounted under the player
+  shown.mounted = () => shown.p.base.children.filter(node => node.name === 'avatar' && node.mounted)
+  return shown
+}
+
+// an avatar file as the client loader gives it (buildAvatarResult): one real Avatar node that carries its factory,
+// cloned by toNodes(); `made` lists the avatar nodes it handed out. `fails`: the factory's create throws; `instance`:
+// properties of the instance create returns, over a working one with these heights.
+function avatarFile({ fails = false, headToHeight = 1.5, height = 1.7, instance = {} } = {}) {
+  const factory = {
+    create() {
+      if (fails) throw new Error('this avatar cannot be made')
+      return Object.defineProperties(
+        {
+          height,
+          headToHeight,
+          destroyed: false,
+          setEmote() {},
+          setVisible(visible) {
+            this.visible = visible
+          },
+          disableRateCheck() {
+            this.rateCheck = false
+          },
+          move() {},
+          destroy() {
+            this.destroyed = true
+          },
+        },
+        Object.getOwnPropertyDescriptors(instance)
+      )
+    },
+  }
+  const root = m.createNode('group', { id: '$root' })
+  root.add(m.createNode('avatar', { id: 'avatar', factory, hooks: {} }))
+  const file = {
+    made: [],
+    toNodes() {
+      const clone = root.clone(true)
+      file.made.push(clone.get('avatar'))
+      return clone
+    },
+  }
+  return file
+}
+
+// nothing may be left unhandled (a mount's rejection is one: Node.activate does not keep the promise)
+function noUnhandled(t) {
+  const unhandled = []
+  const onUnhandled = reason => unhandled.push(reason)
+  process.on('unhandledRejection', onUnhandled)
+  t.after(() => process.off('unhandledRejection', onUnhandled))
+  return unhandled
+}
+
+// a real player who shows avatar A, a real Avatar node
+async function showingReal(Cls) {
+  const shown = realPlayer(Cls)
+  const file = avatarFile()
+  shown.p.applyAvatar()
+  shown.loads['https://example.com/a.vrm'].with(file)
+  await tick()
+  shown.a = file.made[0]
+  assert.equal(shown.p.avatar, shown.a)
+  assert.ok(shown.a.instance, 'A is mounted, with an instance')
+  assert.deepEqual(shown.mounted(), [shown.a])
+  assert.deepEqual([...shown.world.avatars], [shown.a.instance])
+  // the heights are read from the mounted avatar
+  assert.equal(shown.p.nametag.position.y, 1.5 + 0.2)
+  assert.equal(shown.p.bubble.position.y, 1.5 + 0.2)
+  if (Cls === m.PlayerLocal) assert.equal(shown.p.camHeight, 1.7 * 0.9)
+  return shown
+}
+
+// what a real player who shows A must still have after a new avatar failed
+function assertStillShowingA(shown, candidate, label) {
+  const { p, a, loads, world } = shown
+  const instance = a.instance
+  assert.equal(p.avatar, a, `${label}: A is still the player's avatar`)
+  assert.equal(p.avatarUrl, 'https://example.com/a.vrm', label)
+  assert.equal(a.mounted, true, `${label}: and still mounted`)
+  assert.ok(instance && !instance.destroyed, label)
+  assert.deepEqual(shown.mounted(), [a], `${label}: the only avatar mounted`)
+  assert.equal(candidate.mounted, false, `${label}: the new one is not mounted`)
+  assert.equal(p.base.children.includes(candidate), false, `${label}: nor under the player`)
+  assert.deepEqual([...world.avatars], [instance], `${label}: only A's instance is in the world`)
+  assert.deepEqual([...world.hot], [instance], label)
+  assert.equal(p.nametag.position.y, 1.5 + 0.2, `${label}: the name stays where A puts it`)
+  assert.equal(p.bubble.position.y, 1.5 + 0.2, label)
+  if (p instanceof m.PlayerLocal) assert.equal(p.camHeight, 1.7 * 0.9, label)
+  assert.equal(p.avatarFallback, null, `${label}: no fallback over it`)
+  assert.equal(loads[m.BUILTIN_AVATAR_URL], undefined, label)
 }
 
 for (const name of ['PlayerRemote', 'PlayerLocal']) {
@@ -356,7 +494,103 @@ for (const name of ['PlayerRemote', 'PlayerLocal']) {
       assert.equal(loads[m.BUILTIN_AVATAR_URL], undefined)
     }
   })
+
+  test(`${name}, real nodes: an avatar whose mount fails leaves the one showing; one that mounts takes its place`, async t => {
+    quiet(t)
+    const unhandled = noUnhandled(t)
+    const shown = await showingReal(m[name])
+    const { p, loads, a } = shown
+    const broken = avatarFile({ fails: true })
+    p.modify({ avatar: 'https://example.com/b.vrm' })
+    loads['https://example.com/b.vrm'].with(broken)
+    await tick()
+    await tick()
+    assert.equal(broken.made.length, 1, 'B was made')
+    assertStillShowingA(shown, broken.made[0], 'B failed to mount')
+    assert.deepEqual(unhandled, [], 'its rejection is handled')
+
+    // an avatar that mounts: it takes A's place, and A goes
+    const working = avatarFile({ headToHeight: 1.2, height: 1.4 })
+    const instance = a.instance
+    p.modify({ avatar: 'https://example.com/c.vrm' })
+    loads['https://example.com/c.vrm'].with(working)
+    await tick()
+    const c = working.made[0]
+    assert.equal(p.avatar, c)
+    assert.equal(p.avatarUrl, 'https://example.com/c.vrm')
+    assert.deepEqual(shown.mounted(), [c])
+    assert.equal(a.mounted, false)
+    assert.equal(instance.destroyed, true, "A's instance left the world")
+    assert.deepEqual([...shown.world.avatars], [c.instance])
+    assert.equal(p.nametag.position.y, 1.2 + 0.2, 'heights from the mounted C')
+    assert.equal(p.bubble.position.y, 1.2 + 0.2)
+    if (name === 'PlayerLocal') {
+      assert.equal(p.camHeight, 1.4 * 0.9)
+      assert.equal(c.instance.rateCheck, false, 'the local avatar runs at full rate')
+    }
+    assert.deepEqual(unhandled, [])
+  })
+
+  test(`${name}, real nodes: a failure after the new avatar was placed takes it out again and leaves the player as it was`, async t => {
+    quiet(t)
+    const unhandled = noUnhandled(t)
+    const failures = {
+      'its head height cannot be read': () =>
+        avatarFile({
+          instance: {
+            get headToHeight() {
+              throw new Error('no head')
+            },
+          },
+        }),
+      'the bubble cannot be moved': p => {
+        // the name moves first, then the bubble refuses: the name is put back
+        const position = p.bubble.position
+        const y = position.y
+        Object.defineProperty(position, 'y', {
+          configurable: true,
+          get: () => y,
+          set: value => {
+            if (value !== y) throw new Error('the bubble cannot move')
+          },
+        })
+        return avatarFile({ headToHeight: 1.1 })
+      },
+    }
+    for (const [label, makeFile] of Object.entries(failures)) {
+      const shown = await showingReal(m[name])
+      const { p, loads } = shown
+      const file = makeFile(p)
+      p.modify({ avatar: 'https://example.com/b.vrm' })
+      loads['https://example.com/b.vrm'].with(file)
+      await tick()
+      assert.equal(file.made.length, 1, `${label}: B was made`)
+      assert.ok(file.made[0].instance === null, `${label}: and its instance is gone`)
+      assertStillShowingA(shown, file.made[0], label)
+      assert.deepEqual(unhandled, [], label)
+    }
+  })
 }
+
+test('PlayerLocal: choosing a session avatar is a new choice: a retry for the one before it does nothing', async t => {
+  const timers = quiet(t)
+  const { p, loads, started } = await showing(m.PlayerLocal)
+  p.world.network = { send() {} }
+  p.setSessionAvatar('https://example.com/b.vrm')
+  loads['https://example.com/b.vrm'].fail(busyError())
+  await tick()
+  assert.equal(timers.length, 1, 'B is to be asked for again')
+  // the same avatar chosen again: its own load, its own chance
+  p.setSessionAvatar('https://example.com/b.vrm')
+  assert.equal(started['https://example.com/b.vrm'], 2)
+  timers.shift()()
+  assert.equal(started['https://example.com/b.vrm'], 2, 'the retry of the first choice does nothing')
+  loads['https://example.com/b.vrm'].fail(busyError())
+  await tick()
+  assert.equal(timers.length, 1, 'the second choice has its own retry')
+  timers.shift()()
+  assert.equal(started['https://example.com/b.vrm'], 3)
+})
 
 test('PlayerLocal: an avatar that arrives while the view is in first person is hidden from it', async () => {
   const { p, loads } = player(m.PlayerLocal, 'https://example.com/a.vrm')

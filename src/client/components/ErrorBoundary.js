@@ -42,6 +42,8 @@ export class ErrorBoundary extends Component {
     this.retryTimer = null
     // forgetting the tries, while the part is rendered
     this.forgetTimer = null
+    // the resetKey the timers were set for
+    this.timersKey = props.resetKey
   }
 
   static getDerivedStateFromError() {
@@ -77,7 +79,14 @@ export class ErrorBoundary extends Component {
   // after each commit: a failed part with a try left is tried again later, and a part that is rendered after a
   // failure has its tries forgotten once it has stayed rendered for RETRY_FORGET_MS
   schedule() {
-    const { failed, tries } = this.state
+    const { failed, tries, resetKey } = this.state
+    // the timers belong to the key they were set for: a new key starts without them, before it sets its own (the old
+    // part's try, due perhaps 100 ms later, would otherwise stand for the new part's first one and keep it from being
+    // set)
+    if (resetKey !== this.timersKey) {
+      this.clear()
+      this.timersKey = resetKey
+    }
     if (failed) {
       clearTimeout(this.forgetTimer)
       this.forgetTimer = null

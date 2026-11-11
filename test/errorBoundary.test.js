@@ -100,7 +100,7 @@ function fakeTimers(t) {
   let ids = 0
   const clock = { timers, errors: [], now: 1_000_000 }
   globalThis.setTimeout = (fn, ms) => {
-    timers.set(++ids, { fn, ms })
+    timers.set(++ids, { fn, ms, due: clock.now + ms })
     return ids
   }
   globalThis.clearTimeout = id => timers.delete(id)
@@ -114,6 +114,8 @@ function fakeTimers(t) {
   })
   // the pending timers with this delay
   clock.pending = ms => [...timers.values()].filter(timer => timer.ms === ms).length
+  // when the pending timers with this delay are due
+  clock.due = ms => [...timers.values()].filter(timer => timer.ms === ms).map(timer => timer.due)
   // runs the first pending timer with this delay; `late`: it runs that much after it was due, as in a background tab
   clock.run = (ms, late = 0) => {
     const entry = [...timers].find(([, timer]) => timer.ms === ms)
@@ -236,6 +238,33 @@ test('a new resetKey is a new start: the part is shown again and its tries are f
   assert.equal(quiet.shown, 'CHILD')
   assert.equal(quiet.b.state.tries, 0)
   assert.equal(clock.timers.size, 0, 'the pending try goes with the old key')
+})
+
+test("a new resetKey that fails too gets its own full delay, not what was left of the old key's", t => {
+  const clock = fakeTimers(t)
+  const part = mount({ mode: 'quiet', resetKey: 'A' }, { broken: true })
+  assert.deepEqual(clock.due(ui.RETRY_DELAY_MS), [clock.now + ui.RETRY_DELAY_MS])
+  // 2900 ms later the part is shown something else, which fails as well
+  clock.now += 2900
+  part.update({ resetKey: 'B' })
+  assert.equal(part.shown, null)
+  assert.deepEqual(clock.due(ui.RETRY_DELAY_MS), [clock.now + ui.RETRY_DELAY_MS], "B's try, a full delay from now")
+  assert.equal(clock.timers.size, 1)
+  part.child.broken = false
+  clock.run(ui.RETRY_DELAY_MS)
+  assert.equal(part.shown, 'CHILD')
+  assert.equal(part.b.state.tries, 1, 'the try counts for B, from B')
+  assert.equal(clock.pending(ui.RETRY_FORGET_MS), 1)
+
+  // a part rendered after tries, forgetting them, that is shown something else: the forgetting goes with the old key
+  const shown = mount({ mode: 'quiet', resetKey: 'A' })
+  shown.child.broken = true
+  shown.update()
+  shown.child.broken = false
+  clock.run(ui.RETRY_DELAY_MS)
+  assert.equal(clock.due(ui.RETRY_FORGET_MS).length, 2)
+  shown.update({ resetKey: 'B' })
+  assert.equal(clock.due(ui.RETRY_FORGET_MS).length, 1, "only the first part's forgetting is left")
 })
 
 test('panel: a message with a Retry button; Retry shows the part again', t => {

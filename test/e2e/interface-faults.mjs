@@ -99,36 +99,49 @@ try {
         })
         window.world.ui.togglePane('prefs')
       })
+      // the cause is taken away again whatever happens below: left in place, the pane's message would still be on
+      // the screen in the next step, which would then fail for this step's reason
+      const restore = () =>
+        page.evaluate(() => {
+          const prefs = window.world.prefs
+          if (window.__bloom) Object.defineProperty(prefs, 'bloom', window.__bloom)
+          else delete prefs.bloom
+          window.__bloom = undefined
+        })
+      const failures = () => consoleLines.filter(line => /\[ui\] the prefs pane failed to render/.test(line)).length
       const notice = page.locator('.ui-error')
-      await notice.waitFor({ state: 'visible', timeout: 15000 * TIMEOUT_SCALE })
-      eq(await notice.locator('.ui-error-text').textContent(), 'This panel hit an error.', 'message')
-      ok(await page.locator('.sidebar').isVisible(), 'the sidebar is still there')
-      ok((await page.locator('.side-chatbox-input').count()) === 1, 'the chat entry is still there')
-      ok(
-        consoleLines.some(line => /\[ui\] the prefs pane failed to render/.test(line)),
-        'the failure is reported with the name of the part'
-      )
-      const before = await page.evaluate(() => window.world.frame)
-      await sleep(1000)
-      ok((await page.evaluate(() => window.world.frame)) > before, 'the world keeps drawing')
+      try {
+        await notice.waitFor({ state: 'visible', timeout: 15000 * TIMEOUT_SCALE })
+        eq(await notice.locator('.ui-error-text').textContent(), 'This panel hit an error.', 'message')
+        ok(await page.locator('.sidebar').isVisible(), 'the sidebar is still there')
+        ok((await page.locator('.side-chatbox-input').count()) === 1, 'the chat entry is still there')
+        ok(failures() >= 1, 'the failure is reported with the name of the part')
+        // A frame drawn after the failure, however long this machine takes for one: a software-rendered browser on a
+        // busy CI runner can need more than a second for a frame, and "within one second" failed there with the
+        // world drawing all the while.
+        const before = await page.evaluate(() => window.world.frame)
+        await waitUntil(() => page.evaluate(frame => window.world.frame > frame, before), {
+          timeout: 30000,
+          message: 'the world to draw a frame after the pane failed',
+        })
 
-      // still failing: Retry shows the message again
-      await notice.locator('.ui-error-retry').click()
-      await sleep(500)
-      ok(await notice.isVisible(), 'a retry that fails again shows the message again')
+        // still failing: Retry renders the pane again, it fails again (reported again) and the message is shown
+        const reported = failures()
+        await notice.locator('.ui-error-retry').click()
+        await waitUntil(() => failures() > reported, { timeout: 15000, message: 'the retried pane to fail again' })
+        await notice.waitFor({ state: 'visible', timeout: 15000 * TIMEOUT_SCALE })
 
-      // the cause gone: Retry shows the pane
-      await page.evaluate(() => {
-        const prefs = window.world.prefs
-        if (window.__bloom) Object.defineProperty(prefs, 'bloom', window.__bloom)
-        else delete prefs.bloom
-      })
-      await notice.locator('.ui-error-retry').click()
-      await notice.waitFor({ state: 'detached', timeout: 15000 * TIMEOUT_SCALE })
-      ok((await page.locator('.sidebarpane-content').count()) > 0, 'the pane is shown')
-      await page.evaluate(() => window.world.ui.togglePane(null))
-      // the deliberate error is not a failure of this run
-      pageErrors.splice(0, pageErrors.length, ...pageErrors.filter(line => !line.includes('E2E_PANE_BOOM')))
+        // the cause gone: Retry shows the pane
+        await restore()
+        await notice.locator('.ui-error-retry').click()
+        await notice.waitFor({ state: 'detached', timeout: 15000 * TIMEOUT_SCALE })
+        ok((await page.locator('.sidebarpane-content').count()) > 0, 'the pane is shown')
+      } finally {
+        await restore().catch(() => {})
+        await page.evaluate(() => window.world.ui.togglePane(null)).catch(() => {})
+        // the deliberate error is not a failure of this run
+        pageErrors.splice(0, pageErrors.length, ...pageErrors.filter(line => !line.includes('E2E_PANE_BOOM')))
+      }
     }
   )
 
@@ -164,7 +177,10 @@ try {
       const before = await page.evaluate(() => window.world.frame)
       // tried again after RETRY_DELAY_MS (3 s)
       await page.locator('.sidebar').waitFor({ state: 'visible', timeout: 20000 * TIMEOUT_SCALE })
-      ok((await page.evaluate(() => window.world.frame)) > before, 'the world kept drawing')
+      await waitUntil(() => page.evaluate(frame => window.world.frame > frame, before), {
+        timeout: 30000,
+        message: 'the world to draw a frame after the interface failed',
+      })
       eq(await page.locator('.mainchat').count(), 1, 'the chat is back')
       eq(await page.locator('.ui-error').count(), 0, 'no Reload message')
       await sleep(500)

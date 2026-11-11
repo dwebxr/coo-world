@@ -84,8 +84,10 @@ test('the previous secret is accepted for reading only, and its tokens are renew
   assert.equal(read.userId, 'user-1')
   assert.equal(read.renew, true, 'even a token made a moment ago')
   const renewed = await after.sign(read.userId)
-  assert.throws(() => jwt.verify(renewed, OLD), /invalid signature/, 'never signed with the previous secret')
-  assert.equal(jwt.verify(renewed, SECRET).userId, 'user-1')
+  // (checked at the test's own time: the tokens are made by its clock, and the library would use today's)
+  const at = { clockTimestamp: c.seconds() }
+  assert.throws(() => jwt.verify(renewed, OLD, at), /invalid signature/, 'never signed with the previous secret')
+  assert.equal(jwt.verify(renewed, SECRET, at).userId, 'user-1')
   // without the previous secret configured the old token is nobody's
   const rotatedOut = createSessionTokens({ secret: SECRET, now: c.now })
   assert.equal(await rotatedOut.read(token), null)
@@ -101,7 +103,7 @@ test('only HS256 tokens with a string user id are sessions', async () => {
   const iat = c.seconds()
   // another HMAC size with the right secret: accepted by the library's defaults, refused by the pin
   const hs512 = jwt.sign({ userId: 'user-1', iat, exp: iat + 1000 }, SECRET, { algorithm: 'HS512' })
-  assert.equal(jwt.verify(hs512, SECRET).userId, 'user-1', 'the library alone would take it')
+  assert.equal(jwt.verify(hs512, SECRET, { clockTimestamp: iat }).userId, 'user-1', 'the library alone would take it')
   assert.equal(await tokens.read(hs512), null)
   // unsigned
   const none = `${Buffer.from('{"alg":"none","typ":"JWT"}').toString('base64url')}.${Buffer.from(

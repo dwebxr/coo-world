@@ -842,9 +842,12 @@ export class ServerNetwork extends System {
             const row = await this.db('users').where('id', lapsed).first()
             if (cancelled) return
             if (row?.rank > 0) {
+              // once per user for as long as the server runs: the same expired token can be presented again and
+              // again, and only tokens that were really signed here get this far, so the keys are no more than the
+              // ranked users
               this.logOnce(
-                ws,
-                'session-ended',
+                this,
+                `session-ended:${lapsed}`,
                 `[auth] the session of a ranked user ended unused: ${previewValue(lapsed, 64)} (rank ${row.rank}); they join as a new visitor`
               )
             }

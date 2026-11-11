@@ -746,6 +746,16 @@ test('onConnection: a session that ended unused starts a new visitor, and says s
     }
     f.ws.finishClose()
   }
+  // the same expired token presented again and again is said once
+  const again = fixture({ auth: null, lapsed: { id: 'gone-admin', rank: 2 } })
+  await again.run({ authToken: 'expired-token' })
+  again.ws.finishClose()
+  for (let i = 0; i < 3; i++) {
+    const ws = again.peer()
+    await again.run({ authToken: 'expired-token' }, ws)
+    ws.finishClose()
+  }
+  assert.equal(again.logs.filter(line => line.startsWith('[auth] the session of a ranked user')).length, 1)
   // a token that is simply not genuine is not looked up at all
   const f = fixture({ auth: null })
   await f.run({ authToken: 'forged' })

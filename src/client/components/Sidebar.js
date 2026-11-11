@@ -68,6 +68,7 @@ import { Ranks } from '../../core/extras/ranks'
 import { callScript } from '../../core/extras/callScript'
 import { TipForm } from './TipForm'
 import { toText } from '../../core/extras/scriptText'
+import { cssImage } from '../../core/extras/cssImage'
 import { fieldValues } from '../../core/extras/appFields'
 import { guardTransform } from '../../core/nodes/Node'
 
@@ -997,9 +998,7 @@ function Add({ world, hidden }) {
               <div className='add-item' key={blueprint.id} onClick={() => add(blueprint)}>
                 <div
                   className='add-item-image'
-                  css={css`
-                    background-image: url(${world.resolveURL(blueprint.image?.url)});
-                  `}
+                  style={{ backgroundImage: cssImage(url => world.resolveURL(url), blueprint.image?.url) }}
                 ></div>
                 <div className='add-item-name'>{toText(blueprint.name)}</div>
               </div>

@@ -24,6 +24,7 @@ import { ChevronDoubleUpIcon, HandIcon } from './Icons'
 import { Sidebar } from './Sidebar'
 import { WalletButton } from './WalletButton'
 import { toText } from '../../core/extras/scriptText'
+import { cssImage } from '../../core/extras/cssImage'
 import { CHAT_APP_NAME_MAX_LENGTH, CHAT_BODY_MAX_LENGTH } from '../../core/extras/chatPolicy'
 import { NAME_MAX_LENGTH } from '../../core/extras/entityModifyPolicy'
 
@@ -569,9 +570,6 @@ export function LoadingOverlay({ world }) {
           background-position: center;
           background-size: cover;
           background-repeat: no-repeat;
-          background-image: ${typeof image?.url === 'string' && image.url
-            ? `url(${world.resolveURL(image.url)})`
-            : 'none'};
           animation: pulse 5s ease-in-out infinite;
         }
         .loading-shade {
@@ -616,7 +614,7 @@ export function LoadingOverlay({ world }) {
         }
       `}
     >
-      <div className='loading-image' />
+      <div className='loading-image' style={{ backgroundImage: cssImage(url => world.resolveURL(url), image?.url) }} />
       <div className='loading-shade' />
       <div className='loading-info'>
         {toText(title) && <div className='loading-title'>{toText(title)}</div>}

@@ -65,6 +65,7 @@ test('toHostFetchOptions: a body is copied by the host, whatever constructor or 
   let calls = 0
   class Body extends ArrayBuffer {
     static get [Symbol.species]() {
+      calls++
       return function (length) {
         calls++
         return Object.defineProperty(new ArrayBuffer(length), 'byteLength', { value: 1 })

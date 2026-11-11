@@ -18,3 +18,10 @@ export function boundedAudio(name, value, fallback) {
   const [min, max] = AUDIO_BOUNDS[name]
   return boundedNumber(value, fallback, min, max)
 }
+
+// where in its buffer a source may be asked to start, in seconds
+export const AUDIO_MAX_OFFSET = 1e9
+
+export function isFiniteVector(v) {
+  return Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z)
+}

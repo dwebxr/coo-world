@@ -7,7 +7,7 @@ import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
 import { Node, secureRef } from './Node'
 import { getTrianglesFromGeometry } from '../extras/getTrianglesFromGeometry'
 import { getTextureBytesFromMaterial } from '../extras/getTextureBytesFromMaterial'
-import { Layers, NODE_LAYERS } from '../extras/Layers'
+import { Layers } from '../extras/Layers'
 import { geometryToPxMesh } from '../extras/geometryToPxMesh'
 import { quantizeRadiusRatio, quantizeTubeRatio } from '../extras/primQuantize.js'
 import {
@@ -64,7 +64,7 @@ const _defaultScale = new THREE.Vector3(1, 1, 1)
 const TRANSFORM_SKIPS = new Set(['size', 'scale', 'extent', 'position', 'mirror'])
 
 // the same layer names as Collider and Controller
-const layers = NODE_LAYERS
+const layers = ['environment', 'prop', 'player', 'tool']
 
 const types = ['box', 'sphere', 'cylinder', 'cone', 'torus', 'plane']
 

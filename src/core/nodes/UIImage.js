@@ -1,7 +1,7 @@
 import Yoga from 'yoga-layout'
 import { every, isArray } from 'lodash-es'
 import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
-import { Node } from './Node'
+import { Node, watchLoad } from './Node'
 import { Display, isDisplay } from '../extras/yoga'
 import { fillRoundRect, imageRoundRect } from '../extras/roundRect'
 
@@ -144,7 +144,7 @@ export class UIImage extends Node {
     })
     this.parent.yogaNode.insertChild(this.yogaNode, this.parent.yogaNode.getChildCount())
     if (this._src && !this.img) {
-      this.loadImage(this._src)
+      watchLoad(this, this.loadImage(this._src))
     }
     this.ui?.redraw()
   }
@@ -354,7 +354,7 @@ export class UIImage extends Node {
     if (this._src === value) return
     this._src = value
     if (this._src) {
-      this.loadImage(this._src)
+      watchLoad(this, this.loadImage(this._src))
     } else {
       this.img = null
       this.ui?.redraw()

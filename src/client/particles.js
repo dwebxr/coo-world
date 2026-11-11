@@ -2,6 +2,8 @@ const emitters = {}
 const MAX_DISTANCE_EMITS_PER_UPDATE = 1000
 // rows and columns of a spritesheet (65,536 frames at most)
 const SPRITESHEET_MAX_SIDE = 256
+// points of an over-life curve
+const CURVE_MAX_POINTS = 64
 
 import { DEG2RAD } from '../core/extras/general'
 import { boundedInteger } from '../core/extras/boundedValue.js'
@@ -73,6 +75,9 @@ function createEmitter(config) {
   let moveDir = new Vector3()
 
   const particles = []
+  // the starts made in the current step and where its search for a free particle is (emit)
+  let stepStarts = 0
+  let stepNext = 0
 
   // initialize pool
   for (let i = 0; i < config.max; i++) {
@@ -128,15 +133,16 @@ function createEmitter(config) {
 
   function emit({ amount, matrixWorld }) {
     const progress = elapsed / config.duration // ratio through this cycle (0 to 1)
-    // No more starts than the pool holds: a particle started with no life left is free again at once, and would be
-    // started `amount` times. The free particle is searched from where the last one was found (the ones before it
-    // were in use then), so one step costs the pool's length once, whatever the rate.
-    amount = Math.min(amount, particles.length)
-    let next = 0
+    // One step starts at most as many particles as the pool holds, over all its emits (rate, distance, bursts): a
+    // particle started with no life left is free again at once and would be started again and again. The free
+    // particle is searched from where the step's last one was found: the ones before it were in use then, and
+    // nothing ages before the step's emits are done. So a step costs the pool's length once, whatever is asked.
     for (let i = 0; i < amount; i++) {
-      while (next < particles.length && !(particles[next].age >= particles[next].life)) next++
-      if (next === particles.length) break
-      const particle = particles[next]
+      if (stepStarts >= particles.length) break
+      while (stepNext < particles.length && !(particles[stepNext].age >= particles[stepNext].life)) stepNext++
+      if (stepNext === particles.length) break
+      stepStarts++
+      const particle = particles[stepNext]
       particle.age = 0
       particle.life = life(progress)
       particle.speed = speed(progress)
@@ -202,6 +208,8 @@ function createEmitter(config) {
     aUV,
   }) {
     delta *= config.timescale
+    stepStarts = 0
+    stepNext = 0
     // console.time('update')
     // console.log('m1', matrixWorld)
     matrixWorld = m1.fromArray(matrixWorld)
@@ -1051,7 +1059,8 @@ function createNumberCurve(str) {
   // Each point is defined by an alpha (0-1) and a corresponding value
   //
   // Split the string by '|' to get individual points
-  const pointsStr = str.split('|')
+  // (the first CURVE_MAX_POINTS of them: the curve is walked for every particle in every step)
+  const pointsStr = str.split('|', CURVE_MAX_POINTS)
   // Parse each point into [alpha, value] pairs
   const points = pointsStr.map(point => {
     const [alpha, value] = point.split(',').map(parseFloat)
@@ -1080,7 +1089,7 @@ function createNumberCurve(str) {
 
 function createColorCurve(str) {
   // Parse the string format: `alpha1,color1|alpha2,color2|...`
-  const pointsStr = str.split('|')
+  const pointsStr = str.split('|', CURVE_MAX_POINTS)
   const points = []
   // Parse each point into {alpha,color} pairs
   for (const point of pointsStr) {

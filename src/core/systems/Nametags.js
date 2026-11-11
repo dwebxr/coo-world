@@ -230,7 +230,6 @@ export class Nametags extends System {
         if (nametag.health === health) return
         nametag.health = health
         this.draw(nametag)
-        console.log('SET HEALTH', health)
       },
       destroy: () => {
         this.remove(nametag)
@@ -322,7 +321,8 @@ export class Nametags extends System {
       {
         const fillStyle = '#229710'
         const maxWidth = HEALTH_WIDTH - HEALTH_BORDER * 2
-        const perc = nametag.health / HEALTH_MAX
+        // a bar from empty to full, whatever the number
+        const perc = Math.min(1, Math.max(0, nametag.health / HEALTH_MAX))
         const width = maxWidth * perc
         const height = HEALTH_HEIGHT - HEALTH_BORDER * 2
         const left = x + (NAMETAG_WIDTH - HEALTH_WIDTH) / 2 + HEALTH_BORDER

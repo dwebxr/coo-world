@@ -82,7 +82,7 @@ export function glbToNodes(glb, world) {
           geometry: object3d.geometry,
           convex: props.convex,
           trigger: props.trigger,
-          // a model's custom property: a layer a node may be on, or the default (a model with another value loads)
+          // a model's custom property: a layer a script could set, or the default (a model with another value loads)
           layer: isNodeLayer(props.layer) ? props.layer : undefined,
           position: object3d.position.toArray(),
           quaternion: object3d.quaternion.toArray(),

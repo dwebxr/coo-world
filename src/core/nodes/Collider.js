@@ -5,7 +5,7 @@ import { isBoolean } from '../extras/scriptPrimitives.js'
 
 import { getRef, guardTransform, Node, resolveValueRef, secureRef } from './Node'
 
-import { isNodeLayer, Layers } from '../extras/Layers'
+import { Layers } from '../extras/Layers'
 import { geometryToPxMesh } from '../extras/geometryToPxMesh'
 import {
   extentOk,
@@ -43,6 +43,7 @@ const _q2 = new THREE.Quaternion()
 const types = ['box', 'sphere', 'geometry']
 // skips that depend on the collider's transform, retried when it moves
 const TRANSFORM_SKIPS = new Set(['scale', 'extent', 'pose'])
+const layers = ['environment', 'prop', 'player', 'tool']
 
 export class Collider extends Node {
   constructor(data = {}) {
@@ -569,8 +570,6 @@ function isType(value) {
   return types.includes(value)
 }
 
-// not `player`: refused here, in the class, so that no way of making a node (a script's handle, a model file's custom
-// properties) puts one on the players' layer
 function isLayer(value) {
-  return isNodeLayer(value)
+  return layers.includes(value)
 }

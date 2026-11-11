@@ -1,10 +1,12 @@
+// Adds a box with rounded corners to the path. A box without a size adds nothing (a border wider than its box, a
+// bar of a negative length), and the radius is never negative: arc() throws for one, in the middle of a draw.
 export function roundRect(ctx, x, y, width, height, radius) {
-  if (!radius) {
+  if (!(width > 0) || !(height > 0)) return
+  radius = Math.min(radius, width / 2, height / 2)
+  if (!(radius > 0)) {
     ctx.rect(x, y, width, height)
     return
   }
-  const maxRadius = Math.min(width / 2, height / 2)
-  radius = Math.min(radius, maxRadius)
   ctx.moveTo(x + radius, y)
   ctx.lineTo(x + width - radius, y)
   ctx.arc(x + width - radius, y + radius, radius, -Math.PI / 2, 0) // Top-right

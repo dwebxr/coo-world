@@ -2,8 +2,9 @@ import * as THREE from '../extras/three'
 import { every } from 'lodash-es'
 import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
 
-import { Node } from './Node'
-import { boundedAudio } from '../extras/audioBounds.js'
+import { Node, watchLoad } from './Node'
+import { AUDIO_MAX_OFFSET, boundedAudio, isFiniteVector } from '../extras/audioBounds.js'
+import { boundedNumber } from '../extras/boundedValue.js'
 
 const v1 = new THREE.Vector3()
 const v2 = new THREE.Vector3()
@@ -66,7 +67,7 @@ export class Audio extends Node {
       this.needsRebuild = false
       if (this.source) {
         this.pause()
-        this.play()
+        watchLoad(this, this.play())
       }
       return
     }
@@ -85,6 +86,8 @@ export class Audio extends Node {
     const pos = v1.setFromMatrixPosition(this.matrixWorld)
     const qua = q1.setFromRotationMatrix(this.matrixWorld)
     const dir = v2.set(0, 0, -1).applyQuaternion(qua)
+    // a node whose transform is not finite keeps the panner where it was (its ramps throw for a NaN)
+    if (!isFiniteVector(pos) || !isFiniteVector(dir)) return
     if (this.pannerNode.positionX) {
       const endTime = audio.ctx.currentTime + audio.lastDelta
       this.pannerNode.positionX.linearRampToValueAtTime(pos.x, endTime)
@@ -302,11 +305,12 @@ export class Audio extends Node {
     if (!isNumber(time)) {
       throw new Error('[audio] currentTime not a number')
     }
-    const offset = Math.max(0, time)
+    // where the source starts: finite and not negative (start() throws for anything else, inside play())
+    const offset = boundedNumber(time, 0, 0, AUDIO_MAX_OFFSET)
     if (this.source) {
       this.stop()
       this.offset = offset
-      this.play()
+      watchLoad(this, this.play())
     } else {
       this.offset = offset
     }
@@ -504,7 +508,7 @@ export class Audio extends Node {
           return self.isPlaying
         },
         play(restartIfPlaying) {
-          self.play(restartIfPlaying)
+          watchLoad(self, self.play(restartIfPlaying))
         },
         pause() {
           self.pause()

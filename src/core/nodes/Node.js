@@ -168,6 +168,15 @@ const defaults = {
 
 let nodeIds = -1
 
+// A class's mount or build may be async: it waits for a file. Nothing awaits it, so a load that fails (a missing file,
+// one the loader's limits refuse) was an unhandled rejection, and before the world is ready the page counts one as a
+// failed start (the watchdog in index.html). The node stays as it is, without the file, and says so.
+export function watchLoad(node, pending) {
+  if (pending instanceof Promise) {
+    pending.catch(err => console.warn(`[${node.name}] not loaded:`, err?.message || err))
+  }
+}
+
 const EPSILON = 0.000000001
 const CURSOR_MAX_LENGTH = 128
 let cursorWarned = false
@@ -329,7 +338,7 @@ export class Node {
     const entity = this.ctx.entity
     if (entity?.isApp) chargeNode(this, entity)
     this.mounted = true
-    this.mount()
+    watchLoad(this, this.mount())
     // a mount that ran script code which unmounted this node (its run retired meanwhile) is taken back: what the mount
     // made after the unmount goes again
     if (!this.mounted) return this.rollBackMount()
@@ -352,7 +361,7 @@ export class Node {
   remount() {
     this.unmount()
     if (!this.mounted || !this.canMount()) return false
-    this.mount()
+    watchLoad(this, this.mount())
     if (!this.mounted) {
       this.rollBackMount()
       return false
@@ -685,9 +694,9 @@ export class Node {
     return this._cursor
   }
 
-  // written to the page's cursor style while the pointer is over the node: a CSS cursor keyword, or nothing. A
-  // string that is not a keyword (an image cursor, cursorKeyword.js) is kept as nothing, and said once; it does not
-  // throw, since a script written before this rule may set one.
+  // written to the page's cursor style while the pointer is over the node: a CSS cursor keyword, or nothing. Of an
+  // image cursor its closing keyword is kept (cursorKeyword.js); a string with no keyword is kept as nothing. Either
+  // is said once, and neither throws, since a script written before this rule may set one.
   set cursor(value) {
     if (value === undefined || value === null) {
       this._cursor = value
@@ -697,11 +706,9 @@ export class Node {
       throw new Error(`[node] cursor must be a string of at most ${CURSOR_MAX_LENGTH} characters`)
     }
     const keyword = cursorKeyword(value)
-    if (keyword === null && !cursorWarned) {
+    if ((keyword === null || value.includes(',')) && !cursorWarned) {
       cursorWarned = true
-      console.warn(
-        '[node] cursor: only CSS cursor keywords are used (pointer, grab, crosshair, ...); others are ignored'
-      )
+      console.warn('[node] cursor: only CSS cursor keywords are used (pointer, grab, crosshair, ...), not images')
     }
     this._cursor = keyword
   }

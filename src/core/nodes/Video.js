@@ -4,7 +4,7 @@ import * as THREE from '../extras/three'
 
 import { getRef, Node, resolveValueRef, secureRef } from './Node'
 import { uuid } from '../utils'
-import { boundedAudio } from '../extras/audioBounds.js'
+import { boundedAudio, isFiniteVector } from '../extras/audioBounds.js'
 import { boundedNumber, SCREEN_MAX_SIDE } from '../extras/boundedValue.js'
 import { materialForScript } from '../extras/scriptMaterial'
 import { hardenForScripts } from '../extras/scriptHardening'
@@ -433,6 +433,8 @@ export class Video extends Node {
     const pos = v1.setFromMatrixPosition(this.matrixWorld)
     const qua = q1.setFromRotationMatrix(this.matrixWorld)
     const dir = v2.set(0, 0, -1).applyQuaternion(qua)
+    // a node whose transform is not finite keeps the panner where it was (its ramps throw for a NaN)
+    if (!isFiniteVector(pos) || !isFiniteVector(dir)) return
     if (this.panner.positionX) {
       const endTime = audio.ctx.currentTime + audio.lastDelta
       this.panner.positionX.linearRampToValueAtTime(pos.x, endTime)
@@ -767,8 +769,8 @@ export class Video extends Node {
       throw new Error('[audio] distanceModel not valid')
     }
     this._distanceModel = value
-    if (this.pannerNode) {
-      this.pannerNode.distanceModel = this._distanceModel
+    if (this.panner) {
+      this.panner.distanceModel = this._distanceModel
     }
   }
 
@@ -782,8 +784,8 @@ export class Video extends Node {
     }
     value = boundedAudio('refDistance', value, defaults.refDistance)
     this._refDistance = value
-    if (this.pannerNode) {
-      this.pannerNode.refDistance = this._refDistance
+    if (this.panner) {
+      this.panner.refDistance = this._refDistance
     }
   }
 
@@ -797,8 +799,8 @@ export class Video extends Node {
     }
     value = boundedAudio('maxDistance', value, defaults.maxDistance)
     this._maxDistance = value
-    if (this.pannerNode) {
-      this.pannerNode.maxDistance = this._maxDistance
+    if (this.panner) {
+      this.panner.maxDistance = this._maxDistance
     }
   }
 
@@ -812,8 +814,8 @@ export class Video extends Node {
     }
     value = boundedAudio('rolloffFactor', value, defaults.rolloffFactor)
     this._rolloffFactor = value
-    if (this.pannerNode) {
-      this.pannerNode.rolloffFactor = this._rolloffFactor
+    if (this.panner) {
+      this.panner.rolloffFactor = this._rolloffFactor
     }
   }
 
@@ -827,8 +829,8 @@ export class Video extends Node {
     }
     value = boundedAudio('coneInnerAngle', value, defaults.coneInnerAngle)
     this._coneInnerAngle = value
-    if (this.pannerNode) {
-      this.pannerNode.coneInnerAngle = this._coneInnerAngle
+    if (this.panner) {
+      this.panner.coneInnerAngle = this._coneInnerAngle
     }
   }
 
@@ -842,8 +844,8 @@ export class Video extends Node {
     }
     value = boundedAudio('coneOuterAngle', value, defaults.coneOuterAngle)
     this._coneOuterAngle = value
-    if (this.pannerNode) {
-      this.pannerNode.coneOuterAngle = this._coneOuterAngle
+    if (this.panner) {
+      this.panner.coneOuterAngle = this._coneOuterAngle
     }
   }
 
@@ -857,8 +859,8 @@ export class Video extends Node {
     }
     value = boundedAudio('coneOuterGain', value, defaults.coneOuterGain)
     this._coneOuterGain = value
-    if (this.pannerNode) {
-      this.pannerNode.coneOuterGain = this._coneOuterGain
+    if (this.panner) {
+      this.panner.coneOuterGain = this._coneOuterGain
     }
   }
 

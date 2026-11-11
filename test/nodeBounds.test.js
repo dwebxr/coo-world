@@ -18,6 +18,9 @@ before(async () => {
     export { canvasScale, UI_CANVAS_MAX_SIDE, UI_CANVAS_MAX_PIXELS, UI_MAX_SIDE, UI_MAX_RES } from './src/core/nodes/UI'
     export { UITEXT_MAX_LENGTH, UITEXT_MAX_FONT_SIZE } from './src/core/nodes/UIText'
     export { PARTICLES_MAX, PARTICLES_MAX_RATE, PARTICLES_MAX_BURSTS } from './src/core/nodes/Particles'
+    export { roundRect } from './src/core/extras/roundRect'
+    export { watchLoad } from './src/core/nodes/Node'
+    export { ClientAudio } from './src/core/systems/ClientAudio'
     export { NAMETAG_MAX_LENGTH } from './src/core/nodes/Nametag'
     export { ACTION_LABEL_MAX_LENGTH } from './src/core/nodes/Action'
     export { NODE_LAYERS } from './src/core/extras/Layers'
@@ -80,7 +83,8 @@ test('ui: width, height, res and size are bounded; a value in range is kept as i
   keeps('ui', 'size', [
     [0.01, 0.01],
     [NaN, 0.01],
-    [-1, 0],
+    [-1, 1e-6],
+    [0, 1e-6],
     [Infinity, 1e6],
   ])
   // what is not a number is refused as before
@@ -150,7 +154,7 @@ const buildUI = (args, check) =>
           const canvas = {
             tag,
             style: {},
-            getContext: () => context,
+            getContext: () => (data.noContext ? null : context),
             addEventListener() {},
             removeEventListener() {},
             getBoundingClientRect: () => ({ left: 0, top: 0 }),
@@ -159,7 +163,8 @@ const buildUI = (args, check) =>
           return canvas
         },
       }
-      const ui = createNode('ui', { space: 'screen', backgroundColor: 'black', ...data })
+      const { noContext: _noContext, ...options } = data
+      const ui = createNode('ui', { space: 'screen', backgroundColor: 'black', ...options })
       ui.ctx = {
         world: {
           network: { isServer: false },
@@ -217,6 +222,12 @@ test('ui: sizes at their bounds still build (the largest UI a script can ask for
     assert.ok(r.width > 0 && r.height > 0)
   }))
 
+test('ui: a canvas the browser gives no context for leaves the UI blank instead of throwing in draw', () =>
+  buildUI({ width: 300, height: 200, noContext: true }, (r, assert) => {
+    assert.deepEqual([r.width, r.height], [600, 400])
+    assert.deepEqual(r.order, [], 'nothing was drawn')
+  }))
+
 test('uitext, nametag, action: texts are cut to their limits; the font size is bounded', () => {
   const long = 'x'.repeat(100000)
   const text = handle('uitext')
@@ -264,6 +275,20 @@ test('particles: max, rate and bursts are bounded', () => {
     [NaN, 10],
     [-1, 0],
     [Infinity, m.PARTICLES_MAX_RATE],
+  ])
+  keeps('particles', 'duration', [
+    [5, 5],
+    [NaN, 5],
+    [0, 0.01],
+    [-1, 0.01],
+    [Infinity, 1e6],
+  ])
+  keeps('particles', 'timescale', [
+    [1, 1],
+    [0, 0],
+    [NaN, 1],
+    [-1, 0],
+    [1e9, 100],
   ])
   const node = handle('particles')
   node.bursts = [
@@ -389,6 +414,129 @@ test('particle worker: a rate without end and particles with no life cannot hold
 test('particle worker: a burst without end and particles with no life cannot hold a step', () =>
   runEmitter({ ...emitterConfig, life: '0', bursts: [{ time: 0, count: Infinity }] }, [0.1], [0]))
 
+// The work of one step is counted through the emitter's own curve: `life` is read once per start.
+const countStarts = (config, deltas, limit) =>
+  runProbe(
+    bundle,
+    ({ THREE }, { config, deltas, limit }) => {
+      self.postMessage = () => {}
+      // a life of '0' parses to a constant; count the starts through Math.random, which shape() calls per start
+      let starts = 0
+      const random = Math.random
+      Math.random = () => {
+        starts++
+        return random()
+      }
+      self.onmessage({ data: config })
+      const max = config.max
+      const perStep = []
+      for (const delta of deltas) {
+        starts = 0
+        self.onmessage({
+          data: {
+            op: 'update',
+            emitterId: 'probe',
+            delta,
+            camPosition: [0, 0, 0],
+            matrixWorld: new THREE.Matrix4().toArray(),
+            aPosition: new Float32Array(max * 3),
+            aRotation: new Float32Array(max),
+            aDirection: new Float32Array(max * 3),
+            aSize: new Float32Array(max),
+            aColor: new Float32Array(max * 3),
+            aAlpha: new Float32Array(max),
+            aEmissive: new Float32Array(max),
+            aUV: new Float32Array(max * 4),
+          },
+        })
+        perStep.push(starts)
+      }
+      Math.random = random
+      assert.ok(perStep[0] > 0, `the probe sees starts (${perStep})`)
+      for (const count of perStep) assert.ok(count <= limit, `starts in a step: ${perStep} (limit ${limit})`)
+    },
+    { config, deltas, limit }
+  )
+
+test('particle worker: one step starts no more than the pool holds, over its rate and all its bursts together', () =>
+  // 64 bursts of the whole pool each, a rate without end and particles with no life, in a cycle that restarts its
+  // bursts every step: each step may start 8 (the pool), not 8 x 65. shape 'sphere' draws random numbers per start
+  // (at most 6 here: 3 for the shape's point and its retry, and 3 for the direction spread)
+  countStarts(
+    {
+      ...emitterConfig,
+      rate: Infinity,
+      life: '0',
+      duration: 0.01,
+      shape: ['sphere', 1, 1],
+      direction: 1,
+      bursts: Array.from({ length: 64 }, () => ({ time: 0, count: 8 })),
+    },
+    [0.1, 0.1, 0.1],
+    8 * 12
+  ))
+
+test('particle worker: the step budget starts again with every step', () =>
+  // two a second into a pool of four, each living a second and a half: every step starts two (six in all by the
+  // third step, more than the pool), reusing the ones that died
+  runEmitter({ ...emitterConfig, max: 4, rate: 2, life: '1.5' }, [1, 1, 1, 1], [2, 2, 2, 2]))
+
+test('particle worker: only the first 64 points of an over-life curve count', () =>
+  runProbe(
+    bundle,
+    ({ THREE }, { config }) => {
+      let output
+      self.postMessage = msg => {
+        output = msg
+      }
+      self.onmessage({ data: config })
+      const max = config.max
+      self.onmessage({
+        data: {
+          op: 'update',
+          emitterId: 'probe',
+          delta: 0.9,
+          camPosition: [0, 0, 0],
+          matrixWorld: new THREE.Matrix4().toArray(),
+          aPosition: new Float32Array(max * 3),
+          aRotation: new Float32Array(max),
+          aDirection: new Float32Array(max * 3),
+          aSize: new Float32Array(max),
+          aColor: new Float32Array(max * 3),
+          aAlpha: new Float32Array(max),
+          aEmissive: new Float32Array(max),
+          aUV: new Float32Array(max * 4),
+        },
+      })
+      assert.ok(output.n > 0)
+      // 90% through its life: past the 64th point (at 63%), which is the last one read; the 65th and later would
+      // make it a hundred times as large
+      assert.equal(output.aSize[0], 1)
+    },
+    {
+      config: {
+        ...emitterConfig,
+        rate: 10,
+        life: '1',
+        size: '1',
+        sizeOverLife: Array.from({ length: 100 }, (_, i) => `${i / 100},${i < 64 ? 1 : 100}`).join('|'),
+      },
+    }
+  ))
+
+test('particle worker: an over-life curve is read up to 64 points', () =>
+  // 100,000 points: the emitter is made and steps (each particle walks the curve every step)
+  runEmitter(
+    {
+      ...emitterConfig,
+      rate: 10,
+      sizeOverLife: Array.from({ length: 100000 }, (_, i) => `${i / 100000},1`).join('|'),
+      colorOverLife: Array.from({ length: 100000 }, (_, i) => `${i / 100000},white`).join('|'),
+    },
+    [0.5, 0.5],
+    [5, 8]
+  ))
+
 test('particle worker: a spritesheet of a billion rows and columns is bounded to 256 each', () =>
   runEmitter({ ...emitterConfig, rate: 10, spritesheet: [1e9, 1e9, 30, true] }, [0.5, 0.5], [5, 8]))
 
@@ -436,16 +584,17 @@ test('audio and video: the numbers given to Web Audio stay inside the ranges it 
   const hostile = [NaN, Infinity, -Infinity, -1, 0, 1e300, 0.5, 720]
   for (const type of ['audio', 'video']) {
     const node = m.createNode(type)
-    node.pannerNode = strictPanner()
-    if (type === 'audio') node.gainNode = gain()
-    else node.gain = gain()
+    // (the audio node holds its panner as pannerNode and its gain as gainNode, the video node as panner and gain)
+    const panner = strictPanner()
+    if (type === 'audio') Object.assign(node, { pannerNode: panner, gainNode: gain() })
+    else Object.assign(node, { panner, gain: gain() })
     const proxy = node.getProxy()
     for (const name of Object.keys(m.AUDIO_BOUNDS)) {
       const [min, max] = m.AUDIO_BOUNDS[name]
       for (const value of hostile) {
         proxy[name] = value // a playing node: the value goes straight to the panner or the gain, which must accept it
         assert.ok(proxy[name] >= min && proxy[name] <= max, `${type}.${name} = ${value} kept ${proxy[name]}`)
-        if (name !== 'volume') assert.equal(node.pannerNode[name], proxy[name])
+        if (name !== 'volume') assert.equal(panner[name], proxy[name], `${type}.${name} reaches the panner`)
       }
       proxy[name] = NaN
       assert.equal(proxy[name], m.createNode(type)[name], `${type}.${name}: a NaN is the default`)
@@ -506,20 +655,25 @@ test('image and video: a screen side is finite and not negative, or not set', ()
   ])
 })
 
-test('cursor: a CSS cursor keyword is kept; an image cursor or any other value is kept as nothing, without a throw', () => {
+test('cursor: a CSS cursor keyword is kept; of an image cursor only its closing keyword; nothing else, and no throw', () => {
   const { cursorKeyword } = m
   assert.equal(cursorKeyword('pointer'), 'pointer')
   assert.equal(cursorKeyword(' Grab '), 'grab')
   assert.equal(cursorKeyword('NOT-ALLOWED'), 'not-allowed')
+  // an image cursor's list ends in a keyword (CSS requires one): that keyword is what is used
+  assert.equal(cursorKeyword('url(https://example.test/c.png), auto'), 'auto')
+  assert.equal(cursorKeyword('url("https://example.test/c.png") 4 4, url(d.png), Pointer'), 'pointer')
   for (const value of [
-    'url(https://example.test/c.png), auto',
-    'url("https://example.test/c.png") 4 4, pointer',
-    'image-set(url(a.png) 1x), auto',
-    'pointer, url(x)',
+    'url(https://example.test/c.png)',
+    'url("https://example.test/a,pointer")',
+    'url(a.png), pointer, url(b.png)',
+    'image-set(url(a.png) 1x)',
     'pointer;background:red',
+    'pointer url(x)',
     'var(--x)',
     'inherit',
     '',
+    ',',
     'hand',
     7,
     null,
@@ -527,6 +681,10 @@ test('cursor: a CSS cursor keyword is kept; an image cursor or any other value i
     {},
   ]) {
     assert.equal(cursorKeyword(value), null, String(value))
+  }
+  // whatever is kept is a bare keyword: no value can carry a url() to the page's style
+  for (const value of ['url(x), auto', 'URL(x) , GRAB', 'pointer', 'url(a), url(b), crosshair']) {
+    assert.match(cursorKeyword(value), /^[a-z-]+$/)
   }
 
   const warnings = []
@@ -539,7 +697,11 @@ test('cursor: a CSS cursor keyword is kept; an image cursor or any other value i
     assert.equal(node.cursor, 'pointer')
     node.cursor = ' Crosshair'
     assert.equal(node.cursor, 'crosshair')
-    node.cursor = 'url(https://example.test/c.png), auto'
+    assert.equal(warnings.length, 0, 'a keyword is not remarked on')
+    node.cursor = 'url(https://example.test/c.png), grab'
+    assert.equal(node.cursor, 'grab')
+    assert.equal(warnings.length, 1, 'an image cursor is said')
+    node.cursor = 'url(https://example.test/c.png)'
     assert.equal(node.cursor, null)
     node.cursor = 'hand'
     assert.equal(node.cursor, null)
@@ -551,26 +713,27 @@ test('cursor: a CSS cursor keyword is kept; an image cursor or any other value i
     assert.throws(() => (node.cursor = 'x'.repeat(129)), /at most 128/)
     assert.throws(() => (node.cursor = 7), /cursor must be a string/)
     // and a node made with a cursor (the class's constructor) is held to the same rule
-    assert.equal(m.createNode('group', { cursor: 'url(x), auto' }).cursor, null)
+    assert.equal(m.createNode('group', { cursor: 'url(x)' }).cursor, null)
+    assert.equal(m.createNode('group', { cursor: 'url(x), wait' }).cursor, 'wait')
     assert.equal(m.createNode('group', { cursor: 'grab' }).cursor, 'grab')
   } finally {
     console.warn = realWarn
   }
 })
 
-test('layer: no node is put on the players layer, by a script, by the class or by a model file', () => {
+test("layer: a model file gets the layers a script may set; the players layer stays the engine's own", () => {
   assert.deepEqual([...m.NODE_LAYERS], ['environment', 'prop', 'tool'])
   for (const type of ['collider', 'prim', 'controller']) {
     for (const layer of m.NODE_LAYERS) {
       const node = handle(type)
       node.layer = layer
       assert.equal(node.layer, layer)
-      assert.equal(m.createNode(type, { layer }).layer, layer)
     }
+    // a script's handle refuses the players' layer, as before
     assert.throws(() => (handle(type).layer = 'player'), /layer/, `${type}: through the handle`)
-    assert.throws(() => m.createNode(type, { layer: 'player' }), /layer/, `${type}: through the class`)
-    assert.throws(() => (m.createNode(type).layer = 'player'), /layer/, `${type}: the class setter`)
   }
+  // the engine itself makes the other players' capsules there (PlayerRemote): the class must keep taking it
+  assert.equal(m.createNode('collider', { type: 'geometry', convex: true, layer: 'player' }).layer, 'player')
 
   // a model whose collider meshes carry a custom `layer` property
   const { THREE } = m
@@ -599,4 +762,156 @@ test('layer: no node is put on the players layer, by a script, by the class or b
     'c-7': 'environment',
     'c-undefined': 'environment',
   })
+})
+
+test('roundRect: a box without a size adds nothing, and the radius is never negative', () => {
+  const path = (...box) => {
+    const calls = []
+    const ctx = {
+      rect: (...a) => calls.push(['rect', ...a]),
+      moveTo: () => calls.push(['moveTo']),
+      lineTo: () => calls.push(['lineTo']),
+      closePath: () => calls.push(['closePath']),
+      // as a canvas: a negative radius is an IndexSizeError
+      arc(x, y, radius) {
+        if (radius < 0) throw new RangeError('IndexSizeError')
+        calls.push(['arc', radius])
+      },
+    }
+    m.roundRect(ctx, ...box)
+    return calls
+  }
+  const radii = calls => calls.filter(call => call[0] === 'arc').map(call => call[1])
+  assert.deepEqual(radii(path(0, 0, 10, 10, 3)), [3, 3, 3, 3])
+  assert.deepEqual(radii(path(0, 0, 10, 4, 5)), [2, 2, 2, 2], 'no more than half the shorter side')
+  assert.deepEqual(path(0, 0, 10, 10, 0), [['rect', 0, 0, 10, 10]])
+  assert.deepEqual(path(0, 0, 10, 10, -5), [['rect', 0, 0, 10, 10]], 'a negative radius is a plain box')
+  assert.deepEqual(path(0, 0, 10, 10, NaN), [['rect', 0, 0, 10, 10]])
+  // a border wider than its box, a health bar below zero: nothing, where arc() threw
+  assert.deepEqual(path(0, 0, -4, 10, 2), [])
+  assert.deepEqual(path(0, 0, 10, -4, 2), [])
+  assert.deepEqual(path(0, 0, 0, 10, 2), [])
+  assert.deepEqual(path(0, 0, NaN, 10, 2), [])
+})
+
+test('a load that fails in an async mount or build is reported, not left as an unhandled rejection', async () => {
+  const unhandled = []
+  const onUnhandled = reason => unhandled.push(reason)
+  process.on('unhandledRejection', onUnhandled)
+  const warnings = []
+  const realWarn = console.warn
+  console.warn = (...line) => warnings.push(line.join(' '))
+  try {
+    m.watchLoad({ name: 'probe' }, Promise.reject(new Error('gone')))
+    m.watchLoad({ name: 'probe' }, undefined) // a mount that is not async
+    m.watchLoad({ name: 'probe' }, Promise.resolve())
+
+    // the real nodes, with a loader that refuses: an image (mount -> build), a UI image (loadImage)
+    const world = {
+      network: { isServer: false },
+      resolveURL: url => url,
+      loader: { get: () => null, load: () => Promise.reject(new Error('asset refused')) },
+    }
+    const image = m.createNode('image', { src: 'asset://missing.png' })
+    image.ctx = { world }
+    image.mount()
+    image.needsRebuild = true
+    image.commit(false)
+    const uiImage = m.createNode('uiimage', { src: 'asset://missing.png' })
+    uiImage.ctx = { world }
+    uiImage.mounted = true
+    uiImage.canMount = () => true
+    uiImage.src = 'asset://other.png' // the setter starts a load
+
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.deepEqual(unhandled, [])
+    assert.equal(warnings.filter(line => line.includes('[probe] not loaded: gone')).length, 1)
+    assert.equal(warnings.filter(line => line.includes('[image] not loaded: asset refused')).length, 2)
+    assert.equal(warnings.filter(line => line.includes('[uiimage] not loaded: asset refused')).length, 1)
+  } finally {
+    console.warn = realWarn
+    process.off('unhandledRejection', onUnhandled)
+  }
+})
+
+test('audio: a start offset is finite; a panner is not given a position that is not finite', () => {
+  const audio = m.createNode('audio')
+  audio.ctx = { world: { audio: null } }
+  for (const [given, kept] of [
+    [2.5, 2.5],
+    [NaN, 0],
+    [-1, 0],
+    [Infinity, 1e9],
+  ]) {
+    audio.currentTime = given
+    assert.equal(audio.offset, kept, `currentTime = ${given}`)
+  }
+
+  // a panner as strict as the browser's, on a node whose transform holds a NaN
+  const ramps = []
+  const param = {
+    linearRampToValueAtTime: value => (Number.isFinite(value) ? ramps.push(value) : assert.fail('NaN ramp')),
+  }
+  const strict = () => ({
+    positionX: param,
+    positionY: param,
+    positionZ: param,
+    orientationX: param,
+    orientationY: param,
+    orientationZ: param,
+  })
+  for (const [type, field] of [
+    ['audio', 'pannerNode'],
+    ['video', 'panner'],
+  ]) {
+    const node = m.createNode(type)
+    node.ctx = { world: { audio: { ctx: { currentTime: 0 }, lastDelta: 0 } } }
+    node[field] = strict()
+    ramps.length = 0
+    node.updatePannerPosition()
+    assert.equal(ramps.length, 6, `${type}: a finite position is written`)
+    node.matrixWorld.elements[12] = NaN
+    node.updatePannerPosition()
+    assert.equal(ramps.length, 6, `${type}: a NaN position is not`)
+  }
+})
+
+test('audio: one queued sound that throws at unlock does not keep the others from starting', async () => {
+  const realDocument = globalThis.document
+  const realLog = console.log
+  const realError = console.error
+  const listeners = {}
+  const errors = []
+  globalThis.document = {
+    addEventListener: (type, fn) => (listeners[type] = fn),
+    removeEventListener: type => delete listeners[type],
+    createElement: () => ({ play: async () => {}, pause() {}, remove() {} }),
+  }
+  console.log = () => {}
+  console.error = (...line) => errors.push(line.join(' '))
+  try {
+    const started = []
+    const audio = {
+      ctx: { state: 'running', resume: async () => {} },
+      unlocked: false,
+      queue: [
+        () => started.push('first'),
+        () => {
+          throw new TypeError('start: offset is not finite')
+        },
+        () => started.push('last'),
+      ],
+    }
+    m.ClientAudio.prototype.setupUnlockListener.call(audio)
+    await listeners.click()
+    assert.equal(audio.unlocked, true)
+    assert.deepEqual(started.sort(), ['first', 'last'])
+    assert.equal(audio.queue.length, 0)
+    assert.equal(errors.length, 1)
+    assert.match(errors[0], /queued sound/)
+  } finally {
+    globalThis.document = realDocument
+    console.log = realLog
+    console.error = realError
+  }
 })

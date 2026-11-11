@@ -45,10 +45,12 @@ const billboards = ['full', 'y', 'direction']
 // What a particles node keeps of its sizes (boundedValue.js): the pool and its buffers are `max` long (the client makes
 // seventeen floats a particle, twice, and the worker one object each), and `rate` and a burst's `count` are how many
 // the worker tries to start in one step.
-export const PARTICLES_MAX = 50000
+export const PARTICLES_MAX = 20000
 export const PARTICLES_MAX_RATE = 100000 // a second
 export const PARTICLES_MAX_BURSTS = 64
+export const PARTICLES_MIN_DURATION = 0.01 // seconds
 export const PARTICLES_MAX_TIME = 1e6 // seconds
+export const PARTICLES_MAX_TIMESCALE = 100
 
 // prettier-ignore
 const defaults = {
@@ -340,7 +342,9 @@ export class Particles extends Node {
     if (!isNumber(value)) {
       throw new Error('[particles] duration not a number')
     }
-    this._duration = value
+    // not zero: the cycle's progress is the time over the duration, and a cycle that is over at once starts its
+    // bursts again in every step
+    this._duration = boundedNumber(value, defaults.duration, PARTICLES_MIN_DURATION, PARTICLES_MAX_TIME)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -379,7 +383,7 @@ export class Particles extends Node {
     if (!isNumber(value)) {
       throw new Error('[particles] timescale not a number')
     }
-    this._timescale = value
+    this._timescale = boundedNumber(value, defaults.timescale, 0, PARTICLES_MAX_TIMESCALE)
     this.needsRebuild = true
     this.setDirty()
   }

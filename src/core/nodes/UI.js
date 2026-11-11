@@ -59,7 +59,10 @@ const pivots = [
 // The canvas is bounded separately, where it is made (canvasScale).
 export const UI_MAX_SIDE = 16384 // width and height, in the UI's own units
 export const UI_MAX_RES = 16
+// metres a unit; not zero, since pointer coordinates are divided by it
+export const UI_MIN_SIZE = 1e-6
 export const UI_MAX_SIZE = 1e6
+let contextWarned = false
 // The most pixels a UI's canvas has: 4096 on a side and 8,388,608 in all (1920 x 1080 at the default res of 2 fits).
 // A canvas keeps 4 bytes a pixel and its texture as many again, and a canvas over the browser's own limit cannot be
 // drawn on at all (Safari on a phone has allowed about 16.7 million pixels).
@@ -156,6 +159,12 @@ export class UI extends Node {
     this.canvas.width = Math.floor(layoutWidth * this.canvasScale)
     this.canvas.height = Math.floor(layoutHeight * this.canvasScale)
     this.canvasCtx = this.canvas.getContext('2d')
+    // a browser that has no memory left for canvases gives none (Safari on a phone, with many large UIs): the UI is
+    // there, blank, and draw() does nothing
+    if (!this.canvasCtx && !contextWarned) {
+      contextWarned = true
+      console.warn('[ui] no drawing context for a canvas (out of canvas memory?): the UI stays blank')
+    }
     if (this._space === 'world') {
       // world-space
       this.texture = new THREE.CanvasTexture(this.canvas)
@@ -261,6 +270,10 @@ export class UI extends Node {
     if (!isBrowser) return
     this.yogaNode.calculateLayout(this._width * this._res, this._height * this._res, Yoga.DIRECTION_LTR)
     const ctx = this.canvasCtx
+    if (!ctx) {
+      this.needsRedraw = false
+      return
+    }
     ctx.setTransform(this.canvasScale, 0, 0, this.canvasScale, 0, 0)
     ctx.clearRect(0, 0, this._width * this._res, this._height * this._res)
     const left = this.yogaNode.getComputedLeft()
@@ -562,7 +575,7 @@ export class UI extends Node {
     if (!isNumber(value)) {
       throw new Error('[ui] size not a number')
     }
-    value = boundedNumber(value, defaults.size, 0, UI_MAX_SIZE)
+    value = boundedNumber(value, defaults.size, UI_MIN_SIZE, UI_MAX_SIZE)
     if (this._size === value) return
     this._size = value
     this.rebuild()

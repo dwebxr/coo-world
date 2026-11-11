@@ -17,9 +17,11 @@ import { DEG2RAD } from '../extras/general'
 import { finiteNumber, lengthOk, positionOk } from '../extras/physicsValidate.js'
 
 import { Node } from './Node'
-import { isNodeLayer, Layers } from '../extras/Layers'
+import { Layers } from '../extras/Layers'
 
 const warnController = createLogOnce()
+
+const layers = ['environment', 'prop', 'player', 'tool']
 
 const _v1 = new THREE.Vector3()
 const _v2 = new THREE.Vector3()
@@ -407,8 +409,6 @@ export class Controller extends Node {
   }
 }
 
-// not `player`: refused here, in the class, so that no way of making a node (a script's handle, a model file's custom
-// properties) puts one on the players' layer
 function isLayer(value) {
-  return isNodeLayer(value)
+  return layers.includes(value)
 }

@@ -39,9 +39,10 @@ for (const key in Groups) {
   }
 }
 
-// The layers a node (collider, prim, controller) may be on. `player` is the engine's own, for the players' capsules:
-// what is on it is skipped by the checks that keep players from colliding with each other, and is taken for a player
-// by what filters on the layer. No script and no model file puts a node there.
+// The layers a script may put a node (collider, prim, controller) on. `player` is the engine's own, for the capsules
+// of the other players (PlayerRemote makes its collider there): a script's handle refuses it, and so does the reader
+// of a model file's custom properties (glbToNodes.js), so that a model cannot do what a script may not. It carries no
+// authority (who a collider belongs to comes from its entity, not its layer); the point is one rule for both ways in.
 export const NODE_LAYERS = Object.freeze(['environment', 'prop', 'tool'])
 
 export function isNodeLayer(value) {

@@ -11,7 +11,8 @@ import { wrapText } from '../extras/wrapText.js'
 const textAligns = ['left', 'center', 'right']
 
 export const UITEXT_MAX_LENGTH = 10000
-export const UITEXT_MAX_FONT_SIZE = 4096
+// in the UI's units; the font drawn is this times the UI's res (16 at most)
+export const UITEXT_MAX_FONT_SIZE = 1024
 
 const defaults = {
   display: 'flex',

@@ -43,7 +43,7 @@ The height of the UI canvas in pixels. Defaults to `100`. Kept between `0` and `
 ### Limits
 
 The numbers a UI is sized by are kept inside a range: `width` and `height` between `0` and `16384`, `res` between `0`
-and `16`, `size` between `0` and `1000000`. A value outside its range becomes the nearest bound, and `NaN` becomes
+and `16`, `size` between `0.000001` and `1000000`. A value outside its range becomes the nearest bound, and `NaN` becomes
 the default; nothing throws, and reading the property back gives what was kept.
 
 The canvas a UI is drawn on has at most 4096 pixels on a side and 8,388,608 pixels in all (`width` and `height` times

@@ -57,7 +57,7 @@ Defaults to `10`
 ### `.bursts`: Array
 
 An optional list of particle bursts to run at specific times. Useful for explosions etc.
-At most 64 bursts are kept (the first ones), and a burst's `count` is a whole number of at most `50000`.
+At most 64 bursts are kept (the first ones), and a burst's `count` is a whole number of at most `20000`.
 
 The following example will immediately emit 10 particles and then half a second later emit 30 more.
 
@@ -82,7 +82,7 @@ Defaults to `true`.
 
 The absolute maximum number of particles that can exist at one time. If the emitter runs out of particles it will stop emitting until more become available. Defaults to `1000`.
 
-A whole number between `0` and `50000`: a fraction is rounded down, a larger value becomes `50000`, and `NaN` becomes the default. Reading the property back gives what was kept.
+A whole number between `0` and `20000`: a fraction is rounded down, a larger value becomes `20000`, and `NaN` becomes the default. Reading the property back gives what was kept.
 
 ### `.timescale`: Number
 

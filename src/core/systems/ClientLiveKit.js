@@ -38,6 +38,10 @@ export class ClientLiveKit extends System {
     this.screenNodes = new Set() // Video
     // the screen this client last asked its share to be shown on (its metadata; a token carries none)
     this.screenTargetAsked = null
+    // the screen this client wants its share on (null: no share), as asked last. Apart from screenTargetAsked,
+    // which is forgotten when the voice server does not confirm the metadata so that it is written again: a
+    // metadata request that timed out says nothing about what the player wants
+    this.screenTargetWanted = null
     // this client is out of the world (kicked or disconnected) and so out of the voice room
     this.left = false
   }
@@ -232,6 +236,7 @@ export class ClientLiveKit extends System {
   setScreenShareTarget(targetId = null) {
     if (!this.room) return console.error('[livekit] setScreenShareTarget failed (not connected)')
     if (this.left) return
+    this.screenTargetWanted = targetId
     // Nothing to do when the screen asked for last is this one and a share is published exactly when one is named.
     // Not decided by the status: that follows the published share and the metadata the voice server has confirmed,
     // which come after the ask and in either order, so a stop or a change asked meanwhile would be skipped
@@ -255,7 +260,7 @@ export class ClientLiveKit extends System {
   // starts it.
   settleShare() {
     if (this.left || !this.room) return
-    if (this.screenTargetAsked != null || !this.shares.has(this.world.network.id)) return
+    if (this.screenTargetWanted !== null || !this.shares.has(this.world.network.id)) return
     this.ask(() => this.room.localParticipant.setScreenShareEnabled(false), 'screen share')
   }
 

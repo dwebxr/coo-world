@@ -601,6 +601,26 @@ test('voice room: a capture that starts after its stop was asked is ended', asyn
   room.emit(RoomEvent.LocalTrackUnpublished, { source: 'screen_share', track }, local)
   assert.equal(c.livekit.shares.size, 0)
   assert.equal(c.livekit.status.screenshare, null)
+  // A share that is still wanted is left alone when it is published, also when the voice server never confirmed
+  // the metadata naming its screen (that request times out after a few seconds, well within the time a player
+  // takes to pick a window; Codex: the timeout was read as a stop, and the capture was ended as it started)
+  local.asked.length = 0
+  local.setScreenShareEnabled = on => (local.asked.push(['screen', on]), Promise.resolve())
+  local.answer = () => Promise.reject(new Error('timed out'))
+  c.livekit.setScreenShareTarget('wall')
+  await new Promise(resolve => setImmediate(resolve))
+  local.answer = null
+  const late = c.screenTrack()
+  local.metadata = shareTo('wall')
+  room.emit(RoomEvent.ParticipantMetadataChanged, undefined, local)
+  room.emit(RoomEvent.LocalTrackPublished, { source: 'screen_share', track: late }, local)
+  assert.deepEqual(
+    local.asked.filter(([what]) => what === 'screen'),
+    [['screen', true]]
+  )
+  assert.equal(c.livekit.status.screenshare, 'wall')
+  c.livekit.setScreenShareTarget(null)
+  room.emit(RoomEvent.LocalTrackUnpublished, { source: 'screen_share', track: late }, local)
   // a share that IS asked for is left alone when it is published
   local.asked.length = 0
   local.setScreenShareEnabled = on => (local.asked.push(['screen', on]), Promise.resolve())

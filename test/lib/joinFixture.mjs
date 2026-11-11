@@ -45,6 +45,11 @@ class FakePlayer extends FakeApp {
   isAdmin() {
     return this.data.rank >= 2
   }
+  // as playerRanks.outranks: the session's rank and the world's, for both
+  outranks(other) {
+    const rank = player => Math.max(player.data.rank, player.world.settings.effectiveRank)
+    return rank(this) > rank(other)
+  }
 }
 const Entities = load('core/systems/Entities.js', 'Entities', {
   App: FakeApp,
@@ -145,14 +150,15 @@ export function fixture({ env = {} } = {}) {
     socket.ws.emit('message', writeClientPacket(name, data))
     network.flush()
   }
-  const join = async (params = {}) => {
+  // `origin`: where the connection comes from ({ key, parents }), as the route gives it
+  const join = async (params = {}, origin) => {
     const ws = fakeWs()
     ws.closeCodes = []
     ws.close = code => {
       ws.closeCodes.push(code)
       ws.readyState = 3
     }
-    await network.onConnection(ws, params)
+    await network.onConnection(ws, params, origin)
     ws.drain()
     const [method, snapshot] = ws.packets.length ? readPacket(ws.packets[0]) : []
     return { ws, method, snapshot, bytes: ws.packets[0]?.length }

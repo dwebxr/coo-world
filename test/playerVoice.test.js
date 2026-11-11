@@ -225,12 +225,12 @@ test('livekit: a re-subscribe destroys the old voice and prefs toggle lip sync o
   const settings = new EventEmitter()
   settings.voice = 'spatial'
   const player = s.player
-  const world = {
+  const world = Object.assign(new EventEmitter(), {
     ...s.world,
     prefs,
     settings,
     entities: { getPlayer: id => (id === 'p1' ? player : null) },
-  }
+  })
   const livekit = new s.ClientLiveKit(world)
   world.livekit = livekit
   livekit.start()
@@ -252,6 +252,7 @@ test('livekit: a re-subscribe destroys the old voice and prefs toggle lip sync o
   livekit.destroy()
   assert.equal(prefs.listenerCount('change'), 0)
   assert.equal(settings.listenerCount('change'), 0)
+  assert.equal(world.listenerCount('kick') + world.listenerCount('disconnect'), 0)
 })
 
 for (const audioParams of [false, true]) {

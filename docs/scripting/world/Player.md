@@ -250,6 +250,10 @@ Can only be called on a local player.
 
 Prompts the player to share their screen, and then casts it to all video nodes that have a matching `.screenId` property.
 
+The `screenId` is a string of at most 128 characters. Which player may share to which screen is not enforced by the
+server: the script decides who is offered the prompt, but a modified client can share to any `screenId` in the world.
+A moderator's mute hides a player's share on every client, and a kick ends it.
+
 ### `.setVoiceLevel(level)`
 
 Overrides the players voice chat level to `disabled`, `spatial` or `global`.
@@ -259,5 +263,9 @@ By default all players have the voice level defined in the world settings menu, 
 Calling `player.setVoiceLevel(null)` removes the current apps override and reverting to the world setting (unless another app is overriding it).
 
 **NOTE:** Changes stack with priority, so if two apps have set a voice level, the higher priority level takes precendence. Global is the highest priority.
+
+A voice level, like a moderator's mute, is carried out by the clients that listen: each plays a voice at that level or
+not at all. A player whose level is `disabled`, or who is muted, still sends their microphone to the voice server
+while it is on; no client that follows the level plays it.
 
 Must be called on the server for security reasons.

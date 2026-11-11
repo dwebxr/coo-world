@@ -254,6 +254,8 @@ export class PlayerRemote extends Entity {
     this.avatar = null
     this.world.setHot(this, false)
     this.world.events.emit('leave', eventPayload({ playerId: this.data.id }))
+    // a client stops playing what this player says and shows (ClientLiveKit; the server's system has no such part)
+    this.world.livekit?.dropPlayer?.(this.data.id)
     this.aura.deactivate()
     this.aura = null
 

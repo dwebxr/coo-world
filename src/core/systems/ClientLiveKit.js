@@ -1,12 +1,12 @@
-import { Participant, ParticipantEvent, Room, RoomEvent, ScreenSharePresets, Track } from 'livekit-client'
+import { ParticipantEvent, Room, RoomEvent, ScreenSharePresets } from 'livekit-client'
 import * as THREE from '../extras/three'
 
 import { System } from './System'
 import { isBoolean } from 'lodash-es'
-import { TrackSource } from 'livekit-server-sdk'
 import { prepareVideoElement } from './ClientLoader'
 import { createVoiceTap } from '../extras/voiceTap'
 import { mouthTarget, nextMouth, quantizeMouth } from '../extras/voiceLevel'
+import { screenTarget } from '../extras/screenShare'
 
 const v1 = new THREE.Vector3()
 const v2 = new THREE.Vector3()
@@ -32,8 +32,12 @@ export class ClientLiveKit extends System {
     this.levels = {}
     this.muted = new Set()
     this.voices = new Map() // playerId -> PlayerVoice
+    // playerId -> what that player shares ({ targetId, track }); its screen is shown while the player is not muted
+    this.shares = new Map()
     this.screens = []
     this.screenNodes = new Set() // Video
+    // this client is out of the world (kicked or disconnected) and so out of the voice room
+    this.left = false
   }
 
   start() {
@@ -41,6 +45,38 @@ export class ClientLiveKit extends System {
     this.status.level = this.defaultLevel
     this.world.settings.on('change', this.onSettingsChange)
     this.world.prefs?.on('change', this.onPrefsChange)
+    this.world.on('kick', this.leave)
+    this.world.on('disconnect', this.leave)
+  }
+
+  // Out of the world is out of the voice room. The room is a connection of its own, to another server: when the
+  // world's connection ended (a kick, a lost connection) it stayed open, so a kicked player kept talking to
+  // everyone and kept hearing them. The page does not reconnect by itself, so this is final.
+  leave = () => {
+    if (this.left) return
+    this.left = true
+    this.voices.forEach(voice => voice.destroy())
+    this.voices.clear()
+    this.shares.clear()
+    for (const screen of [...this.screens]) this.removeScreen(screen)
+    this.status.connected = false
+    this.status.mic = false
+    this.status.screenshare = null
+    this.emit('status', this.status)
+    // disconnect() is async; a failure leaves nothing to do
+    Promise.resolve(this.room?.disconnect()).catch(() => {})
+  }
+
+  // A player left the world (PlayerRemote.destroy): what they say and show ends here, whatever the voice room says.
+  // A kicked player whose client stays in the room, or comes back into it with its voice token, is in nobody's
+  // world: its tracks are dropped here and ignored when they arrive (onTrackSubscribed).
+  dropPlayer(playerId) {
+    const voice = this.voices.get(playerId)
+    if (voice) {
+      voice.destroy()
+      this.voices.delete(playerId)
+    }
+    this.setShare(playerId, null)
   }
 
   onPrefsChange = changes => {
@@ -84,13 +120,17 @@ export class ClientLiveKit extends System {
     this.room.on(RoomEvent.LocalTrackUnpublished, this.onLocalTrackUnpublished)
     this.room.on(RoomEvent.TrackSubscribed, this.onTrackSubscribed)
     this.room.on(RoomEvent.TrackUnsubscribed, this.onTrackUnsubscribed)
+    this.room.on(RoomEvent.ParticipantMetadataChanged, this.onMetadataChanged)
     this.room.localParticipant.on(ParticipantEvent.IsSpeakingChanged, speaking => {
       const player = this.world.entities.player
       this.world.livekit.emit('speaking', { playerId: player.data.id, speaking })
       player.setSpeaking(speaking)
     })
     this.world.audio.ready(async () => {
+      // audio becomes ready on the player's first touch, which may come after the world's connection has ended
+      if (this.left) return
       await this.room.connect(opts.wsUrl, opts.token)
+      if (this.left) return this.room.disconnect()
       this.status.connected = true
       this.emit('status', this.status)
     })
@@ -106,6 +146,9 @@ export class ClientLiveKit extends System {
     }
     const voice = this.voices.get(playerId)
     voice?.setMuted(muted)
+    // a mute covers what the player shows too, and ends a speaking state that was on when it came
+    this.syncScreen(playerId)
+    if (muted) this.world.entities.getPlayer(playerId)?.setSpeaking(false)
     this.emit('muted', { playerId, muted })
     if (playerId === this.world.network.id) {
       this.status.muted = muted
@@ -118,7 +161,9 @@ export class ClientLiveKit extends System {
   }
 
   setLevel(playerId, level) {
-    this.levels[playerId] = level
+    // no level of their own: the world's default (the server sends null and keeps no entry either)
+    if (level) this.levels[playerId] = level
+    else delete this.levels[playerId]
     level = level || this.defaultLevel
     if (playerId === this.world.network.id) {
       if (this.status.level !== level) {
@@ -174,7 +219,6 @@ export class ClientLiveKit extends System {
   }
 
   onLocalTrackPublished = publication => {
-    const world = this.world
     const track = publication.track
     const playerId = this.world.network.id
     // console.log('onLocalTrackPublished', publication)
@@ -183,11 +227,9 @@ export class ClientLiveKit extends System {
       this.emit('status', this.status)
     }
     if (publication.source === 'screen_share') {
-      const metadata = JSON.parse(this.room.localParticipant.metadata || '{}')
-      const targetId = metadata.screenTargetId
+      const targetId = screenTarget(this.room.localParticipant.metadata)
       this.status.screenshare = targetId
-      const screen = createPlayerScreen({ world, playerId, targetId, track, publication })
-      this.addScreen(screen)
+      this.setShare(playerId, { targetId, track })
       this.emit('status', this.status)
     }
   }
@@ -200,8 +242,7 @@ export class ClientLiveKit extends System {
       this.emit('status', this.status)
     }
     if (publication.source === 'screen_share') {
-      const screen = this.screens.find(s => s.playerId === playerId)
-      this.removeScreen(screen)
+      this.setShare(playerId, null)
       this.status.screenshare = null
       this.emit('status', this.status)
     }
@@ -223,11 +264,35 @@ export class ClientLiveKit extends System {
       this.voices.set(playerId, voice)
     }
     if (track.source === 'screen_share') {
-      const metadata = JSON.parse(participant.metadata || '{}')
-      const targetId = metadata.screenTargetId
-      const screen = createPlayerScreen({ world, playerId, targetId, track, publication })
-      this.addScreen(screen)
+      this.setShare(playerId, { targetId: screenTarget(participant.metadata), track })
     }
+  }
+
+  // A share names its screen in its participant's metadata, which may arrive after the track or change during it
+  onMetadataChanged = (prev, participant) => {
+    const share = this.shares.get(participant?.identity)
+    if (!share) return
+    const targetId = screenTarget(participant.metadata)
+    if (targetId === share.targetId) return
+    this.setShare(participant.identity, { ...share, targetId })
+  }
+
+  // What a player shares (null: nothing), and the screen made from it
+  setShare(playerId, share) {
+    if (share) this.shares.set(playerId, share)
+    else this.shares.delete(playerId)
+    this.syncScreen(playerId)
+  }
+
+  // One screen for a player, when they share to a screen and are not muted: a mute hides the share on every
+  // client that has the mute, and lifting it shows the share again while its track is still here.
+  syncScreen(playerId) {
+    const share = this.shares.get(playerId)
+    const wanted = !!share && share.targetId !== null && !this.muted.has(playerId)
+    const shown = this.screens.find(s => s.playerId === playerId)
+    if (shown && wanted && shown.track === share.track && shown.targetId === share.targetId) return
+    if (shown) this.removeScreen(shown)
+    if (wanted) this.addScreen(createPlayerScreen({ world: this.world, playerId, ...share }))
   }
 
   onTrackUnsubscribed = (track, publication, participant) => {
@@ -239,8 +304,7 @@ export class ClientLiveKit extends System {
       this.voices.delete(playerId)
     }
     if (track.source === 'screen_share') {
-      const screen = this.screens.find(s => s.playerId === playerId)
-      this.removeScreen(screen)
+      this.setShare(playerId, null)
     }
   }
 
@@ -283,10 +347,13 @@ export class ClientLiveKit extends System {
   destroy() {
     this.world.settings.off('change', this.onSettingsChange)
     this.world.prefs?.off('change', this.onPrefsChange)
+    this.world.off('kick', this.leave)
+    this.world.off('disconnect', this.leave)
     this.voices.forEach(voice => {
       voice.destroy()
     })
     this.voices.clear()
+    this.shares.clear()
     this.screens.forEach(screen => {
       screen.destroy()
     })
@@ -299,6 +366,7 @@ export class ClientLiveKit extends System {
       this.room.off(RoomEvent.LocalTrackUnpublished, this.onLocalTrackUnpublished)
       this.room.off(RoomEvent.TrackSubscribed, this.onTrackSubscribed)
       this.room.off(RoomEvent.TrackUnsubscribed, this.onTrackUnsubscribed)
+      this.room.off(RoomEvent.ParticipantMetadataChanged, this.onMetadataChanged)
       if (this.room.localParticipant) {
         this.room.localParticipant.off(ParticipantEvent.IsSpeakingChanged)
       }
@@ -461,7 +529,7 @@ class PlayerVoice {
   }
 }
 
-function createPlayerScreen({ world, playerId, targetId, track, participant }) {
+function createPlayerScreen({ world, playerId, targetId, track }) {
   // NOTE: this follows the same construct in ClientLoader.js -> createVideoFactory
   // so that it is automatically compatible with the video node
   const elem = document.createElement('video')
@@ -508,6 +576,8 @@ function createPlayerScreen({ world, playerId, targetId, track, participant }) {
     // document.body.removeChild(elem)
   }
   function destroy() {
+    // the element stops receiving the track (a hidden share's track stays subscribed)
+    track.detach(elem)
     texture.dispose()
     // help to prevent chrome memory leaks
     // see: https://github.com/facebook/react/issues/15583#issuecomment-490912533
@@ -518,6 +588,7 @@ function createPlayerScreen({ world, playerId, targetId, track, participant }) {
     isScreen: true,
     playerId,
     targetId,
+    track,
     elem,
     audio: null,
     texture,

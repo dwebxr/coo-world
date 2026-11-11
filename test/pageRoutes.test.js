@@ -6,6 +6,7 @@ import path from 'node:path'
 import zlib from 'node:zlib'
 import Fastify from 'fastify'
 import compress from '@fastify/compress'
+import statics from '@fastify/static'
 import { compressOptions } from '../src/server/compressOptions.js'
 import {
   PAGE_CSP,
@@ -27,10 +28,13 @@ before(async () => {
   await fs.writeFile(path.join(dir, 'terms.html'), '<!doctype html><title>Terms</title>')
   await fs.writeFile(path.join(dir, 'index.css'), 'body{}')
   await fs.writeFile(path.join(dir, 'app-ABC.js'), 'export {}')
+  // other names the statics type as HTML, and one they do not
+  for (const name of ['b.htm', 'c.shtml', 'D.HTML']) await fs.writeFile(path.join(dir, name), '<p>page</p>')
+  await fs.writeFile(path.join(dir, 'notes.txt'), 'notes')
 })
 after(() => fs.rm(dir, { recursive: true, force: true }))
 
-async function server({ hstsMaxAge = null, page } = {}) {
+async function server({ hstsMaxAge = null, page, envsCode = 'globalThis.env = {}' } = {}) {
   const app = Fastify()
   // as the server registers them: compression first, then the headers, then the pages
   app.register(compress, compressOptions())
@@ -40,7 +44,7 @@ async function server({ hstsMaxAge = null, page } = {}) {
     page:
       page ??
       (() => ({ title: 'World', desc: 'A world', image: 'https://cdn.example/i.png', url: 'https://w.example' })),
-    envsCode: 'globalThis.env = {}',
+    envsCode,
   })
   app.get('/status', async () => ({ ok: true }))
   app.get('/boom', async () => {
@@ -114,10 +118,11 @@ test('the world page: by either name, with the page headers, its placeholders fi
   }
 })
 
-test('the pages are whole when a browser asks for them compressed', async () => {
-  // a page longer than the size compression starts at, and an env script as large
+test('the pages and the env script are whole when a browser asks for them compressed', async () => {
+  // a page and an env script longer than the size compression starts at (1024 bytes)
   const long = 'x'.repeat(4000)
-  const app = await server({ page: () => ({ title: long, desc: 'd', image: '', url: 'u' }) })
+  const envsCode = `globalThis.env = ${JSON.stringify({ PUBLIC_LONG: 'y'.repeat(4000), PUBLIC_END: 'end' })}`
+  const app = await server({ page: () => ({ title: long, desc: 'd', image: '', url: 'u' }), envsCode })
   try {
     for (const [encoding, decode] of [
       ['br', zlib.brotliDecompressSync],
@@ -132,16 +137,71 @@ test('the pages are whole when a browser asks for them compressed', async () => 
         assert.equal(res.headers['content-security-policy'], PAGE_CSP, url)
         assert.equal(res.headers['x-content-type-options'], 'nosniff', url)
       }
+      const env = await app.inject({ method: 'GET', url: '/env.js', headers: { 'accept-encoding': encoding } })
+      assert.equal(env.statusCode, 200)
+      assert.equal(env.headers['content-encoding'], encoding, `/env.js over ${encoding}`)
+      assert.match(env.headers['content-type'], /javascript/)
+      assert.equal(decode(env.rawPayload).toString(), envsCode, `/env.js over ${encoding}`)
     }
+    const plain = await app.inject({ method: 'GET', url: '/env.js', headers: { 'accept-encoding': 'identity' } })
+    assert.equal(plain.headers['content-encoding'], undefined)
+    assert.equal(plain.body, envsCode)
   } finally {
     await app.close()
   }
-  const big = await server()
+})
+
+test('a static page has the page headers on a 304, a HEAD and a range too', async () => {
+  // what a browser cached before these headers existed: the same file from the statics alone
+  const before = Fastify()
+  before.register(statics, { root: dir, prefix: '/' })
+  await before.ready()
+  const app = await server({ hstsMaxAge: 600 })
   try {
-    const plain = await big.inject({ method: 'GET', url: '/env.js', headers: { 'accept-encoding': 'identity' } })
-    assert.equal(plain.body, 'globalThis.env = {}')
+    const cached = await before.inject({ method: 'GET', url: '/terms.html' })
+    assert.equal(cached.statusCode, 200)
+    assert.equal(cached.headers['content-security-policy'], undefined)
+    const conditions = [
+      { 'if-none-match': cached.headers.etag },
+      { 'if-modified-since': cached.headers['last-modified'] },
+    ]
+    const requests = [
+      ...conditions.map(headers => ({ method: 'GET', headers, status: 304 })),
+      { method: 'HEAD', headers: {}, status: 200 },
+      { method: 'GET', headers: { range: 'bytes=0-3' }, status: 206 },
+    ]
+    for (const { method, headers, status } of requests) {
+      const label = `${method} ${JSON.stringify(headers)}`
+      const res = await app.inject({ method, url: '/terms.html', headers })
+      assert.equal(res.statusCode, status, label)
+      assert.equal(res.headers['content-security-policy'], PAGE_CSP, label)
+      assert.equal(res.headers['x-frame-options'], 'DENY', label)
+      assert.equal(res.headers['permissions-policy'], PAGE_PERMISSIONS, label)
+      assert.equal(res.headers['x-content-type-options'], 'nosniff', label)
+      assert.equal(res.headers['strict-transport-security'], 'max-age=600', label)
+    }
+    // a static file is a page exactly when the statics type it text/html, on the 200 and on its 304
+    for (const name of ['terms.html', 'b.htm', 'c.shtml', 'D.HTML', 'index.css', 'app-ABC.js', 'notes.txt']) {
+      const full = await app.inject({ method: 'GET', url: `/${name}` })
+      assert.equal(full.statusCode, 200, name)
+      const page = /^text\/html/.test(full.headers['content-type'])
+      const revalidated = await app.inject({
+        method: 'GET',
+        url: `/${name}`,
+        headers: { 'if-none-match': full.headers.etag },
+      })
+      assert.equal(revalidated.statusCode, 304, name)
+      assert.equal(revalidated.headers['content-type'], undefined, `${name}: a 304 has no type`)
+      for (const res of [full, revalidated]) {
+        assert.equal(res.headers['content-security-policy'], page ? PAGE_CSP : undefined, `${name} ${res.statusCode}`)
+        assert.equal(res.headers['x-frame-options'], page ? 'DENY' : undefined, `${name} ${res.statusCode}`)
+        assert.equal(res.headers['x-content-type-options'], 'nosniff', `${name} ${res.statusCode}`)
+      }
+      assert.equal(page, /\.(html?|shtml)$/i.test(name), `${name} is typed ${full.headers['content-type']}`)
+    }
   } finally {
-    await big.close()
+    await app.close()
+    await before.close()
   }
 })
 
@@ -169,6 +229,12 @@ test('every other response: nosniff, and no page headers on what is not a page',
     }
     const env = await app.inject({ method: 'GET', url: '/env.js' })
     assert.equal(env.body, 'globalThis.env = {}')
+    // what the hook does not see (pageRoutes.js says so): the answer Fastify writes itself for a URL it cannot
+    // decode. It is JSON, not a page; this fails when that changes, and then the comment is to be read again.
+    const bad = await app.inject({ method: 'GET', url: '/%ZZ' })
+    assert.equal(bad.statusCode, 400)
+    assert.match(String(bad.headers['content-type']), /^application\/json/)
+    assert.equal(bad.headers['x-content-type-options'], undefined)
   } finally {
     await app.close()
   }

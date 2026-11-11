@@ -7,14 +7,21 @@ import { escapeHtml } from './escapeHtml.js'
 // The pages this server serves and the headers that go with them.
 //
 // What the headers do, and no more:
-// - every response: `X-Content-Type-Options: nosniff` (a browser takes a response for what its Content-Type says).
-// - every HTML response (the world page and the static pages): a Content-Security-Policy of four directives that
-//   nothing on these pages uses. No other site can put the page in a frame (`frame-ancestors`, with
-//   `X-Frame-Options` for browsers that do not read it): the world page asks for wallet signatures and sends tips,
-//   and a framed copy under someone else's page can be clicked through. Markup that got into the page cannot change
-//   where relative URLs load from (`base-uri`), embed a plugin (`object-src`) or post a form to another site
-//   (`form-action`). And a Permissions-Policy: the page and what it frames can never ask for the camera, the
-//   location, a payment or a USB device.
+// - `X-Content-Type-Options: nosniff` (a browser takes a response for what its Content-Type says) on every response
+//   sent through a Fastify reply: the pages, the statics, the assets, the API, 404s and errors.
+// - on the pages: a Content-Security-Policy of four directives that nothing on these pages uses. No other site can
+//   put the page in a frame (`frame-ancestors`, with `X-Frame-Options` for browsers that do not read it): the world
+//   page asks for wallet signatures and sends tips, and a framed copy under someone else's page can be clicked
+//   through. Markup that got into the page cannot change where relative URLs load from (`base-uri`), embed a plugin
+//   (`object-src`) or post a form to another site (`form-action`). And a Permissions-Policy: in browsers that
+//   implement it (Firefox does not), the page and what it frames cannot use the camera, the location, the Payment
+//   Request API or a USB device. `payment` is that API only: wallet requests go through the wallet's own extension
+//   or app, and it does not touch them.
+//   A page is a response typed text/html when the hook below runs, and a static file the send library types so,
+//   whatever its status (a 304 has no type).
+// - not covered: a WebSocket upgrade (the socket plugin takes the connection over and writes its own answer, which
+//   no browser shows or runs), the 400 that Fastify writes itself for a URL it cannot decode (JSON, not a page), and
+//   HTML typed after the hook runs or sent as a native `Response` (no route here does either).
 // - it is NOT a policy on scripts, styles or connections: markup that got into the page could still run a script.
 //   (A full policy needs the script host's `eval` for app scripts, and has to be tried against real wallets first.)
 // - `Strict-Transport-Security` only when HSTS_MAX_AGE is set: whether every host of the domain is served over
@@ -50,8 +57,11 @@ export function responseHeaders({ html = false, hstsMaxAge = null } = {}) {
 }
 
 const isHtml = type => typeof type === 'string' && /^text\/html\b/i.test(type)
+// the names the send library (its `mime` table) types as text/html, in any case
+const isHtmlFile = filePath => /\.(?:html?|shtml)$/i.test(filePath)
 
-// Registered on the root instance, so the hook sees every response: pages, statics, assets, the API, errors.
+// Registered on the root instance, so the hook runs for every reply of every plugin: pages, statics, assets, the API,
+// 404s and errors (what it does not see is listed at the top).
 export function securityHeaders(fastify, { hstsMaxAge = null } = {}) {
   fastify.addHook('onSend', (req, reply, payload, done) => {
     reply.headers(responseHeaders({ html: isHtml(reply.getHeader('content-type')), hstsMaxAge }))
@@ -90,9 +100,13 @@ export async function pageRoutes(fastify, { publicDir, page, envsCode }) {
     decorateReply: false,
     // Cache-Control stays @fastify/static's default (public, max-age=0: revalidate by ETag), which is what
     // production has always served: before v10, send overwrote a Cache-Control set here
-    setHeaders: reply => {
+    // A static page gets the page headers here, where the file is known, on a 200, a 206, a HEAD and a 304 alike: the
+    // send library drops the Content-Type of a 304 before the hook runs, so the hook cannot tell it is a page, and a
+    // browser that revalidates a copy cached before these headers existed would keep that copy without them.
+    setHeaders: (reply, filePath) => {
       reply.header('Pragma', 'no-cache')
       reply.header('Expires', '0')
+      if (isHtmlFile(filePath)) reply.headers(responseHeaders({ html: true }))
     },
   })
 }

@@ -177,7 +177,7 @@ const envsCode = `
 `
 fastify.register(cors)
 fastify.register(compress, compressOptions())
-// headers of every response and of every page (pageRoutes.js says what they do and what they do not)
+// the headers of the replies and of the pages (pageRoutes.js says which, what they do and what they do not)
 securityHeaders(fastify, { hstsMaxAge })
 fastify.register(pageRoutes, {
   publicDir: path.join(__dirname, 'public'),

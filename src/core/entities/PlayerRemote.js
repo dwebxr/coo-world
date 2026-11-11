@@ -9,6 +9,7 @@ import { isEmoteUrl } from '../extras/entityModifyPolicy'
 import { readAnchorPose } from '../extras/anchorPose'
 import {
   avatarChosen,
+  avatarLoadFailed,
   avatarSettled,
   beginAvatarLoad,
   isCurrentAvatarLoad,
@@ -90,8 +91,9 @@ export class PlayerRemote extends Entity {
     const avatarUrl = playerAvatarUrl(this)
     const load = beginAvatarLoad(this)
     if (this.avatarUrl === avatarUrl) return
-    this.world.loader.load('avatar', avatarUrl).then(
-      src => {
+    this.world.loader
+      .load('avatar', avatarUrl)
+      .then(src => {
         if (!isCurrentAvatarLoad(this, load)) return
         if (this.avatar) this.avatar.deactivate()
         this.avatar = src.toNodes().get('avatar')
@@ -103,13 +105,13 @@ export class PlayerRemote extends Entity {
         }
         this.avatarUrl = avatarUrl
         avatarSettled(this, avatarUrl)
-      },
-      err => {
-        // reported like the local player's, instead of an unhandled rejection
-        if (isCurrentAvatarLoad(this, load)) avatarSettled(this, avatarUrl)
+      })
+      .catch(err => {
+        // a load that failed, or an avatar that could not be put in place: reported, and a player left with no
+        // avatar gets the built-in one
+        if (isCurrentAvatarLoad(this, load)) avatarLoadFailed(this, avatarUrl, err)
         console.error(err)
-      }
-    )
+      })
   }
 
   // World.hotFailed: this player (or its avatar) threw in the frame loop

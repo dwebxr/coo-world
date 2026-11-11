@@ -3,10 +3,15 @@
 // world's default avatar setting: that one is builder-chosen and may be the failing file.
 export const BUILTIN_AVATAR_URL = 'asset://avatar.vrm'
 
+// the avatar a player has asked for
+export function playerAvatarSource(player) {
+  return player.data.sessionAvatar || player.data.avatar || BUILTIN_AVATAR_URL
+}
+
 // the url a player's avatar loads from
 export function playerAvatarUrl(player) {
   if (player.avatarFallback) return BUILTIN_AVATAR_URL
-  return player.data.sessionAvatar || player.data.avatar || BUILTIN_AVATAR_URL
+  return playerAvatarSource(player)
 }
 
 // true while the player should stay hot: on the first failure (the switch starts) and until the built-in avatar
@@ -41,4 +46,33 @@ export function avatarSettled(player, url) {
 // a newly chosen avatar gets its own chance
 export function avatarChosen(player) {
   player.avatarFallback = null
+  player.avatarRetried = false
+}
+
+// the code of a load the loader refused only because too many were running (ClientLoader.enter)
+export const LOADER_BUSY = 'LOADER_BUSY'
+export const AVATAR_RETRY_MS = 15000
+
+// Called when the player's current avatar load failed (a missing file, one the loader's limits refuse, a file that is
+// not a usable avatar). A player who has an avatar showing keeps it. One who has none would be a name floating over
+// nothing, for everyone, for as long as they stay: they get the built-in avatar. When the load was only turned away
+// because the loader was busy, the avatar is asked for once more a little later; `later` is setTimeout.
+export function avatarLoadFailed(player, url, err, later = setTimeout) {
+  avatarSettled(player, url)
+  if (player.avatar || player.avatarFallback) return
+  if (url === BUILTIN_AVATAR_URL) {
+    // nothing left to fall back to
+    player.avatarFallback = 'ready'
+    return
+  }
+  switchToBuiltinAvatar(player)
+  if (err?.code === LOADER_BUSY && !player.avatarRetried) {
+    player.avatarRetried = true
+    later(() => {
+      // still the same player on the fallback this failure started, with the same avatar asked for
+      if (player.destroyed || !player.avatarFallback || playerAvatarSource(player) !== url) return
+      player.avatarFallback = null
+      player.applyAvatar()
+    }, AVATAR_RETRY_MS)
+  }
 }

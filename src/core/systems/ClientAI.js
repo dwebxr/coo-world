@@ -28,7 +28,6 @@ export class ClientAI extends System {
     this.provider = data.provider
     this.model = data.model
     this.effort = data.effort
-    console.log('[ai]', data)
   }
 
   create = async ({ value: prompt }) => {
@@ -86,7 +85,6 @@ export class ClientAI extends System {
     // this.world.builder.select(app)
 
     // send to server
-    console.log('[ai] creating', action)
     this.world.network.send('ai', action)
   }
 
@@ -109,7 +107,6 @@ export class ClientAI extends System {
       prompt,
     }
     this.world.network.send('ai', action)
-    console.log('[ai] editing', action)
   }
 
   fix = async () => {
@@ -143,6 +140,5 @@ export class ClientAI extends System {
       limit = Math.floor(limit / 2)
     }
     this.world.network.send('ai', action)
-    console.log('[ai] fixing', action)
   }
 }

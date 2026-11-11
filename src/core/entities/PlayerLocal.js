@@ -16,6 +16,7 @@ import { isEmoteUrl, sanitizeName, sanitizePlayerSelfModify } from '../extras/en
 import { readAnchorPose } from '../extras/anchorPose'
 import {
   avatarChosen,
+  avatarLoadFailed,
   avatarSettled,
   beginAvatarLoad,
   isCurrentAvatarLoad,
@@ -209,7 +210,9 @@ export class PlayerLocal extends Entity {
         avatarSettled(this, avatarUrl)
       })
       .catch(err => {
-        if (isCurrentAvatarLoad(this, load)) avatarSettled(this, avatarUrl)
+        // a load that failed, or an avatar that could not be put in place: reported, and a player left with no
+        // avatar gets the built-in one
+        if (isCurrentAvatarLoad(this, load)) avatarLoadFailed(this, avatarUrl, err)
         console.error(err)
       })
   }
@@ -865,11 +868,11 @@ export class PlayerLocal extends Entity {
     if (this.cam.zoom < 1 && !this.firstPerson) {
       this.cam.zoom = 0
       this.firstPerson = true
-      this.avatar.visible = false
+      if (this.avatar) this.avatar.visible = false
     } else if (this.cam.zoom > 0 && this.firstPerson) {
       this.cam.zoom = 1
       this.firstPerson = false
-      this.avatar.visible = true
+      if (this.avatar) this.avatar.visible = true
     }
 
     // stick movement threshold

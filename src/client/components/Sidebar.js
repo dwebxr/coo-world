@@ -69,6 +69,7 @@ import { callScript } from '../../core/extras/callScript'
 import { TipForm } from './TipForm'
 import { toText } from '../../core/extras/scriptText'
 import { cssImage } from '../../core/extras/cssImage'
+import { setDebugGlobal } from '../../core/extras/debugGlobals'
 import { fieldValues } from '../../core/extras/appFields'
 import { guardTransform } from '../../core/nodes/Node'
 
@@ -1033,7 +1034,7 @@ function App({ world, hidden }) {
     showTransforms = transforms
   }, [transforms])
   useEffect(() => {
-    window.app = app
+    setDebugGlobal('app', app)
     const onModify = bp => {
       if (bp.id === blueprint.id) setBlueprint(bp)
     }
@@ -1268,7 +1269,6 @@ function AppTransformFields({ app }) {
         bigStep={1}
         value={position}
         onChange={value => {
-          console.log(value)
           setPosition(value)
           app.modify({ position: value })
           app.world.network.send('entityModified', {
@@ -1655,7 +1655,7 @@ function Meta({ world, hidden }) {
   const app = world.ui.state.app
   const [blueprint, setBlueprint] = useState(app.blueprint)
   useEffect(() => {
-    window.app = app
+    setDebugGlobal('app', app)
     const onModify = bp => {
       if (bp.id === blueprint.id) setBlueprint(bp)
     }

@@ -451,11 +451,6 @@ export class ClientBuilder extends System {
       !this.control.shiftLeft.down &&
       (this.control.metaLeft.down || this.control.controlLeft.down)
     ) {
-      console.log('undo', {
-        shiftLeft: this.control.shiftLeft.down,
-        metaLeft: this.control.metaLeft.down,
-        controlLeft: this.control.controlLeft.down,
-      })
       this.undo()
     }
     // translate updates
@@ -813,12 +808,10 @@ export class ClientBuilder extends System {
         menu.stick.capture = true
         menu.state = 'open'
         $root.activate({ world: this.world, entity: null })
-        console.log('OPEN')
       },
       hide: () => {
         menu.state = 'hidden'
         $root.deactivate()
-        console.log('HIDe')
       },
       close: () => {
         menu.ray = null
@@ -826,7 +819,6 @@ export class ClientBuilder extends System {
         menu.stick = null
         menu.state = 'closed'
         $root.deactivate()
-        console.log('CLOSE')
       },
       update: delta => {
         if (menu.state !== 'open') return

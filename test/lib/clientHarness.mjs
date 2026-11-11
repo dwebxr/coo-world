@@ -25,6 +25,7 @@ import {
   sanitizePlayerSelfModify,
   isAvatarUrl,
   isEmoteUrl,
+  nextSessionAvatarRequest,
   rememberScriptEmote,
 } from '../../src/core/extras/entityModifyPolicy.js'
 import { normalizeSettingValue } from '../../src/core/extras/settingsPolicy.js'
@@ -116,6 +117,7 @@ export function loadClient(file, name, context = {}) {
     sanitizePlayerSelfModify,
     isEmoteUrl,
     isAvatarUrl,
+    nextSessionAvatarRequest,
     rememberScriptEmote,
     normalizeSettingValue,
     createEventLedger,

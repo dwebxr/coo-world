@@ -545,6 +545,7 @@ async function probes(admin, watcher) {
     const scriptEmote = outside('emote-float.glb')
     const own = outside('avatar.vrm?mine')
     const fromAdmin = admin.mark()
+    const fromWatcher = watcher.mark()
     const seen = (client, from, key) =>
       client
         .since(from)
@@ -563,6 +564,12 @@ async function probes(admin, watcher) {
       scriptAvatar,
       'the avatar a script chose, with the visitor a visitor'
     )
+    // and the visitor's own connection has it too, before the mark below is taken: arriving after it, this packet
+    // would be taken for the answer to the visitor's own update
+    await waitUntil(() => seen(watcher, fromWatcher, 'sessionAvatar').length >= 1, {
+      message: "the script's avatar, on the visitor's connection",
+    })
+    eq(JSON.stringify(seen(watcher, fromWatcher, 'sessionAvatar')), JSON.stringify([scriptAvatar]), 'told the visitor')
     await waitUntil(() => seen(admin, fromAdmin, 'ef').length >= 1, { message: "the script's effect" })
     eq(seen(admin, fromAdmin, 'ef')[0].emote, scriptEmote, 'the effect carries its emote')
     // the visitor's client names the emote it plays: the one the script chose is relayed, another is not
@@ -576,19 +583,24 @@ async function probes(admin, watcher) {
     const barrier = 'asset://emote-float.glb?s=1.25'
     const fromAdminOwn = admin.mark()
     const fromWatcherOwn = watcher.mark()
-    watcher.send('entityModified', { id: watcher.id, sessionAvatar: own })
+    // (numbered as a browser numbers its own session avatar updates)
+    watcher.send('entityModified', { id: watcher.id, sessionAvatar: own, sessionAvatarRequest: 41 })
     watcher.send('entityModified', { id: watcher.id, e: barrier })
     await waitUntil(() => seen(admin, fromAdminOwn, 'e').includes(barrier), { message: 'the update after it' })
     eq(seen(admin, fromAdminOwn, 'sessionAvatar').length, 0, 'nothing relayed')
     ok(!JSON.stringify(admin.since(fromAdmin)).includes('?mine'), "the visitor's url reached nobody")
-    // the answer: a packet sent after the refused update, with the avatar the server has (the script's)
+    ok(!JSON.stringify(admin.since(fromAdmin)).includes('sessionAvatarRequest'), 'nor its number')
+    // the answer: a packet sent after the refused update, with the avatar the server has (the script's) and the
+    // update's number
     await waitUntil(() => seen(watcher, fromWatcherOwn, 'sessionAvatar').length >= 1, { message: 'the correction' })
     eq(JSON.stringify(seen(watcher, fromWatcherOwn, 'sessionAvatar')), JSON.stringify([scriptAvatar]), 'the correction')
+    eq(JSON.stringify(seen(watcher, fromWatcherOwn, 'sessionAvatarRequest')), '[41]', 'carrying the number')
     // a late joiner's snapshot carries the script's choice and nothing of the visitor's own
     const late = await new WireClient(PORT, 'late').connect()
     const record = late.snapshot.entities.find(entity => entity.id === watcher.id)
     late.close()
     eq(record.sessionAvatar, scriptAvatar, 'the snapshot has the avatar a script chose')
+    ok(!JSON.stringify(late.snapshot).includes('sessionAvatarRequest'), 'and no number')
     // a builder's own url outside the world is relayed as before, and the builder is told the value the server took,
     // as every sender of a session avatar is
     const fromWatcher2 = watcher.mark()

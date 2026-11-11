@@ -12,7 +12,12 @@ import { isBoolean, isNumber } from 'lodash-es'
 import { Modes } from '../extras/locomotionModes'
 import { outranks, isAdmin, isBuilder, isMuted } from '../extras/playerRanks'
 import { createPlayerAura, chatBubble } from '../extras/playerAura'
-import { isEmoteUrl, sanitizeName, sanitizePlayerSelfModify } from '../extras/entityModifyPolicy'
+import {
+  isEmoteUrl,
+  nextSessionAvatarRequest,
+  sanitizeName,
+  sanitizePlayerSelfModify,
+} from '../extras/entityModifyPolicy'
 import { readAnchorPose } from '../extras/anchorPose'
 import {
   avatarChosen,
@@ -1248,9 +1253,12 @@ export class PlayerLocal extends Entity {
     this.data.sessionAvatar = avatar
     avatarChosen(this)
     this.applyAvatar()
+    // numbered, so that the server's answer to this update can be told from its answers to earlier ones (modify)
+    this.sessionAvatarRequest = nextSessionAvatarRequest(this.sessionAvatarRequest)
     this.world.network.send('entityModified', {
       id: this.data.id,
       sessionAvatar: avatar,
+      sessionAvatarRequest: this.sessionAvatarRequest,
     })
   }
 
@@ -1277,11 +1285,19 @@ export class PlayerLocal extends Entity {
       avatarChanged = true
       changed = true
     }
-    if (Object.prototype.hasOwnProperty.call(data, 'sessionAvatar')) {
+    // The server answers each session avatar update this client sends with the session avatar it has afterwards,
+    // carrying the update's number back (setSessionAvatar, ServerNetwork onEntityModified). An answer to an update
+    // this client has since superseded is passed over: the answer to its latest update is on its way, and applied,
+    // this one would put an older avatar up until that comes. A value without a number (a server script's choice,
+    // the server's clean-up when builder rank ends) is applied as it comes.
+    const superseded =
+      Object.prototype.hasOwnProperty.call(data, 'sessionAvatarRequest') &&
+      data.sessionAvatarRequest !== this.sessionAvatarRequest
+    if (Object.prototype.hasOwnProperty.call(data, 'sessionAvatar') && !superseded) {
       // The server tells this client every session avatar it takes for this player, the ones this client set
-      // included (ServerNetwork onEntityModified), so the value it already has is common: no change. The avatar
-      // shown, a load of it in progress and the built-in fallback after a failure stay as they are (asked again, a
-      // new load generation would start and a failing avatar would get another try).
+      // included, so the value it already has is common: no change. The avatar shown, a load of it in progress and
+      // the built-in fallback after a failure stay as they are (asked again, a new load generation would start and a
+      // failing avatar would get another try).
       if ((data.sessionAvatar || null) !== (this.data.sessionAvatar || null)) avatarChanged = true
       this.data.sessionAvatar = data.sessionAvatar
     }

@@ -2,21 +2,34 @@
 // isExternalUrl and the rule in sanitizePlayerSelfModify; ServerNetwork onEntityModified and onConnection;
 // createPlayerProxy on the server). A file of the world's own store: anyone. A url outside the world: a builder, or
 // the very url a server script chose for that player.
-import { test } from 'node:test'
+import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
   SCRIPT_EMOTE_LIMIT,
+  SESSION_AVATAR_REQUEST_MAX,
   isEmoteUrl,
   isExternalUrl,
+  nextSessionAvatarRequest,
   rememberScriptEmote,
   sanitizePlayerSelfModify,
+  sessionAvatarRequest,
 } from '../src/core/extras/entityModifyPolicy.js'
 import { hasRank, Ranks } from '../src/core/extras/ranks.js'
 import { SCRIPT_BACKLOG_CAP, SCRIPT_TICK_CAP } from '../src/core/extras/writeLedger.js'
 import * as gating from '../src/server/solana-gating.js'
 import { fixture, nextId, sentTo } from './lib/joinFixture.mjs'
 import { loadClient } from './lib/clientHarness.mjs'
+import { bundleProbe } from './lib/workerProbe.mjs'
+
+// the real PlayerLocal, bundled as the client build bundles it, as a player's own client
+let PlayerLocal
+let bundle
+before(async () => {
+  bundle = await bundleProbe(`export { PlayerLocal } from './src/core/entities/PlayerLocal'`)
+  ;({ PlayerLocal } = await import(bundle.url))
+})
+after(() => bundle?.destroy())
 
 const ASSETS = 'https://world.example/assets'
 const me = 'socket-me'
@@ -31,6 +44,17 @@ const EVIL_SPELLINGS = [
   `\t${EVIL_VRM}\n`,
   'HTTPS://evil.example/a.vrm',
 ]
+// the same spellings for a file of the world's own store: as every loader reads them, each is
+// https://world.example/assets/mine.vrm, so each is the visitor's own (Codex: the protocol-relative and bare-host ones
+// were classified as written, not as resolved, and a visitor who had stored one joined wearing the default)
+const OWN_SPELLINGS = [
+  '//world.example/assets/mine.vrm',
+  'world.example/assets/mine.vrm',
+  ` ${ASSETS}/mine.vrm`,
+  `\t${ASSETS}/mine.vrm\n`,
+  ' //world.example/assets/mine.vrm\n',
+  '\tworld.example/assets/mine.vrm ',
+]
 
 test('isExternalUrl: an asset or a plain address of a store file is not; anything else that loads is', () => {
   for (const own of [
@@ -38,8 +62,8 @@ test('isExternalUrl: an asset or a plain address of a store file is not; anythin
     'asset://emote-float.glb?s=1.5',
     `${ASSETS}/avatar.vrm`,
     `${ASSETS}/0123abcd.glb`,
-    // the loaders take the white space off first
-    ` ${ASSETS}/avatar.vrm\n`,
+    // the loaders take the white space off first, and resolve what is left
+    ...OWN_SPELLINGS,
     ' asset://avatar.vrm ',
     null,
     undefined,
@@ -52,6 +76,27 @@ test('isExternalUrl: an asset or a plain address of a store file is not; anythin
   for (const other of [...EVIL_SPELLINGS, '/assets/avatar.vrm', 'blob:https://world.example/1234', 'avatar.vrm']) {
     assert.equal(isExternalUrl(other, ASSETS), true, other)
   }
+  // A page path is left for the browser to resolve against the page. It lands in the store only when the page is
+  // served from the assets url's origin and path, which the server cannot know (a proxy, a CDN or another path can
+  // be in between), so it is outside whatever the assets url is, the page's own origin included.
+  for (const assetsUrl of [ASSETS, 'https://cdn.example/assets', 'https://world.example/w/assets']) {
+    assert.equal(isExternalUrl('/assets/mine.vrm', assetsUrl), true, assetsUrl)
+  }
+  // resolved to another place than the store: outside, whatever the spelling
+  for (const near of [
+    '//world.example/other/mine.vrm',
+    'world.example/assets/sub/mine.vrm',
+    '//world.example:8443/assets/mine.vrm',
+    'world.example.evil.example/assets/mine.vrm',
+    '//world.example/assets/../mine.vrm',
+    'world.example/assets/mine.vrm?x=1',
+    '//user@world.example/assets/mine.vrm',
+  ]) {
+    assert.equal(isExternalUrl(near, ASSETS), true, near)
+  }
+  // with an http assets url, `//host/…` and `host/…` load over https: another origin
+  assert.equal(isExternalUrl('//world.example/assets/mine.vrm', 'http://world.example/assets'), true)
+  assert.equal(isExternalUrl('http://world.example/assets/mine.vrm', 'http://world.example/assets'), false)
   // an asset is the store's whatever the assets url is
   assert.equal(isExternalUrl('asset://avatar.vrm', undefined), false)
   assert.equal(isExternalUrl(' asset://avatar.vrm\n', undefined), false)
@@ -65,6 +110,8 @@ test('isExternalUrl: an asset or a plain address of a store file is not; anythin
     'https://world.example/assets/avatar.vrm?x=1',
     'https://user:pw@world.example/assets/avatar.vrm',
     'https://world.example.evil.example/assets/avatar.vrm',
+    // a browser reads it as the store's file and the node agent loads nothing; a plain address takes only the
+    // lower-case scheme every loader reads alike, so this is refused to a visitor though it is not outside
     'HTTPS://world.example/assets/avatar.vrm',
     'https://world.example/other/avatar.vrm',
   ]) {
@@ -286,6 +333,252 @@ test('crossing packets: the sender ends on the session avatar the server ends on
   }
 })
 
+// The player's own client, the real PlayerLocal, on a handler-level world. Its updates reach the server when the test
+// says, oldest first as on its connection (`send(n)` sends the n oldest, `lose()` drops the oldest unsent), and what
+// the server told it reaches it when the test says (`deliver`). `started` lists the avatar loads it begins, in order;
+// `finish(url)` ends the latest load of that url; `installed` is the url of the avatar it shows.
+async function ownClient(w, who) {
+  const outbox = []
+  const pending = {}
+  const started = []
+  const p = Object.create(PlayerLocal.prototype)
+  Object.assign(p, {
+    data: { id: who.id, avatar: 'asset://avatar.vrm', sessionAvatar: null },
+    world: {
+      loader: {
+        load: (_type, url) =>
+          new Promise(resolve => {
+            started.push(url)
+            pending[url] = () => resolve({ toNodes: () => ({ get: () => avatarNode(url) }) })
+          }),
+      },
+      network: { send: (name, data) => outbox.push([name, data]) },
+      emit() {},
+    },
+    base: { add: node => (p.installed = node.url) },
+    nametag: { position: {}, active: false },
+    bubble: { position: {}, active: false },
+  })
+  const tick = () => new Promise(resolve => setTimeout(resolve, 0))
+  const client = {
+    p,
+    started,
+    outbox,
+    finish: async url => (pending[url](), await tick()),
+    send: (count = outbox.length) => {
+      for (const [name, data] of outbox.splice(0, count)) w.f.send(name, data, who.socket)
+    },
+    lose: () => outbox.shift(),
+    deliver: () => {
+      for (const [name, data] of w.received(who)) if (name === 'onEntityModified' && data.id === who.id) p.modify(data)
+    },
+  }
+  // it shows the world's avatar to begin with
+  p.applyAvatar()
+  await client.finish('asset://avatar.vrm')
+  started.length = 0
+  return client
+}
+
+function avatarNode(url) {
+  return { url, deactivate() {}, getHeadToHeight: () => 1.6, disableRateCheck() {}, height: 1.8 }
+}
+
+const A = 'asset://a.vrm'
+const B = 'asset://b.vrm'
+
+// Codex: the answer to an earlier update of the owner's arrived after the owner had chosen again, put the older
+// avatar back (a new load, and it could be installed for a moment), and the answer to the newer one then put the
+// newer one back: four loads for two choices. The client numbers its updates and passes over an answer that is not
+// to its latest one.
+test("the owner's client: the answer to an older choice does not undo a newer one in flight", async () => {
+  const w = await world()
+  const owner = await w.connect()
+  const watcher = await w.connect()
+  const c = await ownClient(w, owner)
+  c.p.setSessionAvatar(A)
+  c.p.setSessionAvatar(B)
+  // the server takes A and answers it while B is still on its way
+  c.send(1)
+  c.deliver()
+  assert.equal(c.p.data.sessionAvatar, B, 'the newer choice stays')
+  assert.deepEqual(c.started, [A, B], 'no load for the answer to A')
+  c.send()
+  c.deliver()
+  assert.equal(c.p.data.sessionAvatar, B)
+  assert.deepEqual(c.started, [A, B], 'one load for each choice')
+  // A's load ends after B was chosen: it is stale and never shown
+  await c.finish(A)
+  assert.equal(c.p.installed, 'asset://avatar.vrm')
+  await c.finish(B)
+  assert.equal(c.p.installed, B)
+  assert.equal(owner.player.data.sessionAvatar, B, 'the server')
+  assert.equal(endsOn(w, watcher, owner, null), B, 'everyone else')
+})
+
+test("the owner's client: a refused value, then a valid one before the answer, shows nothing in between", async () => {
+  const w = await world()
+  const visitor = await w.connect()
+  const watcher = await w.connect()
+  const c = await ownClient(w, visitor)
+  c.p.setSessionAvatar(EVIL_VRM)
+  c.p.setSessionAvatar(A)
+  c.send(1)
+  c.deliver()
+  // the answer to the refused value (the session avatar the server has: none) is passed over: A is on its way
+  assert.equal(c.p.data.sessionAvatar, A)
+  assert.deepEqual(c.started, [EVIL_VRM, A], "the visitor's own two choices, and not the world's avatar again")
+  c.send()
+  c.deliver()
+  assert.deepEqual(c.started, [EVIL_VRM, A])
+  await c.finish(A)
+  assert.equal(c.p.installed, A)
+  assert.equal(visitor.player.data.sessionAvatar, A, 'the server')
+  assert.equal(endsOn(w, watcher, visitor, null), A, 'everyone else')
+  // the other way round: the answer to the valid one is passed over, and the answer to the refused one, the latest
+  // update, puts the visitor back on the valid one, which the server has
+  c.p.setSessionAvatar(B)
+  c.p.setSessionAvatar(EVIL_VRM)
+  c.send()
+  c.deliver()
+  assert.deepEqual(c.started.slice(2), [B, EVIL_VRM, B])
+  assert.equal(c.p.data.sessionAvatar, B)
+  assert.equal(visitor.player.data.sessionAvatar, B)
+  assert.equal(endsOn(w, watcher, visitor, A), B, 'everyone else')
+})
+
+test("the owner's client: a server script's choice crossing the owner's own ends where the server ends", async () => {
+  // the script's choice reaches the owner first, then the server takes the owner's: everyone ends on the owner's
+  {
+    const w = await world()
+    const owner = await w.connect()
+    const watcher = await w.connect()
+    const c = await ownClient(w, owner)
+    c.p.setSessionAvatar(A)
+    scriptProxy(owner.player).setSessionAvatar(EVIL_VRM)
+    c.send()
+    c.deliver()
+    assert.deepEqual(c.started, [A, EVIL_VRM, A], "the script's choice, which everyone saw, then the owner's again")
+    assert.equal(c.p.data.sessionAvatar, A)
+    assert.equal(owner.player.data.sessionAvatar, A, 'the server')
+    assert.equal(endsOn(w, watcher, owner, null), A, 'everyone else')
+  }
+  // the server takes the owner's, then the script chooses: everyone ends on the script's
+  {
+    const w = await world()
+    const owner = await w.connect()
+    const watcher = await w.connect()
+    const c = await ownClient(w, owner)
+    c.p.setSessionAvatar(A)
+    c.send()
+    scriptProxy(owner.player).setSessionAvatar(EVIL_VRM)
+    c.deliver()
+    assert.deepEqual(c.started, [A, EVIL_VRM])
+    assert.equal(c.p.data.sessionAvatar, EVIL_VRM)
+    assert.equal(owner.player.data.sessionAvatar, EVIL_VRM, 'the server')
+    assert.equal(endsOn(w, watcher, owner, null), EVIL_VRM, 'everyone else')
+  }
+  // two choices of the owner's with the script's between them on the server: the answer to the first is passed
+  // over, the script's choice is shown, and the answer to the second ends it
+  {
+    const w = await world()
+    const owner = await w.connect()
+    const watcher = await w.connect()
+    const c = await ownClient(w, owner)
+    c.p.setSessionAvatar(A)
+    c.p.setSessionAvatar(B)
+    c.send(1)
+    scriptProxy(owner.player).setSessionAvatar(EVIL_VRM)
+    c.send()
+    c.deliver()
+    assert.deepEqual(c.started, [A, B, EVIL_VRM, B])
+    assert.equal(c.p.data.sessionAvatar, B)
+    assert.equal(owner.player.data.sessionAvatar, B, 'the server')
+    assert.equal(endsOn(w, watcher, owner, null), B, 'everyone else')
+  }
+})
+
+// An update that never reaches the server (the inbound gate dropped it) gets no answer, and the answers to the ones
+// before it are passed over: the owner stays on its own latest choice, as it did before the server answered at all.
+test("the owner's client: when its latest update is lost, it stays on its own choice", async () => {
+  const w = await world()
+  const owner = await w.connect()
+  const c = await ownClient(w, owner)
+  c.p.setSessionAvatar(A)
+  c.p.setSessionAvatar(B)
+  c.send(1)
+  c.lose()
+  c.deliver()
+  assert.equal(c.p.data.sessionAvatar, B)
+  assert.deepEqual(c.started, [A, B])
+  assert.equal(owner.player.data.sessionAvatar, A, 'the server has the last one it got')
+})
+
+test('the number of a session avatar update comes back to its sender alone, and is kept nowhere', async () => {
+  const w = await world()
+  const visitor = await w.connect()
+  const watcher = await w.connect()
+  const answers = () =>
+    w
+      .received(visitor)
+      .filter(([name, data]) => name === 'onEntityModified' && data.id === visitor.id)
+      .map(([, data]) => data)
+  const relayed = () => w.received(watcher).filter(([name]) => name === 'onEntityModified')
+  // taken: relayed without the number; the answer carries it
+  w.modify(visitor, { sessionAvatar: A, sessionAvatarRequest: 7 })
+  assert.deepEqual(answers(), [{ id: visitor.id, sessionAvatar: A, sessionAvatarRequest: 7 }])
+  assert.deepEqual(relayed(), [['onEntityModified', { id: visitor.id, sessionAvatar: A }]])
+  // refused: nothing relayed; the answer carries the number with the value the server has
+  w.modify(visitor, { sessionAvatar: EVIL_VRM, sessionAvatarRequest: 8 })
+  assert.deepEqual(answers(), [{ id: visitor.id, sessionAvatar: A, sessionAvatarRequest: 8 }])
+  assert.deepEqual(relayed(), [])
+  // the bounds are numbers; anything else is no number, and the answer carries none
+  for (const request of [0, SESSION_AVATAR_REQUEST_MAX]) {
+    w.modify(visitor, { sessionAvatar: A, sessionAvatarRequest: request })
+    assert.deepEqual(answers(), [{ id: visitor.id, sessionAvatar: A, sessionAvatarRequest: request }])
+  }
+  for (const request of [-1, 1.5, '9', SESSION_AVATAR_REQUEST_MAX + 1, 2 ** 53, NaN, Infinity, null, true, [1], {}]) {
+    w.modify(visitor, { sessionAvatar: A, sessionAvatarRequest: request })
+    assert.deepEqual(answers(), [{ id: visitor.id, sessionAvatar: A }], String(request))
+  }
+  relayed()
+  // a number alone is not a change, and one beside another field is not relayed with it; only an update that names
+  // a session avatar is answered
+  w.modify(visitor, { sessionAvatarRequest: 9 })
+  w.modify(visitor, { p: [1, 2, 3], sessionAvatarRequest: 10 })
+  assert.deepEqual(answers(), [])
+  assert.deepEqual(relayed(), [['onEntityModified', { id: visitor.id, p: [1, 2, 3] }]])
+  assert.equal(w.f.logs.filter(line => /no permitted fields/.test(line)).length, 1)
+  // the server's player, and a later joiner's snapshot, have no number
+  assert.equal(Object.hasOwn(visitor.player.data, 'sessionAvatarRequest'), false)
+  const late = await w.connect()
+  assert.equal(JSON.stringify(late.snapshot).includes('sessionAvatarRequest'), false)
+})
+
+test("the number: the policy leaves it out of the player's fields; the client counts from 1 and starts again", () => {
+  assert.equal(sanitizePlayerSelfModify({ id: me, sessionAvatarRequest: 3 }, me), null)
+  assert.deepEqual(sanitizePlayerSelfModify({ id: me, sessionAvatar: A, sessionAvatarRequest: 3 }, me), {
+    id: me,
+    sessionAvatar: A,
+  })
+  assert.equal(sessionAvatarRequest({ sessionAvatarRequest: 3 }), 3)
+  assert.equal(sessionAvatarRequest({}), undefined)
+  assert.equal(sessionAvatarRequest(null), undefined)
+  let reads = 0
+  const data = {
+    get sessionAvatarRequest() {
+      return reads++ ? 'x' : 4
+    },
+  }
+  assert.equal(sessionAvatarRequest(data), 4)
+  assert.equal(reads, 1, 'read once')
+  assert.equal(nextSessionAvatarRequest(undefined), 1)
+  assert.equal(nextSessionAvatarRequest(1), 2)
+  assert.equal(nextSessionAvatarRequest(SESSION_AVATAR_REQUEST_MAX - 1), SESSION_AVATAR_REQUEST_MAX)
+  assert.equal(nextSessionAvatarRequest(SESSION_AVATAR_REQUEST_MAX), 1)
+  for (const junk of [0, -1, 1.5, NaN, '2', null]) assert.equal(nextSessionAvatarRequest(junk), 1, String(junk))
+})
+
 test("a visitor's own effect does not make its emote one a script chose", async () => {
   const w = await world()
   const visitor = await w.connect()
@@ -353,9 +646,11 @@ test('joining: a stored avatar is read as the loaders read it, whatever its spel
     assert.equal(JSON.stringify(w.received(watcher)).includes('evil.example'), false, 'not in entityAdded')
     assert.equal(w.f.users.get(visitor.id).avatar, stored, 'the stored value is left alone')
   }
-  // a file of the store, spelled with white space the loaders take off, is the visitor's own
-  const own = await w.connect({ stored: ` ${ASSETS}/mine.vrm` })
-  assert.equal(own.player.data.avatar, ` ${ASSETS}/mine.vrm`)
+  // a file of the store, in any of the spellings the loaders resolve to it, is the visitor's own
+  for (const stored of OWN_SPELLINGS) {
+    const own = await w.connect({ stored })
+    assert.equal(own.player.data.avatar, stored, JSON.stringify(stored))
+  }
 })
 
 // the ways a player stops being a builder; `make` makes the joined player one, `lower` ends it
@@ -413,6 +708,16 @@ for (const [way, { rank = Ranks.VISITOR, worldRank = null, make, lower }] of Obj
     assert.equal(JSON.stringify(late.snapshot).includes('evil.example'), false, "a later joiner's snapshot")
   })
 }
+
+test('a builder who stops being one keeps a stored avatar of the store, whatever its spelling', async () => {
+  const w = await world()
+  for (const stored of OWN_SPELLINGS) {
+    const who = await w.connect({ rank: Ranks.BUILDER, stored })
+    await w.f.network.onModifyRank(w.f.builder, { playerId: who.id, rank: Ranks.VISITOR })
+    assert.equal(who.player.isBuilder(), false)
+    assert.equal(who.player.data.avatar, stored, JSON.stringify(stored))
+  }
+})
 
 test('a builder who stops being one keeps what a server script chose; a builder who stays one keeps everything', async () => {
   const w = await world()

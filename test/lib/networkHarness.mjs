@@ -24,6 +24,7 @@ import {
   sanitizeName,
   sanitizePersistedApp,
   sanitizeSpawn,
+  sessionAvatarRequest,
 } from '../../src/core/extras/entityModifyPolicy.js'
 import { readInboundPacket } from '../../src/server/inboundDecode.js'
 import { appChatLine, sanitizeChatMessage } from '../../src/core/extras/chatPolicy.js'
@@ -224,6 +225,7 @@ function networkClass(context) {
     sanitizeName,
     sanitizePersistedApp,
     sanitizeSpawn,
+    sessionAvatarRequest,
     sanitizeChatMessage,
     appChatLine,
     eventPayload,

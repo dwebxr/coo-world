@@ -99,20 +99,43 @@ export function scriptSource(value, assetsUrl) {
   if (!root) return unknown
   const canonical = assetName(ref)
   if (canonical) return { source: 'store', name: canonical }
-  if (!/^https?:\/\//.test(ref)) return unknown
-  if (resolveReference(ref, assetsUrl) !== ref || /[?#%\\]/.test(ref) || DOT_SEGMENT.test(ref)) return unknown
+  if (resolveReference(ref, assetsUrl) !== ref) return unknown
+  const name = storeAddressName(ref, root)
+  return name ? { source: 'store', name } : unknown
+}
+
+// The name of the store file an absolute URL is the plain address of, or null: it starts with the literal lower-case
+// http:// or https://, its own text has no `?`, `#`, `%`, backslash or dot segment, it has no userinfo, and its parsed
+// origin and path segments are the store's (`root`, storeRoot) followed by one valid name.
+function storeAddressName(href, root) {
+  if (!/^https?:\/\//.test(href) || /[?#%\\]/.test(href) || DOT_SEGMENT.test(href)) return null
   let url
   try {
-    url = new URL(ref)
+    url = new URL(href)
   } catch {
-    return unknown
+    return null
   }
-  if (url.username || url.password || url.origin !== root.origin) return unknown
+  if (url.username || url.password || url.origin !== root.origin) return null
   const segments = url.pathname.split('/').slice(1)
-  if (segments.length !== root.segments.length + 1) return unknown
-  if (root.segments.some((segment, i) => segments[i] !== segment)) return unknown
-  const name = assetName(ASSET_PROTOCOL + segments[segments.length - 1])
-  return name ? { source: 'store', name } : unknown
+  if (segments.length !== root.segments.length + 1) return null
+  if (root.segments.some((segment, i) => segments[i] !== segment)) return null
+  return assetName(ASSET_PROTOCOL + segments[segments.length - 1])
+}
+
+// The name of the store file a client loads for a reference, or null when it loads no file of the store for
+// certain. A client loads what resolveReference makes of the reference, so that is what is read, by the rules
+// storeAddressName applies: `//host/assets/x`, `host/assets/x` and asset://x, white space around them or not, load
+// the file x of a store at https://host/assets. (scriptSource, for the start-up clean-up, takes an absolute URL only
+// as it is written, never one resolveReference rewrites.) A page path such as /assets/x and a `blob:` value are left
+// for the browser to resolve against the page: whether that is the store depends on where the page is served, which
+// the server cannot know for certain (the assets URL may be another origin, or another path of the page's own, and a
+// proxy can put the page anywhere), so they load no file of the store for certain. Neither does anything without a
+// clean assets URL (assetsUrlProblem).
+export function loadedStoreFile(value, assetsUrl) {
+  const ref = loaderReference(value)
+  if (typeof ref !== 'string' || !ref) return null
+  const root = storeRoot(assetsUrl)
+  return root ? storeAddressName(resolveReference(ref, assetsUrl), root) : null
 }
 
 // an http(s) URL that parses, with the literal lower-case prefix the server's loader fetches as remote

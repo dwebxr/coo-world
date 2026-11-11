@@ -2,7 +2,7 @@
 // Each sanitizer returns a new object holding only the permitted, well-formed fields
 // (plus `id`), or null when nothing usable remains.
 
-import { loaderReference, scriptSource } from './assetURL.js'
+import { loadedStoreFile, loaderReference } from './assetURL.js'
 
 export const NAME_MAX_LENGTH = 64
 export const TRANSFORM_LIMIT = 1e6
@@ -203,13 +203,17 @@ function isHttpUrl(value) {
 }
 
 // Whether an avatar or emote reference names a file outside this world, as the loaders will read it: anything that
-// is not a file of the world's own store. Every loader first takes the white space off (assetURL.js
-// loaderReference) and then maps what is left (resolveReference). A file of the store is then an asset reference
-// (`asset://<name>.vrm`, or `.glb` with the playback query an emote may carry and the store's route ignores), which
-// the loaders put under the assets url, or the plain address of a store file under the world's assets url
-// `assetsUrl` (scriptSource, which reads an http(s) url through resolveReference). Any other spelling loads from
-// wherever it resolves to, so it is outside: `//host/a.vrm` and `host/a.vrm` load from https://host, an https url
-// with white space around it loads from its host, a page path from wherever the page is served. Nothing to load
+// a client does not load from the world's own store. Every loader first takes the white space off (assetURL.js
+// loaderReference) and then maps what is left (resolveReference); what that makes of the value is what is fetched.
+// A file of the store is then an asset reference (`asset://<name>.vrm`, or `.glb` with the playback query an emote
+// may carry and the store's route ignores), which the loaders put under the assets url, or any spelling that
+// resolves to the plain address of a store file under the world's assets url `assetsUrl` (loadedStoreFile): that
+// address itself, `//host/assets/a.vrm` or `host/assets/a.vrm` when https://host/assets is the assets url, white
+// space around them or not. Any other value is taken as outside. It loads from another host, or another path or
+// scheme of this one; or, as a page path such as /assets/a.vrm, from wherever the browser resolves it against the
+// page (the store only when the page is served from the assets url's origin and path, which the server cannot know
+// for certain); or, spelled with an upper-case scheme, from the store for a browser and from nowhere for the node
+// agent (a plain address takes only the literal lower-case prefix that every loader reads alike). Nothing to load
 // (null, undefined, '') is not outside, and neither is a value that is not a string (resolveReference throws on it,
 // so nothing is fetched).
 //
@@ -221,7 +225,28 @@ export function isExternalUrl(value, assetsUrl) {
   if (typeof value !== 'string' || !value) return false
   const ref = loaderReference(value)
   if (AVATAR_ASSET_URL.test(ref) || EMOTE_ASSET_URL.test(ref)) return false
-  return scriptSource(ref, assetsUrl).source !== 'store'
+  return loadedStoreFile(ref, assetsUrl) === null
+}
+
+// A client numbers the session avatar updates it sends for its own player (PlayerLocal setSessionAvatar), in
+// `sessionAvatarRequest`: 1, 2, 3, …, and 1 again after SESSION_AVATAR_REQUEST_MAX, which is far more than a session
+// sends. The server hands the number back in its answer to that update, to that client alone (ServerNetwork
+// onEntityModified), so the client can tell the answer to its latest update from the answer to one it has since
+// superseded. The number is the client's bookkeeping, not the player's: it is not a field of the update
+// (sanitizePlayerSelfModify leaves it out), so it is not kept, relayed or put in a snapshot.
+export const SESSION_AVATAR_REQUEST_MAX = 2 ** 31 - 1
+
+// the number a client gives its next session avatar update, after `previous` (none yet: undefined)
+export function nextSessionAvatarRequest(previous) {
+  return Number.isSafeInteger(previous) && previous >= 1 && previous < SESSION_AVATAR_REQUEST_MAX ? previous + 1 : 1
+}
+
+// the number a client gave an update (`data`, as received), or undefined when it gave none or a value that is not a
+// whole number from 0 to SESSION_AVATAR_REQUEST_MAX; read once
+export function sessionAvatarRequest(data) {
+  if (!isPlainObject(data) || !has(data, 'sessionAvatarRequest')) return undefined
+  const request = data.sessionAvatarRequest
+  return Number.isSafeInteger(request) && request >= 0 && request <= SESSION_AVATAR_REQUEST_MAX ? request : undefined
 }
 
 // how many emote urls a server script chose for one player are remembered (the latest ones)

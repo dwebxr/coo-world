@@ -21,6 +21,7 @@ import {
   sanitizePlayerSelfModify,
   sanitizePersistedApp,
   sanitizeSpawn,
+  sessionAvatarRequest,
 } from '../extras/entityModifyPolicy'
 import { createRelayDrop } from '../extras/playerRelayPolicy'
 import { appChatLine, sanitizeChatMessage } from '../extras/chatPolicy'
@@ -2135,14 +2136,18 @@ export class ServerNetwork extends System {
         this.send('entityModified', safe, socket.id)
       }
       // The sender applied its session avatar before sending it. Whether it was taken or not, the sender is told the
-      // session avatar the server now has, after everything the server told it before. Every client, the sender
-      // included, then receives the server's session avatars in the server's order and ends on its last one. Told
-      // only when a value is refused, the sender would end elsewhere for good when packets cross: the answer to an
-      // earlier refused value arriving after a later value it set, or a server script's choice arriving after a
-      // value of its own that the server takes later. Its own client takes the value it already has as no change
-      // (PlayerLocal modify).
+      // session avatar the server now has, after everything the server told it before, with the number the sender
+      // gave the update (entityModifyPolicy.js sessionAvatarRequest; none when it gave none). Told only when a value
+      // is refused, the sender would end elsewhere for good when packets cross: the answer to an earlier refused
+      // value arriving after a later value it set, or a server script's choice arriving after a value of its own
+      // that the server takes later. Its own client applies the answer to its latest update and passes over the
+      // answers to the ones before (PlayerLocal modify), so it ends on the server's value without going back to an
+      // older choice of its own on the way.
       if (namesSessionAvatar) {
-        socket.send('entityModified', { id: entity.data.id, sessionAvatar: entity.data.sessionAvatar ?? null })
+        const answer = { id: entity.data.id, sessionAvatar: entity.data.sessionAvatar ?? null }
+        const request = sessionAvatarRequest(data)
+        if (request !== undefined) answer.sessionAvatarRequest = request
+        socket.send('entityModified', answer)
       }
       if (!safe) {
         return this.logOnce(

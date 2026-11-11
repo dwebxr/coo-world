@@ -6,6 +6,7 @@ import { css } from '@firebolt-dev/css'
 
 import { createClientWorld } from '../core/createClientWorld'
 import { CoreUI } from './components/CoreUI'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { createSolanaIntegration } from './solana-integration'
 import { createEvmIntegration } from './evm-integration'
 
@@ -80,7 +81,12 @@ export function Client({ wsUrl, onSetup }) {
     >
       <div className='App__viewport' ref={viewportRef}>
         <div className='App__ui' ref={uiRef}>
-          <CoreUI world={world} />
+          {/* around the interface only: the world's canvas and the screen-space UI canvases live in the two
+              elements above, outside React's children, and this component must never be made again (it makes the
+              world and its connection). If the interface as a whole cannot render, the world stays on screen. */}
+          <ErrorBoundary name='the interface' mode='root'>
+            <CoreUI world={world} />
+          </ErrorBoundary>
         </div>
       </div>
     </div>

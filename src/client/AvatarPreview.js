@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { isString } from 'lodash-es'
 import { Emotes } from '../core/extras/playerEmotes'
+import { setDebugGlobal } from '../core/extras/debugGlobals'
 
 const MAX_UPLOAD_SIZE = 1000000000000 // TODO
 const MAX_UPLOAD_SIZE_LABEL = '1LOLS'
@@ -70,13 +71,12 @@ export class AvatarPreview {
     this.scene.add(this.rig)
     this.viewport.appendChild(this.renderer.domElement)
     this.resize(this.viewport.offsetWidth, this.viewport.offsetHeight, false)
-    window.preview = this
+    setDebugGlobal('preview', this)
   }
 
   async load(file, url) {
     this.file = file
     this.url = url
-    console.log('file', this.file)
     if (this.file.size > MAX_UPLOAD_SIZE) {
       return { error: `Max file size ${MAX_UPLOAD_SIZE_LABEL}` }
     }
@@ -237,8 +237,6 @@ export class AvatarPreview {
   }
 
   resolveInfo() {
-    console.log(this.renderer.info)
-    console.log(this.renderer.info.render.triangles)
     const stats = {}
     // bounds
     const bbox = new THREE.Box3().setFromObject(this.node.instance.raw.scene)
@@ -315,7 +313,6 @@ export class AvatarPreview {
       rank,
       stats,
     }
-    console.log('info', this.info)
   }
 
   determineRank(fn) {

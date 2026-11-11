@@ -68,6 +68,9 @@ import { Ranks } from '../../core/extras/ranks'
 import { callScript } from '../../core/extras/callScript'
 import { TipForm } from './TipForm'
 import { toText } from '../../core/extras/scriptText'
+import { cssImage } from '../../core/extras/cssImage'
+import { setDebugGlobal } from '../../core/extras/debugGlobals'
+import { ErrorBoundary } from './ErrorBoundary'
 import { fieldValues } from '../../core/extras/appFields'
 import { guardTransform } from '../../core/nodes/Node'
 
@@ -244,15 +247,19 @@ export function Sidebar({ world, ui }) {
             </Section>
           )}
         </div>
-        {ui.pane === 'prefs' && <Prefs world={world} hidden={!ui.active} />}
-        {ui.pane === 'world' && <World world={world} hidden={!ui.active} />}
-        {ui.pane === 'apps' && <Apps world={world} hidden={!ui.active} />}
-        {ui.pane === 'add' && <Add world={world} hidden={!ui.active} />}
-        {ui.pane === 'app' && <App key={ui.app.data.id} world={world} hidden={!ui.active} />}
-        {ui.pane === 'script' && <Script key={ui.app.data.id} world={world} hidden={!ui.active} />}
-        {ui.pane === 'nodes' && <Nodes key={ui.app.data.id} world={world} hidden={!ui.active} />}
-        {ui.pane === 'meta' && <Meta key={ui.app.data.id} world={world} hidden={!ui.active} />}
-        {ui.pane === 'players' && <Players world={world} hidden={!ui.active} />}
+        {/* the open pane on its own (ErrorBoundary.js): one that throws while rendering leaves the buttons, the
+            chat and the HUD standing, says so, and can be tried again; another pane or app is a new start */}
+        <ErrorBoundary name={`the ${ui.pane} pane`} mode='panel' resetKey={`${ui.pane}:${ui.app?.data?.id}`}>
+          {ui.pane === 'prefs' && <Prefs world={world} hidden={!ui.active} />}
+          {ui.pane === 'world' && <World world={world} hidden={!ui.active} />}
+          {ui.pane === 'apps' && <Apps world={world} hidden={!ui.active} />}
+          {ui.pane === 'add' && <Add world={world} hidden={!ui.active} />}
+          {ui.pane === 'app' && <App key={ui.app.data.id} world={world} hidden={!ui.active} />}
+          {ui.pane === 'script' && <Script key={ui.app.data.id} world={world} hidden={!ui.active} />}
+          {ui.pane === 'nodes' && <Nodes key={ui.app.data.id} world={world} hidden={!ui.active} />}
+          {ui.pane === 'meta' && <Meta key={ui.app.data.id} world={world} hidden={!ui.active} />}
+          {ui.pane === 'players' && <Players world={world} hidden={!ui.active} />}
+        </ErrorBoundary>
       </div>
     </HintProvider>
   )
@@ -997,9 +1004,7 @@ function Add({ world, hidden }) {
               <div className='add-item' key={blueprint.id} onClick={() => add(blueprint)}>
                 <div
                   className='add-item-image'
-                  css={css`
-                    background-image: url(${world.resolveURL(blueprint.image?.url)});
-                  `}
+                  style={{ backgroundImage: cssImage(url => world.resolveURL(url), blueprint.image?.url) }}
                 ></div>
                 <div className='add-item-name'>{toText(blueprint.name)}</div>
               </div>
@@ -1034,7 +1039,7 @@ function App({ world, hidden }) {
     showTransforms = transforms
   }, [transforms])
   useEffect(() => {
-    window.app = app
+    setDebugGlobal('app', app)
     const onModify = bp => {
       if (bp.id === blueprint.id) setBlueprint(bp)
     }
@@ -1269,7 +1274,6 @@ function AppTransformFields({ app }) {
         bigStep={1}
         value={position}
         onChange={value => {
-          console.log(value)
           setPosition(value)
           app.modify({ position: value })
           app.world.network.send('entityModified', {
@@ -1656,7 +1660,7 @@ function Meta({ world, hidden }) {
   const app = world.ui.state.app
   const [blueprint, setBlueprint] = useState(app.blueprint)
   useEffect(() => {
-    window.app = app
+    setDebugGlobal('app', app)
     const onModify = bp => {
       if (bp.id === blueprint.id) setBlueprint(bp)
     }

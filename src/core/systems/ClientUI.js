@@ -16,6 +16,19 @@ export class ClientUI extends System {
     }
     this.lastAppPane = 'app'
     this.control = null
+    // The last value of each world event the interface learns only by being told: the local player is in (`ready`,
+    // told once), the connection was refused (`kick`) or closed (`disconnect`), a confirm dialog or the avatar pane
+    // waits for an answer. The interface is made again after a render error (ErrorBoundary.js, mode root) and starts
+    // from these: one that started from nothing would wait for a `ready` that never comes again, behind the loading
+    // screen, and a confirm dialog would never be answered.
+    this.latest = { ready: false, kick: null, disconnect: false, confirm: null, avatar: null }
+    this.remember = {}
+    for (const name in this.latest) {
+      this.remember[name] = value => {
+        this.latest[name] = value
+      }
+      world.on(name, this.remember[name])
+    }
   }
 
   start() {
@@ -113,5 +126,6 @@ export class ClientUI extends System {
   destroy() {
     this.control?.release()
     this.control = null
+    for (const name in this.remember) this.world.off(name, this.remember[name])
   }
 }

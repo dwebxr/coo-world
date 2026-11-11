@@ -3,6 +3,7 @@ import { System } from './System'
 
 import * as THREE from '../extras/three'
 import { initYoga } from '../extras/yoga'
+import { setDebugGlobal } from '../extras/debugGlobals'
 
 let worker
 
@@ -17,8 +18,8 @@ export class Client extends System {
   constructor(world) {
     super(world)
     this.tickErrors = new Set()
-    window.world = world
-    window.THREE = THREE
+    setDebugGlobal('world', world)
+    setDebugGlobal('THREE', THREE)
   }
 
   // the frame callback: like the server's tick, one exception is logged (each distinct message once, up to 32)

@@ -14,6 +14,7 @@ import { imageElementsPlugin, isAppleMobile } from '../extras/gltfImageElements'
 import { checkGLTF, createGLTFBudget, GLTF_LIMITS, isDataURI } from '../extras/gltfLimits'
 import { IMAGE_HEADER_BYTES, MAX_IMAGE_PIXELS, readImageHeader } from '../extras/imageHeader'
 import { emoteUrls } from '../extras/playerEmotes'
+import { LOADER_BUSY } from '../extras/playerAvatarFallback'
 import Hls from 'hls.js/dist/hls.js'
 
 // THREE.Cache.enabled = true
@@ -552,7 +553,9 @@ export class ClientLoader extends System {
   enter(remote) {
     if (!remote) return () => {}
     if (this.remoteRequests >= this.remoteRequestLimit) {
-      throw new Error(`too many downloads from other hosts at once (${this.remoteRequestLimit}); try again later`)
+      const err = new Error(`too many downloads from other hosts at once (${this.remoteRequestLimit}); try again later`)
+      err.code = LOADER_BUSY
+      throw err
     }
     this.remoteRequests++
     const life = this.life

@@ -8,6 +8,7 @@ import { Node, secureRef } from './Node'
 import { getTrianglesFromGeometry } from '../extras/getTrianglesFromGeometry'
 import { getTextureBytesFromMaterial } from '../extras/getTextureBytesFromMaterial'
 import { Layers } from '../extras/Layers'
+import { setDebugGlobal } from '../extras/debugGlobals'
 import { geometryToPxMesh } from '../extras/geometryToPxMesh'
 import { quantizeRadiusRatio, quantizeTubeRatio } from '../extras/primQuantize.js'
 import {
@@ -197,15 +198,13 @@ const getMaterial = props => {
 
 let count = 0
 
-if (typeof window !== 'undefined') {
-  window.prims = {
-    material: materialCache,
-    geometry: geometryCache,
-    get count() {
-      return count
-    },
-  }
-}
+setDebugGlobal('prims', {
+  material: materialCache,
+  geometry: geometryCache,
+  get count() {
+    return count
+  },
+})
 
 const applyTexture = (material, textureUrl, loader) => {
   if (!material._texPromise) {

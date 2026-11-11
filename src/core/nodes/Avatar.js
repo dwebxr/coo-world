@@ -23,9 +23,18 @@ export class Avatar extends Node {
     this.hooks = data.hooks
     this.instance = null
     this.n = 0
+    this.mounting = null
   }
 
-  async mount() {
+  // Node.activate starts a mount and does not wait for it, nor keep what it returns: the promise of the last mount is
+  // kept here, so that whoever placed this avatar and must know how its mount ended (a player taking it as its new
+  // avatar: installAvatar) can wait for it. A mount fails by rejecting this promise, not by throwing.
+  mount() {
+    this.mounting = this.mountInstance()
+    return this.mounting
+  }
+
+  async mountInstance() {
     this.needsRebuild = false
     if (this._src) {
       const n = ++this.n

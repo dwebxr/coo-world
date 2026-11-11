@@ -508,7 +508,6 @@ function createPlayerScreen({ world, playerId, targetId, track, participant }) {
     // document.body.removeChild(elem)
   }
   function destroy() {
-    console.log('destory')
     texture.dispose()
     // help to prevent chrome memory leaks
     // see: https://github.com/facebook/react/issues/15583#issuecomment-490912533

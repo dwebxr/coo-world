@@ -349,8 +349,6 @@ export class Apps extends System {
                 window.location.href = resolvedUrl
               }
             }, 0)
-
-            console.log(`[world.open] Redirecting to: ${resolvedUrl} ${newWindow ? '(new window)' : ''}`)
           } catch (e) {
             console.error('[world.open] Failed to open URL:', e)
           }

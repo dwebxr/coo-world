@@ -24,21 +24,25 @@ import { ChevronDoubleUpIcon, HandIcon } from './Icons'
 import { Sidebar } from './Sidebar'
 import { WalletButton } from './WalletButton'
 import { toText } from '../../core/extras/scriptText'
+import { cssImage } from '../../core/extras/cssImage'
+import { ErrorBoundary } from './ErrorBoundary'
 import { CHAT_APP_NAME_MAX_LENGTH, CHAT_BODY_MAX_LENGTH } from '../../core/extras/chatPolicy'
 import { NAME_MAX_LENGTH } from '../../core/extras/entityModifyPolicy'
 
 export function CoreUI({ world }) {
   const ref = useRef()
-  const [ready, setReady] = useState(false)
+  // what the world has told so far (ClientUI.latest): this interface may be made again after a render error, long after
+  // `ready` and the rest were told
+  const [ready, setReady] = useState(() => world.ui.latest.ready)
   const [player, setPlayer] = useState(() => world.entities.player)
   const [ui, setUI] = useState(world.ui.state)
   const [menu, setMenu] = useState(null)
-  const [confirm, setConfirm] = useState(null)
+  const [confirm, setConfirm] = useState(() => world.ui.latest.confirm)
   const [code, setCode] = useState(false)
-  const [avatar, setAvatar] = useState(null)
+  const [avatar, setAvatar] = useState(() => world.ui.latest.avatar)
   const [fatal, setFatal] = useState(world.fatalError)
-  const [disconnected, setDisconnected] = useState(false)
-  const [kicked, setKicked] = useState(null)
+  const [disconnected, setDisconnected] = useState(() => world.ui.latest.disconnect)
+  const [kicked, setKicked] = useState(() => world.ui.latest.kick)
   useEffect(() => {
     world.on('ready', setReady)
     world.on('player', setPlayer)
@@ -50,6 +54,14 @@ export function CoreUI({ world }) {
     world.on('kick', setKicked)
     world.on('disconnect', setDisconnected)
     world.on('fatal', setFatal)
+    // anything told between the render that read these and the listeners above
+    const latest = world.ui.latest
+    setReady(latest.ready)
+    setConfirm(latest.confirm)
+    setAvatar(latest.avatar)
+    setDisconnected(latest.disconnect)
+    setKicked(latest.kick)
+    setFatal(world.fatalError)
     return () => {
       world.off('ready', setReady)
       world.off('player', setPlayer)
@@ -100,19 +112,29 @@ export function CoreUI({ world }) {
         overflow: hidden;
       `}
     >
-      {(disconnected || fatal) && <Disconnected message={fatal ? 'Physics stopped. Reload to reconnect.' : null} />}
-      {!ui.reticleSuppressors && <Reticle world={world} />}
-      {<Toast world={world} />}
-      {ready && <ActionsBlock world={world} />}
-      {ready && <Sidebar world={world} ui={ui} />}
-      {ready && <Chat world={world} />}
-      {avatar && <AvatarPane key={avatar.hash} world={world} info={avatar} />}
-      {!ready && <LoadingOverlay world={world} />}
-      {kicked && <KickedOverlay code={kicked} />}
-      {ready && isTouch && <TouchBtns world={world} />}
-      {ready && isTouch && <TouchStick world={world} />}
-      {confirm && <Confirm options={confirm} />}
-      {ready && (world.solana || world.evm) && <WalletButton world={world} />}
+      {/* each part on its own (ErrorBoundary.js): one that throws while rendering leaves the others standing */}
+      <Part name='disconnected'>
+        {(disconnected || fatal) && <Disconnected message={fatal ? 'Physics stopped. Reload to reconnect.' : null} />}
+      </Part>
+      <Part name='reticle'>{!ui.reticleSuppressors && <Reticle world={world} />}</Part>
+      <Part name='toast'>
+        <Toast world={world} />
+      </Part>
+      <Part name='actions'>{ready && <ActionsBlock world={world} />}</Part>
+      <Part name='sidebar'>{ready && <Sidebar world={world} ui={ui} />}</Part>
+      <Part name='chat'>{ready && <Chat world={world} />}</Part>
+      <ErrorBoundary name='avatar pane' mode='panel' resetKey={avatar?.hash}>
+        {avatar && <AvatarPane key={avatar.hash} world={world} info={avatar} />}
+      </ErrorBoundary>
+      <Part name='loading'>{!ready && <LoadingOverlay world={world} />}</Part>
+      <Part name='kicked'>{kicked && <KickedOverlay code={kicked} />}</Part>
+      <Part name='touch buttons'>{ready && isTouch && <TouchBtns world={world} />}</Part>
+      <Part name='touch stick'>{ready && isTouch && <TouchStick world={world} />}</Part>
+      {/* a dialog that cannot be shown answers "cancel": whoever asked is waiting on its promise */}
+      <ErrorBoundary name='confirm' mode='once' resetKey={confirm} onError={() => confirm?.cancel?.()}>
+        {confirm && <Confirm options={confirm} />}
+      </ErrorBoundary>
+      <Part name='wallet'>{ready && (world.solana || world.evm) && <WalletButton world={world} />}</Part>
       <div id='core-ui-portal' />
     </div>
   )
@@ -569,9 +591,6 @@ export function LoadingOverlay({ world }) {
           background-position: center;
           background-size: cover;
           background-repeat: no-repeat;
-          background-image: ${typeof image?.url === 'string' && image.url
-            ? `url(${world.resolveURL(image.url)})`
-            : 'none'};
           animation: pulse 5s ease-in-out infinite;
         }
         .loading-shade {
@@ -616,7 +635,7 @@ export function LoadingOverlay({ world }) {
         }
       `}
     >
-      <div className='loading-image' />
+      <div className='loading-image' style={{ backgroundImage: cssImage(url => world.resolveURL(url), image?.url) }} />
       <div className='loading-shade' />
       <div className='loading-info'>
         {toText(title) && <div className='loading-title'>{toText(title)}</div>}
@@ -910,6 +929,10 @@ function TouchBtns({ world }) {
     world.actions.on('change', onChange)
     return () => {
       world.actions.off('change', onChange)
+      // a button is let go by its pointer leaving it; buttons that are removed while held (the interface failed, the
+      // world stopped being ready) would stay down: jump or the action, held for good
+      world.controls.setTouchBtn('touchA', false)
+      world.controls.setTouchBtn('touchB', false)
     }
   }, [])
   return (
@@ -1080,6 +1103,15 @@ function TouchStick({ world }) {
       </div>
       <div className='stick-inner' ref={innerRef} />
     </div>
+  )
+}
+
+// a part of the HUD: tried again by itself when its render throws
+function Part({ name, children }) {
+  return (
+    <ErrorBoundary name={name} mode='quiet'>
+      {children}
+    </ErrorBoundary>
   )
 }
 

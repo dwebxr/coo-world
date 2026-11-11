@@ -9,8 +9,9 @@ import { isEmoteUrl } from '../extras/entityModifyPolicy'
 import { readAnchorPose } from '../extras/anchorPose'
 import {
   avatarChosen,
-  avatarSettled,
+  avatarLoadFailed,
   beginAvatarLoad,
+  installAvatar,
   isCurrentAvatarLoad,
   playerAvatarUrl,
   switchToBuiltinAvatar,
@@ -90,26 +91,17 @@ export class PlayerRemote extends Entity {
     const avatarUrl = playerAvatarUrl(this)
     const load = beginAvatarLoad(this)
     if (this.avatarUrl === avatarUrl) return
-    this.world.loader.load('avatar', avatarUrl).then(
-      src => {
-        if (!isCurrentAvatarLoad(this, load)) return
-        if (this.avatar) this.avatar.deactivate()
-        this.avatar = src.toNodes().get('avatar')
-        this.base.add(this.avatar)
-        this.nametag.position.y = this.avatar.getHeadToHeight() + 0.2
-        this.bubble.position.y = this.avatar.getHeadToHeight() + 0.2
-        if (!this.bubble.active) {
-          this.nametag.active = true
-        }
-        this.avatarUrl = avatarUrl
-        avatarSettled(this, avatarUrl)
-      },
-      err => {
-        // reported like the local player's, instead of an unhandled rejection
-        if (isCurrentAvatarLoad(this, load)) avatarSettled(this, avatarUrl)
+    this.world.loader
+      .load('avatar', avatarUrl)
+      // the new avatar takes the place of the one showing only once it is mounted and set up; one that fails on the
+      // way leaves the player as they were, with the avatar they had, which avatarLoadFailed then keeps (installAvatar)
+      .then(src => installAvatar(this, load, avatarUrl, src))
+      .catch(err => {
+        // a load that failed, or an avatar that could not be put in place: reported, and a player left with no
+        // avatar gets the built-in one
+        if (isCurrentAvatarLoad(this, load)) avatarLoadFailed(this, avatarUrl, err)
         console.error(err)
-      }
-    )
+      })
   }
 
   // World.hotFailed: this player (or its avatar) threw in the frame loop

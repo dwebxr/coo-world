@@ -1028,9 +1028,9 @@ function createSpritesheet(options) {
   const rows = boundedInteger(toEngineNumber(options[0]), 1, 1, SPRITESHEET_MAX_SIDE)
   const cols = boundedInteger(toEngineNumber(options[1]), 1, 1, SPRITESHEET_MAX_SIDE)
   // the frame rate by the same rule, bounded: a rate that is not a number, zero or below stays on the first frame. The
-  // loop flag loops only when it is true.
+  // loop flag is read as before, by its truth (any value that is not false, 0, '' or null loops).
   const frameRate = boundedNumber(toEngineNumber(options[2]), 0, 0, SPRITESHEET_MAX_FPS)
-  const loop = options[3] === true
+  const loop = !!options[3]
   const totalFrames = rows * cols
   // pre-calculate all uv frames
   const uvFrames = []

@@ -816,9 +816,9 @@ test('particle worker: a spritesheet frame rate is read by the number rule and b
     ),
   ]))
 
-test('particle worker: a spritesheet loops only when its loop flag is true', () =>
-  Promise.all(
-    [false, 'false', 1, 'true', null].map(loop =>
+test('particle worker: a spritesheet loops by the truth of its loop flag, as it always has', () =>
+  Promise.all([
+    ...[false, 0, '', null].map(loop =>
       // one frame a second, no loop: it stays on the last frame (3) from the third second on
       stepEmitter({ ...oneParticle, spritesheet: [1, 4, 1, loop] }, sixSeconds, (results, assert) =>
         assert.deepEqual(
@@ -826,8 +826,16 @@ test('particle worker: a spritesheet loops only when its loop flag is true', () 
           [0.25, 0.5, 0.75, 0.75, 0.75, 0.75]
         )
       )
-    )
-  ))
+    ),
+    ...[true, 1, 'true'].map(loop =>
+      stepEmitter({ ...oneParticle, spritesheet: [1, 4, 1, loop] }, sixSeconds, (results, assert) =>
+        assert.deepEqual(
+          results.map(step => step.uv[0]),
+          [0.25, 0.5, 0.75, 0, 0.25, 0.5]
+        )
+      )
+    ),
+  ]))
 
 test('audio and video: the numbers given to Web Audio stay inside the ranges it accepts', () => {
   // a panner as strict as the browser's: it throws for what Web Audio refuses

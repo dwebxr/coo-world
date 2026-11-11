@@ -169,7 +169,7 @@ particles.spritesheet = [
 ]
 ```
 
-Rows and columns are whole numbers between `1` and `256`, and the frame rate is between `0` and `1000`: a rate that is not a number, or is `0` or less, shows the first frame. The sheet loops only when its loop flag is `true`.
+Rows and columns are whole numbers between `1` and `256`, and the frame rate is between `0` and `1000`: a rate that is not a number, or is `0` or less, shows the first frame.
 
 ### `.blending`: String
 

@@ -1,11 +1,16 @@
 // e2e probe: the player relays. On the server, when props.serverTarget names a player, it teleports, pushes
-// and re-skins that player through the server path, which must still reach them. On a client it acts on a
+// and re-skins that player through the server path, which must still reach them. With props.serverAvatar and
+// props.serverEmote it instead gives that player this session avatar and an effect with this emote (urls outside
+// the world, which only a server script may choose for a visitor). On a client it acts on a
 // remote player (props.remote; must do nothing and log once per method) or on the local player (must
 // work), driven by app.state.cmd and reporting through app.state.results.
 if (world.isServer) {
   if (props.serverTarget) {
     const player = world.getPlayer(props.serverTarget)
-    if (player) {
+    if (player && props.serverAvatar) {
+      player.setSessionAvatar(props.serverAvatar)
+      player.applyEffect({ emote: props.serverEmote, duration: 30 })
+    } else if (player) {
       player.teleport(new Vector3(1, 2, 3), 0.5)
       // a respawn hook passes a quaternion as rotationY; the client ignores it and still teleports
       player.teleport(new Vector3(4, 5, 6), new Quaternion())

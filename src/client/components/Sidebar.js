@@ -750,7 +750,7 @@ function World({ world, hidden }) {
           {isAdmin && world.settings.hasAdminCode && (
             <FieldToggle
               label='Custom Avatars'
-              hint='Allow visitors to drag and drop custom VRM avatars.'
+              hint='Allow visitors to drag and drop their own VRM avatars. The file is uploaded to this world.'
               trueLabel='On'
               falseLabel='Off'
               value={customAvatars}

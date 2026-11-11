@@ -16,6 +16,7 @@ import {
   WORLD_BLUEPRINT_BYTES,
 } from '../../src/core/extras/blueprintPolicy.js'
 import {
+  isExternalUrl,
   sanitizeAppModify,
   sanitizeAppRelease,
   sanitizeEntityAdd,
@@ -44,7 +45,7 @@ import { adminMode, adminWaitScale, createAdminGate } from '../../src/server/adm
 import { isAdminCommand } from '../../src/core/extras/chatCommand.js'
 import { createSolanaRpc } from '../../src/server/solanaRpc.js'
 import { createTokenBalanceService } from '../../src/server/tokenBalance.js'
-import { Ranks } from '../../src/core/extras/ranks.js'
+import { hasRank, Ranks } from '../../src/core/extras/ranks.js'
 import { clientIpKeys } from '../../src/server/uploadLimits.js'
 import { previewValue } from '../../src/core/extras/assetURL.js'
 import {
@@ -211,6 +212,8 @@ function networkClass(context) {
     createSolanaRpc,
     createTokenBalanceService,
     Ranks,
+    hasRank,
+    isExternalUrl,
     sanitizeAppModify,
     sanitizeAppRelease,
     sanitizeEntityAdd,
@@ -324,6 +327,8 @@ export function connectionMethod(context) {
     GROWTH_RESERVE_BYTES,
     SNAPSHOT_FIXED_BYTES,
     Ranks,
+    hasRank,
+    isExternalUrl,
     Socket,
     briefError,
     previewValue,

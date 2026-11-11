@@ -6,7 +6,12 @@ import { applyInitials, copyFields } from '../src/core/extras/appFields.js'
 import { createLogOnce } from '../src/core/extras/logOnce.js'
 import { NODE_CLIMB_LIMIT, placeWorldNode, unplaceWorldNode } from '../src/core/extras/nodeLimits.js'
 import { eventPayload } from '../src/core/extras/eventPayload.js'
-import { sanitizePlayerSelfModify } from '../src/core/extras/entityModifyPolicy.js'
+import {
+  isAvatarUrl,
+  isEmoteUrl,
+  rememberScriptEmote,
+  sanitizePlayerSelfModify,
+} from '../src/core/extras/entityModifyPolicy.js'
 import { readVec3, warnOnce } from '../src/core/extras/physxConvert.js'
 import { createEventLedger } from '../src/core/extras/appEventQueue.js'
 import { isPrimitive } from '../src/core/extras/scriptPrimitives.js'
@@ -309,6 +314,9 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
       console,
       clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v)),
       sanitizePlayerSelfModify: (data, id) => sanitizePlayerSelfModify({ ef: { ...data.ef } }, id),
+      isAvatarUrl,
+      isEmoteUrl,
+      rememberScriptEmote,
     }
   )
   const proxy = createProxy(entity, player)

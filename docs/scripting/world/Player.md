@@ -181,6 +181,13 @@ Changes the avatar the player wears for the rest of their session. It does not c
 
 On a client, only the local player's session avatar can be set; server scripts can set any player's.
 
+**Where to call it.** Every other visitor's browser downloads the file a session avatar names, so who may name a file outside the world is limited:
+
+- From a **server** script (`if (world.isServer)`), any allowed URL works for any player. The server applies it and tells everyone.
+- From a **client** script, the call speaks for the visitor whose browser runs it. An `asset://` avatar is shown to everyone. An `http(s)://` URL outside the world is shown to others only when that visitor is a builder; otherwise the server does not pass it on and sets the visitor's own view back.
+
+So a script that dresses visitors in avatars hosted elsewhere must do it from server code. Do not pass a URL a visitor supplied to `setSessionAvatar` on the server: that hands the visitor the same reach.
+
 ### `.getBoneTransform(boneName)`: Matrix4
 
 Returns a matrix of the bone transform in world space.
@@ -221,6 +228,9 @@ out-of-range anchor pose is ignored for that frame, preserving the previous pose
 (optionally with a playback query, eg `?s=1.5`) or an `http(s)://` URL, up to 512 characters. Invalid
 values are ignored locally and do not replace locomotion. Playback speed `s` must parse to a finite
 number in `[0.01, 100]`, otherwise it defaults to 1. The `l`/`g` string flags are unchanged.
+As with a session avatar, other visitors load the emote: an `http(s)://` emote outside the world is shown to
+them when a **server** script applied the effect (or the player is a builder), not when a client script did
+for a visitor. An `asset://` emote works from either.
 
 **snare**: a finite number from 0 to 1 that reduces movement speed, where zero means no snaring and one means entirely snared. Invalid values are treated as 0. When snared, players can still turn and attempt to move.
 

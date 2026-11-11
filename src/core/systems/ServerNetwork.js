@@ -7,11 +7,12 @@ import { createJWT, expiredSessionUser, readJWT } from '../utils-server'
 import { isNumber } from 'lodash-es'
 import { appPersistenceData, persistenceRecord } from '../extras/persistenceRecord.js'
 import * as THREE from '../extras/three'
-import { Ranks } from '../extras/ranks'
+import { hasRank, Ranks } from '../extras/ranks'
 import {
   PLAYER_NAME_MAX_LENGTH,
   SESSION_AVATAR_MAX_LENGTH,
   isAvatarUrl,
+  isExternalUrl,
   isBoundedJsonObject,
   sanitizeAppModify,
   sanitizeAppRelease,
@@ -816,7 +817,9 @@ export class ServerNetwork extends System {
 
       // check connection params
       let name = sanitizeName(params.name)
-      const avatar = isAvatarUrl(params.avatar) ? params.avatar : null
+      // the avatar a connection asks for becomes its session avatar; whether a url outside this world is taken is
+      // decided below, once the user and their rank are known
+      const askedAvatar = isAvatarUrl(params.avatar) ? params.avatar : null
 
       // get or create user
       let user
@@ -938,10 +941,18 @@ export class ServerNetwork extends System {
       // The joiner's record and the snapshot are made before the player is added (nothing awaits from here on), so
       // a refused join leaves nothing behind. The snapshot carries the record as the player will hold it once added
       // (PlayerRemote sets a missing emote to null).
+      // A url outside this world, as the avatar a connection asks for or as the one stored with the user: only for a
+      // builder (the stored rank or the world's own: a token's grant comes after the join). Anyone else gets the
+      // world's avatar; the stored value is left as it is, for the day the user is a builder.
+      const mayUseExternal = hasRank(Math.max(user.rank, this.world.settings.effectiveRank), Ranks.BUILDER)
+      const taken = url => (mayUseExternal || !isExternalUrl(url, process.env.ASSETS_BASE_URL) ? url : null)
+      if (askedAvatar && !taken(askedAvatar)) {
+        this.logOnce(ws, 'avatar-refused', 'a connection asked for an avatar outside this world without builder rank')
+      }
       const record = this.joinRecord(user.id, {
         name: name || sanitizeName(user.name) || 'Anonymous',
-        avatar: user.avatar || this.world.settings.avatar?.url || 'asset://avatar.vrm',
-        sessionAvatar: avatar,
+        avatar: taken(user.avatar) || this.world.settings.avatar?.url || 'asset://avatar.vrm',
+        sessionAvatar: taken(askedAvatar),
         rank: user.rank,
       })
       const state = this.snapshotState(user.id, {
@@ -2060,8 +2071,32 @@ export class ServerNetwork extends System {
       if (entity !== socket.player) {
         return this.logOnce(socket, 'player-modify-other', 'player attempted to modify another player')
       }
-      const allowAvatar = socket.player.isBuilder() || !!this.world.settings.customAvatars
-      const safe = sanitizePlayerSelfModify(data, socket.id, { allowAvatar })
+      // The stored avatar: a builder, or anyone with Custom Avatars on (a VRM uploaded here). A url outside this
+      // world (entityModifyPolicy.js isExternalUrl), for the avatar, the session avatar or the emote: a builder only,
+      // or the very url a server script chose for this player.
+      const builder = socket.player.isBuilder()
+      const safe = sanitizePlayerSelfModify(data, socket.id, {
+        allowAvatar: builder || !!this.world.settings.customAvatars,
+        allowExternal: builder,
+        assetsUrl: process.env.ASSETS_BASE_URL,
+        scriptAvatar: entity.scriptAvatar,
+        scriptEmotes: entity.scriptEmotes,
+      })
+      // The sender applied its session avatar before sending it. One that was not taken is put right for the sender
+      // too: what they see is then what everyone sees, and a client script that set it shows its builder why nobody
+      // else saw it.
+      if (
+        isObject(data) &&
+        Object.prototype.hasOwnProperty.call(data, 'sessionAvatar') &&
+        !(safe && Object.prototype.hasOwnProperty.call(safe, 'sessionAvatar'))
+      ) {
+        socket.send('entityModified', { id: entity.data.id, sessionAvatar: entity.data.sessionAvatar ?? null })
+        this.logOnce(
+          socket,
+          'avatar-refused',
+          'a session avatar was not taken: a url outside this world needs builder rank or a server script'
+        )
+      }
       if (!safe) {
         return this.logOnce(
           socket,

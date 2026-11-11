@@ -275,7 +275,8 @@ export class ServerNetwork extends System {
   // players in the world for the limit: the registered ones, plus those being replaced whose old connection is
   // already gone (each id once)
   playersPresent() {
-    let count = this.sockets.size
+    // `arriving`: joins that passed the limit and are still being set up (onConnection): each holds a place
+    let count = this.sockets.size + (this.arriving ?? 0)
     for (const id of this.replacing ?? []) if (!this.sockets.has(id)) count++
     return count
   }
@@ -800,6 +801,7 @@ export class ServerNetwork extends System {
     })
     let reserved = null
     let replacing = null
+    let arriving = false
     let carriedRankWrites = []
     let socket = null
     try {
@@ -819,6 +821,12 @@ export class ServerNetwork extends System {
           ws.close()
           return
         }
+      } else {
+        // A place is held from here until the player is registered or the join ends. A join waits on the database
+        // and the voice token before it registers, and the limit was only asked here: any number of joins that
+        // arrived together all found room. (A join let in above is of a player who is here: it has its place.)
+        this.arriving = (this.arriving ?? 0) + 1
+        arriving = true
       }
 
       // A kicked user waits (kickList.js): told so and closed, with nothing added or announced. Asked where the
@@ -903,6 +911,11 @@ export class ServerNetwork extends System {
       // up to 2 x PING_RATE to notice.
       const existing = this.sockets.get(user.id)
       if (existing) {
+        // this player is here already: its place is the one it has, not a second one
+        if (arriving) {
+          this.arriving--
+          arriving = false
+        }
         const alive = await this.answersPing(existing, undefined, stop => (stopWaiting = stop))
         stopWaiting = null
         if (cancelled) return
@@ -1065,6 +1078,8 @@ export class ServerNetwork extends System {
     } finally {
       if (reserved) this.connecting.delete(reserved)
       if (replacing) this.replacing.delete(replacing)
+      // registered (it counts as a socket now) or refused: either way the held place is given back
+      if (arriving) this.arriving--
     }
   }
 
@@ -2309,7 +2324,41 @@ export class ServerNetwork extends System {
     this.world.livekit.clearModifiers(socket.id)
     solanaGating.clearSocket(socket.id)
     if (!this.stopping) socket.player?.destroy(true)
+    // not for a connection another one of the same user has already replaced: what that user holds now is the new
+    // connection's
+    const current = this.sockets.get(socket.id)
+    if (!this.stopping && (!current || current === socket)) this.releaseApps(socket.id)
     // only drop the entry that still refers to this socket
-    if (this.sockets.get(socket.id) === socket) this.sockets.delete(socket.id)
+    if (current === socket) this.sockets.delete(socket.id)
+  }
+
+  // What a connection that is gone was holding. Only the holder's client ends a move or an upload (it sends
+  // `mover: null` when the app is placed and `uploader: null` when its files are in the store), so an app whose
+  // holder left stayed as it was for everyone: in the middle of a move, or showing "loading" for good, and never
+  // saved (markAppDirty leaves out an app that is held).
+  // - a move ends where the app is: the hold is lifted, said to everyone, and the app is saved there.
+  // - an upload that never reported its end is taken as not finished: the app is removed, as the uploader's own
+  //   client does when an upload fails. (If the files did arrive, dropping the file again finds them there.)
+  releaseApps(holder) {
+    for (const entity of [...this.world.entities.items.values()]) {
+      if (!entity.isApp) continue
+      const id = entity.data.id
+      if (entity.data.uploader === holder) {
+        try {
+          this.world.entities.remove(id)
+        } catch (err) {
+          this.logOnce(this, 'release-remove', `[network] removing an app whose uploader left: ${briefError(err)}`)
+          // the app is gone from the world all the same (as in rekeyApp)
+          this.world.entities.items.delete(id)
+          this.world.entities.untrackApp?.(id)
+        }
+        this.send('entityRemoved', id)
+      } else if (entity.data.mover === holder) {
+        const change = { id, mover: null }
+        this.markAppDirty(entity.data, change)
+        this.send('entityModified', change)
+        entity.modify(change)
+      }
+    }
   }
 }

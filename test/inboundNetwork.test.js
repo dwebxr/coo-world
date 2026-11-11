@@ -24,6 +24,7 @@ const methods = [
   'enqueue',
   'flush',
   'onDisconnect',
+  'releaseApps',
   'dropTipTickets',
   'checkSockets',
   'onEntityEvent',
@@ -54,7 +55,11 @@ const make = () => {
   const network = new Network()
   network.scheduler = createInboundScheduler()
   network.sockets = new Map()
-  network.world = { livekit: { clearModifiers() {} }, apps: { eventLedger: createEventLedger() } }
+  network.world = {
+    livekit: { clearModifiers() {} },
+    apps: { eventLedger: createEventLedger() },
+    entities: { items: new Map() },
+  }
   network.logOnce = createLogOnce(line => logs.push(line))
   network.gate = createInboundGate({ now: () => 1000, log: line => logs.push(line) })
   const ws = new EventEmitter()
@@ -232,7 +237,10 @@ test('flush: synchronous and async handler errors are brief, logged once, and do
 test('onEntityEvent: rejects invalid versions silently and passes scheduler metadata to the app', () => {
   const { network, socket, ws, logs } = make()
   const seen = []
-  network.world.entities = { get: id => (id === 'app' ? { onEvent: (...args) => seen.push(args) } : undefined) }
+  network.world.entities = {
+    items: new Map(),
+    get: id => (id === 'app' ? { onEvent: (...args) => seen.push(args) } : undefined),
+  }
   for (const version of [
     NaN,
     Infinity,

@@ -66,6 +66,7 @@ function fixture(t, { evmGating = evmEnabled, balance = 0, evmHoldings, tipWatch
     blueprints: { serialize: () => [] },
     events: { emit: (name, data) => events.push([name, data]) },
     entities: {
+      items: entities,
       add(data) {
         const player = {
           data,

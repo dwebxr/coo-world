@@ -77,6 +77,7 @@ function fixture({ pause, fail, existing = false, auth = { userId: 'player' }, l
     ai: serial,
     blueprints: serial,
     entities: {
+      items: players,
       add(data) {
         if (fail === 'add-before') throw failure
         const player = {

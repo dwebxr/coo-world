@@ -19,6 +19,7 @@ import { eventPayload } from '../../src/core/extras/eventPayload.js'
 import { appChatLine } from '../../src/core/extras/chatPolicy.js'
 import { adminMode, adminWaitScale, createAdminGate } from '../../src/server/adminCode.js'
 import { isAdminCommand } from '../../src/core/extras/chatCommand.js'
+import * as aiBudget from '../../src/server/aiBudget.js'
 
 class System extends EventEmitter {
   constructor(world) {
@@ -39,6 +40,7 @@ export function source(file) {
 export function load(file, name, extra = {}) {
   const dependencies = {
     System,
+    ...aiBudget,
     App: class {},
     PlayerLocal: class {},
     PlayerRemote: class {},

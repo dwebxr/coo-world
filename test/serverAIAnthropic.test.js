@@ -67,13 +67,15 @@ test('anthropic response: refusals, cut-off replies and replies without text are
 // ServerAI with a fake SDK: the Anthropic client sends the built request and reads the reply past thinking.
 function makeAI({ env, reply, fail } = {}) {
   const calls = []
+  const options = []
   const errors = []
   class Anthropic {
     constructor() {
       this.beta = {
         messages: {
-          create: async params => {
+          create: async (params, given) => {
             calls.push(params)
+            options.push(given)
             if (fail) throw new Error(fail)
             return reply
           },
@@ -94,11 +96,11 @@ function makeAI({ env, reply, fail } = {}) {
     anthropicRequest,
     readAnthropicText,
   })
-  return { ai: new ServerAI({}), calls, errors }
+  return { ai: new ServerAI({}), calls, options, errors }
 }
 
 test('server ai: Claude Opus 5.5 requests carry the fallback and effort, and the script is read past thinking', async () => {
-  const { ai, calls } = makeAI({
+  const { ai, calls, options } = makeAI({
     env: { AI_MODEL: 'claude-opus-5-5', AI_EFFORT: 'medium' },
     reply: {
       stop_reason: 'end_turn',
@@ -109,7 +111,9 @@ test('server ai: Claude Opus 5.5 requests carry the fallback and effort, and the
     },
   })
   assert.equal(ai.enabled, true)
-  assert.equal(await ai.client.create('a cube'), 'CODE')
+  const signal = new AbortController().signal
+  assert.equal(await ai.client.create('a cube', { signal }), 'CODE')
+  assert.equal(options[0].signal, signal, 'the request can be aborted (ServerAI.run)')
   assert.equal(calls[0].model, 'claude-opus-5-5')
   assert.equal(calls[0].max_tokens, 16000)
   assert.deepEqual(calls[0].betas, ['server-side-fallback-2026-07-01'])
@@ -118,9 +122,17 @@ test('server ai: Claude Opus 5.5 requests carry the fallback and effort, and the
   assert.match(calls[0].system, /DOCS/)
   assert.match(calls[0].messages[0].content, /a cube/)
   // naming is a small task: low effort and a smaller limit
-  assert.equal(await ai.client.classify('a cube'), 'CODE')
+  assert.equal(await ai.client.classify('a cube', { signal }), 'CODE')
   assert.deepEqual(calls[1].output_config, { effort: 'low' })
   assert.equal(calls[1].max_tokens, 4096)
+  assert.equal(options[1].signal, signal)
+  await ai.client.edit('old()', 'spin', { signal })
+  await ai.client.fix('old()', { message: 'x' }, { signal })
+  assert.deepEqual(
+    calls.map(call => call.max_tokens),
+    [16000, 4096, 16000, 16000]
+  )
+  assert.ok(options.every(given => given.signal === signal))
 })
 
 test('server ai: a failed AI call is logged, not left as an unhandled rejection', async () => {
@@ -151,8 +163,9 @@ test('server ai: edit and fix failures are logged too, with no unhandled rejecti
       blueprints: { get: () => blueprint },
       loader: { get: () => ({ code: 'app.on("update", () => {})' }) },
     }
-    await ai.onAction({ name: 'edit', blueprintId: 'bp', appId: 'app', prompt: 'p' })
-    await ai.onAction({ name: 'fix', blueprintId: 'bp', appId: 'app', error: { message: 'x' } })
+    // (two builders: one builder's second request waits for the first to end, aiBudget.js)
+    ai.onAction({ name: 'edit', blueprintId: 'bp', appId: 'app', prompt: 'p' }, 'user:a')
+    ai.onAction({ name: 'fix', blueprintId: 'bp', appId: 'app', error: { message: 'x' } }, 'user:b')
     for (let i = 0; i < 20 && errors.length < 2; i++) await new Promise(resolve => setImmediate(resolve))
     assert.deepEqual(errors.sort(), ['[ai] edit failed: overloaded', '[ai] fix failed: overloaded'])
     await new Promise(resolve => setImmediate(resolve))

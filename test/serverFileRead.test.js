@@ -215,8 +215,9 @@ test('server ai: edit and fix of a script that is a path or asset:// traversal m
       code: 'ASSET_REFUSED',
     })
     // the network entry point logs the refusal as the action's failure
-    await ai.onAction({ name: 'edit', blueprintId: 'bp', appId: 'app', prompt: 'quote the code' })
-    await ai.onAction({ name: 'fix', blueprintId: 'bp', appId: 'app', error: { message: 'x' } })
+    // (two builders: one builder's second request waits for the first to end, aiBudget.js)
+    ai.onAction({ name: 'edit', blueprintId: 'bp', appId: 'app', prompt: 'quote the code' }, 'user:a')
+    ai.onAction({ name: 'fix', blueprintId: 'bp', appId: 'app', error: { message: 'x' } }, 'user:b')
     await settle()
     assert.equal(calls.length, 0, `${script}: no provider request`)
     assert.deepEqual(reads, [], `${script}: no file read`)
@@ -232,7 +233,7 @@ test('server ai: edit and fix of a script that is a path or asset:// traversal m
 test('server ai: an asset:// script is read through the loader and edited', async () => {
   reset()
   const { ai, calls, modified } = makeAI({ id: 'bp', version: 1, script: 'asset://inside.js' })
-  await ai.edit({ blueprintId: 'bp', appId: 'app', prompt: 'make it spin' })
+  await ai.edit({ blueprintId: 'bp', appId: 'app', prompt: 'make it spin' }, { signal: new AbortController().signal })
   assert.equal(calls.length, 1)
   assert.match(calls[0].system, /INSIDE/)
   assert.deepEqual(reads, [path.join(assetsDir, 'inside.js')])

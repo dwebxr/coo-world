@@ -35,6 +35,8 @@ export class ClientAI extends System {
       return console.error('[ai] not enabled')
     }
     if (!this.world.builder.canBuild()) return
+    // the server refuses a create without a description; its placeholder (made below, before asking) would stay
+    if (typeof prompt !== 'string' || !prompt.trim()) return console.error('[ai] /create needs a description')
     // create blueprint
     const blueprint = {
       id: uuid(),

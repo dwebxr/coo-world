@@ -734,7 +734,7 @@ test('join budget: an AI change that would grow a full world is not applied', as
   const ai = new ServerAI(f.world)
   ai.assets = { upload: async () => true }
   ai.client = { classify: async () => 'N'.repeat(5000) }
-  await ai.classify({ blueprintId: 'ai-bp', prompt: 'p' })
+  await ai.classify({ blueprintId: 'ai-bp', prompt: 'p' }, { signal: new AbortController().signal })
   assert.equal(f.world.blueprints.get('ai-bp').version, 0)
   assert.equal(f.network.dirtyBlueprints.size, 0)
   assert.deepEqual(warnings, [

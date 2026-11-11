@@ -261,6 +261,13 @@ test('a script reads a data: URL and its own object URLs without a request; no o
   const response = await loader.scriptFetch(url, {}, caller)
   assert.equal(response.headers.get('content-type'), 'image/png')
   assert.equal(await response.text(), 'png bytes')
+  // the request's other options reach the platform's fetch (Codex: a Range header gives a part, as it did)
+  const part = await loader.scriptFetch(url, { headers: { Range: 'bytes=1-2' } }, caller)
+  assert.equal(part.status, 206)
+  assert.equal(part.headers.get('content-range'), 'bytes 1-2/9')
+  // (the part is the platform's: Node 24 hands over both bytes, Node 22's fetch one byte fewer)
+  assert.ok(['ng', 'n'].includes(await part.text()))
+  await assert.rejects(loader.scriptFetch(url, { method: 'POST', body: 'x' }, caller), TypeError)
   // once revoked it is a blob: URL like any other: refused, as the engine's own are
   revokeScriptObjectURL(url)
   const engineURL = URL.createObjectURL(new Blob(['engine']))
@@ -299,6 +306,15 @@ test('aborting the signal of a local read with its body unread does nothing; the
       controller.abort()
       await new Promise(resolve => setTimeout(resolve, 20))
       assert.equal(await response.text(), text)
+    }
+    // and an abort at any moment of the read itself changes nothing: the platform's fetch never has the signal
+    // (the read ends by itself; what a stopped run may still see is App.fetchFor's to decide)
+    for (let turns = 0; turns < 40; turns++) {
+      const controller = new AbortController()
+      const reading = loader.scriptFetch(url, { signal: controller.signal }, { key: 'app' })
+      for (let i = 0; i < turns; i++) await Promise.resolve()
+      controller.abort()
+      assert.equal(await (await reading).text(), 'held', `aborted after ${turns} turns`)
     }
     assert.deepEqual(uncaught, [])
   } finally {

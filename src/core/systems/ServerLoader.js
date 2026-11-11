@@ -32,10 +32,11 @@ function isLocalData(url) {
 // end here and without the caller's signal: they are already in the process (there is no transfer to give up), and
 // on Node 24 (undici 7) aborting the signal of such a response while its body is unread throws from the platform's
 // own abort listener, outside any promise, which ends the process (Codex; an app that is removed or rebuilt aborts
-// its requests). Only the method is passed on. App.fetchFor settles nothing for a run that has ended
+// its requests). The other options are passed on as they are (a Range header gives a part of an object URL's
+// bytes, as before). App.fetchFor settles nothing for a run that has ended
 async function readLocalData(url, init) {
-  const method = typeof init?.method === 'string' ? init.method : 'GET'
-  const response = await fetch(url, { method })
+  const { signal: _signal, ...options } = init || {}
+  const response = await fetch(url, options)
   return new Response(await response.arrayBuffer(), {
     status: response.status,
     statusText: response.statusText,

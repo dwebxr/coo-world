@@ -40,6 +40,8 @@ import { createEvmHoldingService } from '../../src/server/evmHoldings.js'
 import { createTipWatcher } from '../../src/server/evmTipWatcher.js'
 import { formatUnits, isTxHash } from '../../src/core/extras/evmAbi.js'
 import { grantTokenRank, persistRank, revokeTokenRank } from '../../src/server/rankGrants.js'
+import { adminMode, adminWaitScale, createAdminGate } from '../../src/server/adminCode.js'
+import { isAdminCommand } from '../../src/core/extras/chatCommand.js'
 import { createSolanaRpc } from '../../src/server/solanaRpc.js'
 import { createTokenBalanceService } from '../../src/server/tokenBalance.js'
 import { Ranks } from '../../src/core/extras/ranks.js'
@@ -76,6 +78,7 @@ const names = [
   'onDisconnect',
   'onChatAdded',
   'onAppChat',
+  'admin',
   'onCommand',
   'onModifyRank',
   'invalidateWallet',
@@ -146,6 +149,10 @@ function networkClass(context) {
     writePacket,
     packetNameById,
     peekPacketId,
+    adminMode,
+    adminWaitScale,
+    createAdminGate,
+    isAdminCommand,
     Uint8Array,
     Date,
     JSON,

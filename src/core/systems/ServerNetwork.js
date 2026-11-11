@@ -23,6 +23,7 @@ import {
 } from '../extras/entityModifyPolicy'
 import { createRelayDrop } from '../extras/playerRelayPolicy'
 import { appChatLine, sanitizeChatMessage } from '../extras/chatPolicy'
+import { isAdminCommand } from '../extras/chatCommand'
 import { sanitizeBlueprintAdd, sanitizeBlueprintModify, WORLD_BLUEPRINT_BYTES } from '../extras/blueprintPolicy'
 import { previewValue } from '../extras/assetURL'
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../extras/settingsPolicy'
@@ -55,6 +56,7 @@ import { formatUnits, isTxHash } from '../extras/evmAbi'
 import { createSolanaRpc } from '../../server/solanaRpc'
 import { createTokenBalanceService } from '../../server/tokenBalance'
 import { grantTokenRank, persistRank, revokeTokenRank } from '../../server/rankGrants'
+import { adminMode, adminWaitScale, createAdminGate } from '../../server/adminCode'
 import { eventPayload } from '../extras/eventPayload.js'
 
 const SAVE_INTERVAL = parseInt(process.env.SAVE_INTERVAL || '60') // seconds
@@ -206,10 +208,12 @@ export class ServerNetwork extends System {
     )
     // hydrate settings
     let settingsRow = await this.db('config').where('key', 'settings').first()
+    // Before the stored settings are read: a settings row that cannot be parsed left this unset, and unset means
+    // "no code, so everyone is admin" (Settings.effectiveRank), with a code configured.
+    this.world.settings.setHasAdminCode(this.admin().mode !== 'open')
     try {
       const settings = JSON.parse(settingsRow?.value || '{}')
       this.world.settings.deserialize(settings)
-      this.world.settings.setHasAdminCode(!!process.env.ADMIN_CODE)
       this.loadedConfig.set('settings', JSON.stringify(this.world.settings.serialize()))
     } catch (err) {
       console.error(err)
@@ -418,7 +422,7 @@ export class ServerNetwork extends System {
     this.logOnce(
       socket,
       `builder:${action}`,
-      `player attempted to ${action} without builder permission: ${String(socket.id).slice(0, 64)}`
+      `player attempted to ${action} without builder permission: ${previewValue(socket.id, 64)}`
     )
     return false
   }
@@ -726,7 +730,7 @@ export class ServerNetwork extends System {
       entities,
       livekit,
       authToken,
-      hasAdminCode: !!process.env.ADMIN_CODE,
+      hasAdminCode: this.admin().mode !== 'open',
     }
   }
 
@@ -759,7 +763,25 @@ export class ServerNetwork extends System {
     return this.fixedBytes
   }
 
-  async onConnection(ws, params) {
+  // The world's admin mode and the brake on `/admin` codes (adminCode.js), made from the environment on first use:
+  // `open` (everyone is admin), `code`, or `locked` (nobody becomes admin by a code; clients are told there is one,
+  // so nobody is admin by default either).
+  admin() {
+    if (!this.adminState) {
+      const mode = adminMode(process.env)
+      this.adminState = {
+        mode,
+        gate: createAdminGate({
+          code: mode === 'code' ? process.env.ADMIN_CODE : '',
+          waitScale: adminWaitScale(process.env),
+        }),
+      }
+    }
+    return this.adminState
+  }
+
+  // `origin`: the connection's address key and its wider networks (clientIpKeys), for the brake on admin codes
+  async onConnection(ws, params, origin) {
     // still loading (start): the user ids and the join-state accounting are not complete yet
     if (this.stopping || this.starting) return ws.close()
     let cancelled = false
@@ -939,6 +961,8 @@ export class ServerNetwork extends System {
 
       // create socket
       socket = new Socket({ id: user.id, ws, network: this })
+      socket.addressKey = origin?.key
+      socket.addressParents = origin?.parents
       socket.wallet = solanaGating.createWalletSession()
       socket.evmWallet = evmGating.createEvmWalletSession()
 
@@ -1056,10 +1080,31 @@ export class ServerNetwork extends System {
     const player = socket.player
     const playerId = player.data.id
     const [cmd, arg1, arg2] = args
-    // become admin command
-    if (cmd === 'admin') {
-      const code = arg1
-      if (process.env.ADMIN_CODE && process.env.ADMIN_CODE === code) {
+    // The admin command (chatCommand.js, as the client decides it): it is never handed on as a command event (the
+    // code is in it). A wrong code is answered and, past a few, slowed down (adminCode.js); this socket's line only,
+    // never a broadcast.
+    const adminCommand = isAdminCommand(args)
+    if (adminCommand) {
+      const attempt = this.admin().gate.attempt(
+        { socket, user: player.data.userId, address: socket.addressKey, parents: socket.addressParents },
+        arg1
+      )
+      if (!attempt.ok && attempt.tell) {
+        socket.send('chatAdded', {
+          id: uuid(),
+          kind: 'system',
+          from: null,
+          fromId: null,
+          body: attempt.reason === 'wrong' ? 'Wrong admin code.' : 'Too many attempts. Try again later.',
+          createdAt: moment().toISOString(),
+        })
+      }
+      if (attempt.reason === 'closed') {
+        socket.send('kick', 'admin_attempts')
+        socket.disconnect()
+        return
+      }
+      if (attempt.ok) {
         const id = player.data.id
         const userId = player.data.userId
         const granted = !player.isAdmin()
@@ -1096,7 +1141,7 @@ export class ServerNetwork extends System {
           this.logOnce(
             socket,
             'user-rank-save',
-            `error saving user rank for ${String(userId).slice(0, 64)}; the session keeps its previous grant state: ${briefError(err)}`
+            `error saving user rank for ${previewValue(userId, 64)}; the session keeps its previous grant state: ${briefError(err)}`
           )
         } finally {
           player.rankWritesPending--
@@ -1159,7 +1204,7 @@ export class ServerNetwork extends System {
       }
     }
     // emit event for all except admin
-    if (cmd !== 'admin') {
+    if (!adminCommand) {
       this.world.events.emit('command', eventPayload({ playerId, args }))
     }
   }
@@ -1192,7 +1237,7 @@ export class ServerNetwork extends System {
       this.logOnce(
         socket,
         'user-rank-save',
-        `error saving user rank for ${String(playerId).slice(0, 64)}; the session keeps its previous grant state: ${briefError(err)}`
+        `error saving user rank for ${previewValue(playerId, 64)}; the session keeps its previous grant state: ${briefError(err)}`
       )
     } finally {
       player.rankWritesPending--
@@ -1907,7 +1952,7 @@ export class ServerNetwork extends System {
       return this.logOnce(
         socket,
         'blueprint-missing',
-        `onBlueprintModified: no blueprint found: ${String(safe.id).slice(0, 64)}`
+        `onBlueprintModified: no blueprint found: ${previewValue(safe.id, 64)}`
       )
     }
     // if new version is greater than current version, allow it
@@ -1966,7 +2011,7 @@ export class ServerNetwork extends System {
       entityExists: id => !!this.world.entities.get(id) || this.userIds.has(id),
     })
     if (!safe) {
-      return this.logOnce(socket, 'entity-invalid', `onEntityAdded: invalid entity: ${String(data?.id).slice(0, 64)}`)
+      return this.logOnce(socket, 'entity-invalid', `onEntityAdded: invalid entity: ${previewValue(data?.id, 64)}`)
     }
     if (!this.world.entities.canFitApp(safe.id, safe)) {
       // the id is new here, so the sender's optimistic copy is the only one to take back
@@ -1983,11 +2028,7 @@ export class ServerNetwork extends System {
     if (!isObject(data)) return this.logOnce(socket, 'entity-packet-invalid', 'onEntityModified: invalid packet')
     const entity = this.world.entities.get(data.id)
     if (!entity) {
-      return this.logOnce(
-        socket,
-        'entity-missing',
-        `onEntityModified: no entity found: ${String(data.id).slice(0, 64)}`
-      )
+      return this.logOnce(socket, 'entity-missing', `onEntityModified: no entity found: ${previewValue(data.id, 64)}`)
     }
     if (entity.isPlayer) {
       // a socket may only modify its own player, and only the client-owned fields
@@ -2000,7 +2041,7 @@ export class ServerNetwork extends System {
         return this.logOnce(
           socket,
           'entity-fields',
-          `onEntityModified: no permitted fields: ${String(data.id).slice(0, 64)}`
+          `onEntityModified: no permitted fields: ${previewValue(data.id, 64)}`
         )
       }
       entity.modify(safe)
@@ -2047,7 +2088,7 @@ export class ServerNetwork extends System {
         return this.logOnce(
           socket,
           'entity-fields',
-          `onEntityModified: no permitted fields: ${String(data.id).slice(0, 64)}`
+          `onEntityModified: no permitted fields: ${previewValue(data.id, 64)}`
         )
       }
       // only the blueprint id and a client-set state change an app's join-snapshot size (joinBudget.js)
@@ -2102,18 +2143,14 @@ export class ServerNetwork extends System {
     if (!isObject(data)) return
     const { key, value } = data
     if (!isKnownSettingKey(key)) {
-      return this.logOnce(socket, 'setting-unknown', `onSettingsModified: unknown setting: ${String(key).slice(0, 64)}`)
+      return this.logOnce(socket, 'setting-unknown', `onSettingsModified: unknown setting: ${previewValue(key, 64)}`)
     }
     if (isAdminOnlySettingKey(key) && !socket.player.isAdmin()) {
       return this.logOnce(socket, 'setting-admin', 'player attempted to modify setting without admin permission')
     }
     const result = normalizeSettingValue(key, value)
     if (!result.ok) {
-      return this.logOnce(
-        socket,
-        'setting-invalid',
-        `onSettingsModified: invalid value for ${String(key).slice(0, 64)}`
-      )
+      return this.logOnce(socket, 'setting-invalid', `onSettingsModified: invalid value for ${previewValue(key, 64)}`)
     }
     // settings are part of the join snapshot's world state (joinBudget.js): measured as they would be
     const next = settingsBytes({ ...this.world.settings.serialize(), [key]: result.value })

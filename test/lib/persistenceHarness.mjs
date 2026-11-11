@@ -17,6 +17,8 @@ import { uuid } from '../../src/core/utils.js'
 import { Ranks } from '../../src/core/extras/ranks.js'
 import { eventPayload } from '../../src/core/extras/eventPayload.js'
 import { appChatLine } from '../../src/core/extras/chatPolicy.js'
+import { adminMode, adminWaitScale, createAdminGate } from '../../src/server/adminCode.js'
+import { isAdminCommand } from '../../src/core/extras/chatCommand.js'
 
 class System extends EventEmitter {
   constructor(world) {
@@ -55,6 +57,10 @@ export function load(file, name, extra = {}) {
     Ranks,
     eventPayload,
     appChatLine,
+    adminMode,
+    adminWaitScale,
+    createAdminGate,
+    isAdminCommand,
     ...entityPolicy,
     ...blueprintPolicy,
     ...settingsPolicy,

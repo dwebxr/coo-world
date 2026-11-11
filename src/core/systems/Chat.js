@@ -1,6 +1,7 @@
 import moment from 'moment'
 import { uuid } from '../utils'
-import { CHAT_BODY_MAX_LENGTH, chatEnvelope, cutText, sanitizeChatMessage } from '../extras/chatPolicy'
+import { chatEnvelope, sanitizeChatMessage } from '../extras/chatPolicy'
+import { isAdminCommand, parseCommand } from '../extras/chatCommand'
 import { System } from './System'
 import { eventPayload } from '../extras/eventPayload.js'
 
@@ -52,23 +53,22 @@ export class Chat extends System {
   }
 
   command(text) {
-    text = cutText(text, CHAT_BODY_MAX_LENGTH)
     if (this.world.network.isServer) return
     const playerId = this.world.network.id
-    const cmd = text.slice(1).split(' ')[0] // "/foo bar" -> "foo"
-    const value = text.slice(1 + cmd.length + 1) // "/foo bar" -> "bar"
-    const args = text // "/foo bar" -> ["foo", "bar"]
-      .slice(1)
-      .split(' ')
-      .map(str => str.trim())
-      .filter(str => !!str)
-    const callback = this.commands[cmd]
+    // "/foo bar" -> cmd "foo", value "bar", args ["foo", "bar"]
+    const { cmd, value, args } = parseCommand(text)
+    // The admin command (as the server decides it, from the same words) carries the code: it goes to the server and
+    // nowhere else, not to a command bound here and not to scripts as a command event.
+    if (isAdminCommand(args)) {
+      this.world.network.send('command', { cmd, value, args })
+      return
+    }
+    // (a command bound here, not a property every object has: `/constructor` is not one)
+    const callback = Object.hasOwn(this.commands, cmd) ? this.commands[cmd] : undefined
     if (callback) {
       return callback({ playerId, cmd, value, args })
     }
-    if (cmd !== 'admin') {
-      this.world.events.emit('command', eventPayload({ playerId, cmd, value, args }))
-    }
+    this.world.events.emit('command', eventPayload({ playerId, cmd, value, args }))
     this.world.network.send('command', { cmd, value, args })
   }
 

@@ -40,7 +40,7 @@ import {
 } from '../../src/core/extras/nodeLimits.js'
 import * as assetURL from '../../src/core/extras/assetURL.js'
 import * as runTeardown from '../../src/core/extras/runTeardown.js'
-import { revokeRunObjectURLs } from '../../src/core/extras/scriptBlob.js'
+import { isScriptObjectURL, revokeRunObjectURLs } from '../../src/core/extras/scriptBlob.js'
 import { isPrimitive } from '../../src/core/extras/scriptPrimitives.js'
 import { jsonCopy } from '../../src/core/extras/scriptText.js'
 import * as joinBudget from '../../src/core/extras/joinBudget.js'
@@ -122,6 +122,7 @@ export function loadClient(file, name, context = {}) {
     NODE_LIMIT,
     ...runTeardown,
     revokeRunObjectURLs,
+    isScriptObjectURL,
     isPrimitive,
     jsonCopy,
     ...assetURL,

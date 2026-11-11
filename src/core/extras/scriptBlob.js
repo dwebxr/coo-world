@@ -121,6 +121,12 @@ export function createScriptObjectURL(value) {
   return url
 }
 
+// whether `url` is an object URL minted for a script that has not been revoked (the server's script fetch reads
+// those, and no other blob: URL of the process)
+export function isScriptObjectURL(url) {
+  return typeof url === 'string' && urlOwners.has(url)
+}
+
 // the URL.revokeObjectURL endowment: only a URL minted for a script (never one the engine made)
 export function revokeScriptObjectURL(url) {
   if (typeof url !== 'string') return

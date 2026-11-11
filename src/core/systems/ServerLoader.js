@@ -13,8 +13,20 @@ import { createEmoteFactory } from '../extras/createEmoteFactory'
 import { ASSET_PROTOCOL, assetName, assetRefusal, loaderReference } from '../extras/assetURL'
 import { resolveAssetFile } from '../extras/resolveAssetFile'
 import { createOutboundFetch, OutboundError } from '../extras/outboundFetch'
+import { isScriptObjectURL } from '../extras/scriptBlob'
 import { checkGLTF, createGLTFBudget, GLTF_LIMITS, isDataURI } from '../extras/gltfLimits'
 import { LoadingManager } from 'three'
+
+// a script's request for bytes the process holds (see scriptFetch): read as fetch will read it, so a spelling fetch
+// takes for another scheme is not taken for one of these
+function isLocalData(url) {
+  if (isScriptObjectURL(url)) return true
+  try {
+    return typeof url === 'string' && new URL(url).protocol === 'data:'
+  } catch {
+    return false
+  }
+}
 
 const isRemote = url => typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'))
 
@@ -163,14 +175,18 @@ export class ServerLoader extends System {
   // An app script's fetch (App.fetchFor, with the app as the caller its requests are counted against): scripts
   // that keep every slot busy leave the loads above theirs, and a burst of loads leaves scripts theirs
   // A request the policy refuses or cannot complete rejects as fetch's do, with a TypeError (the policy's message
-  // says why)
+  // says why). Two kinds of URL name bytes this process already holds, not a destination, and are read by the
+  // platform's fetch as before: a `data:` URL, and an object URL made for a script (URL.createObjectURL of a blob
+  // its fetch returned; no other blob: URL of the process)
   get scriptFetch() {
     if (!this.scriptOutbound) {
       const policy = createOutboundFetch({ trustedOrigins: this.trustedOrigins() })
-      this.scriptOutbound = (url, init, caller) =>
-        policy(url, init, caller).catch(err => {
+      this.scriptOutbound = (url, init, caller) => {
+        if (isLocalData(url)) return fetch(url, init)
+        return policy(url, init, caller).catch(err => {
           throw err instanceof OutboundError ? new TypeError(err.message) : err
         })
+      }
     }
     return this.scriptOutbound
   }

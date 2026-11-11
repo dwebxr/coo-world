@@ -4,6 +4,7 @@ import http from 'node:http'
 import path from 'node:path'
 import fs from 'fs-extra'
 import { loadClient } from './lib/clientHarness.mjs'
+import { createScriptBlob, createScriptObjectURL, revokeScriptObjectURL } from '../src/core/extras/scriptBlob.js'
 import { GLTFLoader } from '../src/core/libs/gltfloader/GLTFLoader.js'
 
 // The server loader's remote side: what it fetches, what it refuses, and what it keeps.
@@ -242,6 +243,39 @@ test("script requests and remote loads do not take each other's slots", async ()
     name: 'TypeError',
     message: /is not public/,
   })
+})
+
+// e2e (sandbox-probe): a script fetches the object URL it made of a blob, and a data: URL, on the server as in a
+// browser. Those name bytes the process holds, so they are read without the policy; nothing else is
+test('a script reads a data: URL and its own object URLs without a request; no other blob: URL, no other scheme', async () => {
+  const loader = makeLoader()
+  const before = requests.assets.length + requests.other.length
+  const caller = { key: 'app' }
+  assert.equal(await (await loader.scriptFetch('data:text/plain,hi', {}, caller)).text(), 'hi')
+  const run = { dead: false }
+  const blob = await createScriptBlob(new Blob(['png bytes'], { type: 'image/png' }), {
+    entity: { deadHook: run },
+    run,
+  })
+  const url = createScriptObjectURL(blob)
+  const response = await loader.scriptFetch(url, {}, caller)
+  assert.equal(response.headers.get('content-type'), 'image/png')
+  assert.equal(await response.text(), 'png bytes')
+  // once revoked it is a blob: URL like any other: refused, as the engine's own are
+  revokeScriptObjectURL(url)
+  const engineURL = URL.createObjectURL(new Blob(['engine']))
+  try {
+    for (const refused of [url, engineURL, `${engineURL}#x`, 'file:///etc/hosts', 'ftp://127.0.0.1/x']) {
+      await assert.rejects(
+        loader.scriptFetch(refused, {}, caller),
+        { name: 'TypeError', message: /only http and https are allowed/ },
+        refused
+      )
+    }
+  } finally {
+    URL.revokeObjectURL(engineURL)
+  }
+  assert.equal(requests.assets.length + requests.other.length, before, 'no request was made')
 })
 
 test('600 loads finishing together leave at most 512 entries, with results for kept entries only', async () => {

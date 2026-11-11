@@ -98,7 +98,7 @@ A script runs on the server as well as in each browser, and `fetch` is made from
 
 - In a browser it is the browser's `fetch`: the page's origin rules (CORS) apply.
 - On the server it only reaches public addresses, over `http` and `https`: a request to the server's own machine (`localhost`, `127.0.0.1`), to a private network or to a cloud metadata address is refused, also when a public host name resolves to such an address or redirects to one. The world's own assets URL, and the origins the operator lists in `OUTBOUND_TRUSTED_ORIGINS`, are exempt.
-- On the server a request is bounded: 15 seconds in all, a response of at most 8 MiB (after decompression; gzip and deflate only), a request body of at most 1 MiB, at most 64 headers, at most 3 redirects, and the methods `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE` and `OPTIONS`. An app may have 4 requests in flight at once (the server 16 in all): one more is refused rather than queued, so wait for a request to finish before starting a fifth.
+- On the server a request is bounded: 15 seconds in all, a response of at most 8 MiB (after decompression; gzip and deflate only), a request body of at most 1 MiB, at most 64 headers, at most 3 redirects, and the methods `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE` and `OPTIONS`. An app may have 4 requests in flight at once (all apps together 16): one more is refused rather than queued, so wait for a request to finish before starting a fifth.
 - A request the server refuses rejects with an error named `OutboundError`; its message says why (`outbound request refused: the address is not public`).
 
 Use `world.isServer` to make a request from one place only.

@@ -79,6 +79,7 @@ export class ServerLoader extends System {
     this.rgbeLoader = new RGBELoader()
     this.gltfLoader = new GLTFLoader(createEmbeddedOnlyManager())
     this.outbound = null
+    this.scriptOutbound = null
     this.preloadItems = []
     // this.gltfLoader.register(parser => new VRMLoaderPlugin(parser))
 
@@ -149,19 +150,29 @@ export class ServerLoader extends System {
     }
   }
 
-  // The world's one fetch for URLs it did not choose: remote models, emotes and scripts a blueprint names go
-  // through it, and so does every request of an app script (App.fetchFor, with the app as the caller its requests
-  // are counted against). Public addresses only, bounded in time, size and number (outboundFetch.js). The world's
-  // own assets origin is trusted, and so are the origins the operator lists in OUTBOUND_TRUSTED_ORIGINS.
+  // The world's fetch for URLs it did not choose: public addresses only, bounded in time, size and number
+  // (outboundFetch.js). The world's own assets origin is trusted, and so are the origins the operator lists in
+  // OUTBOUND_TRUSTED_ORIGINS. There are two of it, with the same rules and each with its own slots and memory, so
+  // that neither kind of request can take the other's: this one for the remote models, emotes and scripts a
+  // blueprint names, and scriptFetch for the requests app scripts make
   get outboundFetch() {
-    if (!this.outbound) {
-      const listed = String(globalThis.process?.env?.OUTBOUND_TRUSTED_ORIGINS || '')
-        .split(',')
-        .map(origin => origin.trim())
-        .filter(Boolean)
-      this.outbound = createOutboundFetch({ trustedOrigins: [this.world.assetsUrl, ...listed].filter(Boolean) })
-    }
+    if (!this.outbound) this.outbound = createOutboundFetch({ trustedOrigins: this.trustedOrigins() })
     return this.outbound
+  }
+
+  // An app script's fetch (App.fetchFor, with the app as the caller its requests are counted against): scripts
+  // that keep every slot busy leave the loads above theirs, and a burst of loads leaves scripts theirs
+  get scriptFetch() {
+    if (!this.scriptOutbound) this.scriptOutbound = createOutboundFetch({ trustedOrigins: this.trustedOrigins() })
+    return this.scriptOutbound
+  }
+
+  trustedOrigins() {
+    const listed = String(globalThis.process?.env?.OUTBOUND_TRUSTED_ORIGINS || '')
+      .split(',')
+      .map(origin => origin.trim())
+      .filter(Boolean)
+    return [this.world.assetsUrl, ...listed].filter(Boolean)
   }
 
   async fetchRemote(url, signal) {

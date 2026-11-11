@@ -196,7 +196,7 @@ export function createSweep({ m, scripts, requests }) {
         },
         load: (type, url) => world.loaderLoad?.(type, url) ?? Promise.reject(new Error(`no ${type} ${url}`)),
         // an app's requests go through its world's loader: here, to whatever a test put in place of the global fetch
-        outboundFetch: (url, init) => globalThis.fetch(url, init),
+        scriptFetch: (url, init) => globalThis.fetch(url, init),
       },
       ui: {
         suppressors: 0,

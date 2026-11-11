@@ -320,10 +320,10 @@ export class ClientLoader extends System {
     this.preloadItems = []
   }
 
-  // An app script's fetch in a browser (App.fetchFor asks the loader of its world, see ServerLoader.outboundFetch):
+  // An app script's fetch in a browser (App.fetchFor asks the loader of its world, see ServerLoader.scriptFetch):
   // the browser's own fetch, under the page's origin rules and from the user's place in the network. Only the url
   // and the init are passed on
-  get outboundFetch() {
+  get scriptFetch() {
     return browserFetch
   }
 

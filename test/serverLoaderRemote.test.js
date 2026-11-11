@@ -201,6 +201,34 @@ test('loads in progress are never dropped, and refused loads leave nothing behin
   assert.ok(cached(loader), 'every result belongs to an entry')
 })
 
+// App scripts' requests (App.fetchFor -> loader.scriptFetch) and the loader's own remote loads have the same rules
+// but slots of their own: whichever is full, the other is still served
+test("script requests and remote loads do not take each other's slots", async () => {
+  const loader = makeLoader()
+  assert.notEqual(loader.scriptFetch, loader.outboundFetch)
+  assert.equal(loader.scriptFetch, loader.scriptFetch, 'one policy for all scripts')
+  // 16 script requests in flight (4 from each of 4 apps): the 17th is refused, a remote load is admitted
+  const scriptRequests = Array.from({ length: 16 }, (_, i) =>
+    loader.scriptFetch(`${assets}/assets/hold-script-${i}.js`, {}, { key: `app-${i % 4}` })
+  )
+  while (held.length < 16) await tick()
+  await assert.rejects(loader.scriptFetch(`${assets}/assets/script.js`, {}, { key: 'app-9' }), { code: 'busy' })
+  assert.equal((await loader.load('script', 'asset://script.js')).code, '// SCRIPT')
+  // and with every load slot taken too, the loads are refused while a finished script request frees its own slot
+  const loads = Array.from({ length: 16 }, (_, i) => loader.load('script', `asset://hold-load-${i}.js`))
+  while (held.length < 32) await tick()
+  await assert.rejects(loader.load('script', 'asset://refused.js'), { code: 'busy' })
+  held[0].end('// done')
+  assert.equal(await (await scriptRequests[0]).text(), '// done')
+  assert.equal(await (await loader.scriptFetch(`${assets}/assets/script.js`, {}, { key: 'app-0' })).text(), '// SCRIPT')
+  await assert.rejects(loader.load('script', 'asset://refused-again.js'), { code: 'busy' })
+  for (const res of held.slice(1)) res.end('// late')
+  held.length = 0
+  await Promise.all([...scriptRequests.slice(1), ...loads])
+  // a private address is refused by both
+  await assert.rejects(loader.scriptFetch(`${other}/x.js`, {}, { key: 'app-0' }), { code: 'address' })
+})
+
 test('600 loads finishing together leave at most 512 entries, with results for kept entries only', async () => {
   const { reads, readFile } = deferredReads()
   const loader = makeLocalLoader(readFile)

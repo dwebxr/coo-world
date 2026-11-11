@@ -74,7 +74,7 @@ function makeWorld(script, { isServer = false, livekit = false } = {}) {
           ? { exec: (...args) => (world.scripts[url] || script)(...args) }
           : { toNodes: () => (world.models[url] ? world.models[url]() : m.createNode('group')) },
       // an app's requests go through its world's loader: here, to the stand-in above (or a test's own)
-      outboundFetch: (url, init) => globalThis.fetch(url, init),
+      scriptFetch: (url, init) => globalThis.fetch(url, init),
     },
     ui: {
       suppressors: 0,

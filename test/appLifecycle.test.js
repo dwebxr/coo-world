@@ -58,7 +58,7 @@ function makeApp(script, hostFetch = () => assert.fail('no fetch expected')) {
     setHot() {},
     loader: {
       get: type => (type === 'script' ? { exec: script } : { toNodes: root }),
-      outboundFetch: (...args) => hostFetch(...args),
+      scriptFetch: (...args) => hostFetch(...args),
     },
   })
   world.apps = new Apps(world)
@@ -127,7 +127,7 @@ test('app.fetch: a successful request resolves with the whitelisted response; th
   assert.ok(seen[0].init.signal instanceof AbortSignal)
 })
 
-// A script's request is the world's to make: App.fetchFor asks the world's loader (ServerLoader.outboundFetch on the
+// A script's request is the world's to make: App.fetchFor asks the world's loader (ServerLoader.scriptFetch on the
 // server and the node agent: public addresses only, bounded; the browser's fetch on a client), never the global
 // fetch, and names the app as the caller.
 test('app.fetch: the request is made by the world loader, for this app; the global fetch is never called', async () => {
@@ -158,7 +158,7 @@ test('app.fetch: a world whose loader makes no outbound requests starts none (th
   globalThis.fetch = () => assert.fail('the global fetch was called')
   try {
     const { world } = makeApp((_w, _a, fetch) => (fetchFn = fetch))
-    delete world.loader.outboundFetch
+    delete world.loader.scriptFetch
     const err = await fetchFn('https://example.com/x').then(
       () => assert.fail('resolved'),
       e => e
@@ -190,7 +190,7 @@ test('app.fetch on the server: loopback is refused before anything connects; req
       resolve6: (_host, done) => done(Object.assign(new Error('no data'), { code: 'ENODATA' })),
       cancel() {},
     })
-    world.loader.outboundFetch = createOutboundFetch({ resolver })
+    world.loader.scriptFetch = createOutboundFetch({ resolver })
     for (const url of [
       `${base}/x`,
       `http://a-name.example:${server.address().port}/x`,
@@ -212,7 +212,7 @@ test('app.fetch on the server: loopback is refused before anything connects; req
 
     // the same server made reachable (as a trusted origin is): the per-app bound of 4 requests in flight
     const policy = createOutboundFetch({ isAllowedAddress: () => true, timeoutMs: 5000 })
-    world.loader.outboundFetch = policy
+    world.loader.scriptFetch = policy
     assert.equal(await (await fetchFn(`${base}/x`)).text(), 'local')
     const held = Array.from({ length: OUTBOUND_DEFAULTS.perKey }, () => fetchFn(`${base}/hold`))
     while (waiting.length < OUTBOUND_DEFAULTS.perKey) await tick()

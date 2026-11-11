@@ -23,7 +23,8 @@ const NAME_MAX_TOKENS = 4096
 
 // the script of the app ClientAI.create places before it asks: a "generating…" display (src/world/assets/ai.js)
 const PLACEHOLDER_SCRIPT = 'asset://ai.js'
-// how many placeholder apps of one blueprint may wait for the actions on it to end (ClientAI makes one a blueprint)
+// how many placeholder apps of one blueprint refused requests may leave waiting for the actions on it to end
+// (ClientAI makes one a blueprint)
 const PLACEHOLDERS_WAITING_MAX = 8
 
 /**
@@ -134,7 +135,7 @@ export class ServerAI extends System {
       if (left > 0) this.running.set(blueprintId, left)
       else this.running.delete(blueprintId)
       done()
-      this.dropPlaceholder(request)
+      this.dropPlaceholder(request, true)
       if (left <= 0) {
         // the last action on this blueprint ended: the placeholders that waited for it are decided now, whatever
         // this action was (an edit that failed on a placeholder whose own create had failed before it)
@@ -153,11 +154,12 @@ export class ServerAI extends System {
   // being one that cleans up. Only this request's placeholder goes: the action is a create, the app named by
   // appId is of the action's blueprint, that blueprint still runs the placeholder script, and no admitted action
   // runs on it (so a refused request cannot take away the placeholder of one that runs). While one runs, the
-  // removal waits for the last of them to end and is decided again then (run): a few apps of that blueprint, and
-  // only for blueprints with a running action, so the list is bounded by AI_MAX_CONCURRENT. A builder may remove any
+  // removal waits for the last of them to end and is decided again then (run). The list is kept only for
+  // blueprints with a running action and holds apps of that blueprint only: the app of every admitted create that
+  // ended meanwhile (as many as were admitted), and a few named by refused requests, which cost nothing to send. A builder may remove any
   // app (ServerNetwork.onEntityRemoved), so this lets no one remove what they could not. The blueprint stays,
   // unused: the protocol has no way to remove a blueprint.
-  dropPlaceholder({ name, blueprintId, appId }) {
+  dropPlaceholder({ name, blueprintId, appId }, admitted = false) {
     if (name !== 'create' || typeof appId !== 'string') return
     if (this.world.blueprints.get(blueprintId)?.script !== PLACEHOLDER_SCRIPT) return
     if (this.world.network.stopping) return
@@ -166,7 +168,7 @@ export class ServerAI extends System {
     if (this.running.has(blueprintId)) {
       let waiting = this.waiting.get(blueprintId)
       if (!waiting) this.waiting.set(blueprintId, (waiting = new Set()))
-      if (waiting.size < PLACEHOLDERS_WAITING_MAX) waiting.add(appId)
+      if (admitted || waiting.size < PLACEHOLDERS_WAITING_MAX) waiting.add(appId)
       return
     }
     try {

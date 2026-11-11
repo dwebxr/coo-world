@@ -739,6 +739,29 @@ test('ServerAI: a create that is refused, fails or runs out of time removes its 
     assert.deepEqual(stage.removed, ['ph-app', ...Array.from({ length: 7 }, (_, i) => `copy-${i}`)])
     assert.equal(stage.ai.waiting.size, 0)
   }
+  // an admitted create's own app waits even when refused requests have filled the list
+  {
+    const stage = makeAI({ AI_MAX_CONCURRENT: '2' })
+    placeholder(stage)
+    for (let i = 0; i < 8; i++) placeholder(stage, 'ph', `copy-${i}`)
+    stage.ai.world.loader = { get: () => ({ code: 'old()' }) }
+    assert.equal(stage.ai.onAction(create, 'user:a'), null)
+    assert.equal(
+      stage.ai.onAction({ name: 'edit', blueprintId: 'ph', appId: 'ph-app', prompt: 'spin' }, 'user:b'),
+      null
+    )
+    for (let i = 0; i < 8; i++) {
+      assert.equal(stage.ai.onAction({ ...create, appId: `copy-${i}` }, 'user:c'), AI_REFUSALS.world_busy)
+    }
+    await settle()
+    ask(stage.asks, 'classify').resolve('Cube')
+    ask(stage.asks, 'create').reject(new Error('overloaded'))
+    await settle()
+    assert.deepEqual(stage.removed, [])
+    ask(stage.asks, 'edit').reject(new Error('overloaded'))
+    await settle()
+    assert.deepEqual([...stage.removed].sort(), ['ph-app', ...Array.from({ length: 8 }, (_, i) => `copy-${i}`)].sort())
+  }
 })
 
 // The provider clients with fake SDKs and a fake fetch: what each request asks for and what a cut-off reply does

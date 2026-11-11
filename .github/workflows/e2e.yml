@@ -58,8 +58,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # --with-deps installs system packages with apt. The runner's package mirrors have been unreachable for hours
+      # at a time (name resolution), and apt then waits several minutes per index before it gives up; one leg sat
+      # in this step until the job's 60 minutes were over. So the step is bounded, and tried again after a pause.
       - name: Install browser
-        run: npx playwright install --with-deps ${{ matrix.engine }}
+        timeout-minutes: 20
+        run: |
+          for attempt in 1 2 3; do
+            if timeout 360 npx playwright install --with-deps ${{ matrix.engine }}; then
+              exit 0
+            fi
+            echo "::warning title=Install browser::attempt $attempt failed (${{ matrix.engine }})"
+            sleep 30
+          done
+          echo "::error title=Install browser::the browser or its system packages could not be installed (three attempts); nothing was tested"
+          exit 1
 
       # client/viewer/node-client builds each empty build/, so the server build runs last
       - name: Build (client)

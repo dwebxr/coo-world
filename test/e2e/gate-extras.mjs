@@ -487,10 +487,29 @@ try {
           }
           await route.continue()
         })
+        // The page itself notes each message as it is added. Looking from here cannot be relied on: goto() returns
+        // at DOMContentLoaded, which waits for the delayed app script, and the middle message is moved within a
+        // second of the app drawing, so on a slow runner it has come and gone before this script looks.
+        await p.addInitScript(() => {
+          window.__bootBoxes = []
+          new MutationObserver(records => {
+            for (const record of records) {
+              for (const node of record.addedNodes) {
+                if (node.nodeType === 1 && node.classList.contains('boot-error')) {
+                  window.__bootBoxes.push(node.className)
+                }
+              }
+            }
+          }).observe(document, { childList: true, subtree: true })
+        })
       })
       try {
-        await shown(probe, '.boot-error.blocking', 15000 * TIMEOUT_SCALE, probeErrors)
-        await shown(probe, '.boot-error.notice', 30000 * TIMEOUT_SCALE, probeErrors)
+        await shown(probe, '.boot-error.notice', 45000 * TIMEOUT_SCALE, probeErrors)
+        eq(
+          JSON.stringify(await probe.evaluate(() => window.__bootBoxes)),
+          JSON.stringify(['boot-error blocking', 'boot-error notice']),
+          'the message in the middle first, then the notice'
+        )
         ok(await probe.evaluate(() => !document.querySelector('.boot-error.blocking')), 'moved out of the middle')
         eq(probeErrors.length, 0, probeErrors.join(' | '))
       } finally {

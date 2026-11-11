@@ -155,19 +155,21 @@ export class ServerAI extends System {
   // appId is of the action's blueprint, that blueprint still runs the placeholder script, and no admitted action
   // runs on it (so a refused request cannot take away the placeholder of one that runs). While one runs, the
   // removal waits for the last of them to end and is decided again then (run). The list is kept only for
-  // blueprints with a running action and holds apps of that blueprint only: the app of every admitted create that
-  // ended meanwhile (as many as were admitted), and a few named by refused requests, which cost nothing to send. A builder may remove any
+  // blueprints with a running action and holds apps that are of that blueprint now: the app of every admitted
+  // create that ended meanwhile, and a few named by refused requests, which cost nothing to send. A builder may remove any
   // app (ServerNetwork.onEntityRemoved), so this lets no one remove what they could not. The blueprint stays,
   // unused: the protocol has no way to remove a blueprint.
   dropPlaceholder({ name, blueprintId, appId }, admitted = false) {
     if (name !== 'create' || typeof appId !== 'string') return
     if (this.world.blueprints.get(blueprintId)?.script !== PLACEHOLDER_SCRIPT) return
     if (this.world.network.stopping) return
-    const app = this.world.entities.get(appId)
-    if (!app?.isApp || app.data.blueprint !== blueprintId) return
+    if (!this.isAppOf(appId, blueprintId)) return
     if (this.running.has(blueprintId)) {
       let waiting = this.waiting.get(blueprintId)
       if (!waiting) this.waiting.set(blueprintId, (waiting = new Set()))
+      // what was removed or given another blueprint meanwhile waits no longer: the list never holds more than the
+      // blueprint's apps, however long actions keep overlapping on it
+      for (const id of waiting) if (!this.isAppOf(id, blueprintId)) waiting.delete(id)
       if (admitted || waiting.size < PLACEHOLDERS_WAITING_MAX) waiting.add(appId)
       return
     }
@@ -181,6 +183,11 @@ export class ServerAI extends System {
     }
     this.world.network.send('entityRemoved', appId)
     console.log(`[ai] placeholder app ${previewValue(appId, 16)} removed`)
+  }
+
+  isAppOf(appId, blueprintId) {
+    const app = this.world.entities.get(appId)
+    return !!app?.isApp && app.data.blueprint === blueprintId
   }
 
   // A generated change passes the same world budgets as a builder's edit (Blueprints.budgetRefusal: the blueprint

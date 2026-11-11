@@ -762,6 +762,27 @@ test('ServerAI: a create that is refused, fails or runs out of time removes its 
     await settle()
     assert.deepEqual([...stage.removed].sort(), ['ph-app', ...Array.from({ length: 8 }, (_, i) => `copy-${i}`)].sort())
   }
+  // creates that keep failing on a blueprint that stays busy do not pile up: an app removed meanwhile waits no longer
+  {
+    const stage = makeAI({ AI_MAX_CONCURRENT: '9' })
+    placeholder(stage)
+    stage.ai.world.loader = { get: () => ({ code: 'old()' }) }
+    assert.equal(
+      stage.ai.onAction({ name: 'edit', blueprintId: 'ph', appId: 'ph-app', prompt: 'spin' }, 'user:b'),
+      null
+    )
+    for (let i = 0; i < 6; i++) {
+      placeholder(stage, 'ph', `gen-${i}`)
+      assert.equal(stage.ai.onAction({ ...create, appId: `gen-${i}` }, `user:c${i}`), null)
+      await settle()
+      for (const entry of stage.asks) if (entry.name !== 'edit') entry.reject(new Error('overloaded'))
+      await settle()
+      assert.deepEqual([...stage.ai.waiting.get('ph')], [`gen-${i}`])
+      // its builder removes it by hand
+      stage.apps.delete(`gen-${i}`)
+    }
+    assert.deepEqual(stage.removed, [])
+  }
 })
 
 // The provider clients with fake SDKs and a fake fetch: what each request asks for and what a cut-off reply does

@@ -92,8 +92,9 @@ export function createAiBudget(limits = AI_LIMIT_DEFAULTS, { now = () => perform
     if (recent(starts, time).length >= perHour) return { ok: false, reason: 'world_limit' }
     if (!user) {
       if (users.size >= MAX_KEYS && time >= sweepAt) forget(time)
-      // Still full: every key started within the hour or still runs (which takes AI_MAX_PER_HOUR near or above the
-      // table's size). A new key is refused, and the keys already counted are kept: forgetting one would give it a
+      // Still full: every key started within the hour or still runs. That takes AI_MAX_PER_HOUR near the table's
+      // size, or actions that run for hours (AI_MAX_SECONDS and AI_MAX_CONCURRENT both raised far above their
+      // defaults). A new key is refused, and the keys already counted are kept: forgetting one would give it a
       // fresh hour.
       if (users.size >= MAX_KEYS) return { ok: false, reason: 'world_full' }
       user = { running: 0, starts: [] }

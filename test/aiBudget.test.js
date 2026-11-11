@@ -687,6 +687,58 @@ test('ServerAI: a create that is refused, fails or runs out of time removes its 
     assert.deepEqual(stage.removed, kept ? [] : ['ph-app'], label)
     assert.equal(stage.ai.budget.stats().running, 0, label)
   }
+  // another builder's edit runs on the placeholder's blueprint when the create fails: the removal waits for the
+  // edit, and is decided when the edit ends: removed when it left the placeholder script, kept when it made one
+  for (const [label, editEnds, kept] of [
+    ['the edit fails too', 'reject', false],
+    ['the edit makes a script', 'resolve', true],
+  ]) {
+    const stage = makeAI()
+    placeholder(stage)
+    stage.ai.world.loader = { get: () => ({ code: 'old()' }) }
+    assert.equal(stage.ai.onAction(create, 'user:a'), null)
+    assert.equal(
+      stage.ai.onAction({ name: 'edit', blueprintId: 'ph', appId: 'ph-app', prompt: 'spin' }, 'user:b'),
+      null
+    )
+    await settle()
+    ask(stage.asks, 'classify').resolve('Cube')
+    ask(stage.asks, 'create').reject(new Error('overloaded'))
+    await settle()
+    assert.equal(stage.ai.budget.stats().running, 1, `${label}: the edit still runs`)
+    assert.deepEqual(stage.removed, [], `${label}: not while the edit runs`)
+    ask(stage.asks, 'edit')[editEnds](editEnds === 'resolve' ? 'Spun()' : new Error('overloaded'))
+    await settle()
+    assert.deepEqual(stage.removed, kept ? [] : ['ph-app'], label)
+    assert.equal(stage.ai.waiting.size, 0, `${label}: nothing left waiting`)
+    assert.equal(stage.ai.budget.stats().running, 0, label)
+  }
+  // a refused create that named a running blueprint waits the same way: only apps of that blueprint, and at most
+  // a few of them
+  {
+    const stage = makeAI({ AI_MAX_CONCURRENT: '1' })
+    placeholder(stage)
+    placeholder(stage, 'ph2', 'ph2-app')
+    for (let i = 0; i < 9; i++) placeholder(stage, 'ph', `copy-${i}`)
+    stage.ai.world.loader = { get: () => ({ code: 'old()' }) }
+    const edit = { name: 'edit', blueprintId: 'ph', appId: 'ph-app', prompt: 'spin' }
+    assert.equal(stage.ai.onAction(edit, 'user:a'), null)
+    for (const appId of ['missing', 'ph2-app']) {
+      assert.equal(stage.ai.onAction({ ...create, appId }, 'user:b'), AI_REFUSALS.world_busy)
+    }
+    assert.equal(stage.ai.waiting.size, 0, 'what is not an app of the blueprint does not wait')
+    assert.equal(stage.ai.onAction(create, 'user:b'), AI_REFUSALS.world_busy)
+    for (let i = 0; i < 9; i++) {
+      assert.equal(stage.ai.onAction({ ...create, appId: `copy-${i}` }, 'user:b'), AI_REFUSALS.world_busy)
+    }
+    assert.equal(stage.ai.waiting.get('ph').size, 8)
+    assert.deepEqual(stage.removed, [])
+    await settle()
+    ask(stage.asks, 'edit').reject(new Error('overloaded'))
+    await settle()
+    assert.deepEqual(stage.removed, ['ph-app', ...Array.from({ length: 7 }, (_, i) => `copy-${i}`)])
+    assert.equal(stage.ai.waiting.size, 0)
+  }
 })
 
 // The provider clients with fake SDKs and a fake fetch: what each request asks for and what a cut-off reply does

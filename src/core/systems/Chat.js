@@ -66,7 +66,8 @@ export class Chat extends System {
     if (callback) {
       return callback({ playerId, cmd, value, args })
     }
-    if (cmd !== 'admin') {
+    // (in any letter case: the server takes `/Admin <code>` for the admin command too, and the code is in it)
+    if (cmd.toLowerCase() !== 'admin') {
       this.world.events.emit('command', eventPayload({ playerId, cmd, value, args }))
     }
     this.world.network.send('command', { cmd, value, args })

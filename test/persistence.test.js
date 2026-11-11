@@ -428,3 +428,28 @@ test(
     }
   }
 )
+
+test('a stored settings row that cannot be parsed does not make every visitor an admin', { timeout: 5000 }, async t => {
+  t.mock.method(console, 'error', () => {})
+  const saved = process.env.ADMIN_CODE
+  process.env.ADMIN_CODE = 'a-code-for-this-test'
+  t.after(() => {
+    if (saved === undefined) delete process.env.ADMIN_CODE
+    else process.env.ADMIN_CODE = saved
+  })
+  const { db, tables } = database()
+  tables.config.set('settings', { key: 'settings', value: '{' })
+  tables.config.set('spawn', { key: 'spawn', value: JSON.stringify({ position: [0, 0, 0], quaternion: [0, 0, 0, 1] }) })
+  const world = { blueprints: { add() {} }, entities: { add() {} } }
+  const network = new Network(world)
+  world.network = network
+  world.settings = new Settings(world)
+  t.after(() => network.stopForFatal())
+  network.db = table =>
+    table !== 'config' ? [] : { ...db(table), where: (_key, id) => ({ first: async () => tables.config.get(id) }) }
+  await network.start()
+  // "there is a code" was set only after a successful parse: left unset, the settings take everyone for an admin
+  assert.equal(world.settings.hasAdminCode, true)
+  assert.equal(world.settings.effectiveRank, world.settings.rank)
+  assert.ok(world.settings.effectiveRank < 2, 'not admin')
+})

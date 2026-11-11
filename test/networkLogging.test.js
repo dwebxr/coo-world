@@ -17,6 +17,8 @@ import { briefError, createLogOnce } from '../src/core/extras/logOnce.js'
 import { eventPayload } from '../src/core/extras/eventPayload.js'
 import { Ranks } from '../src/core/extras/ranks.js'
 import { sanitizeBlueprintModify } from '../src/core/extras/blueprintPolicy.js'
+import { previewValue } from '../src/core/extras/assetURL.js'
+import { adminMode, adminWaitScale, createAdminGate } from '../src/server/adminCode.js'
 
 const source = fs.readFileSync(new URL('../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
 const methods = [
@@ -29,6 +31,7 @@ const methods = [
   'onEntityRemoved',
   'onSettingsModified',
   'onAi',
+  'admin',
   'onCommand',
   'onModifyRank',
   'onSpawnModified',
@@ -76,6 +79,10 @@ function fixture() {
     isKnownSettingKey,
     normalizeSettingValue,
     briefError,
+    previewValue,
+    adminMode,
+    adminWaitScale,
+    createAdminGate,
     eventPayload,
     moment,
     Ranks,
@@ -231,10 +238,26 @@ for (const [index, [key, message, refuse]] of refusals.entries()) {
       await refuse(f, s, 'different-id'.repeat(100))
       await refuse(f, s, id)
     }
-    assert.deepEqual(f.lines, Array(2).fill(`${message}: ${'i'.repeat(64)}`))
+    // the id as previewValue gives it: quoted, cut at 64 characters with a mark (a blueprint id reaches its handler
+    // already cut to 64 by the policy, so it has no mark)
+    const shown = JSON.stringify('i'.repeat(64) + (key === 'blueprint-missing' ? '' : '...'))
+    assert.deepEqual(f.lines, Array(2).fill(`${message}: ${shown}`))
     assert.ok(f.calls.every(call => call.key === key && (call.subject === a || call.subject === b)))
   })
 }
+
+test('handler logging: an id with a line break or control characters cannot start a log line of its own', async () => {
+  const f = fixture()
+  const s = f.socket()
+  const forged = 'x\n[network] admin granted to everyone\r\u001b[2J\u2028y'
+  await f.network.onEntityModified(s, packet({ id: forged }))
+  await f.network.onSettingsModified(s, packet({ key: forged }))
+  assert.equal(f.lines.length, 2)
+  for (const line of f.lines) {
+    assert.ok(!/[\n\r\u001b\u2028]/.test(line), JSON.stringify(line))
+    assert.match(line, /: "x\?\[network\] admin granted to everyone\?\?\[2J\?y"$/)
+  }
+})
 
 test('handler logging: builder refusals use builder:<action> and a bounded socket id', () => {
   const f = fixture()
@@ -254,7 +277,7 @@ test('handler logging: builder refusals use builder:<action> and a bounded socke
     }
   }
   assert.equal(f.lines.length, 14)
-  assert.ok(f.lines.every(line => line.endsWith(`: ${'s'.repeat(64)}`)))
+  assert.ok(f.lines.every(line => line.endsWith(`: ${JSON.stringify('s'.repeat(64) + '...')}`)))
   const builder = f.socket()
   assert.equal(f.network.requireBuilder(builder, 'add blueprint'), true)
   assert.equal(f.lines.length, 14)

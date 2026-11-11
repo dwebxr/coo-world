@@ -24,6 +24,7 @@ import { collections } from './collections'
 import { cleaner } from './cleaner'
 import { errorHandler } from './errorHandler'
 import { checkJwtSecret } from './jwtSecret'
+import { adminMode, adminStartupNotes } from './adminCode'
 import { escapeHtml } from './escapeHtml'
 import { walletOf } from './solana-gating'
 import { clientIpKeys, createUploadLimits, readUploadLimitsEnv } from './uploadLimits'
@@ -42,9 +43,8 @@ if (!process.env.PORT) {
   throw new Error('[envs] PORT not set')
 }
 checkJwtSecret(process.env.JWT_SECRET)
-if (!process.env.ADMIN_CODE) {
-  console.warn('[envs] ADMIN_CODE not set - all users will have admin permissions!')
-}
+// the admin mode (a code, open to all, or locked: adminCode.js) and what there is to say about it
+for (const note of adminStartupNotes(process.env)) console[note.level](note.message)
 if (!process.env.SAVE_INTERVAL) {
   throw new Error('[envs] SAVE_INTERVAL not set')
 }
@@ -57,6 +57,11 @@ if (!(maxUploadSize > 0)) {
 }
 const uploadLimitsConfig = readUploadLimitsEnv(process.env) // UPLOAD_*; throws on a bad value
 const connectionLimitsConfig = readConnectionLimitsEnv(process.env) // WS_CONNECT_*; throws on a bad value
+// what the per-address limits (connections, uploads, wrong admin codes) take for a client's address: behind a proxy
+// that is not named here every client has the proxy's
+console.log(
+  `[envs] client addresses are read from ${uploadLimitsConfig.clientIpHeader ? `the ${uploadLimitsConfig.clientIpHeader} header` : 'the connection itself'}`
+)
 const storageLimits = readStorageLimitsEnv(process.env) // STORAGE_*; throws on a bad value
 // days the clean-up keeps what it removes in <world>/assets-trash (ASSETS=local); 0 deletes at once
 const cleanTrashDays = ['', undefined].includes(process.env.CLEAN_TRASH_DAYS)
@@ -257,7 +262,8 @@ fastify.get('/status', async (request, reply) => {
   try {
     const status = {
       uptime: Math.round(world.time),
-      protected: process.env.ADMIN_CODE !== undefined ? true : false,
+      // whether admin rights need something: a code, or (locked) a stored rank
+      protected: adminMode(process.env) !== 'open',
       connectedUsers: [],
       commitHash: process.env.COMMIT_HASH,
       uploads: uploadLimits.stats(),
@@ -312,7 +318,9 @@ async function worldNetwork(fastify) {
       ws.close(1008, 'outdated')
       return
     }
-    world.network.onConnection(ws, req.query)
+    // the address the connection limits counted it under: the brake on wrong admin codes uses the same key
+    const header = uploadLimitsConfig.clientIpHeader
+    world.network.onConnection(ws, req.query, clientIpKeys(header ? req.headers[header] : undefined, req.ip))
   })
 }
 

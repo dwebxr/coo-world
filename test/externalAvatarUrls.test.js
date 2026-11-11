@@ -373,7 +373,23 @@ async function ownClient(w, who) {
       network: { send: (name, data) => outbox.push([name, data]) },
       emit() {},
     },
-    base: { add: node => (p.installed = node.url) },
+    base: {
+      children: [],
+      // a node added is mounted at once, as an Avatar from the loader's toNodes() is (it carries its factory)
+      add(node) {
+        node.parent = this
+        this.children.push(node)
+        node.instance = { headToHeight: 1.6, height: 1.8 }
+        p.installed = node.url
+      },
+      remove(node) {
+        const index = this.children.indexOf(node)
+        if (index === -1) return
+        node.deactivate()
+        node.parent = null
+        this.children.splice(index, 1)
+      },
+    },
     nametag: { position: {}, active: false },
     bubble: { position: {}, active: false },
   })
@@ -399,7 +415,21 @@ async function ownClient(w, who) {
 }
 
 function avatarNode(url) {
-  return { url, deactivate() {}, getHeadToHeight: () => 1.6, disableRateCheck() {}, height: 1.8 }
+  return {
+    url,
+    visible: true,
+    instance: null,
+    deactivate() {
+      this.instance = null
+    },
+    getHeadToHeight() {
+      return this.instance?.headToHeight || null
+    },
+    disableRateCheck() {},
+    get height() {
+      return this.instance?.height || null
+    },
+  }
 }
 
 const A = 'asset://a.vrm'

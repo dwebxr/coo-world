@@ -390,6 +390,19 @@ test('a value met twice is read once, also a function with a toJSON and an owner
   for (const [, write] of WRITERS) {
     assert.equal(bytes(write(proxied)), bytes(write(new Proxy(new TypeError('boom', { cause: 7 }), {}))))
   }
+  // a Map over a prototype chain that passes through Error's is a Map (Codex: asked first, the error check made
+  // it an error and its entries were lost)
+  const map = new Map([['x', 1]])
+  Object.setPrototypeOf(map, new Proxy(Map.prototype, { getPrototypeOf: () => Error.prototype }))
+  assert.ok(map instanceof Error)
+  const mapCopy = readScriptData(map)
+  assert.equal(mapCopy.constructor, Map)
+  assert.deepEqual([...mapCopy], [['x', 1]])
+  // and an instance of a class that extends Error is an error
+  class Failure extends Error {}
+  const failure = readScriptData(new Failure('failed'))
+  assert.ok(failure instanceof Error)
+  assert.equal(failure.message, 'failed')
 })
 
 test('the values of a message are counted: an array that says any length is refused before it is read', () => {

@@ -173,6 +173,16 @@ function readJSON(value, state, otherwise) {
 
 function readBuiltIn(value, state) {
   const { seen } = state
+  // What a value says it is decides nothing, but one that says it is an ordinary object is not asked whether it
+  // is a Map, a Date and so on (each such question is a refused call for a class instance): a built-in that hides
+  // behind that tag is copied as the ordinary object it claims to be.
+  if (tagOf.call(value) !== '[object Object]') {
+    const built = readBranded(value, seen, state)
+    if (built !== missing) return built
+  }
+  // An error has no mark of its own to ask for, so it is told by its prototypes, after everything that has one (a
+  // Map over a prototype chain that passes through Error's is a Map), and also when it says it is an ordinary
+  // object: a Proxy of an error says so, and the packer took it for the error it stands for.
   if (value instanceof Error) {
     // what the packer writes of an error: its name, its message and its cause
     const copy = new Error('')
@@ -182,10 +192,11 @@ function readBuiltIn(value, state) {
     put(copy, 'cause', read(value.cause, state))
     return copy
   }
-  // (what a value says it is decides nothing, but one that says it is an ordinary object is not asked further: a
-  // built-in that hides behind that tag is copied as the ordinary object it claims to be. An error is asked first:
-  // a Proxy of one says it is an ordinary object, and the packer took it for the error it stands for)
-  if (tagOf.call(value) === '[object Object]') return missing
+  return missing
+}
+
+// the built-ins that are told by a mark of their own: a typed array, a Date, an ArrayBuffer, a Map, a Set, a RegExp
+function readBranded(value, seen, state) {
   const kind = typedArrayKind.call(value)
   if (kind !== undefined) {
     const Type = TYPED[kind]

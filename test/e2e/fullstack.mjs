@@ -13,7 +13,18 @@ import Database from 'better-sqlite3'
 import { Packr } from 'msgpackr'
 import WebSocket from 'ws'
 
-import { APPS_DIR, REPO_ROOT, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
+import {
+  APPS_DIR,
+  REPO_ROOT,
+  TIMEOUT_SCALE,
+  arg,
+  createResults,
+  ensureOut,
+  eq,
+  ok,
+  sleep,
+  waitUntil,
+} from './lib/common.mjs'
 import { waitForMemoryToSettle } from './lib/memory.mjs'
 import { installAsset, startServer } from './lib/server.mjs'
 import { WireClient, snapshot } from './lib/ws.mjs'
@@ -862,55 +873,72 @@ async function probes(admin, watcher) {
   })
 
   // its own server: wrong codes leave this machine's address slowed for a quarter of an hour, and every other step
-  // becomes admin from the same address
+  // becomes admin from the same address. What is checked here is the wiring through a real server and real sockets;
+  // when a wait is in force is left to test/adminCode.test.js (an injected clock), so nothing below depends on how
+  // fast this machine runs.
   await step(
-    'A14b wrong admin codes are answered, slowed, and end with the socket closed; the right code still works afterwards',
+    'A14b wrong admin codes are answered to their socket and end with it closed; the right code still works afterwards',
     async () => {
       const port = PORT + 2
       const code = 'e2e-admin-code-long-enough'
       const braked = await startServer({
         port,
         logPath: path.join(OUT, `fullstack-${ENGINE}-admin-server.log`),
-        // the waits at a fifth of their length: 2 s after the fourth wrong code
-        env: { ADMIN_CODE: code, ADMIN_ATTEMPT_WAIT_SCALE: '0.2' },
+        // the waits at a tenth of their length: 1 s after the third wrong code, 6 s at the most
+        env: { ADMIN_CODE: code, ADMIN_ATTEMPT_WAIT_SCALE: '0.1' },
       })
-      let guesser
-      let admin
+      const clients = []
+      const connect = async label => {
+        const client = await new WireClient(port, label).connect()
+        clients.push(client)
+        return client
+      }
+      const said = (client, body) => client.inbox.filter(m => m.method === 'onChatAdded' && m.data.body === body).length
+      const ranked = client => client.inbox.some(m => m.method === 'onEntityModified' && m.data.rank === 2)
+      const WRONG = 'Wrong admin code.'
+      const WAIT = 'Too many attempts. Try again later.'
       try {
-        guesser = await new WireClient(port, 'guesser').connect()
-        const said = body => guesser.inbox.filter(m => m.method === 'onChatAdded' && m.data.body === body).length
-        const ranked = () => guesser.inbox.some(m => m.method === 'onEntityModified' && m.data.rank === 2)
-        for (let i = 0; i < 4; i++) guesser.send('command', { args: ['admin', `guess-${i}`] })
-        await waitUntil(() => said('Wrong admin code.') === 4, { timeout: 10000, message: 'four wrong codes answered' })
-        // inside the wait the right code is not looked at, and the player is told once
-        for (let i = 0; i < 3; i++) guesser.send('command', { args: ['admin', code] })
-        await waitUntil(() => said('Too many attempts. Try again later.') >= 1, {
-          timeout: 10000,
-          message: 'the wait to be said',
-        })
-        await sleep(300)
-        eq(said('Too many attempts. Try again later.'), 1, 'said once for the wait')
-        ok(!ranked(), 'the right code inside the wait granted nothing')
-        // a socket that keeps trying is closed (its 21st attempt), with a reason the client can show
-        for (let i = 0; i < 20; i++) guesser.send('command', { args: ['Admin', 'again'] })
-        const closed = await Promise.race([guesser.closed, sleep(10000).then(() => 'still open')])
-        ok(closed !== 'still open', 'the socket was closed')
+        const witness = await connect('witness')
+        const guesser = await connect('guesser')
+        let closeCode
+        guesser.closed.then(value => (closeCode = value))
+        // the first three wrong codes from an address are each looked at and answered, whatever the spelling
+        ;['admin', 'Admin', 'ADMIN'].forEach((cmd, i) => guesser.send('command', { args: [cmd, `guess-${i}`] }))
+        await waitUntil(() => said(guesser, WRONG) === 3, { timeout: 10000, message: 'three wrong codes answered' })
+        // a socket that keeps trying is closed at its 21st attempt, whether its attempts are looked at or refused
+        for (let i = 3; i < 23; i++) guesser.send('command', { args: [' aDmIn ', `guess-${i}`] })
+        await waitUntil(() => closeCode !== undefined, { timeout: 10000, message: 'the socket to be closed' })
         ok(
           guesser.inbox.some(m => m.method === 'onKick' && m.data === 'admin_attempts'),
           'kick code sent'
         )
-        ok(!ranked(), 'never admin')
-        eq(braked.count(code), 0, 'the code is not in the server log')
-        // after the wait a new connection from this address becomes admin with the right code
-        await sleep(2500)
-        admin = await new WireClient(port, 'admin').connect()
-        await admin.becomeAdmin(code)
+        ok(!ranked(guesser), 'never admin')
+        eq(said(witness, WRONG) + said(witness, WAIT), 0, 'the answers went to the socket that tried, and no other')
+        // the right code from a new connection on this address makes it admin once the address's wait allows: each
+        // try on a connection of its own (a refused try is told on its own line), until a deadline
+        const deadline = Date.now() + 60000 * TIMEOUT_SCALE
+        let tries = 0
+        for (;;) {
+          ok(Date.now() < deadline, `admin within the deadline (${tries} tries refused)`)
+          const client = await connect(`admin-${++tries}`)
+          client.send('command', { args: ['Admin', code] })
+          const reply = await client.waitFor(
+            m =>
+              (m.method === 'onEntityModified' && m.data.id === client.id && m.data.rank === 2) ||
+              (m.method === 'onChatAdded' && m.data.body === WAIT),
+            { timeout: 10000 * TIMEOUT_SCALE }
+          )
+          if (reply.method === 'onEntityModified') break
+          client.close()
+          await sleep(500)
+        }
         const status = await (await fetch(`http://localhost:${port}/status`)).json()
         eq(status.protected, true, '/status says the world is protected')
-        return 'four answered, one wait said, socket closed at its 21st attempt, admin granted after the wait'
+        eq(braked.count(code), 0, 'the code is not in the server log')
+        eq(braked.count('guess-'), 0, 'no candidate is in the server log')
+        return `three answered, socket closed at its 21st attempt, admin on try ${tries}`
       } finally {
-        guesser?.close()
-        admin?.close()
+        for (const client of clients) client.close()
         await braked.stop()
       }
     }

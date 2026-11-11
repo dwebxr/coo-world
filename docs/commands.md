@@ -6,7 +6,7 @@ There are a few commands that can be used by entering them in the chat.
 
 If your world has an admin code set, the only way to become an admin is to use this command with your code (see your .env file). Entering the code again gives admin up. An admin's rank is stored with their user, so the code is needed once per browser, not on every visit.
 
-A wrong code is answered with "Wrong admin code." After three wrong codes, further attempts from the same user or network address have to wait (10 seconds, growing to a minute), and a connection that keeps trying is closed. This only slows guessing down: what protects a world is the code itself. Use 16 or more random characters, without spaces (the command is split on spaces).
+A wrong code is answered with "Wrong admin code." After three wrong codes, further attempts from the same user or network address have to wait (10 seconds, growing to a minute), and a connection that keeps trying is closed. This only slows guessing down: what protects a world is the code itself. Use 16 or more random characters, without spaces (the command is split on spaces) and no more than 493 (what a chat line leaves after `/admin `).
 
 If your .env doesn't have an ADMIN_CODE set:
 

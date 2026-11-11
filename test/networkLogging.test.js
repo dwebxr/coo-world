@@ -19,6 +19,7 @@ import { Ranks } from '../src/core/extras/ranks.js'
 import { sanitizeBlueprintModify } from '../src/core/extras/blueprintPolicy.js'
 import { previewValue } from '../src/core/extras/assetURL.js'
 import { adminMode, adminWaitScale, createAdminGate } from '../src/server/adminCode.js'
+import { isAdminCommand } from '../src/core/extras/chatCommand.js'
 
 const source = fs.readFileSync(new URL('../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
 const methods = [
@@ -83,6 +84,7 @@ function fixture() {
     adminMode,
     adminWaitScale,
     createAdminGate,
+    isAdminCommand,
     eventPayload,
     moment,
     Ranks,
@@ -254,7 +256,7 @@ test('handler logging: an id with a line break or control characters cannot star
   await f.network.onSettingsModified(s, packet({ key: forged }))
   assert.equal(f.lines.length, 2)
   for (const line of f.lines) {
-    assert.ok(!/[\n\r\u001b\u2028]/.test(line), JSON.stringify(line))
+    assert.ok(!['\n', '\r', '\u001b', '\u2028'].some(character => line.includes(character)), JSON.stringify(line))
     assert.match(line, /: "x\?\[network\] admin granted to everyone\?\?\[2J\?y"$/)
   }
 })

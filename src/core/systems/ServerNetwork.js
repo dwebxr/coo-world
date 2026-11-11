@@ -23,6 +23,7 @@ import {
 } from '../extras/entityModifyPolicy'
 import { createRelayDrop } from '../extras/playerRelayPolicy'
 import { appChatLine, sanitizeChatMessage } from '../extras/chatPolicy'
+import { isAdminCommand } from '../extras/chatCommand'
 import { sanitizeBlueprintAdd, sanitizeBlueprintModify, WORLD_BLUEPRINT_BYTES } from '../extras/blueprintPolicy'
 import { previewValue } from '../extras/assetURL'
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../extras/settingsPolicy'
@@ -1079,10 +1080,11 @@ export class ServerNetwork extends System {
     const player = socket.player
     const playerId = player.data.id
     const [cmd, arg1, arg2] = args
-    // The admin command, in any letter case: it is never handed on as a command event (the code is in it). A wrong
-    // code is answered and, past a few, slowed down (adminCode.js); this socket's line only, never a broadcast.
-    const isAdminCommand = typeof cmd === 'string' && cmd.toLowerCase() === 'admin'
-    if (isAdminCommand) {
+    // The admin command (chatCommand.js, as the client decides it): it is never handed on as a command event (the
+    // code is in it). A wrong code is answered and, past a few, slowed down (adminCode.js); this socket's line only,
+    // never a broadcast.
+    const adminCommand = isAdminCommand(args)
+    if (adminCommand) {
       const attempt = this.admin().gate.attempt(
         { socket, user: player.data.userId, address: socket.addressKey, parents: socket.addressParents },
         arg1
@@ -1202,7 +1204,7 @@ export class ServerNetwork extends System {
       }
     }
     // emit event for all except admin
-    if (!isAdminCommand) {
+    if (!adminCommand) {
       this.world.events.emit('command', eventPayload({ playerId, args }))
     }
   }

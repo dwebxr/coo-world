@@ -3,8 +3,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { makeNetwork } from './lib/networkHarness.mjs'
+import { fakeWs, makeNetwork } from './lib/networkHarness.mjs'
+import { clientWorld, loadClient } from './lib/clientHarness.mjs'
+import { fixture as joinFixture, sentTo } from './lib/joinFixture.mjs'
 import { Ranks } from '../src/core/extras/ranks.js'
+import { packetNodeLimit } from '../src/core/extras/inboundPolicy.js'
+import { readInboundPacket } from '../src/server/inboundDecode.js'
 
 const CODE = 'a-long-random-admin-code'
 
@@ -97,10 +101,10 @@ test('the admin command is never handed on as a command event, in any letter cas
   assert.deepEqual([...f.commands[0][1].args], ['dance', 'now'])
 })
 
-test('after three wrong codes the fourth starts a wait: the right code is refused during it, unread, and said once', async () => {
+test('the third wrong code starts a wait: the right code is refused during it, unread, and said once', async () => {
   const f = fixture()
   const socket = f.connect()
-  for (let i = 0; i < 4; i++) await f.admin(socket, 'guess')
+  for (let i = 0; i < 3; i++) await f.admin(socket, 'guess')
   await f.admin(socket, CODE)
   await f.admin(socket, CODE)
   assert.equal(socket.player.data.rank, Ranks.VISITOR, 'not admin: the code was not looked at')
@@ -108,17 +112,137 @@ test('after three wrong codes the fourth starts a wait: the right code is refuse
     'Wrong admin code.',
     'Wrong admin code.',
     'Wrong admin code.',
-    'Wrong admin code.',
     'Too many attempts. Try again later.',
   ])
-  // the wait is the address's and the user's: another visitor from the same address waits too, one from elsewhere
-  // does not
+  // the wait is the address's and the user's: another visitor from the same address waits too (and is told so on
+  // its own line), one from elsewhere does not
   const neighbour = f.connect()
   await f.admin(neighbour, CODE)
+  await f.admin(neighbour, CODE)
   assert.equal(neighbour.player.data.rank, Ranks.VISITOR)
+  assert.deepEqual(f.said(neighbour), ['Too many attempts. Try again later.'])
   const elsewhere = f.connect({ address: '198.51.100.9' })
   await f.admin(elsewhere, CODE)
   assert.equal(elsewhere.player.data.rank, Ranks.ADMIN)
+})
+
+test('a line is the admin command on the client exactly when it is on the server: then no side hands it to scripts', async () => {
+  // the real Chat.command on a client, its packet as the server decodes it, and the real onCommand
+  const Chat = loadClient('core/systems/Chat.js', 'Chat')
+  const lines = [
+    ['/admin CODE', true],
+    ['/Admin CODE', true],
+    ['/ADMIN CODE', true],
+    ['/ Admin CODE', true],
+    ['/   admin CODE', true],
+    ['/\tAdmin CODE', true],
+    ['/Admin\t CODE', true],
+    ['/\u00a0admin CODE', true],
+    ['/admin\u3000 CODE', true],
+    ['/Admin', true],
+    ['/admin\tCODE', false],
+    ['/admin\u00a0CODE', false],
+    ['/administrator CODE', false],
+    ['/\u200badmin CODE', false],
+    ['/say admin CODE', false],
+    ['/name admin', false],
+    ['/dance', false],
+  ]
+  for (const [text, expected] of lines) {
+    const line = text.replace('CODE', CODE)
+    const world = clientWorld()
+    const clientEvents = []
+    world.events = { emit: (...args) => clientEvents.push(args) }
+    new Chat(world).command(line)
+    assert.equal(world.packets.length, 1, `${JSON.stringify(text)}: sent to the server`)
+    const [method, data] = readInboundPacket(world.packets[0], { maxNodes: packetNodeLimit('command') })
+    assert.equal(method, 'onCommand')
+    const f = fixture()
+    const gate = f.network.admin().gate
+    const looked = []
+    const attempt = gate.attempt
+    gate.attempt = (who, candidate) => (looked.push(candidate), attempt(who, candidate))
+    await f.network.onCommand(f.connect(), data)
+    const name = JSON.stringify(text)
+    assert.equal(looked.length > 0, expected, `${name}: the server takes it for the admin command`)
+    if (looked.length) {
+      assert.deepEqual(clientEvents, [], `${name}: no command event on the client`)
+      assert.deepEqual(f.commands, [], `${name}: none on the server`)
+    } else {
+      assert.equal(clientEvents.length, 1, `${name}: a command event on the client`)
+      assert.equal(f.commands.length, 1, `${name}: and on the server`)
+    }
+  }
+  // a client of someone's own making may send the first word untrimmed: it is the admin command all the same
+  for (const first of [' admin', 'ADMIN\t', '\u00a0Admin\u00a0']) {
+    const f = fixture()
+    const socket = f.connect()
+    await f.network.onCommand(socket, { args: [first, CODE] })
+    assert.equal(socket.player.data.rank, Ranks.ADMIN, JSON.stringify(first))
+    assert.deepEqual(f.commands, [])
+  }
+  // a first word that is not text, or no words at all: not the admin command, on the server either
+  for (const args of [[7, CODE], [['admin'], CODE], [{ toString: () => 'admin' }, CODE], [null, CODE], []]) {
+    const f = fixture()
+    const socket = f.connect()
+    await f.network.onCommand(socket, { args })
+    assert.equal(socket.player.data.rank, Ranks.VISITOR)
+    assert.deepEqual(socket.sent, [])
+    assert.equal(f.commands.length, 1)
+  }
+})
+
+test('the admin command is not handed to a command bound on the client under that name either', () => {
+  const Chat = loadClient('core/systems/Chat.js', 'Chat')
+  const world = clientWorld()
+  world.events = { emit: () => assert.fail('no command event') }
+  const chat = new Chat(world)
+  const called = []
+  for (const name of ['admin', 'Admin', ' Admin']) chat.bindCommand(name, action => called.push(action))
+  for (const line of ['/admin CODE', '/Admin CODE', '/ Admin CODE']) chat.command(line)
+  assert.deepEqual(called, [])
+  assert.equal(world.packets.length, 3, 'each went to the server')
+})
+
+test('connections get their address keys on joining: two from one address share its wait, one from another does not', async () => {
+  // the real onConnection, given the address keys the /ws route hands it
+  const f = joinFixture({ env: { ADMIN_CODE: CODE } })
+  const connect = async origin => {
+    const ws = fakeWs()
+    await f.network.onConnection(ws, {}, origin)
+    ws.drain()
+    const socket = [...f.network.sockets.values()].find(socket => socket.ws === ws)
+    assert.ok(socket, 'joined')
+    return socket
+  }
+  const said = socket =>
+    sentTo(socket)
+      .filter(([method]) => method === 'onChatAdded')
+      .map(([, line]) => line.body)
+  const guess = (socket, candidate = 'guess') => f.network.onCommand(socket, { args: ['admin', candidate] })
+  const here = { key: '203.0.113.20', parents: [] }
+  const first = await connect(here)
+  for (let i = 0; i < 3; i++) await guess(first)
+  assert.deepEqual(said(first), Array(3).fill('Wrong admin code.'))
+  // another user on the same address: held by the address's wait
+  const second = await connect(here)
+  await guess(second, CODE)
+  assert.deepEqual(said(second), ['Too many attempts. Try again later.'])
+  assert.equal(second.player.data.rank, Ranks.VISITOR)
+  // another address is not
+  const elsewhere = await connect({ key: '198.51.100.20', parents: [] })
+  await guess(elsewhere)
+  assert.deepEqual(said(elsewhere), ['Wrong admin code.'])
+
+  // the wider networks: 32 wrong codes from as many /64s of one /48 hold a 33rd /64 in it, not one outside it
+  const parents = ['2001:db8:7::/56', '2001:db8:7::/48']
+  for (let i = 0; i < 32; i++) await guess(await connect({ key: `2001:db8:7:${i.toString(16)}::/64`, parents }))
+  const inside = await connect({ key: '2001:db8:7:ff::/64', parents })
+  await guess(inside)
+  assert.deepEqual(said(inside), ['Too many attempts. Try again later.'])
+  const outside = await connect({ key: '2001:db8:8::/64', parents: ['2001:db8:8::/56', '2001:db8:8::/48'] })
+  await guess(outside)
+  assert.deepEqual(said(outside), ['Wrong admin code.'])
 })
 
 test('a socket that keeps trying is closed with a reason; a reconnect of the same user is still held by the wait', async () => {

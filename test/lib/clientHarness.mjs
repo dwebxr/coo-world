@@ -19,6 +19,7 @@ import {
   WORLD_BLUEPRINT_BYTES,
 } from '../../src/core/extras/blueprintPolicy.js'
 import { CHAT_BODY_MAX_LENGTH, chatEnvelope, cutText, sanitizeChatMessage } from '../../src/core/extras/chatPolicy.js'
+import { isAdminCommand, parseCommand } from '../../src/core/extras/chatCommand.js'
 import { sanitizeName, sanitizePlayerSelfModify, isEmoteUrl } from '../../src/core/extras/entityModifyPolicy.js'
 import { normalizeSettingValue } from '../../src/core/extras/settingsPolicy.js'
 import { createEventLedger } from '../../src/core/extras/appEventQueue.js'
@@ -97,6 +98,8 @@ export function loadClient(file, name, context = {}) {
     chatEnvelope,
     cutText,
     sanitizeChatMessage,
+    isAdminCommand,
+    parseCommand,
     sanitizeName,
     sanitizePlayerSelfModify,
     isEmoteUrl,

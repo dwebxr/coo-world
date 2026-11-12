@@ -49,7 +49,7 @@ import { WireClient } from './lib/ws.mjs'
 const lib = file => import(pathToFileURL(path.join(REPO_ROOT, file)))
 const { PACKET_RULES, REFUSED_EVENT_NAMES, namedCases, namesOfClass } = await lib('test/lib/packetAccess.mjs')
 const { ENV_TABLE, envNamesOf } = await lib('test/lib/envTable.mjs')
-const { PUBLIC_ENV_NAMES } = await lib('src/core/extras/publicEnv.js')
+const { SERVED_AS_BEFORE_ENV_NAMES, SERVED_ENV_NAMES } = await lib('src/core/extras/publicEnv.js')
 
 const PORT = Number(arg('port', 3131))
 const OUT = ensureOut()
@@ -138,7 +138,7 @@ const NOT_PLANTED = {
 // every sentinel begins so: this alone in a surface is a finding, whichever secret it is part of
 const SENTINEL = 'p14-sentinel-'
 // Values that are public by design, as controls that the search reads what it is given:
-const PUBLIC_MARKER = 'p14-public-marker-walletconnect' // a listed PUBLIC_ name: must be in /env.js
+const PUBLIC_MARKER = 'p14-public-marker-walletconnect' // a PUBLIC_ name the client reads: must be in /env.js
 const COMMIT_MARKER = 'p14-public-marker-commit' // COMMIT_HASH: must be in /status
 // LIVEKIT_API_KEY is the `iss` of every player's voice token, so every visitor can read it: public (envTable.mjs).
 // It is found only by decoding that token, which is the control of the decoding.
@@ -1183,7 +1183,7 @@ try {
         same([...Object.keys(SECRETS), ...Object.keys(NOT_PLANTED)].sort(), secrets.sort()),
         `every secret of envTable.mjs: ${secrets.join(', ')}`
       )
-      for (const name of PUBLIC_ENV_NAMES) eq(ENV_TABLE[name].class, 'public', name)
+      for (const name of SERVED_ENV_NAMES) eq(ENV_TABLE[name].class, 'public', name)
 
       const visitorJoin = await connect('visitor-join')
       await close(visitorJoin)
@@ -1212,19 +1212,26 @@ try {
         'percent escapes are decoded'
       )
 
-      // /env.js is the listed names that are set, and nothing else
+      // /env.js is the served names that are set, and nothing else
       const served = servedEnv(texts['/env.js'])
       ok(
-        Object.keys(served).every(name => PUBLIC_ENV_NAMES.includes(name)),
-        `only listed names: ${Object.keys(served).join(', ')}`
+        Object.keys(served).every(name => SERVED_ENV_NAMES.includes(name)),
+        `only served names: ${Object.keys(served).join(', ')}`
       )
-      ok(
-        !(UNLISTED.name in served) && !('PUBLIC_API_URL' in served) && !('PUBLIC_RPC_URL' in served),
-        'no other PUBLIC_ name'
-      )
+      ok(!(UNLISTED.name in served) && !('PUBLIC_RPC_URL' in served), 'no other PUBLIC_ name')
       eq(served.PUBLIC_WS_URL, `ws://localhost:${PORT}/ws`, 'the page still gets where to connect')
-      // the PUBLIC_ name nothing reads is named once at start-up, without its value
+      // the three it serves as before (the harness sets them: lib/server.mjs serverEnv)
+      eq(served.PUBLIC_API_URL, `http://localhost:${PORT}/api`, 'PUBLIC_API_URL, as before')
+      eq(served.PUBLIC_MAX_UPLOAD_SIZE, '12', 'PUBLIC_MAX_UPLOAD_SIZE, as before')
+      eq(served.PUBLIC_TOKEN_DECIMALS, '6', 'PUBLIC_TOKEN_DECIMALS, as before')
+      ok(
+        SERVED_AS_BEFORE_ENV_NAMES.every(name => name in served),
+        'every name served as before'
+      )
+      // the PUBLIC_ name nothing reads is named once at start-up, without its value; the RPC fallback, which is
+      // set, is not named
       eq(main.count(`[envs] not handed to the page (/env.js): ${UNLISTED.name}.`), 1, 'named once in the start log')
+      eq(main.count('PUBLIC_RPC_URL'), 0, 'PUBLIC_RPC_URL is left out without a word')
 
       // each sentinel is a value the server uses (where the run can show it)
       ok(verifies(visitorJoin.authToken, SECRETS.JWT_SECRET.value), `JWT_SECRET: ${SECRETS.JWT_SECRET.live}`)
@@ -1308,8 +1315,8 @@ try {
       eq(served.PUBLIC_EVM_CHAIN_IDS, '137', 'the chain ids are public')
       eq(served.PUBLIC_EVM_TIP_TOKENS, 'JPYC', 'the tip tokens are public')
       ok(
-        Object.keys(served).every(name => PUBLIC_ENV_NAMES.includes(name)),
-        'only listed names'
+        Object.keys(served).every(name => SERVED_ENV_NAMES.includes(name)),
+        'only served names'
       )
       ok(second.out.includes('[envs] player.getEvmHolding() asks only about'), 'EVM is on in this world')
       return `${packets} packets and ${second.out.length} bytes of log searched (${mock.rpc.length} requests reached the mock RPC)`

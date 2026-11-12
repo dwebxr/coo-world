@@ -19,6 +19,7 @@ const secret = why => ({ class: 'secret', why })
 const served = (where, why) => ({ class: 'public', served: where, why })
 const operator = why => ({ class: 'operator', why })
 const ENV_JS = '/env.js (publicEnv.js PUBLIC_ENV_NAMES)'
+const ENV_JS_AS_BEFORE = '/env.js (publicEnv.js SERVED_AS_BEFORE_ENV_NAMES)'
 
 export const ENV_TABLE = {
   // ---- secrets ----
@@ -42,8 +43,12 @@ export const ENV_TABLE = {
   PUBLIC_EVM_CHAIN_IDS: served(ENV_JS, 'the chains of EVM sign-in'),
   PUBLIC_EVM_TIP_TOKENS: served(ENV_JS, 'the tokens of the tip form'),
   PUBLIC_WALLETCONNECT_PROJECT_ID: served(ENV_JS, 'a project id that is public by design'),
-  PUBLIC_API_URL: served('the join snapshot (apiUrl)', 'where the page uploads'),
-  PUBLIC_MAX_UPLOAD_SIZE: served('the join snapshot (maxUploadSize)', 'the limit the page applies before it uploads'),
+  PUBLIC_API_URL: served(`${ENV_JS_AS_BEFORE} and the join snapshot (apiUrl)`, 'where the page uploads'),
+  PUBLIC_MAX_UPLOAD_SIZE: served(
+    `${ENV_JS_AS_BEFORE} and the join snapshot (maxUploadSize)`,
+    'the limit the page applies before it uploads'
+  ),
+  PUBLIC_TOKEN_DECIMALS: served(ENV_JS_AS_BEFORE, "the token's decimals; the server reads it, the page does not"),
   ASSETS_BASE_URL: served('the join snapshot (assetsUrl) and the page (og:url)', 'where asset:// urls load from'),
   LIVEKIT_WS_URL: served('the join snapshot (livekit.wsUrl)', 'the voice server the page connects to'),
   LIVEKIT_API_KEY: served(
@@ -70,7 +75,6 @@ export const ENV_TABLE = {
   OUTBOUND_TRUSTED_ORIGINS: operator("origins the guard on server scripts' fetches trusts beside the assets URL"),
   MONITOR_TICK: operator('`1`: a per-minute summary of server tick times in the log'),
   TOKEN_BALANCE_TTL_SECONDS: operator('how long a token balance is cached'),
-  PUBLIC_TOKEN_DECIMALS: operator("the token's decimals; only the server reads it (not in /env.js)"),
   EVM_HOLDING_CONTRACTS: operator('the contracts player.getEvmHolding() may ask about'),
   UPLOAD_CONCURRENT_TOTAL: operator('upload limit'),
   UPLOAD_CONCURRENT_VISITORS: operator('upload limit'),

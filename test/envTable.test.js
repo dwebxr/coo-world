@@ -3,7 +3,7 @@
 // it cannot, is said in test/lib/envScan.mjs; this is a check of names, not of what becomes of a value.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { PUBLIC_ENV_NAMES, SERVER_PUBLIC_ENV_NAMES } from '../src/core/extras/publicEnv.js'
+import { PUBLIC_ENV_NAMES, SERVED_ENV_NAMES, WITHHELD_ENV_NAMES } from '../src/core/extras/publicEnv.js'
 import { NOT_NAMES, scanEnvSource, scanEnvText } from './lib/envScan.mjs'
 import { stripComments } from './lib/sourceScan.mjs'
 import { ENV_CLASSES, ENV_TABLE, checkEnvTable, envEntry, envNamesOf } from './lib/envTable.mjs'
@@ -134,15 +134,15 @@ test('the check: a name without a class, a class without a name, and a read the 
 test('the classes agree with what the page is handed', () => {
   assert.deepEqual(ENV_CLASSES, ['secret', 'public', 'operator', 'internal', 'platform'])
   // every name served in /env.js is classed public, and says so
-  for (const name of PUBLIC_ENV_NAMES) {
+  for (const name of SERVED_ENV_NAMES) {
     assert.equal(ENV_TABLE[name]?.class, 'public', name)
     assert.match(ENV_TABLE[name].served, /^\/env\.js/, name)
   }
   // and no other name claims to be served there
   const claimed = Object.keys(ENV_TABLE).filter(name => /\/env\.js/.test(ENV_TABLE[name].served ?? ''))
-  assert.deepEqual(claimed.sort(), [...PUBLIC_ENV_NAMES].sort())
-  // the PUBLIC_ names the server keeps to itself have a class too
-  for (const name of SERVER_PUBLIC_ENV_NAMES) assert.ok(ENV_TABLE[name], name)
+  assert.deepEqual(claimed.sort(), [...SERVED_ENV_NAMES].sort())
+  // the PUBLIC_ name /env.js withholds has a class too
+  for (const name of WITHHELD_ENV_NAMES) assert.ok(ENV_TABLE[name], name)
   assert.equal(ENV_TABLE.PUBLIC_RPC_URL.class, 'secret')
   // no secret is on the list of what /env.js serves, by its own name or under a stem
   const secrets = envNamesOf('secret')
@@ -158,6 +158,7 @@ test('the classes agree with what the page is handed', () => {
     'PUBLIC_RPC_URL',
     'EVM_RPC_URL_*',
   ])
-  for (const name of PUBLIC_ENV_NAMES) assert.notEqual(envEntry(name).class, 'secret', name)
+  for (const name of SERVED_ENV_NAMES) assert.notEqual(envEntry(name).class, 'secret', name)
+  assert.ok(PUBLIC_ENV_NAMES.every(name => SERVED_ENV_NAMES.includes(name)))
   assert.equal(envEntry('EVM_RPC_URL_137').class, 'secret')
 })

@@ -201,8 +201,9 @@ await startup.step(() => world.network.ready)
 // anyone can join: world growth and visitors' joins count it (joinBudget.js)
 await startup.step(() => world.network.measureFixedBytes())
 
-// what the page is handed of the environment: the names the client reads and no other (publicEnv.js). Any other
-// PUBLIC_ name that is set is left out and said here once, by name; the server starts all the same
+// what the page is handed of the environment: the names on the lists of publicEnv.js (the ones the client reads, and
+// three served as before). Any other PUBLIC_ name that is set is left out and said here once, by name (but
+// PUBLIC_RPC_URL, which is left out without a word); the server starts all the same
 const publicEnvs = buildPublicEnv(process.env)
 const unlistedPublicEnvs = unlistedPublicEnvNote(process.env)
 if (unlistedPublicEnvs) console.error(unlistedPublicEnvs)

@@ -1,10 +1,13 @@
 // What of the environment the page is handed: /env.js at run time (src/server/index.js) and the defines of the
 // build (scripts/lib/buildDefines.mjs).
 //
-// It is a list of names, and no other name is handed out: the PUBLIC_ names the browser code reads, each of them
-// as a literal (test/publicEnv.test.js keeps the list equal to the literals in what is bundled for a browser). The
-// prefix alone used to be enough, so any variable an operator named PUBLIC_… was served to every visitor.
-// What this does not do: it does not look at values. Whatever is put under one of these names is served.
+// Lists of names, and no other name is handed out. The prefix alone used to be enough, so any variable an operator
+// named PUBLIC_… was served to every visitor. What this does not do: it does not look at values. Whatever is put
+// under one of the listed names is served.
+
+// The PUBLIC_ names the browser code reads, each of them as a literal (test/publicEnv.test.js keeps this list equal
+// to the literals in what is bundled for a browser). Served in /env.js, and written into the page's bundles by the
+// build.
 export const PUBLIC_ENV_NAMES = Object.freeze([
   'PUBLIC_WS_URL',
   'PUBLIC_PLAYER_COLLISION',
@@ -16,40 +19,45 @@ export const PUBLIC_ENV_NAMES = Object.freeze([
   'PUBLIC_WALLETCONNECT_PROJECT_ID',
 ])
 
-// PUBLIC_ names that the server alone reads. Not in /env.js or the defines either, and not named at start-up: the
-// server knows what they are for.
-// - PUBLIC_API_URL and PUBLIC_MAX_UPLOAD_SIZE reach the page in the join snapshot (apiUrl, maxUploadSize)
-// - PUBLIC_TOKEN_DECIMALS is read where balances are read (tokenBalance.js)
-// - PUBLIC_RPC_URL is the deprecated fallback of SOLANA_RPC_URL and can hold an RPC credential
-export const SERVER_PUBLIC_ENV_NAMES = Object.freeze([
+// Served in /env.js as before the lists, when they are set. The server reads them; nothing in this repository reads
+// them from the page, but a page or tool outside it may. They are public values (the first two also reach the page
+// in the join snapshot, as apiUrl and maxUploadSize), and a world that sets them gets the /env.js it got before.
+// Not written into the bundles: no bundled code reads them, so a define would replace nothing.
+export const SERVED_AS_BEFORE_ENV_NAMES = Object.freeze([
   'PUBLIC_API_URL',
   'PUBLIC_MAX_UPLOAD_SIZE',
   'PUBLIC_TOKEN_DECIMALS',
-  'PUBLIC_RPC_URL',
 ])
 
-export const isPublicEnvKey = key => PUBLIC_ENV_NAMES.includes(key)
+// what /env.js serves: the two lists
+export const SERVED_ENV_NAMES = Object.freeze([...PUBLIC_ENV_NAMES, ...SERVED_AS_BEFORE_ENV_NAMES])
 
-// the listed names that are set, in the order of the list
+// Left out of /env.js without a word at start-up: the deprecated fallback of SOLANA_RPC_URL, which the server alone
+// reads and which can hold an RPC credential (it was refused by name before the lists too).
+export const WITHHELD_ENV_NAMES = Object.freeze(['PUBLIC_RPC_URL'])
+
+export const isPublicEnvKey = key => SERVED_ENV_NAMES.includes(key)
+
+// the served names that are set, in the order the environment has them (so a world that sets no other PUBLIC_ name
+// gets the /env.js it got before the lists)
 export function buildPublicEnv(env) {
-  const out = {}
-  for (const name of PUBLIC_ENV_NAMES) {
-    if (Object.prototype.hasOwnProperty.call(env, name) && env[name] !== undefined) out[name] = env[name]
-  }
-  return out
+  return Object.fromEntries(Object.entries(env).filter(([key, value]) => isPublicEnvKey(key) && value !== undefined))
 }
 
+// the defines of the page's bundles: the names the client reads that are set, each value as a JSON string
 export function buildPublicEnvDefines(env) {
   return Object.fromEntries(
-    Object.entries(buildPublicEnv(env)).map(([key, value]) => [`process.env.${key}`, JSON.stringify(value)])
+    Object.entries(env)
+      .filter(([key, value]) => PUBLIC_ENV_NAMES.includes(key) && value !== undefined)
+      .map(([key, value]) => [`process.env.${key}`, JSON.stringify(value)])
   )
 }
 
-// The PUBLIC_ names in the environment that nothing reads: neither served nor one of the server's own. A name like
-// that was probably meant to reach the page (it did, before the list), or is a mistake.
+// The PUBLIC_ names in the environment that are neither served nor withheld by name. A name like that was probably
+// meant to reach the page (it did, before the lists), or is a mistake.
 export function unlistedPublicEnv(env) {
   return Object.keys(env)
-    .filter(key => key.startsWith('PUBLIC_') && !isPublicEnvKey(key) && !SERVER_PUBLIC_ENV_NAMES.includes(key))
+    .filter(key => key.startsWith('PUBLIC_') && !isPublicEnvKey(key) && !WITHHELD_ENV_NAMES.includes(key))
     .sort()
 }
 
@@ -59,6 +67,6 @@ export function unlistedPublicEnvNote(env) {
   if (!names.length) return null
   return (
     `[envs] not handed to the page (/env.js): ${names.join(', ')}. ` +
-    `Only names the client reads are: ${PUBLIC_ENV_NAMES.join(', ')}`
+    `The names it serves are: ${SERVED_ENV_NAMES.join(', ')}`
   )
 }

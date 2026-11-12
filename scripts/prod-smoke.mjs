@@ -94,10 +94,16 @@ function groupAlive(proc) {
   }
 }
 
+// Process groups this run could not stop (their leaders' pids): said at the end, and the run then fails.
+const survivors = []
+
 // SIGTERM to the process group; SIGKILL to the group when the leader is not gone after STOP_TIMEOUT_MS or when
-// processes of the group outlive it. Resolves with whether SIGKILL was needed for the leader.
-// `gone` says whether the leader has exited. The group is stopped also when the leader is gone and something it
-// started is not (npm exiting with a child that still holds its pipes: the leader's end was seen, the group lives).
+// processes of the group outlive it. `gone` says whether the leader has exited: the group is stopped also when the
+// leader is gone and something it started is not (npm exiting with a child that still holds its pipes).
+// Resolves with { killed: the leader needed SIGKILL, survived: something of the group was still there after the
+// last wait }. That last wait is bounded: a process that cannot be killed (stuck in the kernel) must not hold the
+// run for good. On Linux a group of which only zombies are left still answers a signal until they are reaped, which
+// normally takes no time; should it take longer than the wait, the group is reported as surviving.
 async function stopGroup(proc, gone) {
   const over = () => gone() && !groupAlive(proc)
   signalGroup(proc, 'SIGTERM')
@@ -105,20 +111,29 @@ async function stopGroup(proc, gone) {
   while (!over() && Date.now() < deadline) await sleep(100)
   const killed = !gone()
   if (!over()) signalGroup(proc, 'SIGKILL')
-  // (SIGKILL cannot be refused; the wait is for the system to take the processes away)
   const last = Date.now() + STOP_TIMEOUT_MS
   while (!over() && Date.now() < last) await sleep(100)
-  return killed
+  const survived = !over()
+  if (survived) survivors.push(proc.pid)
+  return { killed, survived }
 }
 
+// The install and the server are each stopped once, and their record is given up before the stop: the number of a
+// process group that is gone can be given to another group, and a later look at the old record would signal that.
 async function stopInstall() {
-  if (!install || (install.exited && !groupAlive(install.proc))) return
-  await stopGroup(install.proc, () => install.exited)
+  const state = install
+  if (!state) return
+  install = null
+  await stopGroup(state.proc, () => state.exited)
+  state.settle()
 }
 
 async function stopServer() {
-  if (!child || (exited && !groupAlive(child))) return exited
-  const killed = await stopGroup(child, () => exited)
+  const proc = child
+  if (!proc) return exited
+  child = null
+  if (exited && !groupAlive(proc)) return exited
+  const { killed } = await stopGroup(proc, () => exited)
   return killed ? { ...exited, killed: true } : exited
 }
 
@@ -139,27 +154,42 @@ function runInstall() {
     proc.stderr.on('data', keep)
     let error = null
     let timedOut = false
+    let end = { code: null, signal: null }
+    let lingering = null
+    // The install is over, once: by its output ending, by the stop of what it left behind, or by its time running
+    // out. From then on its record is given up (see stopInstall).
+    let settled = false
+    state.settle = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      clearTimeout(lingering)
+      if (install === state) install = null
+      resolve({ ...end, error, timedOut, log })
+    }
     const timer = setTimeout(() => {
       timedOut = true
       stopInstall()
     }, INSTALL_TIMEOUT_MS)
     proc.once('error', err => {
+      // (it could not be started: there is no process and no group)
       error = err
       state.exited = true
+      state.settle()
     })
     // npm is gone, but its output is read to the end only when everything that holds its pipes is gone too. Something
-    // npm started and left behind would keep this waiting until the install's time is up: after a moment it is stopped
-    let lingering = null
-    proc.once('exit', () => {
+    // npm started and left behind would keep this waiting until the install's time is up: after a moment it is
+    // stopped, and the install is over whether or not the output then ends
+    proc.once('exit', (code, signal) => {
       state.exited = true
-      lingering = setTimeout(() => stopGroup(proc, () => true), LINGER_MS)
+      end = { code, signal }
+      lingering = setTimeout(() => stopInstall(), LINGER_MS)
     })
-    // (after the exit, once the output is read to its end)
-    proc.once('close', (code, signal) => {
-      clearTimeout(timer)
-      clearTimeout(lingering)
-      state.exited = true
-      resolve({ code, signal, error, timedOut, log })
+    // after the exit, once the output is read to its end. What npm left in its group without holding a pipe is
+    // stopped here, so that nothing of the install runs beside the server
+    proc.once('close', () => {
+      if (install === state && groupAlive(proc)) stopInstall()
+      else state.settle()
     })
   })
 }
@@ -279,6 +309,13 @@ function finish() {
     if (failed && !interrupted && output.trim()) {
       console.error('[prod-smoke] the end of the output:')
       console.error(output.trim().split('\n').slice(-40).join('\n').slice(-6000))
+    }
+    if (survivors.length) {
+      failed = true
+      console.error(
+        `[prod-smoke] could not stop process group${survivors.length > 1 ? 's' : ''} ${survivors.join(', ')}: ` +
+          'something this run started is still running'
+      )
     }
     if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true })
     if (interrupted) {

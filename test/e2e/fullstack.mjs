@@ -1386,6 +1386,54 @@ async function probes(admin, watcher) {
     }
   })
 
+  await step("A15b a name and a rank an admin gives are in the user's row, and in that user's next join", async () => {
+    // the real database: the server's writer of user rows (src/server/userRows.js) against knex and SQLite
+    const db = new Database(path.join(server.worldDir, 'db.sqlite'), { readonly: true, fileMustExist: true })
+    const player = await new WireClient(PORT, 'row-first').connect()
+    let again = null
+    try {
+      const row = db.prepare('SELECT name, rank FROM users WHERE id = ?')
+      eq(row.get(player.id)?.rank, 0, 'a new user is a visitor')
+      const from = player.mark()
+      // two names at once (the second while the first may still be written), then a rank from the admin
+      player.send('command', { args: ['name', 'row-second'] })
+      player.send('command', { args: ['name', 'row-third'] })
+      admin.send('modifyRank', { playerId: player.id, rank: 1 })
+      await player.waitFor(m => m.method === 'onEntityModified' && m.data.id === player.id && m.data.rank === 1, {
+        from,
+        timeout: 20000 * TIMEOUT_SCALE,
+      })
+      await waitUntil(
+        () => {
+          const stored = row.get(player.id)
+          return stored?.name === 'row-third' && stored?.rank === 1
+        },
+        { message: "the user's row to hold the last name and the rank" }
+      )
+      // the same user again, without a name of its own in the connection: the stored one
+      const { id, authToken } = player
+      player.close()
+      await player.closed
+      again = await new WireClient(PORT, 'row-again').connect('', { authToken })
+      eq(again.id, id, 'the same user')
+      const self = again.snapshot.entities.find(entity => entity.id === id)
+      eq(self?.name, 'row-third', 'the name of the row')
+      eq(self?.rank, 1, 'the rank of the row')
+      // back to a visitor, so the user leaves nothing behind for the steps that follow
+      const lowered = again.mark()
+      admin.send('modifyRank', { playerId: id, rank: 0 })
+      await again.waitFor(m => m.method === 'onEntityModified' && m.data.id === id && m.data.rank === 0, {
+        from: lowered,
+        timeout: 20000 * TIMEOUT_SCALE,
+      })
+      await waitUntil(() => row.get(id)?.rank === 0, { message: "the user's row to hold the lowered rank" })
+    } finally {
+      player.close()
+      again?.close()
+      db.close()
+    }
+  })
+
   await step(
     'A16 old-encoder records are refused once, while plain packets from the same socket still work',
     async () => {

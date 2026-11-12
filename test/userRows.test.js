@@ -38,6 +38,9 @@ function fixture({ decide = () => null, hold = false, ...options } = {}) {
     update: (userId, values) => {
       const statement = { userId, values: { ...values }, ...deferred() }
       f.statements.push(statement)
+      // a writer that does not stop (no test here comes near 200 statements) is stopped as the final save's
+      // deadline would stop it, and the test fails on what it counts
+      if (f.statements.length > 200) f.expired = true
       const land = () => f.rows.set(userId, { ...f.rows.get(userId), ...values })
       if (!f.hold) {
         const error = f.decide(userId, values)
@@ -208,6 +211,26 @@ test('a failed statement: said once, kept, not tried again by itself, written wi
   assert.equal(f.failures.length, 2)
 })
 
+test('a run of failures ends with a statement that lands, also when the entry stays', async () => {
+  const busy = () => new Error('SQLITE_BUSY')
+  const f = fixture({ decide: busy })
+  f.rows_.intend('u', { name: 'one' })
+  await f.rows_.idle()
+  assert.equal(f.failures.length, 1)
+  // the next statement lands, and the one after it (a change decided meanwhile) fails: a new run, said again
+  f.hold = true
+  f.rows_.intend('u', { name: 'two' })
+  f.rows_.intend('u', { name: 'three' })
+  f.statements[1].resolve()
+  await turn()
+  assert.equal(f.statements.length, 3)
+  f.statements[2].reject(busy())
+  await f.rows_.idle()
+  assert.equal(f.failures.length, 2)
+  assert.deepEqual(f.rows.get('u'), { name: 'two' })
+  assert.deepEqual(f.rows_.intended('u'), { name: 'three' })
+})
+
 test('a value the database refuses (too long for its column) does not hold back the other columns', async () => {
   // PostgreSQL: value too long for type character varying(255). Every statement that carries the avatar fails
   const tooLong = Object.assign(new Error('value too long for type character varying(255)'), { code: '22001' })
@@ -289,7 +312,7 @@ test('an entry stays while its user is joining, stored or not, and goes when the
   f.joining.delete('u')
   f.rows_.sweep('u')
   assert.equal(f.rows_.size, 0)
-  // not while something is unstored, and not while a statement is under way
+  // not while something is unstored: a statement that failed, or one that is under way
   f.decide = () => new Error('SQLITE_BUSY')
   f.rows_.intend('u', { rank: 1 })
   await f.rows_.idle()

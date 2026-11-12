@@ -16,8 +16,8 @@
 //   joins keep getting them from here, and they go out again with that user's next change or at the final save.
 //   When the failed statement carried several columns, each is written once on its own first, so that one column
 //   the database refuses (a value too long for it) does not hold back the others.
-// - An entry is dropped once everything in it is stored, nothing is being written and the user is not joining
-//   (`held`): a join that read the row before a change may still be waiting, and takes the change from here.
+// - An entry is dropped once everything in it is stored and the user is not joining (`held`): a join that read the
+//   row before a change may still be waiting, and takes the change from here.
 //
 // What this does not give:
 // - Durability. A change the database has not taken is lost when the process ends without a final save (a crash,
@@ -55,7 +55,8 @@ export function createUserRows({ update, onFailure = () => {}, expired = () => f
 
   const drop = userId => {
     const entry = entries.get(userId)
-    if (!entry || entry.writing || unstoredColumns(entry).length || held(userId)) return
+    // (while a statement is under way, a column it carries is unstored)
+    if (!entry || unstoredColumns(entry).length || held(userId)) return
     entries.delete(userId)
   }
 
@@ -175,7 +176,7 @@ export function createUserRows({ update, onFailure = () => {}, expired = () => f
 
     // settles when the writers that are running now have stopped
     async idle() {
-      await Promise.all([...entries.values()].filter(entry => entry.writing).map(entry => entry.running))
+      await Promise.all([...entries.values()].map(entry => entry.running))
     },
 
     // The final save: waits for the writers that are running, then gives the writer of each user one more run, one

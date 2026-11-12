@@ -117,7 +117,8 @@ function ownership(log, chown = fs.chownSync) {
 //   shell text (a name with a quote or `$(...)` in it used to be), and a name that begins with `-` is not read as
 //   an option. Only -c, -z, -f and -C are used, which BusyBox's tar (the Docker image's) has too.
 // - The archive is written under the working folder and gets its name at the end (`publish`): a run that fails, or
-//   is killed, leaves nothing under a backup's name.
+//   is killed, leaves no part of an archive under a backup's name. (One that fails after that step, while removing
+//   the working folder, leaves a whole one.)
 // Not changed: the archive is kept in the world's own folder, so it is on the same disk as what it backs up and is
 // lost with it. Copy it elsewhere. The other files (assets, storage.json) are read as they are at that moment; a
 // link inside the world's folder is archived as a link, not as what it points to.

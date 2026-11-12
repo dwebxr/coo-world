@@ -23,7 +23,8 @@ function project(t, world = 'world') {
 function unpack(t, file) {
   const out = fs.mkdtempSync(path.join(os.tmpdir(), 'backup-out-'))
   t.after(() => fs.rmSync(out, { recursive: true, force: true }))
-  execFileSync('tar', ['-xzf', file, '-C', out])
+  // (-p: the permissions as archived, whatever this user's umask)
+  execFileSync('tar', ['-xpzf', file, '-C', out])
   return out
 }
 // every path below `dir`; a link is listed and not entered

@@ -408,6 +408,13 @@ try {
   await step('browser: no page errors', async () => {
     eq(pageErrors.length, 0, pageErrors.join('\n'))
   })
+
+  // the wallet flows above (an injected provider, the WalletConnect sheet) are inside the policy the page is tried
+  // against: no browser posted a report (they are posted a moment after the event)
+  await step('the report-only policy: nothing the wallet flows did is outside it', async () => {
+    await sleep(3000)
+    eq(server.lines(/\[csp\]/).join('\n'), '')
+  })
 } catch (err) {
   console.log(`FAIL  setup -- ${err?.stack || err}`)
   process.exitCode = 1

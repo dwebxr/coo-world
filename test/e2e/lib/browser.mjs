@@ -57,6 +57,26 @@ export async function openWorld(
   return { page, consoleLines, pageErrors, errorLines }
 }
 
+// Collects what the page's policies say they refuse, or (report-only) would refuse, in every document of the context:
+// the `securitypolicyviolation` events, as `{ directive, blocked, source, line, disposition }`. A violation inside a
+// worker fires no event in a document; the server's `[csp]` lines have those too (they are posted to it).
+export async function watchPolicy(context) {
+  const violations = []
+  await context.exposeFunction('__policyViolation', violation => violations.push(violation))
+  await context.addInitScript(() => {
+    document.addEventListener('securitypolicyviolation', event => {
+      window.__policyViolation({
+        directive: event.effectiveDirective,
+        blocked: event.blockedURI,
+        source: event.sourceFile,
+        line: event.lineNumber,
+        disposition: event.disposition,
+      })
+    })
+  })
+  return violations
+}
+
 // writes <prefix>-console.log, <prefix>-page-errors.log and <prefix>-final.png; safe to call after an abort
 export async function saveArtifacts({ page, consoleLines = [], pageErrors = [], prefix }) {
   try {

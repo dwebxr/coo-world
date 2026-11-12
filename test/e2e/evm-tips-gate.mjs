@@ -647,6 +647,13 @@ try {
   await step('browser: no page errors', async () => {
     for (const entry of pages) eq(entry.pageErrors.length, 0, entry.pageErrors.join('\n'))
   })
+
+  // tips and the gate above are inside the policy the page is tried against: no browser posted a report (they are
+  // posted a moment after the event)
+  await step('the report-only policy: nothing the tips and the gate did is outside it', async () => {
+    await sleep(3000)
+    eq(server.lines(/\[csp\]/).join('\n'), '')
+  })
 } catch (err) {
   console.log(`FAIL  setup -- ${err?.stack || err}`)
   process.exitCode = 1

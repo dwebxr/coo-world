@@ -85,12 +85,10 @@
   ],
   "ignorePatterns": [
     "build/**/*",
-    "world/**/*",
+    "/world*",
+    ".claude/",
     "node_modules/**/*",
     "src/core/libs/**/*",
-    "src/core/vendors/**/*",
-    "src/core/three-vrm/**/*",
-    "src/core/three/**/*",
     "src/client/public/**/*",
     "**/physx-js-webidl.js"
   ]

@@ -190,6 +190,39 @@ test('backup: what the run makes anew is given its owner back, or says that it c
   await assert.rejects(backupWorld({ rootDir, world, log: quiet, chown: broken, now: new Date(2026, 0, 3) }), /EIO/)
 })
 
+test('backup: a working folder that cannot be removed is said, and does not take the place of what failed', async t => {
+  const { rootDir, dir, world } = project(t)
+  const backups = path.join(dir, 'backups')
+  const stuck = () => {
+    throw Object.assign(new Error('EIO: the disk'), { code: 'EIO' })
+  }
+  const run = async options => {
+    const said = []
+    const result = await backupWorld({ rootDir, world, log: line => said.push(line), remove: stuck, ...options }).then(
+      file => ({ file }),
+      error => ({ error })
+    )
+    const left = fs.readdirSync(backups).filter(name => name.startsWith('.staging-'))
+    for (const name of left) fs.rmSync(path.join(backups, name), { recursive: true, force: true })
+    return { ...result, left, said: said.filter(line => /could not be removed/.test(line)) }
+  }
+  // the run itself went well: the archive is whole and named, and the run fails with the removal's error
+  const done = await run({ now: new Date(2026, 0, 1) })
+  assert.match(done.error?.message, /EIO: the disk/)
+  assert.equal(done.left.length, 1)
+  assert.equal(done.said.length, 1)
+  assert.ok(done.said[0].includes(path.join(backups, done.left[0])), 'the folder to remove by hand is named')
+  assert.deepEqual(fs.readdirSync(backups), ['backup_2026-01-01_00-00-00.tar.gz'])
+  // the run failed by itself: that is the error, and the removal's is only said
+  const noLink = () => {
+    throw Object.assign(new Error('EROFS: the first'), { code: 'EROFS' })
+  }
+  const failed = await run({ now: new Date(2026, 0, 2), link: noLink })
+  assert.match(failed.error?.message, /EROFS: the first/)
+  assert.equal(failed.said.length, 1)
+  assert.deepEqual(fs.readdirSync(backups), ['backup_2026-01-01_00-00-00.tar.gz'])
+})
+
 test('backup: a backups folder that is a link is not walked into, wherever it leads', async t => {
   const { rootDir, dir, world } = project(t)
   // the archives are kept in another folder of the world: the working folder is made there, inside what is walked

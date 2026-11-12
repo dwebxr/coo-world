@@ -136,6 +136,7 @@ export async function backupWorld({
   copyTimeout = 10 * 60 * 1000,
   link = fs.linkSync,
   chown = fs.chownSync,
+  remove = fs.rmSync,
 }) {
   const { dir, name } = worldFolder(rootDir, world)
   const backupsDir = path.join(dir, 'backups')
@@ -148,7 +149,7 @@ export async function backupWorld({
     log('DB_URI is set: the database is in PostgreSQL and is not in this archive. Back it up by its own means.')
   const own = ownership(log, chown)
   const work = fs.mkdtempSync(path.join(backupsDir, '.staging-'))
-  let failed = true
+  let failure = null
   try {
     const tree = path.join(work, 'tree')
     const staged = path.join(tree, name)
@@ -187,16 +188,17 @@ export async function backupWorld({
       stdio: ['ignore', stdio, stdio],
     })
     publish(archive, file, link)
-    failed = false
-  } finally {
-    try {
-      fs.rmSync(work, { recursive: true, force: true })
-    } catch (err) {
-      // (said, and not thrown in place of what failed the run; by itself it fails the run)
-      log(`The working folder could not be removed (${err?.message}): remove ${work} by hand`)
-      if (!failed) throw err
-    }
+  } catch (err) {
+    failure = err
   }
+  try {
+    remove(work, { recursive: true, force: true })
+  } catch (err) {
+    // said, and not thrown in place of what failed the run; by itself it fails the run
+    log(`The working folder could not be removed (${err?.message}): remove ${work} by hand`)
+    failure ??= err
+  }
+  if (failure) throw failure
   log(`Backup created: ${path.basename(file)} (${(fs.statSync(file).size / 1024 / 1024).toFixed(2)} MB)`)
   for (const old of oldBackups(backupsDir, kept, path.basename(file))) {
     fs.rmSync(path.join(backupsDir, old), { force: true })

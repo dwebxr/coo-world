@@ -13,15 +13,20 @@ import { clientIpKey } from './uploadLimits.js'
 //   browser put there, as `inline` or `eval`), and the path of the asking script when it is the page's own (its
 //   origin when it is not). Never a query string, a fragment, the page's address, the referrer, a script sample, or
 //   the path of an extension's file (Firefox gives each install its own).
-// - the bounds: PER_ADDRESS posts a minute from one address (IPv6: its /64) and PER_MINUTE in all, counted when
-//   the request's headers have come and before any of its body is read, whatever becomes of the post; the rest are
-//   answered 429 and counted (so the addresses remembered in a minute are PER_MINUTE at most). A body of
-//   REPORT_MAX_BYTES at most, as sent: a compressed body is refused (415) before it is read (a browser does not
-//   compress a report, and a decompressor reads input that the byte count never sees). A post refused for the rate,
-//   its encoding, its type or its length ends its connection with the answer: the body is not read to its end
-//   (what had already arrived when the answer went out, tens of kilobytes at most in a test, may have been).
-//   KINDS_MAX different lines an hour, each written when first seen and again at 10, 100, 1000 … of the same; one
-//   line of totals when an hour with posts has passed (written when the next post comes: there is no timer).
+// - the bounds are on what the route does with a post, not on what the HTTP layer reads from a connection:
+//   PER_ADDRESS posts a minute from one address (IPv6: its /64) and PER_MINUTE in all, counted when the request
+//   reaches the route (its headers have come, none of its body has been taken), whatever becomes of the post; the
+//   rest are answered 429 and counted (so the addresses remembered in a minute are PER_MINUTE at most). The route
+//   keeps and parses a body of REPORT_MAX_BYTES at most, as sent: a compressed body is refused (415) and never
+//   decompressed (a browser does not compress a report, and a decompressor reads input that the byte count never
+//   sees). KINDS_MAX different lines an hour, each written when first seen and again at 10, 100, 1000 … of the
+//   same; one line of totals when an hour with posts has passed (written when the next post comes: there is no
+//   timer).
+// - a post refused for the rate, its encoding, its type or its length is answered with `Connection: close`, so that
+//   the HTTP layer does not read the body to its end for the sake of a next request. That is a courtesy to the
+//   server, not a limit: bytes sent on a connection are read and thrown away in cases no route sees or decides, here
+//   as on every path of this server (what had arrived before the answer went out; a post queued behind another
+//   answer that is not being read; a request Node answers itself, as one with an `Expect` it does not know).
 
 export const REPORT_PATH = '/csp-report'
 export const REPORT_MAX_BYTES = 8 * 1024

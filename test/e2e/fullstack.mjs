@@ -2084,9 +2084,10 @@ async function probes(admin, watcher) {
   // policy is not enforced), the document is told, and the server writes what was posted to it.
   const before = violations.length
   const ran = await runInlineScript(page)
-  const wrote = await waitUntil(() => server.lines(REPORTED_INLINE).length === 1, {
+  // the report reaches the server and the event reaches this process each in its own time: wait for both
+  const wrote = await waitUntil(() => server.lines(REPORTED_INLINE).length === 1 && violations.length > before, {
     timeout: 15000,
-    message: 'the report',
+    message: 'the report and the event',
   })
     .then(() => true)
     .catch(() => false)

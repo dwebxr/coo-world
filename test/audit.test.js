@@ -179,18 +179,15 @@ test('an allowlist that is not { id, reason, expires } entries makes the audit u
   )
 })
 
-// What npm 10.9 printed for this repository on 2026-11-13 (test/fixtures): one high advisory, in bigint-buffer,
-// which @solana/buffer-layout-utils and @solana/spl-token inherit, and four moderate ones. A record of that day,
-// not of what the registry says now.
-test('the report of 2026-11-13 with the committed allowlist: one tolerated, four listed, nothing failing', () => {
-  const read = file => fs.readFileSync(new URL(file, import.meta.url), 'utf8')
+const read = file => fs.readFileSync(new URL(file, import.meta.url), 'utf8')
+
+// What npm 10.9 printed for this repository on 2026-11-13 while @solana/spl-token was a production dependency
+// (test/fixtures/npm-audit-prod-2026-11-13.json): one high advisory, in bigint-buffer, which
+// @solana/buffer-layout-utils and @solana/spl-token inherit, and four moderate ones. A record of that day, not of
+// what the registry says now; here it is the real report with a high advisory, judged with allowlists of the test.
+test('the report of 2026-11-13 with @solana/spl-token in production: its high advisory passes only while allowlisted', () => {
   const stdout = read('./fixtures/npm-audit-prod-2026-11-13.json')
-  const allowlist = JSON.parse(read('../audit-allowlist.json'))
-  assert.deepEqual(allowlistProblems(allowlist), [])
-  assert.deepEqual(
-    allowlist.map(entry => entry.id),
-    ['GHSA-3gc7-fjrx-p6mg']
-  )
+  const allowlist = [entry('GHSA-3gc7-fjrx-p6mg', '2027-02-11')]
   const verdict = judge(stdout, allowlist)
   assert.equal(verdict.ok, true)
   assert.equal(verdict.tolerated.length, 1)
@@ -201,10 +198,34 @@ test('the report of 2026-11-13 with the committed allowlist: one tolerated, four
   const bare = judge(stdout, [])
   assert.equal(bare.ok, false)
   assert.equal(bare.failures.length, 1)
+  assert.match(bare.failures[0], /^GHSA-3gc7-fjrx-p6mg \(high\) bigint-buffer .*; not in audit-allowlist\.json$/)
   // and the day after the entry's date it fails again
-  const day = new Date(`${allowlist[0].expires}T00:00:00Z`)
-  day.setUTCDate(day.getUTCDate() + 1)
-  const late = judge(stdout, allowlist, day.toISOString().slice(0, 10))
+  const late = judge(stdout, allowlist, '2027-02-12')
   assert.equal(late.ok, false)
-  assert.match(late.failures[0], /its allowlist entry expired on /)
+  assert.match(late.failures[0], /its allowlist entry expired on 2027-02-11$/)
+})
+
+// The same day once @solana/spl-token was a dev dependency (test/fixtures/npm-audit-prod-2026-11-13-no-spl-token.json):
+// the four moderate advisories (stream-json, uuid, below @solana/web3.js) and no high one.
+test('the report of 2026-11-13 without @solana/spl-token, with the committed allowlist: four listed, nothing failing', () => {
+  const stdout = read('./fixtures/npm-audit-prod-2026-11-13-no-spl-token.json')
+  const allowlist = JSON.parse(read('../audit-allowlist.json'))
+  assert.deepEqual(allowlistProblems(allowlist), [])
+  assert.deepEqual(
+    allowlist.map(entry => entry.id),
+    []
+  )
+  assert.doesNotMatch(stdout, /bigint-buffer|spl-token|GHSA-3gc7-fjrx-p6mg/)
+  const verdict = judge(stdout, allowlist)
+  assert.deepEqual(verdict.failures, [])
+  assert.equal(verdict.ok, true)
+  assert.deepEqual(verdict.tolerated, [])
+  assert.equal(verdict.listed.length, 4)
+  assert.ok(verdict.listed.every(line => / \(moderate\) /.test(line)))
+  // the entry this file held before would be stale against this report, and fail the job
+  const stale = judge(stdout, [entry('GHSA-3gc7-fjrx-p6mg', '2027-02-11')])
+  assert.equal(stale.ok, false)
+  assert.deepEqual(stale.failures, [
+    'stale allowlist entry GHSA-3gc7-fjrx-p6mg: no reported advisory has this id; remove the entry',
+  ])
 })

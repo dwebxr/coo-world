@@ -1,7 +1,1 @@
-[
-  {
-    "id": "GHSA-3gc7-fjrx-p6mg",
-    "reason": "bigint-buffer <=1.1.5 (every published version), CVE-2025-3194: a buffer overflow in toBigIntLE() that can crash the process; it is installed through @solana/spl-token -> @solana/buffer-layout-utils. Not fixed here: bigint-buffer has no patched release and the newest @solana/spl-token (0.4.15) still depends on it; the only fix npm offers is @solana/spl-token 0.1.8, an older and incompatible line, so getting rid of it is a breaking change of the Solana packages that changes wallet code and is the owner's decision. Reachability, by grep only: toBigIntLE() is reached from the server, because src/server/solanaRpc.js calls AccountLayout.decode(), whose u64 fields are read by @solana/buffer-layout-utils with toBigIntLE() (grepped spl-token, bigint-buffer, buffer-layout-utils and toBigIntLE over src/, scripts/ and agent.mjs, then toBigIntLE in the two packages), each time on an 8-byte field of a buffer already checked to be 165 bytes long; whether such input can trigger the overflow is not determined.",
-    "expires": "2027-02-11"
-  }
-]
+[]

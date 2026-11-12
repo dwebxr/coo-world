@@ -5,6 +5,11 @@ import { readPacket, writeClientPacket, writePacket } from '../src/core/packets.
 import { clamp } from '../src/core/utils.js'
 import { prng } from '../src/core/extras/prng.js'
 import { createInboundGate } from '../src/core/extras/inboundPolicy.js'
+import {
+  EFFECT_MAX_BYTES,
+  STORED_AVATAR_MAX_LENGTH,
+  sanitizePlayerSelfModify,
+} from '../src/core/extras/entityModifyPolicy.js'
 import { BACKLOG_CAP, SCRIPT_TICK_CAP, WRITE_OVERHEAD } from '../src/core/extras/writeLedger.js'
 import { loadClient } from './lib/clientHarness.mjs'
 import { fixture } from './lib/joinFixture.mjs'
@@ -596,4 +601,54 @@ test('visitors and a script changing players for 300 ticks: after every tick eac
     s.tick()
     assert.equal(s.pending(), 0)
   }
+})
+
+test('an own-player change with every field at its limit in three-byte text is under 3.8 KB; identity fields add under 2.5 KB', () => {
+  // The limits count characters for urls and names and bytes for the effect, so the large values are in
+  // three-byte characters. The changelog gives 3.8 KB and 2.5 KB as what one connection can have written to each
+  // other connection in a tick: this builds a packet with every field near its limit and holds it under them. It
+  // is not a proof of the largest one (other choices of url and effect measure some tens of bytes more or less).
+  const store = 'https://world.example/assets'
+  const options = { allowAvatar: true, assetsUrl: store }
+  const fill = (prefix, length, suffix = '') => prefix + '界'.repeat(length - prefix.length - suffix.length) + suffix
+  const bytes = value => new TextEncoder().encode(JSON.stringify(value)).length
+  // an effect of exactly the 2048 bytes it may have
+  const ef = { anchorId: '界'.repeat(128), emote: fill(`${store}/a.glb#`, 512), freeze: true, snare: '' }
+  ef.emote = ef.emote.slice(0, 400)
+  while (bytes({ ...ef, snare: ef.snare + '界' }) <= EFFECT_MAX_BYTES) ef.snare += '界'
+  while (bytes({ ...ef, snare: ef.snare + 'a' }) <= EFFECT_MAX_BYTES) ef.snare += 'a'
+  assert.equal(bytes(ef), EFFECT_MAX_BYTES)
+  const f = 1.2345678901234567
+  const id = 'a'.repeat(21)
+  const move = sanitizePlayerSelfModify(
+    {
+      id,
+      p: [f, f, f],
+      q: [0.5, 0.5, 0.5, 0.5],
+      m: f,
+      a: [f, f, f],
+      g: [f, f, f],
+      t: true,
+      e: fill(`${store}/a.glb#`, 512),
+      ef,
+    },
+    id,
+    options
+  )
+  assert.deepEqual(Object.keys(move).sort(), ['a', 'e', 'ef', 'g', 'id', 'm', 'p', 'q', 't'])
+  const moved = writePacket('entityModified', move).length
+  assert.ok(moved > 3500 && moved < 3800, `${moved} bytes`)
+  const identity = sanitizePlayerSelfModify(
+    {
+      id,
+      name: '界'.repeat(64),
+      avatar: fill(`${store}/`, STORED_AVATAR_MAX_LENGTH, '.vrm'),
+      sessionAvatar: fill(`${store}/`, 512, '.vrm'),
+    },
+    id,
+    options
+  )
+  assert.deepEqual(Object.keys(identity).sort(), ['avatar', 'id', 'name', 'sessionAvatar'])
+  const both = writePacket('entityModified', { ...move, ...identity }).length
+  assert.ok(both - moved > 2200 && both - moved < 2500, `${both - moved} bytes more`)
 })

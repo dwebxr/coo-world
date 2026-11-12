@@ -8,6 +8,10 @@
 //   4. waits (bounded) for GET /health to answer 200, then asks for / and /env.js (200 each),
 //   5. stops the server with SIGTERM and expects exit code 0, and removes the folder.
 // Any step that fails ends with a non-zero exit code and the end of the server's output.
+// A SIGINT or SIGTERM to this script (Ctrl-C, `kill -INT`) at any step goes through the same cleanup: the install or
+// the server is stopped (SIGTERM to its process group, SIGKILL to what is left after STOP_TIMEOUT_MS), the folder
+// is removed, and the script exits with 130 (SIGINT) or 143 (SIGTERM). A SIGKILL to this script cannot be handled:
+// then the folder and whatever was running stay.
 //
 // What this does NOT check: the Docker image itself (its Alpine/musl base and the native modules built for it, its
 // `npm install` followed by `npm prune --omit=dev` where this runs `npm ci --omit=dev`, its HEALTHCHECK command and
@@ -18,7 +22,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const INSTALL_TIMEOUT_MS = 5 * 60 * 1000
@@ -34,6 +38,9 @@ const sourceDir = path.resolve(process.argv[2] || repoDir)
 const started = Date.now()
 const seconds = since => ((Date.now() - since) / 1000).toFixed(1)
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+// the install and the server run in a process group of their own (POSIX), so that a stop reaches what they started
+const GROUPS = process.platform !== 'win32'
+const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 }
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -53,21 +60,94 @@ async function get(url) {
 }
 
 let tempDir = null
+let install = null // { proc, exited } of `npm ci` from its start
 let child = null
 let output = ''
 let exited = null // { code, signal } once the server process is gone
+let interrupted = null // 'SIGINT' or 'SIGTERM' once one has arrived
+
+class Interrupted extends Error {}
+// called after every wait of run(): nothing new is started once the cleanup may have begun
+const stopIfInterrupted = () => {
+  if (interrupted) throw new Interrupted(`stopped by ${interrupted}`)
+}
+
+function signalGroup(proc, signal) {
+  try {
+    if (GROUPS) process.kill(-proc.pid, signal)
+    else proc.kill(signal)
+  } catch {
+    // (already gone)
+  }
+}
+
+// whether a process of the group is still running (a group id is not given out again while one is)
+function groupAlive(proc) {
+  if (!GROUPS) return false
+  try {
+    process.kill(-proc.pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// SIGTERM to the process group; SIGKILL to the group when the leader is not gone after STOP_TIMEOUT_MS or when
+// processes of the group outlive it. Resolves with whether SIGKILL was needed for the leader.
+async function stopGroup(proc, gone) {
+  signalGroup(proc, 'SIGTERM')
+  const deadline = Date.now() + STOP_TIMEOUT_MS
+  while (!gone() && Date.now() < deadline) await sleep(100)
+  const killed = !gone()
+  if (killed || groupAlive(proc)) signalGroup(proc, 'SIGKILL')
+  while (!gone()) await sleep(100)
+  return killed
+}
+
+async function stopInstall() {
+  if (!install || install.exited) return
+  await stopGroup(install.proc, () => install.exited)
+}
 
 async function stopServer() {
   if (!child || exited) return exited
-  child.kill('SIGTERM')
-  const deadline = Date.now() + STOP_TIMEOUT_MS
-  while (!exited && Date.now() < deadline) await sleep(100)
-  if (!exited) {
-    child.kill('SIGKILL')
-    while (!exited) await sleep(100)
-    return { ...exited, killed: true }
-  }
-  return exited
+  const killed = await stopGroup(child, () => exited)
+  return killed ? { ...exited, killed: true } : exited
+}
+
+// `npm ci --omit=dev` in tempDir, not blocking: a signal that arrives meanwhile is handled at once
+function runInstall() {
+  return new Promise(resolve => {
+    const proc = spawn('npm', ['ci', '--omit=dev', '--no-audit', '--no-fund'], {
+      cwd: tempDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: process.platform === 'win32',
+      detached: GROUPS,
+    })
+    const state = { proc, exited: false }
+    install = state
+    let log = ''
+    const keep = data => (log = (log + data).slice(-200_000))
+    proc.stdout.on('data', keep)
+    proc.stderr.on('data', keep)
+    let error = null
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      stopInstall()
+    }, INSTALL_TIMEOUT_MS)
+    proc.once('error', err => {
+      error = err
+      state.exited = true
+    })
+    proc.once('exit', () => (state.exited = true))
+    // (after the exit, once the output is read to its end)
+    proc.once('close', (code, signal) => {
+      clearTimeout(timer)
+      state.exited = true
+      resolve({ code, signal, error, timedOut, log })
+    })
+  })
 }
 
 async function run() {
@@ -84,16 +164,13 @@ async function run() {
     if (fs.existsSync(from)) fs.cpSync(from, path.join(tempDir, name), { recursive: true })
   }
   let step = Date.now()
-  const install = spawnSync('npm', ['ci', '--omit=dev', '--no-audit', '--no-fund'], {
-    cwd: tempDir,
-    encoding: 'utf8',
-    timeout: INSTALL_TIMEOUT_MS,
-    maxBuffer: 64 * 1024 * 1024,
-    shell: process.platform === 'win32',
-  })
-  if (install.error || install.status !== 0) {
-    output = `${install.stdout ?? ''}\n${install.stderr ?? ''}`
-    throw new Error(`npm ci --omit=dev failed (${install.error?.message ?? `exit code ${install.status}`})`)
+  const installed = await runInstall()
+  stopIfInterrupted()
+  if (installed.error || installed.timedOut || installed.code !== 0) {
+    output = installed.log
+    const why =
+      installed.error?.message ?? (installed.timedOut ? `not done within ${INSTALL_TIMEOUT_MS / 1000} s` : null)
+    throw new Error(`npm ci --omit=dev failed (${why ?? `exit code ${installed.code}, signal ${installed.signal}`})`)
   }
   console.log(`[prod-smoke] npm ci --omit=dev in ${tempDir}: ${seconds(step)} s`)
 
@@ -109,6 +186,7 @@ async function run() {
 
   // 3. the server, with only the settings its start-up asks for (src/server/index.js); all values are made up
   const port = await freePort()
+  stopIfInterrupted()
   const origin = `http://127.0.0.1:${port}`
   step = Date.now()
   child = spawn(process.execPath, ['build/index.js'], {
@@ -131,6 +209,7 @@ async function run() {
       ASSETS_BASE_URL: `${origin}/assets`,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
+    detached: GROUPS,
   })
   child.stdout.on('data', data => (output += data))
   child.stderr.on('data', data => (output += data))
@@ -144,8 +223,10 @@ async function run() {
   const deadline = Date.now() + HEALTH_TIMEOUT_MS
   let health = null
   while (Date.now() < deadline) {
+    stopIfInterrupted()
     if (exited) throw new Error(`the server exited during start-up (code ${exited.code}, signal ${exited.signal})`)
     health = await get(`${origin}/health`).catch(() => null)
+    stopIfInterrupted()
     if (health?.status === 200) break
     await sleep(250)
   }
@@ -157,6 +238,7 @@ async function run() {
   console.log(`[prod-smoke] GET /health 200 after ${seconds(step)} s`)
   for (const route of ['/', '/env.js']) {
     const reply = await get(`${origin}${route}`)
+    stopIfInterrupted()
     if (reply.status !== 200 || !reply.bytes) {
       throw new Error(`GET ${route} answered ${reply.status} with ${reply.bytes} characters (expected 200 and a body)`)
     }
@@ -166,24 +248,51 @@ async function run() {
   // 5. a stop that saves and exits 0 (src/server/shutdown.js)
   step = Date.now()
   const end = await stopServer()
+  stopIfInterrupted()
   if (end.killed) throw new Error(`the server did not stop within ${STOP_TIMEOUT_MS / 1000} s of SIGTERM`)
   if (end.code !== 0) throw new Error(`the server exited with code ${end.code} (signal ${end.signal}) after SIGTERM`)
   console.log(`[prod-smoke] SIGTERM: exit code 0 after ${seconds(step)} s`)
 }
 
+// The one way out, after a pass, a failure or a signal: stop what runs, remove the folder, exit. Called more than
+// once (a signal during a failure, or during this), it runs once.
 let failed = false
+let finishing = null
+function finish() {
+  finishing ??= (async () => {
+    await stopInstall().catch(() => {})
+    await stopServer().catch(() => {})
+    if (failed && !interrupted && output.trim()) {
+      console.error('[prod-smoke] the end of the output:')
+      console.error(output.trim().split('\n').slice(-40).join('\n').slice(-6000))
+    }
+    if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true })
+    if (interrupted) {
+      console.error(
+        `[prod-smoke] stopped by ${interrupted} after ${seconds(started)} s; ${tempDir ?? 'no folder'} removed`
+      )
+      process.exit(SIGNAL_EXIT_CODES[interrupted])
+    }
+    console.log(`[prod-smoke] ${failed ? 'failed' : 'passed'} in ${seconds(started)} s`)
+    process.exit(failed ? 1 : 0)
+  })()
+  return finishing
+}
+
+for (const signal of Object.keys(SIGNAL_EXIT_CODES)) {
+  process.on(signal, () => {
+    if (interrupted) return // (the cleanup of the first one is running)
+    interrupted = signal
+    const running = child && !exited ? 'the server' : install && !install.exited ? 'the install' : 'the run'
+    console.error(`[prod-smoke] ${signal}: stopping ${running}`)
+    finish()
+  })
+}
+
 try {
   await run()
 } catch (err) {
   failed = true
-  console.error(`[prod-smoke] FAILED: ${err.message}`)
-} finally {
-  await stopServer().catch(() => {})
-  if (failed && output.trim()) {
-    console.error('[prod-smoke] the end of the output:')
-    console.error(output.trim().split('\n').slice(-40).join('\n').slice(-6000))
-  }
-  if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true })
+  if (!interrupted) console.error(`[prod-smoke] FAILED: ${err.message}`)
 }
-console.log(`[prod-smoke] ${failed ? 'failed' : 'passed'} in ${seconds(started)} s`)
-process.exit(failed ? 1 : 0)
+await finish()

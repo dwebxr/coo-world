@@ -1,5 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { once } from 'node:events'
+import net from 'node:net'
 import zlib from 'node:zlib'
 import Fastify from 'fastify'
 import compress from '@fastify/compress'
@@ -235,6 +237,7 @@ async function app({ header = null, made = reports() } = {}) {
   // given a decompressed body
   server.register(async scope => {
     scope.post('/other', async req => ({ got: req.body }))
+    scope.get('/other', async () => 'the next request was answered')
   })
   await server.ready()
   const post = (payload, { type = 'application/csp-report', url = REPORT_PATH, headers = {}, remoteAddress } = {}) =>
@@ -373,6 +376,68 @@ test('POST /csp-report: a compressed body is refused before it is read', async t
     headers: { 'content-encoding': 'gzip' },
   })
   assert.deepEqual(other.json(), { got: { a: 1 } })
+})
+
+// what a connection gets back for the head of a chunked post, and whether the server then ended the connection
+// rather than read the megabytes of body that follow
+async function rawPost(port, headers, { first = 0 } = {}) {
+  const socket = net.connect(port, '127.0.0.1')
+  let got = ''
+  let closed = false
+  socket.on('data', chunk => (got += chunk))
+  socket.on('error', () => {})
+  socket.on('close', () => (closed = true))
+  await once(socket, 'connect')
+  const until = async (done, what) => {
+    for (let i = 0; i < 300 && !done(); i++) await new Promise(resolve => setTimeout(resolve, 10))
+    assert.ok(done(), `${what}: ${JSON.stringify(got.slice(0, 200))}`)
+  }
+  const chunk = bytes => {
+    socket.write(`${bytes.toString(16)}\r\n`)
+    socket.write(Buffer.alloc(bytes, 0x61))
+    socket.write('\r\n')
+  }
+  try {
+    socket.write(
+      ['POST /csp-report HTTP/1.1', 'Host: world.example', 'Transfer-Encoding: chunked', ...headers, '', ''].join(
+        '\r\n'
+      )
+    )
+    // `first` bytes of body, when the refusal needs to see some; then the answer, with the body still unfinished
+    if (first) chunk(first)
+    await until(() => /\r\n\r\n/.test(got), 'an answer')
+    const answer = got.split('\r\n\r\n')[0] + '\r\n'
+    // megabytes more of the body the answer did not wait for, and another request behind it
+    for (let i = 0; i < 64 && !closed && !socket.destroyed; i++) chunk(64 * 1024)
+    if (!socket.destroyed) socket.write('0\r\n\r\nGET /other HTTP/1.1\r\nHost: world.example\r\n\r\n')
+    await until(() => closed, 'the connection to end')
+    return { status: Number(/^HTTP\/1\.1 (\d+)/.exec(answer)?.[1]), answer, all: got }
+  } finally {
+    socket.destroy()
+  }
+}
+
+test('POST /csp-report: a post refused before its body ends the connection; the body is not read on', async t => {
+  const { server, made } = await app()
+  await server.listen({ port: 0, host: '127.0.0.1' })
+  t.after(() => server.close())
+  const { port } = server.server.address()
+  // a compressed body
+  let res = await rawPost(port, ['Content-Type: application/csp-report', 'Content-Encoding: gzip'])
+  assert.equal(res.status, 415)
+  assert.match(res.answer, /\r\nconnection: close\r\n/i)
+  assert.doesNotMatch(res.all, /the next request was answered/)
+  // over the rate
+  for (let i = 0; i < PER_ADDRESS; i++) made.admit('127.0.0.1')
+  res = await rawPost(port, ['Content-Type: application/csp-report'])
+  assert.equal(res.status, 429)
+  assert.match(res.answer, /\r\nconnection: close\r\n/i)
+  assert.doesNotMatch(res.all, /the next request was answered/)
+  // and a body that is too long, which the parser refuses: its connection ends too
+  made.clock.at += 60_000
+  res = await rawPost(port, ['Content-Type: application/csp-report'], { first: REPORT_MAX_BYTES + 1 })
+  assert.equal(res.status, 413)
+  assert.doesNotMatch(res.all, /the next request was answered/)
 })
 
 test('POST /csp-report: a fault of the server itself still reaches the root handler', async t => {

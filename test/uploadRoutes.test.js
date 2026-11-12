@@ -238,7 +238,10 @@ test('upload: only one file per request; a second file rejects the whole request
   assert.equal(r.status, 400)
   assert.equal(stored.size, 0)
   // a field before the file is fine
-  assert.equal((await post(tokens.builder, [{ filename: 'one.glb', data: GLB }], { fields: [['note', 'x']] })).status, 200)
+  assert.equal(
+    (await post(tokens.builder, [{ filename: 'one.glb', data: GLB }], { fields: [['note', 'x']] })).status,
+    200
+  )
   stored.clear()
 })
 
@@ -264,7 +267,10 @@ test('upload: a body stuffed with empty fields is refused as 400 and the loop is
   const limit = process.env.CI ? 250 : 50
   assert.ok(maxGap < limit, `event loop held for ${maxGap.toFixed(1)}ms`)
   // a handful of fields next to the file is still fine
-  assert.equal((await post(tokens.builder, [{ filename: 'a.glb', data: GLB }], { fields: fields.slice(0, 3) })).status, 200)
+  assert.equal(
+    (await post(tokens.builder, [{ filename: 'a.glb', data: GLB }], { fields: fields.slice(0, 3) })).status,
+    200
+  )
   stored.clear()
 })
 
@@ -340,7 +346,9 @@ test('upload: malformed multipart is 400, not 500', async () => {
   const noBoundary = await app.inject({
     method: 'POST',
     url: '/api/upload',
-    payload: Buffer.from('--x\r\nContent-Disposition: form-data; name="file"; filename="a.glb"\r\n\r\nglTF\r\n--x--\r\n'),
+    payload: Buffer.from(
+      '--x\r\nContent-Disposition: form-data; name="file"; filename="a.glb"\r\n\r\nglTF\r\n--x--\r\n'
+    ),
     headers: { 'content-type': 'multipart/form-data', ...headers },
   })
   assert.equal(noBoundary.statusCode, 400)
@@ -393,7 +401,8 @@ test('assets: nosniff + explicit type on 200/206/304; sandbox + attachment off t
       h['x-content-type-options'] === 'nosniff' &&
       h['content-security-policy'] === "sandbox; default-src 'none'" &&
       h['content-disposition'] === 'attachment'
-    const media = h => h['x-content-type-options'] === 'nosniff' && !h['content-security-policy'] && !h['content-disposition']
+    const media = h =>
+      h['x-content-type-options'] === 'nosniff' && !h['content-security-policy'] && !h['content-disposition']
     const js = await server.inject({ method: 'GET', url: '/assets/a.js' })
     assert.equal(js.statusCode, 200)
     assert.equal(inert(js.headers), true, JSON.stringify(js.headers))

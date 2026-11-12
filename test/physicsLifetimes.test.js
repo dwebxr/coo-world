@@ -80,7 +80,15 @@ function cycles({ B, root, body, liveChunks }, name) {
       // each type on its own, so one leaking type cannot hide in an average
       const leaks = ['fixed', 'socket', 'hinge', 'distance'].map(type =>
         perCycle(() => {
-          const node = new B.Joint({ type, limitY: 30, limitZ: 30, limitMin: -10, limitMax: 10, limitStiffness: 10, limitDamping: 1 })
+          const node = new B.Joint({
+            type,
+            limitY: 30,
+            limitZ: 30,
+            limitMin: -10,
+            limitMax: 10,
+            limitStiffness: 10,
+            limitDamping: 1,
+          })
           node.body0 = a
           node.body1 = b
           root.add(node)
@@ -149,7 +157,11 @@ probe('physics lifetimes: an unchanged value does not rebuild', ({ B, root }) =>
     rb.clean()
     controller.clean()
   }
-  assert.deepEqual([rbMounts(), colliderMounts(), controllerMounts()], [1, 0, 0], 'rigid body mounts once (for the centre of mass), the rest never')
+  assert.deepEqual(
+    [rbMounts(), colliderMounts(), controllerMounts()],
+    [1, 0, 0],
+    'rigid body mounts once (for the centre of mass), the rest never'
+  )
   // a different value still rebuilds
   rb.mass = 3
   collider.width = 2
@@ -279,7 +291,8 @@ probe('physics lifetimes: mesh checks and budgets', ({ B, root, world }) => {
     const geometry = new B.THREE.BufferGeometry()
     // vertex 3k, 3k+1, 3k+2 form a right triangle at x = k, so consecutive index triples never degenerate
     const positions = new Float32Array(vertexCount * 3)
-    for (let i = 0; i < vertexCount; i++) positions.set([Math.floor(i / 3), i % 3 === 1 ? 1 : 0, i % 3 === 2 ? 1 : 0], i * 3)
+    for (let i = 0; i < vertexCount; i++)
+      positions.set([Math.floor(i / 3), i % 3 === 1 ? 1 : 0, i % 3 === 2 ? 1 : 0], i * 3)
     geometry.setAttribute('position', new B.THREE.BufferAttribute(positions, 3))
     // setIndex keeps a bare typed array unwrapped, so wrap it the way a loaded model has it
     if (indices) geometry.setIndex(Array.isArray(indices) ? indices : new B.THREE.BufferAttribute(indices, 1))
@@ -312,7 +325,11 @@ probe('physics lifetimes: mesh checks and budgets', ({ B, root, world }) => {
   // per app: two 150k-vertex meshes fit one app's 400k budget only once each with their triangles
   const app = { isApp: true, data: { id: 'app-a' }, deadHook: { dead: false } }
   const other = { isApp: true, data: { id: 'app-b' }, deadHook: { dead: false } }
-  const big = () => mesh(150_000, new Uint32Array(30_000 * 3).map((_, i) => i))
+  const big = () =>
+    mesh(
+      150_000,
+      new Uint32Array(30_000 * 3).map((_, i) => i)
+    )
   const first = collide(big(), app)
   const second = collide(big(), app)
   const third = collide(big(), app)
@@ -326,132 +343,149 @@ probe('physics lifetimes: mesh checks and budgets', ({ B, root, world }) => {
   assert.ok(fourth.shape, 'the budget comes back after a release')
 })
 
-probe('physics lifetimes: a native throw mid-mount leaves no temporaries and no stale handle', ({ B, PHYSX, root, physics, liveChunks }) => {
-  // throw once from a native method, then restore it
-  const failOnce = (proto, method) => {
-    const original = proto[method]
-    proto[method] = function () {
-      proto[method] = original
-      throw new Error(`injected ${method} failure`)
-    }
-  }
-  const perCycle = (fn, n = 40) => {
-    for (let i = 0; i < 5; i++) fn()
-    const start = liveChunks()
-    for (let i = 0; i < n; i++) fn()
-    return (liveChunks() - start) / n
-  }
-  const collider = () => {
-    const rb = new B.RigidBody({ type: 'static' })
-    rb.add(new B.Collider({ type: 'box', width: 1, height: 1, depth: 1 }))
-    return rb
-  }
-  // Collider: setLocalPose throws after the shape exists (the throw reaches the caller; the temporaries do not leak)
-  const colliderLeak = perCycle(() => {
-    const rb = collider()
-    failOnce(PHYSX.PxShape.prototype, 'setLocalPose')
-    assert.throws(() => root.add(rb), /injected setLocalPose failure/, 'collider setLocalPose throws')
-    root.remove(rb)
-  })
-  assert.ok(colliderLeak < 0.5, `collider temporaries: ${colliderLeak} chunks per throw`)
-  // Physics.addActor: scene.addActor throws, so neither the handle nor its registration is published
-  const handles = physics.handles.size
-  let attempted = null
-  const addActor = physics.addActor
-  physics.addActor = function (actor, handle) {
-    attempted = handle
-    return addActor.call(this, actor, handle)
-  }
-  const rb = collider()
-  failOnce(PHYSX.PxScene.prototype, 'addActor')
-  assert.throws(() => root.add(rb), /injected addActor failure/, 'scene.addActor throws')
-  physics.addActor = addActor
-  assert.ok(attempted, 'addActor was reached')
-  assert.equal(physics.handles.size, handles, 'no stale handle')
-  assert.equal(physics.registrations.has(attempted), false, 'no stale registration')
-  root.remove(rb)
-  // Prim: the static actor's own attachShape and the shape's setQueryFilterData throw after the geometry and the
-  // filter data exist (Prim logs mount failures instead of throwing); each injection must actually be reached
-  for (const [proto, method] of [
-    [PHYSX.PxRigidStatic.prototype, 'attachShape'],
-    [PHYSX.PxShape.prototype, 'setQueryFilterData'],
-    [PHYSX.PxShapeFlags.prototype, 'raise'],
-  ]) {
-    let reached = 0
-    const primLeak = perCycle(() => {
-      const node = new B.Prim({ type: 'box', size: [1, 1, 1], physics: 'static', opacity: 0 })
+probe(
+  'physics lifetimes: a native throw mid-mount leaves no temporaries and no stale handle',
+  ({ B, PHYSX, root, physics, liveChunks }) => {
+    // throw once from a native method, then restore it
+    const failOnce = (proto, method) => {
       const original = proto[method]
       proto[method] = function () {
         proto[method] = original
-        reached++
         throw new Error(`injected ${method} failure`)
       }
-      root.add(node)
-      proto[method] = original
-      root.remove(node)
-    })
-    assert.ok(reached >= 40, `prim ${method}: the fault was injected (${reached})`)
-    assert.ok(primLeak < 0.5, `prim ${method}: ${primLeak} chunks per throw`)
-  }
-  // a convex collider whose geometry constructor throws after its mesh was cooked: the mesh handle is released
-  let cycle = 0
-  const convexLeak = perCycle(() => {
-    // a fresh geometry each time, so every cycle cooks a new mesh
-    const geometry = new B.THREE.BufferGeometry()
-    geometry.setAttribute('position', new B.THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1 + ++cycle * 1e-3], 3))
-    const body = new B.RigidBody({ type: 'static' })
-    body.add(new B.Collider({ type: 'geometry', geometry, convex: true }))
-    const Original = PHYSX.PxConvexMeshGeometry
-    PHYSX.PxConvexMeshGeometry = function () {
-      PHYSX.PxConvexMeshGeometry = Original
-      throw new Error('injected PxConvexMeshGeometry failure')
     }
-    assert.throws(() => root.add(body), /injected PxConvexMeshGeometry failure/, 'convex geometry throws')
-    PHYSX.PxConvexMeshGeometry = Original
-    root.remove(body)
-  })
-  assert.ok(convexLeak < 0.5, `convex mesh after a geometry throw: ${convexLeak} chunks per throw`)
-  // the mesh scale's own constructor throwing, after its vector and quaternion exist: a convex collider and a convex
-  // (tapered cylinder) prim
-  const scaleThrow = make => {
-    let reached = 0
-    const leak = perCycle(() => {
-      const Original = PHYSX.PxMeshScale
-      PHYSX.PxMeshScale = function () {
-        PHYSX.PxMeshScale = Original
-        reached++
-        throw new Error('injected PxMeshScale failure')
-      }
-      const node = make()
-      try {
-        root.add(node)
-      } catch {
-        // the collider throws to its caller; the prim logs
-      }
-      PHYSX.PxMeshScale = Original
-      root.remove(node)
+    const perCycle = (fn, n = 40) => {
+      for (let i = 0; i < 5; i++) fn()
+      const start = liveChunks()
+      for (let i = 0; i < n; i++) fn()
+      return (liveChunks() - start) / n
+    }
+    const collider = () => {
+      const rb = new B.RigidBody({ type: 'static' })
+      rb.add(new B.Collider({ type: 'box', width: 1, height: 1, depth: 1 }))
+      return rb
+    }
+    // Collider: setLocalPose throws after the shape exists (the throw reaches the caller; the temporaries do not leak)
+    const colliderLeak = perCycle(() => {
+      const rb = collider()
+      failOnce(PHYSX.PxShape.prototype, 'setLocalPose')
+      assert.throws(() => root.add(rb), /injected setLocalPose failure/, 'collider setLocalPose throws')
+      root.remove(rb)
     })
-    return { leak, reached }
+    assert.ok(colliderLeak < 0.5, `collider temporaries: ${colliderLeak} chunks per throw`)
+    // Physics.addActor: scene.addActor throws, so neither the handle nor its registration is published
+    const handles = physics.handles.size
+    let attempted = null
+    const addActor = physics.addActor
+    physics.addActor = function (actor, handle) {
+      attempted = handle
+      return addActor.call(this, actor, handle)
+    }
+    const rb = collider()
+    failOnce(PHYSX.PxScene.prototype, 'addActor')
+    assert.throws(() => root.add(rb), /injected addActor failure/, 'scene.addActor throws')
+    physics.addActor = addActor
+    assert.ok(attempted, 'addActor was reached')
+    assert.equal(physics.handles.size, handles, 'no stale handle')
+    assert.equal(physics.registrations.has(attempted), false, 'no stale registration')
+    root.remove(rb)
+    // Prim: the static actor's own attachShape and the shape's setQueryFilterData throw after the geometry and the
+    // filter data exist (Prim logs mount failures instead of throwing); each injection must actually be reached
+    for (const [proto, method] of [
+      [PHYSX.PxRigidStatic.prototype, 'attachShape'],
+      [PHYSX.PxShape.prototype, 'setQueryFilterData'],
+      [PHYSX.PxShapeFlags.prototype, 'raise'],
+    ]) {
+      let reached = 0
+      const primLeak = perCycle(() => {
+        const node = new B.Prim({ type: 'box', size: [1, 1, 1], physics: 'static', opacity: 0 })
+        const original = proto[method]
+        proto[method] = function () {
+          proto[method] = original
+          reached++
+          throw new Error(`injected ${method} failure`)
+        }
+        root.add(node)
+        proto[method] = original
+        root.remove(node)
+      })
+      assert.ok(reached >= 40, `prim ${method}: the fault was injected (${reached})`)
+      assert.ok(primLeak < 0.5, `prim ${method}: ${primLeak} chunks per throw`)
+    }
+    // a convex collider whose geometry constructor throws after its mesh was cooked: the mesh handle is released
+    let cycle = 0
+    const convexLeak = perCycle(() => {
+      // a fresh geometry each time, so every cycle cooks a new mesh
+      const geometry = new B.THREE.BufferGeometry()
+      geometry.setAttribute(
+        'position',
+        new B.THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1 + ++cycle * 1e-3], 3)
+      )
+      const body = new B.RigidBody({ type: 'static' })
+      body.add(new B.Collider({ type: 'geometry', geometry, convex: true }))
+      const Original = PHYSX.PxConvexMeshGeometry
+      PHYSX.PxConvexMeshGeometry = function () {
+        PHYSX.PxConvexMeshGeometry = Original
+        throw new Error('injected PxConvexMeshGeometry failure')
+      }
+      assert.throws(() => root.add(body), /injected PxConvexMeshGeometry failure/, 'convex geometry throws')
+      PHYSX.PxConvexMeshGeometry = Original
+      root.remove(body)
+    })
+    assert.ok(convexLeak < 0.5, `convex mesh after a geometry throw: ${convexLeak} chunks per throw`)
+    // the mesh scale's own constructor throwing, after its vector and quaternion exist: a convex collider and a convex
+    // (tapered cylinder) prim
+    const scaleThrow = make => {
+      let reached = 0
+      const leak = perCycle(() => {
+        const Original = PHYSX.PxMeshScale
+        PHYSX.PxMeshScale = function () {
+          PHYSX.PxMeshScale = Original
+          reached++
+          throw new Error('injected PxMeshScale failure')
+        }
+        const node = make()
+        try {
+          root.add(node)
+        } catch {
+          // the collider throws to its caller; the prim logs
+        }
+        PHYSX.PxMeshScale = Original
+        root.remove(node)
+      })
+      return { leak, reached }
+    }
+    const colliderScale = scaleThrow(() => {
+      const geometry = new B.THREE.BufferGeometry()
+      geometry.setAttribute(
+        'position',
+        new B.THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1 + ++cycle * 1e-3], 3)
+      )
+      const node = new B.RigidBody({ type: 'static' })
+      node.add(new B.Collider({ type: 'geometry', geometry, convex: true }))
+      return node
+    })
+    const primScale = scaleThrow(
+      () => new B.Prim({ type: 'cylinder', size: [0.5, 1, 1], physics: 'static', opacity: 0 })
+    )
+    for (const [label, { leak, reached }] of [
+      ['collider', colliderScale],
+      ['prim', primScale],
+    ]) {
+      assert.ok(reached >= 40, `${label}: the PxMeshScale fault was injected (${reached})`)
+      assert.ok(leak < 0.5, `${label}: ${leak} chunks per PxMeshScale throw`)
+    }
   }
-  const colliderScale = scaleThrow(() => {
-    const geometry = new B.THREE.BufferGeometry()
-    geometry.setAttribute('position', new B.THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1 + ++cycle * 1e-3], 3))
-    const node = new B.RigidBody({ type: 'static' })
-    node.add(new B.Collider({ type: 'geometry', geometry, convex: true }))
-    return node
-  })
-  const primScale = scaleThrow(() => new B.Prim({ type: 'cylinder', size: [0.5, 1, 1], physics: 'static', opacity: 0 }))
-  for (const [label, { leak, reached }] of [['collider', colliderScale], ['prim', primScale]]) {
-    assert.ok(reached >= 40, `${label}: the PxMeshScale fault was injected (${reached})`)
-    assert.ok(leak < 0.5, `${label}: ${leak} chunks per PxMeshScale throw`)
-  }
-})
+)
 
 probe('physics lifetimes: the mesh budget counts the index array, not index.count', ({ B, root }) => {
   // index.count says one triangle; the array holds 200 001
   const geometry = new B.THREE.BufferGeometry()
   geometry.setAttribute('position', new B.THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0], 3))
-  const index = new B.THREE.BufferAttribute(new Uint32Array(200_001 * 3).map((_, i) => i % 3), 1)
+  const index = new B.THREE.BufferAttribute(
+    new Uint32Array(200_001 * 3).map((_, i) => i % 3),
+    1
+  )
   Object.defineProperty(index, 'count', { value: 3 })
   geometry.setIndex(index)
   const rb = new B.RigidBody({ type: 'static' })
@@ -508,60 +542,78 @@ probe('physics lifetimes: joint bookkeeping survives failures and body swaps', (
   assert.equal(constraints(), 0)
 })
 
-
 // Constructors are plain writable module properties, so a throwing constructor can be injected; native property
 // accessors are defined non-configurable around the original getter/setter functions, so throws from them (the
 // creation-transform and centre-of-mass population, the controller descriptor setters) cannot be injected here and
 // are covered by the same allocate-inside-try pattern, checked by review.
-probe('physics lifetimes: a throwing constructor mid-mount leaves no earlier temporary behind', ({ B, PHYSX, root, body, liveChunks }) => {
-  const throwOn = (name, nth) => {
-    const Original = PHYSX[name]
-    let calls = 0
-    let reached = false
-    PHYSX[name] = function (...args) {
-      if (++calls === nth) {
-        reached = true
+probe(
+  'physics lifetimes: a throwing constructor mid-mount leaves no earlier temporary behind',
+  ({ B, PHYSX, root, body, liveChunks }) => {
+    const throwOn = (name, nth) => {
+      const Original = PHYSX[name]
+      let calls = 0
+      let reached = false
+      PHYSX[name] = function (...args) {
+        if (++calls === nth) {
+          reached = true
+          PHYSX[name] = Original
+          throw new Error(`injected ${name} failure`)
+        }
+        return new Original(...args)
+      }
+      return () => {
         PHYSX[name] = Original
-        throw new Error(`injected ${name} failure`)
+        return reached
       }
-      return new Original(...args)
     }
-    return () => {
-      PHYSX[name] = Original
-      return reached
+    const perCycle = (fn, n = 40) => {
+      for (let i = 0; i < 5; i++) fn()
+      const start = liveChunks()
+      for (let i = 0; i < n; i++) fn()
+      return (liveChunks() - start) / n
+    }
+    const a = body('RigidBody', { position: [0, 0, 0] })
+    const b = body('RigidBody', { position: [3, 0, 0] })
+    const cases = [
+      // the controller's shape flags, after its filter data exists
+      ['PxShapeFlags', 1, () => new B.Controller({ radius: 0.4, height: 1 })],
+      // the second joint frame, after the first exists
+      ['PxTransform', 2, () => Object.assign(new B.Joint({ type: 'fixed' }), { body0: a, body1: b })],
+      // the cone and the angular limit, after their spring exists
+      [
+        'PxJointLimitCone',
+        1,
+        () =>
+          Object.assign(new B.Joint({ type: 'socket', limitY: 30, limitZ: 30, limitStiffness: 10, limitDamping: 1 }), {
+            body0: a,
+            body1: b,
+          }),
+      ],
+      [
+        'PxJointAngularLimitPair',
+        1,
+        () =>
+          Object.assign(
+            new B.Joint({ type: 'hinge', limitMin: -10, limitMax: 10, limitStiffness: 10, limitDamping: 1 }),
+            { body0: a, body1: b }
+          ),
+      ],
+    ]
+    for (const [name, nth, make] of cases) {
+      let reachedAll = true
+      const leak = perCycle(() => {
+        const node = make()
+        const restore = throwOn(name, nth)
+        try {
+          root.add(node)
+        } catch {
+          // the throw reaches the caller; what matters is what it leaves behind
+        }
+        reachedAll = restore() && reachedAll
+        root.remove(node)
+      })
+      assert.ok(reachedAll, `${name}: the fault was injected every cycle`)
+      assert.ok(leak < 0.5, `${name}: ${leak} chunks per throw`)
     }
   }
-  const perCycle = (fn, n = 40) => {
-    for (let i = 0; i < 5; i++) fn()
-    const start = liveChunks()
-    for (let i = 0; i < n; i++) fn()
-    return (liveChunks() - start) / n
-  }
-  const a = body('RigidBody', { position: [0, 0, 0] })
-  const b = body('RigidBody', { position: [3, 0, 0] })
-  const cases = [
-    // the controller's shape flags, after its filter data exists
-    ['PxShapeFlags', 1, () => new B.Controller({ radius: 0.4, height: 1 })],
-    // the second joint frame, after the first exists
-    ['PxTransform', 2, () => Object.assign(new B.Joint({ type: 'fixed' }), { body0: a, body1: b })],
-    // the cone and the angular limit, after their spring exists
-    ['PxJointLimitCone', 1, () => Object.assign(new B.Joint({ type: 'socket', limitY: 30, limitZ: 30, limitStiffness: 10, limitDamping: 1 }), { body0: a, body1: b })],
-    ['PxJointAngularLimitPair', 1, () => Object.assign(new B.Joint({ type: 'hinge', limitMin: -10, limitMax: 10, limitStiffness: 10, limitDamping: 1 }), { body0: a, body1: b })],
-  ]
-  for (const [name, nth, make] of cases) {
-    let reachedAll = true
-    const leak = perCycle(() => {
-      const node = make()
-      const restore = throwOn(name, nth)
-      try {
-        root.add(node)
-      } catch {
-        // the throw reaches the caller; what matters is what it leaves behind
-      }
-      reachedAll = restore() && reachedAll
-      root.remove(node)
-    })
-    assert.ok(reachedAll, `${name}: the fault was injected every cycle`)
-    assert.ok(leak < 0.5, `${name}: ${leak} chunks per throw`)
-  }
-})
+)

@@ -1,26 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { grantTokenRank, persistRank, revokeTokenRank } from '../src/server/rankGrants.js'
+import { grantTokenRank, rankStored, revokeTokenRank } from '../src/server/rankGrants.js'
 // the real wallet table, so the hand-over between the two modules is what runs
 const wallets = await import('../src/server/solana-gating.js')
 
-// a knex-shaped stand-in: db('users').where('id', id).update({ rank }) records the write, or fails
-const makeDb = ({ fail = false } = {}) => {
-  const writes = []
-  const db = table => ({
-    where: (column, value) => ({
-      update: async patch => {
-        if (fail) throw new Error('SQLITE_BUSY')
-        writes.push({ table, column, value, ...patch })
-      },
-    }),
-  })
-  return { db, writes }
-}
 const player = (id, data = {}) => ({
   rankRevision: 0,
-  rankWritesPending: 0,
   data: { id, userId: id, rank: 0, ...data },
 })
 
@@ -41,70 +27,46 @@ test('grant: a live session is flagged and keyed to its wallet; a session that e
   assert.equal(wallets.walletOf('s-live'), null)
 })
 
-test('persist: the grant is cleared only once the rank is in the database; a failed write leaves the session as it was', async () => {
-  const socket = { id: 's-persist', disconnected: false }
-  const p = player('s-persist')
+// rankStored is what ServerNetwork has userRows.js call when a rank it decided has landed (storeRank); the sequences
+// of writes that lead to each call are in test/serverWallet.test.js, through the handlers
+test('stored: the grant is over when the database holds the rank the session has, builder or visitor', () => {
+  const socket = { id: 's-stored', disconnected: false }
+  const p = player('s-stored')
   grantTokenRank({ socket, player: p, walletAddress: 'WALLET_C', wallets })
-  const failing = makeDb({ fail: true })
-  await assert.rejects(
-    persistRank({ db: failing.db, player: p, rank: 1, wallets, isCurrent: () => true }),
-    /SQLITE_BUSY/
-  )
-  assert.equal(p.data.tokenGrantedRank, true, 'still a token grant')
-  assert.equal(wallets.walletOf('s-persist'), 'WALLET_C', 'still keyed to the wallet')
-  const ok = makeDb()
-  await persistRank({ db: ok.db, player: p, rank: 1, wallets, isCurrent: () => true })
-  assert.deepEqual(ok.writes, [{ table: 'users', column: 'id', value: 's-persist', rank: 1 }])
+  p.data.rank = 1
+  assert.equal(rankStored({ player: p, rank: 1, wallets, isCurrent: () => true }), true)
   assert.equal(p.data.tokenGrantedRank, false)
-  assert.equal(wallets.walletOf('s-persist'), null)
+  assert.equal(wallets.walletOf('s-stored'), null)
   // a stored visitor rank ends a grant the same way
-  const demoted = player('s-demote', { rank: 1, tokenGrantedRank: true })
+  const demoted = player('s-demote', { rank: 0, tokenGrantedRank: true })
   wallets.recordWallet('s-demote', 'WALLET_D')
-  await persistRank({ db: ok.db, player: demoted, rank: 0, wallets, isCurrent: () => true })
+  assert.equal(rankStored({ player: demoted, rank: 0, wallets, isCurrent: () => true }), true)
   assert.equal(demoted.data.tokenGrantedRank, false)
   assert.equal(wallets.walletOf('s-demote'), null)
 })
 
-test('persist: helper fault injection preserves a newer revision after an older write', async () => {
-  let finish
-  const db = () => ({ where: () => ({ update: () => new Promise(resolve => (finish = resolve)) }) })
-  const p = player('revision-race')
-  const pending = persistRank({ db, player: p, rank: 0, wallets, isCurrent: () => true })
-  // what a grant does to the session after the write began: a new revision and the builder rank
-  p.rankRevision++
-  p.data.rank = 1
-  grantTokenRank({ socket: { id: p.data.id }, player: p, walletAddress: 'NEW_WALLET', wallets })
-  finish()
-  await pending
-  assert.equal(p.data.tokenGrantedRank, true)
-  assert.equal(wallets.walletOf(p.data.id), 'NEW_WALLET')
-  wallets.clearSocket(p.data.id)
+test('stored: a rank other than the one the session has leaves the grant as it is, in both directions', () => {
+  // the database took visitor; the session is a builder again (a later decision on its way, or a new grant)
+  const up = player('s-up', { rank: 1, tokenGrantedRank: true })
+  wallets.recordWallet('s-up', 'WALLET_UP')
+  assert.equal(rankStored({ player: up, rank: 0, wallets, isCurrent: () => true }), false)
+  assert.equal(up.data.tokenGrantedRank, true)
+  assert.equal(wallets.walletOf('s-up'), 'WALLET_UP')
+  // the database took builder; the session is a visitor meanwhile (a later decision on its way)
+  const down = player('s-down', { rank: 0, tokenGrantedRank: true })
+  wallets.recordWallet('s-down', 'WALLET_DOWN')
+  assert.equal(rankStored({ player: down, rank: 1, wallets, isCurrent: () => true }), false)
+  assert.equal(down.data.tokenGrantedRank, true)
+  assert.equal(wallets.walletOf('s-down'), 'WALLET_DOWN')
+  wallets.clearSocket('s-up')
+  wallets.clearSocket('s-down')
 })
 
-test('persist: a write that lands after another change of the same rank still ends the grant', async () => {
-  let finish
-  const db = () => ({ where: () => ({ update: () => new Promise(resolve => (finish = resolve)) }) })
-  const p = player('same-rank-race', { rank: 1, tokenGrantedRank: true })
-  wallets.recordWallet(p.data.id, 'GRANT_WALLET')
-  const pending = persistRank({ db, player: p, rank: 1, wallets, isCurrent: () => true })
-  // a second administrative write of the same rank began meanwhile
-  p.rankRevision++
-  finish()
-  await pending
-  assert.equal(p.data.tokenGrantedRank, false, 'the rank the session has is the one in the database')
-  assert.equal(wallets.walletOf(p.data.id), null)
-})
-
-test('persist: helper fault injection preserves a replacement session at the same revision', async () => {
-  let finish
-  let current = true
-  const db = () => ({ where: () => ({ update: () => new Promise(resolve => (finish = resolve)) }) })
-  const p = player('session-race', { tokenGrantedRank: true })
-  const pending = persistRank({ db, player: p, rank: 0, wallets, isCurrent: () => current })
-  current = false
+test('stored: a player that is no longer the session of its user changes nothing', () => {
+  // the user reconnected: the wallet table's entry under the same id is the new session's
+  const p = player('session-race', { rank: 0, tokenGrantedRank: true })
   wallets.recordWallet(p.data.id, 'RECONNECTED_WALLET')
-  finish()
-  await pending
+  assert.equal(rankStored({ player: p, rank: 0, wallets, isCurrent: () => false }), false)
   assert.equal(p.data.tokenGrantedRank, true)
   assert.equal(wallets.walletOf(p.data.id), 'RECONNECTED_WALLET')
   wallets.clearSocket(p.data.id)

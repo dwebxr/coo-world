@@ -148,7 +148,7 @@ test('join budget: the visitor rule reads the stored rank, not a free-build worl
   f.world.entities.add(crowd(count++))
   assert.equal(f.users.get('wallet1').rank, Ranks.VISITOR)
   assert.equal((await f.join({ authToken: 'wallet1' })).method, 'onKick')
-  // once the rank is stored (persistRank), the same user skips the rule
+  // once the rank is stored (rankGrants.js rankStored), the same user skips the rule
   f.users.get('wallet1').rank = Ranks.BUILDER
   assert.equal((await f.join({ authToken: 'wallet1' })).method, 'onSnapshot')
 })

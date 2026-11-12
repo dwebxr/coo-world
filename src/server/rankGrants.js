@@ -1,19 +1,23 @@
 // Session-only builder grants (a verified wallet token) and the moment a rank becomes stored.
-// Pure: the database, the wallet table and the socket are passed in, so the pieces ServerNetwork wires
+// Pure: the wallet table and the socket are passed in, so the pieces ServerNetwork wires
 // together can be exercised on their own.
 
-// writes the rank; once it is in the database any session-only grant is over and the user is a plain
-// stored-rank user. a failed write rejects and leaves the session as it was, for the caller to report
-// The grant is over when nothing changed the rank meanwhile, and also when something did and the session still has
-// the rank that was just written (two administrative writes of the same rank that overlap: the first to land used
-// to leave the session marked as token-granted, and ending "the grant" then took a rank the database holds).
-export async function persistRank({ db, player, rank, wallets, isCurrent }) {
-  const revision = player.rankRevision
-  await db('users').where('id', player.data.id).update({ rank })
-  if ((player.rankRevision === revision || player.data.rank === rank) && isCurrent()) {
-    player.data.tokenGrantedRank = false
-    wallets.clearWallet(player.data.id)
-  }
+// A rank an admin (or the admin code) decided for this player has landed in the database: a statement that carried
+// that decision, or a later one for the same user, was taken (userRows.js calls this once for each decision, and
+// never for a statement that started before it). `rank` is what the database now holds.
+// When the session has that rank, it is a stored rank from here on: a session-only grant is over and the user is a
+// plain stored-rank user. When the session has another rank (a later decision still on its way, or one that failed),
+// nothing is touched. So the mark is cleared only at a moment when the database holds the rank the session has:
+// ending "the grant" afterwards does not take a stored rank, and a builder rank the database never took stays
+// marked as a grant (a wallet disconnect takes it from the session).
+// Nothing is touched either for a player that is no longer its user's session (isCurrent): the wallet table is
+// keyed by the user's id, and the entry there now is the session's that replaced it.
+// A write that fails calls nothing: the session keeps its grant state.
+export function rankStored({ player, rank, wallets, isCurrent }) {
+  if (player.data.rank !== rank || !isCurrent()) return false
+  player.data.tokenGrantedRank = false
+  wallets.clearWallet(player.data.id)
+  return true
 }
 
 // marks the session as token-granted and keys its limits to the wallet. a grant that lands after the

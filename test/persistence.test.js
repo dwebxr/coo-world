@@ -455,3 +455,137 @@ test('a stored settings row that cannot be parsed does not make every visitor an
   assert.equal(world.settings.effectiveRank, world.settings.rank)
   assert.ok(world.settings.effectiveRank < 2, 'not admin')
 })
+
+// The users' rows at the final save (userRows.js, ServerNetwork.flushBeforeExit). `users` is a table of its own
+// here: each statement is recorded, and ends as `end(statement)` says.
+function userTable(network, db, end) {
+  const statements = []
+  network.db = table =>
+    table !== 'users'
+      ? db(table)
+      : {
+          where: (_key, id) => ({
+            update: async values => {
+              const statement = { id, values: { ...values } }
+              statements.push(statement)
+              await end(statement)
+            },
+          }),
+        }
+  return statements
+}
+const visitor = id => {
+  const data = { id, userId: id, name: id, rank: 0 }
+  return { id, send() {}, player: { data, isPlayer: true, modify: change => Object.assign(data, change) } }
+}
+
+test(
+  'final save: a user change the database refuses is tried once more, counted, reported, and ends the process with 1',
+  { timeout: 5000 },
+  async t => {
+    const lines = []
+    t.mock.method(console, 'error', line => lines.push(line))
+    t.mock.method(console, 'warn', line => lines.push(line))
+    const { db } = database()
+    const { network, world, exits } = fixture(t, db)
+    world.events = { emit() {} }
+    const statements = userTable(network, db, async () => {
+      throw new Error('SQLITE_BUSY')
+    })
+    await network.onCommand(visitor('u'), { args: ['name', 'Ada'] })
+    await network.onCommand(visitor('v'), { args: ['name', 'Bea'] })
+    await network.userRows().idle()
+    assert.equal(statements.length, 2)
+    assert.equal(lines.filter(line => line.includes('not stored')).length, 2, 'said once for each user')
+    world.fatal('test')
+    await world.fatalPromise
+    assert.deepEqual(exits, [1])
+    assert.deepEqual(
+      statements.map(statement => statement.id),
+      ['u', 'v', 'u', 'v'],
+      'one more statement for each'
+    )
+    const report = lines.filter(line => line.includes('not persisted:'))
+    assert.equal(report.length, 1)
+    assert.match(report[0], / users=2 /)
+    assert.equal(
+      lines.filter(line => line.includes('not stored')).length,
+      2,
+      'the same run of failures: not said again'
+    )
+  }
+)
+
+test(
+  'final save: a user change that failed before lands at the final save, and nothing is reported',
+  { timeout: 5000 },
+  async t => {
+    const lines = []
+    const said = []
+    t.mock.method(console, 'error', line => lines.push(line))
+    t.mock.method(console, 'warn', line => lines.push(line))
+    t.mock.method(console, 'log', line => said.push(line))
+    const { db } = database()
+    const { network, world } = fixture(t, db)
+    world.events = { emit() {} }
+    let down = true
+    const stored = new Map()
+    const statements = userTable(network, db, async statement => {
+      if (down) throw new Error('SQLITE_BUSY')
+      stored.set(statement.id, { ...stored.get(statement.id), ...statement.values })
+    })
+    await network.onCommand(visitor('u'), { args: ['name', 'Ada'] })
+    await network.userRows().idle()
+    assert.equal(network.userRows().unstored(), 1)
+    down = false
+    await network.flushBeforeExit(5000)
+    assert.deepEqual(stored.get('u'), { name: 'Ada' })
+    assert.equal(statements.length, 2)
+    assert.equal(network.userRows().unstored(), 0)
+    assert.deepEqual(
+      lines.filter(line => line.includes('not persisted:')),
+      []
+    )
+    assert.ok(said.includes('[network] final save complete'))
+  }
+)
+
+test(
+  'final save: a user write that hangs is bounded by the deadline, and no statement starts after it',
+  { timeout: 5000 },
+  async t => {
+    const lines = []
+    t.mock.method(console, 'error', line => lines.push(line))
+    t.mock.method(console, 'warn', line => lines.push(line))
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { db } = database()
+    const { network, world, exits } = fixture(t, db)
+    world.events = { emit() {} }
+    const held = deferred()
+    const statements = userTable(network, db, async statement => {
+      if (statement.id === 'failing') throw new Error('SQLITE_BUSY')
+      await held.promise
+    })
+    await network.onCommand(visitor('failing'), { args: ['name', 'Ada'] })
+    await network.userRows().idle()
+    // a statement that does not return, and a second change of that user waiting behind it
+    const slow = visitor('slow')
+    await network.onCommand(slow, { args: ['name', 'one'] })
+    await network.onCommand(slow, { args: ['name', 'two'] }, { at: 60000 })
+    assert.equal(statements.length, 2)
+    world.fatal('test')
+    t.mock.timers.tick(4999)
+    await Promise.resolve()
+    assert.deepEqual(exits, [])
+    t.mock.timers.tick(1)
+    await world.fatalPromise
+    assert.deepEqual(exits, [1])
+    const report = lines.find(line => line.includes('not persisted:'))
+    assert.match(report, / users=2 /)
+    // the statement returns after the deadline: the change behind it and the other user's retry are not started
+    held.resolve()
+    for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve))
+    assert.equal(statements.length, 2, 'no statement after the deadline')
+    assert.equal(network.userRows().unstored(), 2)
+  }
+)

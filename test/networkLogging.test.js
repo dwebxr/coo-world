@@ -24,6 +24,7 @@ import { createActionBudgets } from '../src/core/extras/actionBudget.js'
 import { createPendingChanges } from '../src/core/extras/pendingChanges.js'
 import { adminMode, adminWaitScale, createAdminGate } from '../src/server/adminCode.js'
 import { isAdminCommand } from '../src/core/extras/chatCommand.js'
+import { createUserRows } from '../src/server/userRows.js'
 
 const source = fs.readFileSync(new URL('../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
 const methods = [
@@ -41,6 +42,9 @@ const methods = [
   'onSettingsModified',
   'onAi',
   'admin',
+  'saveExpired',
+  'userRows',
+  'storeRank',
   'onCommand',
   'onModifyRank',
   'defaultAvatar',
@@ -107,9 +111,9 @@ function fixture() {
     setImmediate,
     process: { env: { ADMIN_CODE: 'code' } },
     solanaGating: { TOKEN_GATING_ENABLED: true },
-    persistRank: async () => {
-      throw failure
-    },
+    createUserRows,
+    // (no write of a rank lands in these tests)
+    rankStored: () => assert.fail('nothing was stored'),
     console: {
       error() {
         assert.fail('refusals must go through logOnce')
@@ -153,7 +157,6 @@ function fixture() {
     player: {
       data: { id, userId: id, position: [0, 0, 0], quaternion: [0, 0, 0, 1] },
       rankRevision: 0,
-      rankWritesPending: 0,
       isPlayer: true,
       isBuilder: () => true,
       isAdmin: () => true,
@@ -336,9 +339,21 @@ test('handler logging: caught handler failures use briefError and logOnce', asyn
     await f.network.onModifyRank(s, { playerId: s.id, rank: Ranks.BUILDER })
     await f.network.onSpawnModified(s, 'set')
   }
+  // the user's row: a name from the player's own change, a name from the command, a rank from the admin code and a
+  // rank from an admin, each a write that fails. Said once for the run of failures of that user (userRows.js); the
+  // spawn is the other line
   await fail()
-  assert.equal(f.lines.length, 4)
-  assert.ok(f.lines.every(line => line.endsWith(': error')))
+  await f.network.userRows().idle()
+  assert.deepEqual(f.lines, [
+    '[network] name of user "socket" not stored (kept in memory; written again with that user\'s next change or at the final save): error',
+    '[network] error saving spawn: error',
+  ])
+  assert.deepEqual(
+    f.calls.map(call => call.key),
+    ['user-row', 'config:spawn']
+  )
   await fail()
-  assert.equal(f.lines.length, 4)
+  await f.network.userRows().idle()
+  assert.equal(f.lines.length, 2)
+  assert.deepEqual(f.network.userRows().intended('socket'), { name: 'new-name', rank: Ranks.BUILDER })
 })

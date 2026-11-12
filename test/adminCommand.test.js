@@ -44,7 +44,6 @@ function fixture(env = { ADMIN_CODE: CODE }) {
       player: {
         data,
         rankRevision: 0,
-        rankWritesPending: 0,
         isAdmin: () => data.rank >= Ranks.ADMIN,
         modify: patch => Object.assign(data, patch),
       },

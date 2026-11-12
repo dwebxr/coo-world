@@ -22,7 +22,7 @@ The `Dockerfile` has two stages, both `FROM node:22.23.5-alpine` (the Node versi
 
 ## Environment needed to start
 
-The image has no `.env` file, so every setting comes from the container's environment. The server refuses to start (an `[envs] ...` error, exit code 1) unless all of these are set:
+The image has no `.env` file, so every setting comes from the container's environment. The server refuses to start (a fatal error, most of them beginning `[envs]`, and exit code 1) unless all of these are set:
 
 | Variable | Rule checked at start-up |
 |---|---|
@@ -31,11 +31,11 @@ The image has no `.env` file, so every setting comes from the container's enviro
 | `JWT_SECRET` | not blank and not `hyper`; shorter than 32 characters is only warned about. Generate one with `openssl rand -hex 32` and keep using it: session tokens are signed with it |
 | `SAVE_INTERVAL` | seconds between saves (`.env.example` has 60) |
 | `PUBLIC_MAX_UPLOAD_SIZE` | a positive number of megabytes |
-| `PUBLIC_WS_URL` | starts with `ws://` or `wss://`; the address browsers connect to |
-| `PUBLIC_API_URL` | the address browsers use for `/api` |
-| `ASSETS` | `local` or `s3` |
-| `ASSETS_BASE_URL` | the address browsers load assets from; no trailing `/` |
-| `ASSETS_S3_URI` | only with `ASSETS=s3` |
+| `PUBLIC_WS_URL` | the address browsers connect to. Only its first two letters are checked (`ws`): give a whole `ws://` or `wss://` address |
+| `PUBLIC_API_URL` | the address browsers use for `/api`; at most 1,024 characters |
+| `ASSETS` | must not be empty. Exactly `s3` selects S3; any other value is local storage, so write `local` or `s3` |
+| `ASSETS_BASE_URL` | the address browsers load assets from; no trailing `/`; at most 1,024 characters |
+| `ASSETS_S3_URI` | only with `ASSETS=s3`, where it must be an S3 address the server can read (scheme and credentials: `src/server/AssetsS3.js`) |
 
 - `ADMIN_CODE` is not needed to start. Because the image sets `NODE_ENV=production`, a container without it is `locked`: nobody can become admin with a code, and the server logs an error line saying so. Set `ADMIN_CODE` (16 or more random characters without spaces: `openssl rand -hex 16`), or `ADMIN_OPEN=true` if every visitor is meant to be an admin. Wrong codes are only slowed down: the code itself is the protection.
 - Several optional settings are checked as well (`UPLOAD_*`, `WS_CONNECT_*`, `STORAGE_*`, `CLEAN_TRASH_DAYS`, `HSTS_MAX_AGE` among them): a value the server refuses stops the start-up the same way. `.env.example` lists the settings with their defaults.

@@ -25,7 +25,7 @@ npm test        # the unit tests: node --test "test/**/*.test.js"
 npm run client:build && npm run viewer:build && npm run node-client:build && npm run build
 ```
 
-That is the order CI uses. `client:build` and `viewer:build` each empty `build/` first, so `npm run build` (the world's page into `build/public` and the server into `build/index.js`, which `npm start` runs) goes last.
+That is the order CI uses. `client:build` and `viewer:build` each empty `build/` first, so `npm run build` (the world's page into `build/public` and the server into `build/index.js`, which `npm start` runs) and `node-client:build` have to come after those two.
 
 ## End-to-end suites
 
@@ -35,7 +35,7 @@ The suites in `test/e2e/` drive a built world in a browser. `test/e2e/README.md`
 node test/e2e/fullstack.mjs --engine=chromium   # or --engine=webkit, --engine=firefox
 ```
 
-The workflow (`.github/workflows/e2e.yml`) runs every suite on Chromium, WebKit and Firefox. Chromium and WebKit decide the result. Firefox is advisory: a suite that fails there does not fail the job, except the WebSocket frame probe (`ws-frames.mjs`), which is required on all three. The workflow runs for pull requests that touch `src/`, `scripts/`, `test/e2e/`, `docs/scripting/examples/`, `package.json`, `package-lock.json` or the workflow itself, on pushes to `main`, weekly and when started by hand; a pull request that changes nothing else skips it, so run the suites your change concerns locally, on Chromium and on WebKit.
+The workflow (`.github/workflows/e2e.yml`) runs every suite on Chromium, WebKit and Firefox. Chromium and WebKit decide the result. Firefox is advisory: a suite that fails there does not fail the job, except the WebSocket frame probe (`ws-frames.mjs`), which is required on all three. The workflow runs for pull requests that touch `src/`, `scripts/`, `test/e2e/`, `docs/scripting/examples/`, `package.json`, `package-lock.json` or the workflow itself, on pushes to `main`, weekly and when started by hand; a pull request that touches none of those paths skips it, so run the suites your change concerns locally, on Chromium and on WebKit.
 
 ## Changelog
 

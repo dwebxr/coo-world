@@ -16,7 +16,7 @@ npx playwright install --with-deps chromium   # or webkit / firefox
 npm run client:build && npm run viewer:build && npm run node-client:build && npm run build
 ```
 
-The server build must come last: `client:build` and `viewer:build` each empty `build/`, so anything built before them is gone.
+The server build has to come after `client:build` and `viewer:build`: each of those two empties `build/`, so anything built before them is gone.
 
 ## Scripts
 

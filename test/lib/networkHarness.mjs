@@ -44,6 +44,7 @@ import { formatUnits, isTxHash } from '../../src/core/extras/evmAbi.js'
 import { grantTokenRank, persistRank, revokeTokenRank } from '../../src/server/rankGrants.js'
 import { adminMode, adminWaitScale, createAdminGate } from '../../src/server/adminCode.js'
 import { createKickList, readKickEnv } from '../../src/server/kickList.js'
+import { createActionBudgets } from '../../src/core/extras/actionBudget.js'
 import { isAdminCommand } from '../../src/core/extras/chatCommand.js'
 import { createSolanaRpc } from '../../src/server/solanaRpc.js'
 import { createTokenBalanceService } from '../../src/server/tokenBalance.js'
@@ -136,6 +137,10 @@ const names = [
   'playersPresent',
   'retireSocket',
   'admit',
+  'spend',
+  'settingAllowed',
+  'releaseSettings',
+  'heldAfter',
   'enqueue',
   'flush',
   'requireBuilder',
@@ -166,6 +171,7 @@ function networkClass(context) {
     createAdminGate,
     createKickList,
     readKickEnv,
+    createActionBudgets,
     isAdminCommand,
     Uint8Array,
     Date,

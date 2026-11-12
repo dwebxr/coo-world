@@ -112,9 +112,13 @@ test('PlayerLocal: name and effects match the server policy before any local eff
   player.setEffect(effect, () => ended++)
   assert.deepEqual(player.data.effect, safe.ef)
   assert.deepEqual(decode(world.packets[1]), safe)
-  for (const invalid of [{ duration: Infinity }, { text: 'x'.repeat(9000) }, { fn() {} }]) player.setEffect(invalid)
+  // (the policy keeps a copy with the fields it knows, so what is installed is not the caller's object)
+  const installed = player.data.effect
+  for (const invalid of [{ duration: Infinity }, { text: 'x'.repeat(9000) }, { fn() {} }, { freeze: true, note: 1 }]) {
+    player.setEffect(invalid)
+  }
   assert.equal(ended, 0)
-  assert.equal(player.data.effect, effect)
+  assert.equal(player.data.effect, installed)
   assert.equal(world.packets.length, 2)
   player.setEffect(null)
   assert.equal(player.data.effect, null)

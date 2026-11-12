@@ -118,23 +118,30 @@ async function stopGroup(proc, gone) {
   return { killed, survived }
 }
 
-// The install and the server are each stopped once, and their record is given up before the stop: the number of a
+// The install and the server are each stopped once. Their record is given up before the stop: the number of a
 // process group that is gone can be given to another group, and a later look at the old record would signal that.
-async function stopInstall() {
+// The stop itself is kept: whoever asks again while it is under way, or after it, gets that same stop to wait for
+// (the final cleanup among them, so that it does not end the run before a stop has finished and said what survived).
+let installStop = null
+let serverStop = null
+
+function stopInstall() {
   const state = install
-  if (!state) return
+  if (!state) return installStop ?? Promise.resolve()
   install = null
-  await stopGroup(state.proc, () => state.exited)
-  state.settle()
+  installStop = stopGroup(state.proc, () => state.exited).then(() => state.settle())
+  return installStop
 }
 
-async function stopServer() {
+function stopServer() {
   const proc = child
-  if (!proc) return exited
+  if (!proc) return serverStop ?? Promise.resolve(exited)
   child = null
-  if (exited && !groupAlive(proc)) return exited
-  const { killed } = await stopGroup(proc, () => exited)
-  return killed ? { ...exited, killed: true } : exited
+  serverStop =
+    exited && !groupAlive(proc)
+      ? Promise.resolve(exited)
+      : stopGroup(proc, () => exited).then(({ killed }) => (killed ? { ...exited, killed: true } : exited))
+  return serverStop
 }
 
 // `npm ci --omit=dev` in tempDir, not blocking: a signal that arrives meanwhile is handled at once
@@ -185,10 +192,12 @@ function runInstall() {
       end = { code, signal }
       lingering = setTimeout(() => stopInstall(), LINGER_MS)
     })
-    // after the exit, once the output is read to its end. What npm left in its group without holding a pipe is
-    // stopped here, so that nothing of the install runs beside the server
+    // after the exit, once the output is read to its end. A stop that is under way ends the install when it is done,
+    // not this. Otherwise what npm left in its group without holding a pipe is stopped now, so that nothing of the
+    // install runs beside the server
     proc.once('close', () => {
-      if (install === state && groupAlive(proc)) stopInstall()
+      if (installStop) return
+      if (groupAlive(proc)) stopInstall()
       else state.settle()
     })
   })

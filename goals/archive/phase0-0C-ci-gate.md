@@ -1,7 +1,9 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # Goal 0C — CI ゲート (GitHub Actions)
 
 **Phase 0 (安全網) | 実装: Sonnet | Risk: 低 | Effort: S | upstream_divergence: none**
-まず `goals/_CONTEXT.md` を読むこと。
+まず `goals/archive/_CONTEXT.md` を読むこと。
 
 ## 目的
 現在 CI は push 時の Docker publish のみで、lint/build/test のゲートが無い。PR で自動検証を走らせ、以降の変更が壊れないようにする。

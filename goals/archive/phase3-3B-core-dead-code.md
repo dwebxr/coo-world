@@ -1,7 +1,9 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # Goal 3B — 非UI デッドコード除去 (core 単独所有)
 
 **Phase 3 (デッドコード) | 実装: Sonnet | Risk: 低 | Effort: S | upstream_divergence: low**
-まず `goals/_CONTEXT.md` を読むこと。
+まず `goals/archive/_CONTEXT.md` を読むこと。
 
 ## 目的
 core 側のデッドコード (無限蓄積・未使用 import・到達不能な debug 可視化) を除去。3A (UI 系) とファイル非重複。

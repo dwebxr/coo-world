@@ -1,7 +1,9 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # Goal 2A — nodes / yoga バグ修正
 
 **Phase 2 (正当性バグ) | 実装: Sonnet | Risk: 低 | Effort: S | upstream_divergence: low**
-まず `goals/_CONTEXT.md` を読むこと。
+まず `goals/archive/_CONTEXT.md` を読むこと。
 
 ## 目的
 Phase 0 で lint が機能した後に顕在化した、scene-graph node / yoga レイアウトの実バグを修正。いずれも低リスク・局所修正・挙動を正しくするもの。

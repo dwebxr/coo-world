@@ -1,7 +1,9 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # Goal 4D — 小重複 / import hygiene
 
 **Phase 4 (重複整理) | 実装: Sonnet | Risk: 低 | Effort: S | upstream_divergence: low**
-まず `goals/_CONTEXT.md` を読むこと。
+まず `goals/archive/_CONTEXT.md` を読むこと。
 
 ## 目的
 小さな重複・import 不整合をまとめて解消。いずれも局所・低リスク。

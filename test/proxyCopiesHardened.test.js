@@ -262,6 +262,7 @@ test('callbacks: a call or apply a script defines on its function is never what 
   const player = {
     world: { network: { isServer: false, isClient: true, id: 'me', send() {} } },
     data: { id: 'me', owner: 'me' },
+    // (the player calls the callback it was given when the effect is over)
     setEffect: (effect, onEnd) => (host.onEnd = onEnd),
   }
   const entity = { deadHook: { dead: false } }

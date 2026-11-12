@@ -194,8 +194,10 @@ test('evm tip watch table: two jobs for every connection WS_MAX_SOCKETS admits',
   assert.equal(evm.TIP_WATCH_MAX, 128, 'the test process sets no WS_MAX_SOCKETS')
   assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '200' }), 400)
   assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '1' }), 2)
-  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '2.5' }), 5)
-  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '0.2' }), 1, 'a whole number of jobs')
+  // 2.5 admits three connections: room for the two watches of each
+  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '2.5' }), 6)
+  // 0.2 admits one connection
+  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '0.2' }), 2)
   // no limit on connections: nothing to derive the table from, so it is the default's
   assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '0' }), 128)
   // a value the server refuses at start-up is refused here too, not replaced by a default

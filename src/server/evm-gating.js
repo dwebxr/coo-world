@@ -270,7 +270,8 @@ export const TIP_WATCH_PER_SOCKET = 2
 // A bad WS_* value throws here as it does in index.js, which reads the same variables at start-up.
 export function resolveTipWatchMax(env = process.env) {
   const { maxSockets } = readConnectionLimitsEnv(env)
-  return Math.ceil(TIP_WATCH_PER_SOCKET * (maxSockets > 0 ? maxSockets : readConnectionLimitsEnv({}).maxSockets))
+  // the connection limit admits ceil(maxSockets) connections (connectionLimits.js): the table has room for each
+  return TIP_WATCH_PER_SOCKET * Math.ceil(maxSockets > 0 ? maxSockets : readConnectionLimitsEnv({}).maxSockets)
 }
 export const TIP_WATCH_MAX = resolveTipWatchMax()
 export const TIP_SEEN_TTL_MS = 1_800_000

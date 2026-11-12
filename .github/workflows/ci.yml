@@ -34,8 +34,9 @@ jobs:
       - name: Lint and format check
         run: npm run check
 
-      # NOTE: client/viewer/node-client builds each empty build/, so run the
-      # server build last to mirror the documented local build order.
+      # NOTE: client:build and viewer:build each empty build/ (what the first wrote does not survive the second);
+      # node-client:build and the server build add to it. The server build runs last, as in the documented local
+      # order: it is the one the tests and the e2e suites run.
       - name: Build (client)
         run: npm run client:build
 

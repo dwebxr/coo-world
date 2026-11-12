@@ -143,7 +143,8 @@ export async function failedStart({ port, env = {}, prepare, timeout = 30000 }) 
     let out = ''
     child.stdout.on('data', data => (out += data))
     child.stderr.on('data', data => (out += data))
-    const exited = once(child, 'exit').then(([code]) => code ?? 'signal')
+    // 'close', not 'exit': the output streams have ended too, so `out` is all the process wrote
+    const exited = once(child, 'close').then(([code]) => code ?? 'signal')
     const code = await Promise.race([exited, sleep(timeout).then(() => 'hung')])
     if (code === 'hung') {
       child.kill('SIGKILL')

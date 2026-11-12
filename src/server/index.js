@@ -1,7 +1,7 @@
+// first: from here until the server listens, a start-up that fails ends the process with code 1 (startupExit.js)
+import { startup } from './startupExitInstall'
 import 'ses'
 import '../core/lockdown'
-// from here until the server listens, a start-up that fails ends the process with code 1 (startupExit.js)
-import { startup } from './startupExitInstall'
 import './fetchGuardInstall'
 import './bootstrap'
 
@@ -135,37 +135,40 @@ const shutdown = installShutdown()
 const fastify = Fastify({ logger: { level: 'error' } })
 
 // create world folder if needed
-await fs.ensureDir(worldDir)
+await startup.step(() => fs.ensureDir(worldDir))
 
 // init assets
-await assets.init({ rootDir, worldDir })
+await startup.step(() => assets.init({ rootDir, worldDir }))
 
 // init collections
-await collections.init({ rootDir, worldDir })
+await startup.step(() => collections.init({ rootDir, worldDir }))
 
 // init db
-const db = await getDB({ worldDir })
+const db = await startup.step(() => getDB({ worldDir }))
 
 // init cleaner (before storage is opened: it reads storage.json itself, read-only)
 const storageFile = path.join(worldDir, '/storage.json')
 // the assets URL tells it which scripts are store files for certain; with ASSETS=local (an assets directory) what
 // it removes goes to the trash for CLEAN_TRASH_DAYS
-await cleaner.init({
-  db,
-  storageFile,
-  assetsUrl: assets.url,
-  localStore: Boolean(assets.dir),
-  trashDays: cleanTrashDays,
-  // the largest file it reads: a script came through an upload (PUBLIC_MAX_UPLOAD_SIZE), storage.json is held to
-  // STORAGE_MAX_BYTES; a larger one (an older limit, a hand-made file) stops the clean-up
-  readLimit: Math.max(maxUploadSize * 1024 * 1024, storageLimits.maxBytes || 0),
-})
+await startup.step(() =>
+  cleaner.init({
+    db,
+    storageFile,
+    assetsUrl: assets.url,
+    localStore: Boolean(assets.dir),
+    trashDays: cleanTrashDays,
+    // the largest file it reads: a script came through an upload (PUBLIC_MAX_UPLOAD_SIZE), storage.json is held to
+    // STORAGE_MAX_BYTES; a larger one (an older limit, a hand-made file) stops the clean-up
+    readLimit: Math.max(maxUploadSize * 1024 * 1024, storageLimits.maxBytes || 0),
+  })
+)
 
 // init storage
 const storage = new Storage(storageFile, { limits: storageLimits })
 
 // create world
-// (its app scripts start in world.init: from here an exception thrown from a callback no longer ends the start-up)
+// (its app scripts start in world.init: from here an uncaught exception no longer ends the start-up, and the
+// steps that can fail are awaited through startup.step)
 startup.scriptsStart()
 const world = createServerWorld()
 // from now on a stop saves: world.init hydrates the apps and starts their scripts before the server listens
@@ -177,21 +180,23 @@ shutdown.attach({
   },
   closeServer: () => fastify.close(),
 })
-await world.init({
-  assetsDir: assets.dir,
-  assetsUrl: assets.url,
-  db,
-  assets,
-  storage,
-  collections: collections.list,
-  maxUploadSize,
-})
+await startup.step(() =>
+  world.init({
+    assetsDir: assets.dir,
+    assetsUrl: assets.url,
+    db,
+    assets,
+    storage,
+    collections: collections.list,
+    maxUploadSize,
+  })
+)
 // World.start() does not wait for the systems: no connection is taken before the network has loaded the world, the
 // user ids and the join-state accounting (it refuses any that arrives earlier, too)
-await world.network.ready
+await startup.step(() => world.network.ready)
 // the join snapshot's fixed part for this configuration (its tokens, URLs and largest joiner), measured before
 // anyone can join: world growth and visitors' joins count it (joinBudget.js)
-await world.network.measureFixedBytes()
+await startup.step(() => world.network.measureFixedBytes())
 
 const publicEnvs = buildPublicEnv(process.env)
 const envsCode = `

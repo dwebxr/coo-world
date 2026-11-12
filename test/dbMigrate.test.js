@@ -82,21 +82,25 @@ test('migrate: a step that fails halfway leaves nothing behind, and the next sta
   assert.equal(await version(db), '3')
 })
 
-test('migrate: the version is written with its step, not after it', async t => {
+test('migrate: the version is written with its step: when it cannot be, the step did not happen', async t => {
   quiet(t)
   const db = open(t)
-  const seen = []
-  await migrate(db, [
+  await migrate(db, [])
+  assert.equal(await version(db), '0')
+  // the version cannot be changed
+  await db.raw(`CREATE TRIGGER no_version BEFORE UPDATE ON config BEGIN SELECT RAISE(ABORT, 'version refused'); END`)
+  const list = [
     async trx => {
-      await trx.schema.createTable('a', table => table.string('id').primary())
-      // from outside the transaction nothing of the step is visible yet... on SQLite the one connection is the
-      // transaction's, so the step asks for the version it runs under instead
-      seen.push((await trx('config').where('key', 'version').first()).value)
+      await trx.schema.createTable('made', table => table.string('id').primary())
+      await trx('made').insert({ id: 'row' })
     },
-    async trx => {
-      seen.push((await trx('config').where('key', 'version').first()).value)
-    },
-  ])
-  assert.deepEqual(seen, ['0', '1'])
-  assert.equal(await version(db), '2')
+  ]
+  await assert.rejects(migrate(db, list), /version refused/)
+  // a step that ran with its version unwritten would run again at the next start, on its own table
+  assert.equal(await db.schema.hasTable('made'), false)
+  assert.equal(await version(db), '0')
+  await db.raw('DROP TRIGGER no_version')
+  await migrate(db, list)
+  assert.equal(await version(db), '1')
+  assert.deepEqual(await db('made'), [{ id: 'row' }])
 })

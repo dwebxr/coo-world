@@ -22,8 +22,9 @@ export function parseCommand(text) {
 // client script's `command` event, or null when the packet is not a command line: `args` must be a list of strings
 // that a chat line can hold (their words and the spaces between them within a chat message's length). A client is
 // free to send anything else in that list (numbers, objects), and server scripts used to be handed it.
-// `cmd` and `value` are the client's when they are the text those words came from, and are made from the words
-// otherwise, so a script never gets a command whose parts disagree.
+// `cmd` and `value` are the client's when they are text those words come from (commandWords of it gives exactly
+// `args`), and are made from `args` otherwise. The entries of `args` themselves are taken as they are: a client of
+// someone's own making can send one with a space in it or an empty one, which commandWords would never give.
 export function readCommandPacket(data) {
   const args = data?.args
   if (!Array.isArray(args) || !args.every(word => typeof word === 'string')) return null

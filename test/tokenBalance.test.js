@@ -462,23 +462,45 @@ test('eviction: all pinned gives unknown, including zombies', async t => {
   assert.deepEqual(await replacement, known(1))
 })
 
-test('data: a balance past 2^53 raw units keeps its whole tokens exact', async () => {
-  // 18 decimals: 2^53 raw units is about 0.009 of a token, so every real balance is past it
+test('data: a balance is the number nearest to it, read once from the raw amount', async () => {
   const read = async (amount, decimals) => {
     const service = createTokenBalanceService({ decimals, readRaw: async () => ({ exists: true, amount }) })
     return (await service.get('wallet')).balance
   }
-  const one = 10n ** 18n
-  // one unit under 10,000 tokens used to read as 10,000 exactly (and pass a gate of 10,000 it does not reach by
-  // the chain's count only because the difference is below what a double can say; the whole tokens are right now)
-  assert.equal(await read(9_007_199_254_740_993n * one, 18), 9_007_199_254_740_992)
-  assert.equal(await read(123_456_789n * one + one / 2n, 18), 123_456_789.5)
+  // ordinary balances are what they were: the amount a gate asks for is reached by a wallet that holds it. (Whole
+  // tokens and fraction added apart gave 1.5699999999999998 here, under a required 1.57.)
+  assert.equal(await read(1_570_000n, 6), 1.57)
   assert.equal(await read(100_000n * 10n ** 6n, 6), 100_000)
   assert.equal(await read(99_999_999_999n, 6), 99_999.999999)
   assert.equal(await read(1n, 6), 0.000001)
   assert.equal(await read(0n, 9), 0)
-  // the whole part comes from the integer division: 2^53 + 1 tokens of 6 decimals as one Number would be 2^53
-  const big = (2n ** 53n + 2n) * 10n ** 6n
-  assert.equal(await read(big, 6), Number(2n ** 53n + 2n))
+  assert.equal(await read(7n, 0), 7)
+  for (const [amount, decimals] of [
+    [1_570_000n, 6],
+    [123_456_789n, 6],
+    [999_999n, 6],
+    [10_000_000_001n, 9],
+    [2n ** 53n - 1n, 6],
+  ]) {
+    assert.equal(await read(amount, decimals), Number(amount) / 10 ** decimals, `${amount} / 10^${decimals}`)
+  }
+  // past 2^53 raw units the old way (Number first, then divide) rounded twice, and landed next to the nearest
+  // number: these were found by comparing both ways over random amounts
+  for (const [amount, nearest, twice] of [
+    [97821281163053473875535n, 97821.28116305347, 97821.28116305349],
+    [120130666679123992060596n, 120130.666679124, 120130.66667912398],
+    [61681312953184007309783n, 61681.31295318401, 61681.312953184],
+  ]) {
+    assert.equal(await read(amount, 18), nearest)
+    assert.equal(Number(amount) / 10 ** 18, twice, 'what the old division gave')
+  }
+  assert.equal(await read(123_456_789n * 10n ** 18n + 10n ** 18n / 2n, 18), 123_456_789.5)
+  // a balance is still a double: one unit under a whole token of 18 decimals reads as that token
+  assert.equal(await read(10n ** 18n - 1n, 18), 1)
   assert.equal(await read(10n ** 30n, 0), 1e30)
+  // an amount that is not one
+  for (const amount of [-5n, -5_000_000n, -(10n ** 30n)]) {
+    const negative = createTokenBalanceService({ decimals: 6, readRaw: async () => ({ exists: true, amount }) })
+    assert.deepEqual(await negative.get('wallet'), { known: false }, String(amount))
+  }
 })

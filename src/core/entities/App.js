@@ -656,8 +656,10 @@ export class App extends Entity {
     // On the server, an event from a connection that this app takes (it is kept for the build, or the script
     // listens for its name) uses that connection's budget for script events (ServerNetwork.onEntityEvent `allow`,
     // actionBudget.js). One over the budget is dropped here and counted with this app's other drops: the sending
-    // script is not told. An event nothing listens to uses none
-    if ((queued || this.listeners[name]?.size) && meta?.allow && !meta.allow()) {
+    // script is not told. An event nothing listens to uses none, and neither does one for an app that has crashed
+    // (emit calls no listener then, though the listeners are still there until the crash is cleared up)
+    const heard = !this.crashed && !this.world.fatalError && this.listeners[name]?.size
+    if ((queued || heard) && meta?.allow && !meta.allow()) {
       return this.dropEvent('sender over its event budget')
     }
     if (queued) {

@@ -206,6 +206,23 @@ test('an event the app does not take uses no budget', async () => {
   assert.equal(s.over(game), 0)
 })
 
+test('an event for an app whose script has crashed uses no budget: its listeners are still there, and are not called', async () => {
+  const s = await stage()
+  const broken = s.addApp('game')
+  const healthy = s.addApp('other')
+  // as crash() leaves it until the crash is cleared up: the flag set, the listeners still installed
+  broken.crashed = true
+  assert.equal(broken.listeners.probe.size, 1)
+  for (let i = 0; i < 3000; i++) s.event(s.a, 1000)
+  assert.deepEqual(s.seen, [])
+  assert.equal(s.f.network.actionBudgets, undefined, 'the budget was never asked')
+  assert.equal(s.over(broken), 0)
+  // the connection's whole burst is there for the app that runs
+  for (let i = 0; i < BURST; i++) s.event(s.a, 1000, { id: 'other' })
+  assert.equal(s.seen.length, BURST)
+  assert.equal(s.over(healthy), 0)
+})
+
 test('an event the app keeps while it builds uses the budget, whatever the old script listened for', async () => {
   const s = await stage()
   const game = s.addApp('game')

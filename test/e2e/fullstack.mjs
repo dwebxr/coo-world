@@ -1216,9 +1216,11 @@ async function probes(admin, watcher) {
           from: fromSender,
           timeout: 20000 * TIMEOUT_SCALE,
         })
-        // the most the budget can have let through: the burst, and the rate for the time the events took to arrive
-        const most = 1280 + Math.ceil(((Date.now() - started) / 1000) * 320) + 1
-        ok(most < EVENTS, `the events arrived fast enough to tell (${Date.now() - started} ms)`)
+        // The most the budget can have let through: the burst, and the rate for the time the events took to
+        // arrive. On a machine slow enough for that to reach all of them, only the burst can be told here (the
+        // exact rate is asserted on a clock of the test's own in test/eventBudget.test.js).
+        const elapsed = Date.now() - started
+        const most = Math.min(EVENTS, 1280 + Math.ceil((elapsed / 1000) * 320) + 1)
         // a second later the budget has room again: an event is delivered, and tells the count
         await sleep(1100)
         const fromReport = watcher.mark()

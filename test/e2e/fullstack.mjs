@@ -584,7 +584,9 @@ async function probes(admin, watcher) {
     await waitUntil(() => seen(admin, fromAdmin, 'ef').length >= 1, { message: "the script's effect" })
     eq(seen(admin, fromAdmin, 'ef')[0].emote, scriptEmote, 'the effect carries its emote')
     // the visitor's client names the emote it plays: the one the script chose is relayed, another is not
+    // (each in a tick of its own: of two changes to a player's emote in one tick the others are told the later)
     watcher.send('entityModified', { id: watcher.id, e: scriptEmote })
+    await waitUntil(() => seen(admin, fromAdmin, 'e').length >= 1, { message: 'the first emote change' })
     watcher.send('entityModified', { id: watcher.id, e: outside('emote-jump.glb') })
     await waitUntil(() => seen(admin, fromAdmin, 'e').length >= 2, { message: 'two emote changes' })
     eq(JSON.stringify(seen(admin, fromAdmin, 'e')), JSON.stringify([scriptEmote, null]), 'chosen relayed, other nulled')
@@ -1241,6 +1243,124 @@ async function probes(admin, watcher) {
         return `${report.count} of ${EVENTS} events reached the script (at most ${most})`
       } finally {
         sender.close()
+      }
+    }
+  )
+
+  await step(
+    'A14f a flood of changes to its own player reaches the others once a tick, ending where the flooder is',
+    async () => {
+      const flooder = await new WireClient(PORT, 'mover').connect()
+      const listener = await new WireClient(PORT, 'onlooker').connect()
+      let flooderClosed = false
+      let listenerClosed = false
+      flooder.closed.then(() => (flooderClosed = true))
+      listener.closed.then(() => (listenerClosed = true))
+      try {
+        const fromListener = listener.mark()
+        const fromFlooder = flooder.mark()
+        const started = Date.now()
+        // under the inbound gate's burst (2048 small packets): every one is handled, over a few ticks
+        const CHANGES = 1500
+        for (let i = 0; i < CHANGES; i++) {
+          flooder.send('entityModified', { id: flooder.id, p: [i, 0, -i], q: [0, 0, 0, 1] })
+        }
+        // the flooder's packets are handled in order: when its ping is answered, every change before it was applied
+        flooder.send('ping', 616161)
+        await flooder.waitFor(m => m.method === 'onPong' && m.data === 616161, {
+          from: fromFlooder,
+          timeout: 20000 * TIMEOUT_SCALE,
+        })
+        // one more, in a later tick: when the listener has it, it has everything about the flood
+        await sleep(100)
+        flooder.send('entityModified', { id: flooder.id, p: [-7.5, 0, 7.5] })
+        await listener.waitFor(
+          m => m.method === 'onEntityModified' && m.data.id === flooder.id && m.data.p?.[0] === -7.5,
+          { from: fromListener, timeout: 20000 * TIMEOUT_SCALE }
+        )
+        const elapsed = Date.now() - started
+        const seen = listener
+          .since(fromListener)
+          .filter(m => m.method === 'onEntityModified' && m.data.id === flooder.id)
+          .map(m => m.data)
+        // the server ticks at most once in 33 ms, and writes at most one packet about this player in a tick
+        const most = Math.floor(elapsed / 33) + 2
+        ok(seen.length <= most, `${seen.length} packets for ${CHANGES} changes in ${elapsed} ms (at most ${most})`)
+        ok(most < CHANGES / 10, `the changes were handled fast enough to tell (${elapsed} ms)`)
+        const flood = seen.slice(0, -1)
+        ok(
+          flood.every((data, i) => i === 0 || data.p[0] > flood[i - 1].p[0]),
+          'each packet is later than the one before'
+        )
+        eq(
+          JSON.stringify(flood.at(-1)),
+          JSON.stringify({ id: flooder.id, p: [CHANGES - 1, 0, -(CHANGES - 1)], q: [0, 0, 0, 1] }),
+          'the flood ends on its last change'
+        )
+        eq(
+          JSON.stringify(seen.at(-1)),
+          JSON.stringify({ id: flooder.id, p: [-7.5, 0, 7.5] }),
+          'a single change is told as it is'
+        )
+        ok(
+          !flooder.since(fromFlooder).some(m => m.method === 'onEntityModified' && m.data.id === flooder.id),
+          'nothing of it comes back to the flooder'
+        )
+        // a client that joins now is given the position the server ended on
+        const late = await new WireClient(PORT, 'latecomer').connect()
+        const joined = late.snapshot.entities.find(entity => entity.id === flooder.id)
+        late.close()
+        eq(JSON.stringify(joined?.position), JSON.stringify([-7.5, 0, 7.5]), 'the server applied every change')
+        eq(flooderClosed, false, 'the flooder is not closed')
+        eq(listenerClosed, false, 'the listener is not closed')
+        return `${seen.length} packets for ${CHANGES + 1} changes in ${elapsed} ms`
+      } finally {
+        flooder.close()
+        listener.close()
+      }
+    }
+  )
+
+  await step(
+    'A14g movement at the rate a client sends it (8 a second) reaches the others change by change, within a few ticks',
+    async () => {
+      const walker = await new WireClient(PORT, 'walker').connect()
+      const listener = await new WireClient(PORT, 'bystander-wire').connect()
+      try {
+        const fromListener = listener.mark()
+        const STEPS = 40
+        let slowest = 0
+        for (let i = 0; i < STEPS; i++) {
+          const sentAt = Date.now()
+          // changed fields only, as the client sends them
+          const change = { id: walker.id, p: [i * 0.25, 0, 3] }
+          if (i % 5 === 0) change.q = [0, i % 2 ? 1 : 0, 0, i % 2 ? 0 : 1]
+          if (i % 8 === 0) change.m = (i / 8) % 3
+          walker.send('entityModified', change)
+          await listener.waitFor(
+            m => m.method === 'onEntityModified' && m.data.id === walker.id && m.data.p?.[0] === i * 0.25,
+            { from: fromListener, timeout: 10000 * TIMEOUT_SCALE }
+          )
+          slowest = Math.max(slowest, Date.now() - sentAt)
+          await sleep(Math.max(0, 125 - (Date.now() - sentAt)))
+        }
+        const seen = listener
+          .since(fromListener)
+          .filter(m => m.method === 'onEntityModified' && m.data.id === walker.id)
+          .map(m => m.data)
+        eq(seen.length, STEPS, 'one packet for each change: none merged, none lost')
+        ok(
+          seen.every(
+            (data, i) => data.p[0] === i * 0.25 && 'q' in data === (i % 5 === 0) && 'm' in data === (i % 8 === 0)
+          ),
+          'in order, each with the fields that were sent'
+        )
+        // the end of the tick in which it was handled: a tick is 33 ms
+        ok(slowest <= 150 * TIMEOUT_SCALE, `the slowest took ${slowest} ms`)
+        return `${STEPS} changes, the slowest reached the listener in ${slowest} ms`
+      } finally {
+        walker.close()
+        listener.close()
       }
     }
   )

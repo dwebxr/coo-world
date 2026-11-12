@@ -33,7 +33,10 @@ async function stage() {
   const chat = (who, body, at) => f.network.onChatAdded(who.socket, { body }, { at })
   const chats = packets => packets.filter(([name]) => name === 'onChatAdded').map(([, data]) => data)
   const TOO_FAST = 'You are sending messages too fast. Some were not sent.'
-  return { f, lines, events, admin, a, b, got, chat, chats, TOO_FAST }
+  // a handler called here runs outside ServerNetwork.flush, which ends by telling the others what the players' own
+  // clients changed in the tick (flushPending): this ends the tick of such a call
+  const tick = handled => (f.network.flushPending(), handled)
+  return { f, lines, events, admin, a, b, got, chat, chats, tick, TOO_FAST }
 }
 
 test('chat: a thousand lines a second from one visitor reach the others as a burst and then a line a second', async () => {
@@ -175,7 +178,7 @@ test('/name: the name the player has is answered and changes nothing; a flood of
 test('own player: a name or avatar that is not new is not told or written again', async () => {
   const s = await stage()
   s.f.world.settings.customAvatars = true
-  const modify = (data, at) => s.f.network.onEntityModified(s.a.socket, { id: 'a', ...data }, { at })
+  const modify = (data, at) => s.tick(s.f.network.onEntityModified(s.a.socket, { id: 'a', ...data }, { at }))
   // (a user without an avatar of their own wears the world's)
   const worn = s.a.socket.player.data.avatar
   assert.equal(worn, 'asset://avatar.vrm')
@@ -201,7 +204,7 @@ test('own player: a name or avatar that is not new is not told or written again'
 test("own player: over the budget, name and avatar are taken out, the sender gets the server's back, movement goes on", async () => {
   const s = await stage()
   s.f.world.settings.customAvatars = true
-  const modify = (data, at) => s.f.network.onEntityModified(s.a.socket, { id: 'a', ...data }, { at })
+  const modify = (data, at) => s.tick(s.f.network.onEntityModified(s.a.socket, { id: 'a', ...data }, { at }))
   for (let i = 0; i < 5; i++) await modify({ name: `n${i}` }, 1000)
   s.got(s.a)
   s.got(s.b)
@@ -235,7 +238,7 @@ test("own player: over the budget, name and avatar are taken out, the sender get
 test('own player: a truncated name is corrected whatever became of the avatar in the same packet', async () => {
   const s = await stage()
   s.f.world.settings.customAvatars = true
-  const modify = (data, at) => s.f.network.onEntityModified(s.a.socket, { id: 'a', ...data }, { at })
+  const modify = (data, at) => s.tick(s.f.network.onEntityModified(s.a.socket, { id: 'a', ...data }, { at }))
   const long = 'N'.repeat(64)
   // the name the server keeps is 64 characters long; the rest of the budget goes on avatars
   await modify({ name: long }, 1000)

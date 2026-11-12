@@ -20,7 +20,8 @@
 //
 // What this is not: a limit per person. A connection is cheap, and several of them multiply every number here; the
 // limits on connections per address (connectionLimits.js) are what bounds that. Movement and building are not
-// here: an honest client sends those at frame rate, and a dropped one leaves players out of step.
+// here: an honest client sends those at frame rate, and a dropped one leaves players out of step. (What a client
+// changes on its own player is not refused but merged: the others are told once per server tick, pendingChanges.js.)
 
 export const ACTION_BUDGETS = Object.freeze({
   // a line of chat typed by a player

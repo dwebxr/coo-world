@@ -23,6 +23,7 @@ const methods = [
   'admit',
   'enqueue',
   'flush',
+  'flushPending',
   'onDisconnect',
   'releaseApps',
   'dropTipTickets',

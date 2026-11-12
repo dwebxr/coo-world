@@ -146,6 +146,11 @@ Every position component must be finite and within `[-1e6, 1e6]` metres. A serve
 local script teleport outside that bound is ignored. `rotationY` must be a finite number to change
 the facing direction; otherwise only the position is applied.
 
+Other players are told what a player's own client changes (its position, a teleport, its emote and its effect) at
+most once per server tick, 30 times a second. A client script that teleports its player or sets an effect more often
+than that, on every frame say, is seen by the others at what each tick ended on: the last position, and an effect
+that was set and ended within one tick not at all.
+
 ### `.push(force)`
 
 Applies a short, impulse-like push to the player in world-space. Multiple pushes accumulate vectorially and decay over time with high drag.

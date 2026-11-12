@@ -443,6 +443,7 @@ test('fatal stop suppresses save rearming and refuses mutating packets', async t
     'admit',
     'enqueue',
     'flush',
+    'flushPending',
     'onBlueprintAdded',
     'onBlueprintModified',
     'onEntityAdded',

@@ -17,6 +17,8 @@ export class LooseOctree {
   constructor({ scene, center, size }) {
     this.scene = scene
     this.root = new LooseOctreeNode(this, null, center, size)
+    // nodes a removal emptied, until collapseEmptied() looks at them
+    this.emptied = new Set()
   }
 
   insert(item) {
@@ -56,13 +58,23 @@ export class LooseOctree {
     return false
   }
 
-  // An item leaves the tree for good. The nodes that were made for it and now hold nothing are given back: only
-  // insert and park did that, so a tree that items were removed from kept every node it ever grew (20 scattered
-  // items made 513 nodes, and 513 stayed after all 20 were removed).
+  // An item leaves the tree. The nodes that were made for it and now hold nothing are given back by
+  // collapseEmptied(), which the stage calls once a frame: only insert and park gave nodes back, so a tree that
+  // items were removed from kept every node it ever grew (20 scattered items made 513 nodes, and 513 stayed after
+  // all 20 were removed).
+  // Not at once: a mesh that is rebuilt is removed and inserted again in the same frame (a changed size remounts
+  // it), and collapsing in between threw away the nodes it goes straight back into and made them again.
   remove(item) {
     const node = item._node
     this.detach(item)
-    node?.checkCollapse()
+    if (node) this.emptied.add(node)
+  }
+
+  // gives back the nodes that removals since the last call left with nothing in or under them
+  collapseEmptied() {
+    if (!this.emptied.size) return
+    for (const node of this.emptied) node.checkCollapse()
+    this.emptied.clear()
   }
 
   // takes the item out of its node and leaves the nodes as they are: insert and park put it somewhere else first

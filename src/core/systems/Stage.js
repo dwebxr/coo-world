@@ -106,6 +106,8 @@ export class Stage extends System {
 
   postLateUpdate() {
     this.clean() // after lateUpdate all matrices should be up to date for next step
+    // the end of the frame: what left the scene in it and did not come back gives its octree nodes back
+    this.octree.collapseEmptied()
   }
 
   getDefaultMaterial() {

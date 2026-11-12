@@ -13,6 +13,7 @@ before(async () => {
     export * as THREE from './src/core/extras/three'
     export { LooseOctree } from './src/core/extras/LooseOctree'
     export { SnapOctree } from './src/core/extras/SnapOctree'
+    export { Stage } from './src/core/systems/Stage'
   `)
 })
 after(() => bundle?.destroy())
@@ -38,6 +39,7 @@ test('LooseOctree: removing items gives back the nodes that were made for them',
     assert.ok(grown > 100, `${grown} nodes for 20 scattered items`)
     // one item leaves: the others keep their nodes, and can still be found
     tree.remove(items[0])
+    tree.collapseEmptied()
     assert.equal(items[0]._node, null)
     assert.equal(tree.root.count, 19)
     for (const item of items.slice(1)) assert.ok(item._node.items.includes(item))
@@ -46,9 +48,16 @@ test('LooseOctree: removing items gives back the nodes that were made for them',
     const found = tree.raycast(new THREE.Raycaster(origin, new THREE.Vector3(0, 0, -1)))
     assert.ok(found.length >= 1, 'an item that stayed is still hit')
     // all of them leave: the tree is one node again (it used to keep every node it had grown)
+    const withNineteen = count(tree.root)
+    assert.ok(withNineteen < grown, 'the nodes only the first item needed went with it')
     for (const item of items) tree.remove(item)
     assert.equal(tree.root.count, 0)
+    // not at the removal: at the end of the frame (the stage calls this)
+    assert.equal(count(tree.root), withNineteen)
+    tree.collapseEmptied()
     assert.equal(count(tree.root), 1)
+    assert.equal(tree.emptied.size, 0)
+    tree.collapseEmptied()
     // and it grows again as before
     for (const item of items) assert.equal(tree.insert(item), true)
     assert.equal(tree.root.count, 20)
@@ -57,7 +66,69 @@ test('LooseOctree: removing items gives back the nodes that were made for them',
     tree.remove(items[3])
     tree.remove(items[3])
     tree.remove({ matrix: new THREE.Matrix4(), geometry: new THREE.BoxGeometry(), material: null })
+    tree.collapseEmptied()
     assert.equal(tree.root.count, 19)
+  }))
+
+test('LooseOctree: a mesh that is rebuilt (removed and inserted again in one frame) keeps its nodes', () =>
+  runProbe(bundle, ({ THREE, LooseOctree }) => {
+    const all = node => [node, ...node.children.flatMap(all)]
+    const tree = new LooseOctree({ center: new THREE.Vector3(), size: 10 })
+    const items = []
+    for (let i = 0; i < 50; i++) {
+      const item = {
+        matrix: new THREE.Matrix4().makeTranslation(
+          ((i * 7919) % 17) - 8,
+          ((i * 104729) % 13) - 6,
+          ((i * 1299709) % 11) - 5
+        ),
+        geometry: new THREE.BoxGeometry(0.1, 0.1, 0.1),
+        material: new THREE.MeshBasicMaterial(),
+      }
+      tree.insert(item)
+      items.push(item)
+    }
+    const before = new Set(all(tree.root))
+    // a frame in which every mesh is remounted: taken out, and a replacement put in the same place
+    for (const item of items) {
+      const node = item._node
+      tree.remove(item)
+      tree.insert(item)
+      assert.equal(item._node, node, 'back in the node it was in')
+    }
+    tree.collapseEmptied()
+    const after = all(tree.root)
+    assert.equal(after.length, before.size)
+    assert.ok(
+      after.every(node => before.has(node)),
+      'no node was thrown away and made again'
+    )
+    assert.equal(tree.root.count, 50)
+  }))
+
+test('Stage: the end of a frame gives back the octree nodes of what left the scene in it', () =>
+  runProbe(bundle, ({ THREE, Stage }) => {
+    const count = node => 1 + node.children.reduce((sum, child) => sum + count(child), 0)
+    const stage = new Stage({ setupMaterial() {} })
+    const handles = []
+    for (let i = 0; i < 12; i++) {
+      handles.push(
+        stage.insert({
+          linked: false,
+          matrix: new THREE.Matrix4().makeTranslation(i * 3 - 18, 0, i - 6),
+          node: { ctx: { entity: {} } },
+          geometry: new THREE.BoxGeometry(0.1, 0.1, 0.1),
+          material: new THREE.MeshBasicMaterial(),
+        })
+      )
+    }
+    const grown = count(stage.octree.root)
+    assert.ok(grown > 20, `${grown} nodes`)
+    for (const handle of handles) handle.destroy()
+    assert.equal(stage.octree.root.count, 0)
+    assert.equal(count(stage.octree.root), grown)
+    stage.postLateUpdate()
+    assert.equal(count(stage.octree.root), 1)
   }))
 
 test('LooseOctree: a move does not throw away the nodes the item goes back into', () =>

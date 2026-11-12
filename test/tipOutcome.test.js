@@ -416,7 +416,13 @@ test('tip marker: storage that throws, or is not there, never throws to the call
   assert.equal(partial.incomplete, true)
   assert.equal(storage.items.has(KEY(id)), true)
   // a read in which every value was read says nothing of the kind
-  assert.equal(Object.hasOwn(readTipMarkers(() => storage, 1_000_000), 'incomplete'), false)
+  assert.equal(
+    Object.hasOwn(
+      readTipMarkers(() => storage, 1_000_000),
+      'incomplete'
+    ),
+    false
+  )
   // an old note that cannot be removed is still not shown
   const stuck = withMethod(storage, 'removeItem', denied)
   assert.deepEqual(

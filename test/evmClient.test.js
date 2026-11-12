@@ -991,7 +991,8 @@ test('evm tips: storage that throws or is missing changes nothing about the send
   for (const [name, options] of cases) {
     const h = tipSetup(t, options)
     await h.verify()
-    assert.deepEqual(h.evm.getTipMarkers(), [], name)
+    // (a storage whose reads throw gives no notes and marks that as incomplete: the notes are what is compared)
+    assert.deepEqual([...h.evm.getTipMarkers()], [], name)
     assert.equal((await sendTip(h)).ok, true, name)
     assert.equal(h.sent().length, 1, name)
     assert.deepEqual(requests(h.world, 'EvmTip'), [['onEvmTip', { ticket, txHash }]], name)
@@ -999,7 +1000,11 @@ test('evm tips: storage that throws or is missing changes nothing about the send
       throw new Error('relay timeout')
     }
     assert.deepEqual(await sendTip(h), { ok: false, reason: 'outcome_unknown', request: asked('1') }, name)
-    assert.deepEqual(h.markers, [[], []], `${name}: nothing could be kept`)
+    assert.deepEqual(
+      h.markers.map(notes => [...notes]),
+      [[], []],
+      `${name}: nothing could be kept`
+    )
     // a Dismiss (of a note an earlier read showed) does not throw either
     h.evm.dismissTipMarker('0123456789abcdef')
   }

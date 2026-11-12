@@ -305,4 +305,10 @@ export class ClientEnvironment extends System {
   onViewportResize = () => {
     this.csm.updateFrustums()
   }
+
+  // (what start() listens to; there was no destroy)
+  destroy() {
+    this.world.prefs?.off('change', this.onPrefsChange)
+    this.world.graphics?.off('resize', this.onViewportResize)
+  }
 }

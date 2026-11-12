@@ -137,7 +137,14 @@ export class ClientLiveKit extends System {
     this.world.audio.ready(async () => {
       // audio becomes ready on the player's first touch, which may come after the world's connection has ended
       if (this.left) return
-      await this.room.connect(opts.wsUrl, opts.token)
+      // A voice server that cannot be reached (or refuses the token) is said here and voice stays unconnected. It
+      // used to be an unhandled rejection: nothing awaits this callback (ClientAudio.ready, or its queue).
+      try {
+        await this.room.connect(opts.wsUrl, opts.token)
+      } catch (err) {
+        if (!this.left) console.error('[livekit] could not connect to the voice room:', err)
+        return
+      }
       if (this.left) return this.room.disconnect()
       this.status.connected = true
       this.emit('status', this.status)

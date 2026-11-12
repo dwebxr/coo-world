@@ -88,6 +88,7 @@ export function ScriptEditor({ app, onHandle }) {
   }, [editor])
   useEffect(() => {
     let dead
+    let onScript
     const use = monaco => {
       // only use cached if it matches this key
       const state = cached.key === key ? cached : null
@@ -127,17 +128,21 @@ export function ScriptEditor({ app, onHandle }) {
       })
       setEditor(editor)
       // watch changes
-      app.onScript = () => {
+      onScript = () => {
         const newCode = app.script?.code || '// ...'
         if (newCode !== codeRef.current) {
           editor.setValue(newCode)
           codeRef.current = newCode
         }
       }
+      app.onScript = onScript
     }
     monacoFor(load, { closed: () => dead, toast: text => app.world.emit('toast', text), use })
     return () => {
       dead = true
+      // The app kept this editor's watcher after the editor was closed and disposed: the next change of the script
+      // called setValue on the disposed editor. It is taken off, unless a newer editor of this app has set its own.
+      if (onScript && app.onScript === onScript) app.onScript = null
     }
   }, [])
 

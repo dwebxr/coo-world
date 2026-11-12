@@ -249,8 +249,15 @@ export class ClientGraphics extends System {
     this.effectPass.recompile()
   }
 
+  // The listeners on the world, the prefs and the settings stayed (and with them this system, on emitters that may
+  // outlive it). They are taken off; the observer and the canvas go once, and only if init() made them.
   destroy() {
-    this.resizer.disconnect()
-    this.viewport.removeChild(this.renderer.domElement)
+    this.world.prefs?.off('change', this.onPrefsChange)
+    this.world.off('xrSession', this.onXRSession)
+    this.world.settings?.off('change', this.onSettingsChange)
+    this.resizer?.disconnect()
+    this.resizer = null
+    const canvas = this.renderer?.domElement
+    if (canvas && canvas.parentNode === this.viewport) this.viewport.removeChild(canvas)
   }
 }

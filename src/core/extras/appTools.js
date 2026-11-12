@@ -77,33 +77,56 @@ export async function exportApp(blueprint, resolveFile) {
   return file
 }
 
+// Reads a .hyp file: a 4 byte header size, a JSON header ({ blueprint, assets: [{ type, url, size, mime }] }) and the
+// assets' bytes one after another. The file can come from anywhere (a builder drops one on the world), and the header
+// was taken as it came: a `size` that was negative, not a number or longer than the file gave assets cut from the
+// wrong bytes, each one possibly a copy of the whole file, and a header without a blueprint or with assets that are
+// not a list failed later, somewhere else. Now a file whose header is not of that shape, or whose assets do not lie
+// one after another within the file, is refused with a reason. What the blueprint says is not looked at here: it
+// goes through the blueprint policy where it is used (ClientBuilder.addApp, the server's collections).
 export async function importApp(file) {
+  const invalid = why => new Error(`not a valid .hyp file: ${why}`)
+  const isRecord = value => typeof value === 'object' && value !== null && !Array.isArray(value)
+
   // read as ArrayBuffer
   const buffer = await file.arrayBuffer()
+  if (buffer.byteLength < 4) throw invalid('it is too short')
   const view = new DataView(buffer)
 
   // read header size (first 4 bytes)
   const headerSize = view.getUint32(0, true)
+  if (headerSize > buffer.byteLength - 4) throw invalid('its header is longer than the file')
 
   // read header
   const bytes = new Uint8Array(buffer.slice(4, 4 + headerSize))
-  const header = JSON.parse(new TextDecoder().decode(bytes))
+  let header
+  try {
+    header = JSON.parse(new TextDecoder().decode(bytes))
+  } catch {
+    throw invalid('its header cannot be read')
+  }
+  if (!isRecord(header?.blueprint)) throw invalid('it has no blueprint')
+  if (!Array.isArray(header.assets)) throw invalid('it has no list of assets')
 
   // extract files
   let position = 4 + headerSize
   const assets = []
 
   for (const assetInfo of header.assets) {
-    const data = buffer.slice(position, position + assetInfo.size)
+    if (!isRecord(assetInfo) || typeof assetInfo.url !== 'string') throw invalid('an asset has no url')
+    const size = assetInfo.size
+    if (!Number.isSafeInteger(size) || size < 0) throw invalid('an asset has no size')
+    if (size > buffer.byteLength - position) throw invalid('an asset is longer than the file')
+    const data = buffer.slice(position, position + size)
     const file = new File([data], assetInfo.url.split('/').pop(), {
-      type: assetInfo.mime,
+      type: typeof assetInfo.mime === 'string' ? assetInfo.mime : '',
     })
     assets.push({
       type: assetInfo.type,
       url: assetInfo.url,
       file,
     })
-    position += assetInfo.size
+    position += size
   }
 
   return {

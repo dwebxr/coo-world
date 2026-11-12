@@ -892,51 +892,78 @@ function buildAvatarResult(glb, world, file, vrmHooks) {
  *
  * Shared between ClientLoader.js (createVideoFactory) and ClientLiveKit.js (createPlayerScreen).
  */
-export function prepareVideoElement(
+export function prepareVideoElement(elem, state, options) {
+  return watchVideoElement(elem, state, options).promise
+}
+
+// The wait itself. `promise` resolves when the element has the data of its first frame, with its dimensions in
+// `state`. An element that reports an error before that (a file that is not there, one it cannot decode) used to
+// leave the promise unsettled for good; now it rejects, and Video.mount (the only place that waits) ends there with
+// its warning, the node left as it was. `fail(err)` rejects it for a reason the element does not report itself
+// (an HLS stream); `stop()` ends the wait for an element that is being let go: its listeners are taken off and the
+// promise resolves, with `state.ready` still false. Once the wait is over none of the three changes anything: the
+// promise is settled and the listeners are off.
+function watchVideoElement(
   elem,
   state,
   { trackDuration = false, forcePlayOnMetadata = true, logDimensions = false } = {}
 ) {
-  return new Promise(resolve => {
-    let playing = false
-    let data = false
-    elem.addEventListener(
-      'loadeddata',
-      async () => {
-        // if we needed to hit play to fetch data then revert back to paused
-        if (playing) elem.pause()
-        data = true
-        state.width = elem.videoWidth
-        state.height = elem.videoHeight
-        if (trackDuration) state.duration = elem.duration
-        if (logDimensions) console.log({ width: state.width, height: state.height })
-        state.ready = true
-        resolve()
-      },
-      { once: true }
-    )
-    elem.addEventListener(
-      'loadedmetadata',
-      async () => {
-        // we need a gesture before we can potentially hit play
-        // if we already have data do nothing, we're done!
-        if (data) return
-        // otherwise hit play to force data loading for streams
-        if (forcePlayOnMetadata) {
-          elem.play()
-          playing = true
-        }
-      },
-      { once: true }
-    )
+  let playing = false
+  let data = false
+  let settle
+  const promise = new Promise((resolve, reject) => {
+    settle = { resolve, reject }
   })
+  // (a rejection that no mount is waiting for must not count as an unhandled one; a mount that waits still gets it)
+  promise.catch(() => {})
+  const onLoadedData = () => {
+    // if we needed to hit play to fetch data then revert back to paused
+    if (playing) elem.pause()
+    data = true
+    state.width = elem.videoWidth
+    state.height = elem.videoHeight
+    if (trackDuration) state.duration = elem.duration
+    if (logDimensions) console.log({ width: state.width, height: state.height })
+    state.ready = true
+    end()
+    settle.resolve()
+  }
+  const onLoadedMetadata = () => {
+    // we need a gesture before we can potentially hit play
+    // if we already have data do nothing, we're done!
+    if (data) return
+    // otherwise hit play to force data loading for streams
+    if (forcePlayOnMetadata) {
+      elem.play()
+      playing = true
+    }
+  }
+  const onError = () => {
+    const code = elem.error?.code
+    fail(new Error(`the video could not be loaded${Number.isInteger(code) ? ` (media error ${code})` : ''}`))
+  }
+  function end() {
+    elem.removeEventListener('loadeddata', onLoadedData)
+    elem.removeEventListener('loadedmetadata', onLoadedMetadata)
+    elem.removeEventListener('error', onError)
+  }
+  function fail(err) {
+    end()
+    settle.reject(err)
+  }
+  function stop() {
+    end()
+    settle.resolve()
+  }
+  elem.addEventListener('loadeddata', onLoadedData, { once: true })
+  elem.addEventListener('loadedmetadata', onLoadedMetadata, { once: true })
+  elem.addEventListener('error', onError)
+  return { promise, fail, stop }
 }
 
 function createVideoFactory(world, url) {
   const isHLS = url?.endsWith('.m3u8')
   const sources = {}
-  const state = { width: undefined, height: undefined, duration: undefined, ready: false }
-  let prepare
   function createSource(key) {
     const elem = document.createElement('video')
     elem.crossOrigin = 'anonymous'
@@ -950,9 +977,20 @@ function createVideoFactory(world, url) {
     elem.style.zIndex = '-1000'
     elem.style.pointerEvents = 'none'
     elem.style.overflow = 'hidden'
+    // Each source (each `linked` key) waits for its own element. The wait and the dimensions used to be the first
+    // source's, handed to every later one: a later video went on before its own element had data, and when the first
+    // source was let go before it had loaded, the later ones waited for good.
+    const state = { width: undefined, height: undefined, duration: undefined, ready: false }
+    const watch = watchVideoElement(elem, state, { trackDuration: true })
+    const prepare = watch.promise
     const needsPolyfill = isHLS && !elem.canPlayType('application/vnd.apple.mpegurl') && Hls.isSupported()
+    let hls
     if (needsPolyfill) {
-      const hls = new Hls()
+      hls = new Hls()
+      // a stream that hls.js gives up on is not reported by the element
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (data?.fatal) watch.fail(new Error(`the video stream could not be loaded (${data.details || data.type})`))
+      })
       hls.loadSource(url)
       hls.attachMedia(elem)
     } else {
@@ -971,9 +1009,6 @@ function createVideoFactory(world, url) {
     texture.minFilter = THREE.LinearFilter
     texture.magFilter = THREE.LinearFilter
     texture.anisotropy = world.graphics.maxAnisotropy
-    if (!prepare) {
-      prepare = prepareVideoElement(elem, state, { trackDuration: true })
-    }
     function isPlaying() {
       return elem.currentTime > 0 && !elem.paused && !elem.ended && elem.readyState > 2
     }
@@ -991,11 +1026,17 @@ function createVideoFactory(world, url) {
     function release() {
       n--
       if (n === 0) {
+        // (the audio system's unlock no longer unmutes it, and its wait ends: emptying the element below makes it
+        // report an error)
+        dead = true
+        watch.stop()
         stop()
         audio.disconnect()
         texture.dispose()
         document.body.removeChild(elem)
         delete sources[key]
+        // hls.js keeps its loaders, buffers and worker until it is destroyed
+        hls?.destroy()
         // help to prevent chrome memory leaks
         // see: https://github.com/facebook/react/issues/15583#issuecomment-490912533
         elem.src = ''

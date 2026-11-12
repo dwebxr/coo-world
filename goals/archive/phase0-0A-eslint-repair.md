@@ -1,7 +1,9 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # Goal 0A — ESLint 復旧 & lint スコープ拡張
 
 **Phase 0 (安全網) | 実装: Sonnet | Risk: 低 | Effort: S | upstream_divergence: none/low**
-まず `goals/_CONTEXT.md` を読むこと。
+まず `goals/archive/_CONTEXT.md` を読むこと。
 
 ## 目的
 `npm run lint` は現在 495 errors / 489 warnings で機能停止状態。うち ~214 は eslint に runtime global を宣言していないだけの偽陽性。これを解消し、以降の全フェーズで lint を「本物の欠陥を検出するゲート」として使えるようにする。

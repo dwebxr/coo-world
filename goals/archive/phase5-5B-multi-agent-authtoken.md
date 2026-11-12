@@ -1,7 +1,9 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # Goal 5B — multi-agent authToken 分離
 
 **Phase 5 (AI 基盤) | 実装: Sonnet | Risk: 低 | Effort: M | upstream_divergence: low**
-まず `goals/_CONTEXT.md` を読むこと。
+まず `goals/archive/_CONTEXT.md` を読むこと。
 
 ## 目的
 複数の node-client エージェントを同一マシンで同時起動すると、共有の `localstorage.json` (単一 authToken) を奪い合い、サーバが2体目を `duplicate_user` で kick する (finding 6.2/agent.mjs の既知 TODO)。authToken をインスタンスごとに分離できるようにする。

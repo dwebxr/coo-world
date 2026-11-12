@@ -2,10 +2,7 @@
   "name": "hyperfy",
   "version": "0.16.0",
   "type": "module",
-  "homepage": "https://github.com/hyperfy-xyz/hyperfy#readme",
-  "bugs": {
-    "url": "https://github.com/hyperfy-xyz/hyperfy/issues"
-  },
+  "homepage": "https://github.com/dwebxr/coo-world#readme",
   "keywords": [
     "hyperfy",
     "3d",

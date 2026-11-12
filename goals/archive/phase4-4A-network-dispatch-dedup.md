@@ -1,7 +1,9 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # Goal 4A — network dispatch / builder-check 重複統合
 
 **Phase 4 (重複整理) | 実装: Sonnet | Risk: 低〜中 | Effort: M | upstream_divergence: low**
-まず `goals/_CONTEXT.md` を読むこと。
+まず `goals/archive/_CONTEXT.md` を読むこと。
 
 ## 目的
 Server/Client ネットワークの重複を共有ヘルパ化。挙動 (FIFO 順・per-item エラー分離) は完全に保つ。

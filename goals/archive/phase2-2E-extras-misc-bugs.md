@@ -1,7 +1,9 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # Goal 2E — extras / misc バグ修正
 
 **Phase 2 (正当性バグ) | 実装: Sonnet | Risk: 低 | Effort: S | upstream_divergence: low**
-まず `goals/_CONTEXT.md` を読むこと。
+まず `goals/archive/_CONTEXT.md` を読むこと。
 
 ## 目的
 残りの局所バグ2件を修正。

@@ -1,6 +1,12 @@
 # Migration Guide
 
-## 0.15.0 -> X.XX.X
+## This fork (Coo World)
+
+This fork records its behaviour changes and upgrade notes in [CHANGELOG.md](CHANGELOG.md), under `## [Unreleased]`: that section is where the changes made since upstream Hyperfy v0.16.0 (the version `package.json` still carries) are written down. Read it before upgrading a world; the notes are not repeated here.
+
+## Upstream Hyperfy's note for upgrading from 0.15.0 (history)
+
+Kept as upstream wrote it, for worlds that come from Hyperfy 0.15.0. It is the text of this file at upstream's `v0.16.0` tag; only its heading, which named a placeholder version (`0.15.0 -> X.XX.X`), was replaced.
 
 ### Self Hosting
 

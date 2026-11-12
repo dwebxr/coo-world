@@ -21,6 +21,8 @@ import { adminMode, adminWaitScale, createAdminGate } from '../../src/server/adm
 import { createKickList, readKickEnv } from '../../src/server/kickList.js'
 import { createActionBudgets } from '../../src/core/extras/actionBudget.js'
 import { isAdminCommand } from '../../src/core/extras/chatCommand.js'
+import { createUserRows } from '../../src/server/userRows.js'
+import { endGrantByDecision } from '../../src/server/rankGrants.js'
 import * as aiBudget from '../../src/server/aiBudget.js'
 
 class System extends EventEmitter {
@@ -68,6 +70,8 @@ export function load(file, name, extra = {}) {
     readKickEnv,
     createActionBudgets,
     isAdminCommand,
+    createUserRows,
+    endGrantByDecision,
     ...entityPolicy,
     ...blueprintPolicy,
     ...settingsPolicy,

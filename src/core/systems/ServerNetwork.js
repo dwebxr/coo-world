@@ -57,7 +57,8 @@ import { parseTipAmount, tipAmountReason } from '../extras/evmTokens'
 import { formatUnits, isTxHash } from '../extras/evmAbi'
 import { createSolanaRpc } from '../../server/solanaRpc'
 import { createTokenBalanceService } from '../../server/tokenBalance'
-import { grantTokenRank, persistRank, revokeTokenRank } from '../../server/rankGrants'
+import { endGrantByDecision, grantTokenRank, revokeTokenRank } from '../../server/rankGrants'
+import { createUserRows } from '../../server/userRows'
 import { adminMode, adminWaitScale, createAdminGate } from '../../server/adminCode'
 import { createKickList, readKickEnv } from '../../server/kickList'
 import { createActionBudgets } from '../extras/actionBudget'
@@ -734,11 +735,15 @@ export class ServerNetwork extends System {
     }
     const incomplete = () => {
       if (storage) storageSaved = storage.saved()
-      return this.dirtyBlueprints.size || this.dirtyApps.size || config.size || !storageSaved
+      return (
+        this.dirtyBlueprints.size || this.dirtyApps.size || config.size || !storageSaved || this.userRows().unstored()
+      )
     }
     try {
       await Promise.race([
-        Promise.all([flush(), flushStorage()]),
+        // the users' rows, alongside: the writes under way are waited for, and what a failed one left unstored is
+        // tried once more (userRows.js flush). What the database still has not taken at the end is counted (users=)
+        Promise.all([flush(), flushStorage(), this.userRows().flush()]),
         new Promise((resolve, reject) => {
           timer = setTimeout(() => {
             this.flushExpired = true
@@ -754,7 +759,7 @@ export class ServerNetwork extends System {
       clearTimeout(timer)
       if (incomplete()) {
         console.error(
-          `[network] not persisted: blueprints=${JSON.stringify([...this.dirtyBlueprints.keys()])} apps=${JSON.stringify([...this.dirtyApps.keys()])} config=${JSON.stringify([...config])} storage=${storageSaved ? 'saved' : 'unsaved'}`
+          `[network] not persisted: blueprints=${JSON.stringify([...this.dirtyBlueprints.keys()])} apps=${JSON.stringify([...this.dirtyApps.keys()])} config=${JSON.stringify([...config])} users=${this.userRows().unstored()} storage=${storageSaved ? 'saved' : 'unsaved'}`
         )
       }
     }
@@ -894,6 +899,34 @@ export class ServerNetwork extends System {
     return this.fixedBytes
   }
 
+  // The users' rows as this server means them to be (userRows.js), made on first use. Every change this server
+  // makes to a user's row (a name, an avatar, a rank) goes through its `intend`; a new user's row is inserted by the
+  // join itself. No handler waits for the write. A write that fails is said once per user, and again only after that
+  // user's writes have gone through without a failure in between; what was decided stays in memory, is what a join
+  // of that user gets, and goes out again with the user's next change or at the final save (flushBeforeExit), which
+  // counts what is still unstored. A crash loses it.
+  userRows() {
+    return (this.userRowState ??= createUserRows({
+      update: (userId, values) => this.db('users').where('id', userId).update(values),
+      expired: () => this.saveExpired(),
+      held: userId => !!this.joining?.has(userId),
+      // (userRows.js says it once per run of failures of a user: nothing else limits this line)
+      onFailure: ({ userId, columns, error }) => {
+        console.error(
+          `[network] ${columns.join(', ')} of user ${previewValue(userId, 64)} not stored (kept in memory; written again with that user's next change or at the final save): ${briefError(error)}`
+        )
+      },
+    }))
+  }
+
+  // A rank an admin (or the admin code) decided for a player, in the turn in which the player was given it. It is
+  // the user's rank for this server from here on, so a token grant of the session is over now (rankGrants.js), and
+  // the user's row is to hold it (userRows.js). Whether and when the write lands changes nothing in the session.
+  storeRank(player, rank) {
+    endGrantByDecision({ player, wallets: solanaGating })
+    this.userRows().intend(player.data.id, { rank })
+  }
+
   // The world's admin mode and the brake on `/admin` codes (adminCode.js), made from the environment on first use:
   // `open` (everyone is admin), `code`, or `locked` (nobody becomes admin by a code; clients are told there is one,
   // so nobody is admin by default either).
@@ -939,6 +972,8 @@ export class ServerNetwork extends System {
       if (id === null) this.arriving--
       else if (this.joining.get(id) > 1) this.joining.set(id, this.joining.get(id) - 1)
       else this.joining.delete(id)
+      // what this server decided for the user's row was kept while the join could still need it (userRows.js)
+      if (id !== null) this.userRows().sweep(id)
     }
     // Takes the place of user `id` (null: a place of its own), giving back the one held before. A user who has a
     // place already shares it, whatever the limit; otherwise the limit is asked here, with no wait between the
@@ -968,7 +1003,6 @@ export class ServerNetwork extends System {
       stopWaiting?.()
       release()
     })
-    let carriedRankWrites = []
     let socket = null
     try {
       let authToken = params.authToken
@@ -1072,39 +1106,12 @@ export class ServerNetwork extends System {
         stopWaiting = null
         if (cancelled) return
         if (alive && this.sockets.get(user.id) === existing) return refuseDuplicate()
-        const oldPlayer = existing.player
         if (this.sockets.get(user.id) === existing) await this.retireSocket(existing)
         if (cancelled) return
         if (this.sockets.has(user.id)) return refuseDuplicate()
-        // The old player's rank as it ended (an admin may have changed it while it was asked or retiring; it is
-        // gone from the world now, so nothing changes it any more). Its database writes still on their way get a
-        // moment to land, so the row read next has them. A write not settled when that read starts makes the
-        // in-world rank the answer (the read may have missed it), and one still unsettled is carried to the
-        // replacement, so a next takeover before it lands decides the same way
-        const inWorldRank = oldPlayer?.data?.rank
-        const writes = [...(oldPlayer?.rankWrites ?? [])].map(promise => {
-          const write = { promise, settled: false }
-          promise.then(
-            () => (write.settled = true),
-            () => (write.settled = true)
-          )
-          return write
-        })
-        if (writes.length) {
-          await new Promise(resolve => {
-            const timer = setTimeout(resolve, this.takeoverCloseMs ?? TAKEOVER_CLOSE_MS)
-            Promise.allSettled(writes.map(write => write.promise)).then(() => {
-              clearTimeout(timer)
-              resolve()
-            })
-          })
-          if (cancelled) return
-        }
-        const unsettledBeforeRead = writes.some(write => !write.settled)
-        user = (await this.db('users').where('id', user.id).first()) ?? user
-        if (cancelled) return
-        carriedRankWrites = writes.filter(write => !write.settled).map(write => write.promise)
-        if (unsettledBeforeRead && Number.isInteger(inWorldRank)) user = { ...user, rank: inWorldRank }
+        // (What changed on the old player while it was asked or retiring, a rank an admin gave or took, a name, is
+        // not read from it or from the database again: it is in the user's intended row, which goes over the row
+        // read above once the last wait is over, below.)
       }
 
       // livekit options
@@ -1113,6 +1120,18 @@ export class ServerNetwork extends System {
 
       // a kick that landed on this user's old connection while this one waited above (the takeover, the database)
       if (this.kicks().refusesUser(user.id)) return refuseKicked()
+
+      // The row read above can be older than what this server has decided for it since: a rank an admin gave or took
+      // on the user's earlier connection, a name or an avatar that connection set, with the write still on its way,
+      // landed after the read began, or failed. What was decided goes over the row (userRows.js keeps it for as long
+      // as the user is joining, stored or not) and is taken as what the row holds: a name the connection brings
+      // itself (`name`, read above) is still preferred to it in the record below, as before. Nothing awaits between
+      // here and the player's add: a change decided before this line is in the player's record, and one decided
+      // after it finds the player in the world.
+      // (A rank changed between the old player's leaving and this line finds no player and is not made:
+      // onModifyRank.)
+      const intended = this.userRows().intended(user.id)
+      if (intended) user = { ...user, ...intended }
 
       // an app holding this user's id (stored before new app ids were kept apart from user ids): it moves to a new
       // id and the player joins. Nothing awaits between here and the player's add
@@ -1190,18 +1209,6 @@ export class ServerNetwork extends System {
       socket.player = this.world.entities.add(record, true)
 
       socket.player.rankRevision = 0
-      socket.player.rankWritesPending = 0
-      socket.player.rankWrites = new Set()
-      for (const write of carriedRankWrites) {
-        const player = socket.player
-        player.rankWritesPending++
-        player.rankWrites.add(write)
-        const done = () => {
-          player.rankWritesPending--
-          player.rankWrites.delete(write)
-        }
-        write.then(done, done)
-      }
 
       // send the snapshot made above
       if (steps.length) {
@@ -1344,7 +1351,6 @@ export class ServerNetwork extends System {
       if (attempt.ok && !this.spend(socket, 'moderation', meta, 'You are changing ranks too fast.')) return
       if (attempt.ok) {
         const id = player.data.id
-        const userId = player.data.userId
         const granted = !player.isAdmin()
         let rank
         if (granted) {
@@ -1364,28 +1370,7 @@ export class ServerNetwork extends System {
           body: granted ? 'Admin granted!' : 'Admin revoked!',
           createdAt: moment().toISOString(),
         })
-        player.rankWritesPending++
-        const write = persistRank({
-          db: this.db,
-          player,
-          rank,
-          wallets: solanaGating,
-          isCurrent: () => this.sockets.get(player.data.id)?.player === player,
-        })
-        // kept on the player so a takeover can wait for it (or carry it to the replacement)
-        ;(player.rankWrites ??= new Set()).add(write)
-        try {
-          await write
-        } catch (err) {
-          this.logOnce(
-            socket,
-            'user-rank-save',
-            `error saving user rank for ${previewValue(userId, 64)}; the session keeps its previous grant state: ${briefError(err)}`
-          )
-        } finally {
-          player.rankWritesPending--
-          player.rankWrites.delete(write)
-        }
+        this.storeRank(player, rank)
       }
     }
     if (cmd === 'name') {
@@ -1410,13 +1395,7 @@ export class ServerNetwork extends System {
           body: `Name set to ${name}!`,
           createdAt: moment().toISOString(),
         })
-        if (changed) {
-          try {
-            await this.db('users').where('id', userId).update({ name })
-          } catch (err) {
-            this.logOnce(socket, 'user-name-save', `error saving user name: ${briefError(err)}`)
-          }
-        }
+        if (changed) this.userRows().intend(userId, { name })
       }
     }
     if (cmd === 'spawn') {
@@ -1484,29 +1463,7 @@ export class ServerNetwork extends System {
     player.modify({ rank })
     this.send('entityModified', { id: playerId, rank })
     this.dropBuilderUrls(player)
-    // once the rank is in the database any session-only token grant is over
-    player.rankWritesPending++
-    const write = persistRank({
-      db: this.db,
-      player,
-      rank,
-      wallets: solanaGating,
-      isCurrent: () => this.sockets.get(player.data.id)?.player === player,
-    })
-    // kept on the player so a takeover can wait for it (or carry it to the replacement)
-    ;(player.rankWrites ??= new Set()).add(write)
-    try {
-      await write
-    } catch (err) {
-      this.logOnce(
-        socket,
-        'user-rank-save',
-        `error saving user rank for ${previewValue(playerId, 64)}; the session keeps its previous grant state: ${briefError(err)}`
-      )
-    } finally {
-      player.rankWritesPending--
-      player.rankWrites.delete(write)
-    }
+    this.storeRank(player, rank)
   }
 
   // The player a kick or a mute names, when the sender may: a player here (an app's id named none, and passed the
@@ -1652,16 +1609,13 @@ export class ServerNetwork extends System {
     }
     const revision = player.rankRevision
     let result = { known: false }
-    if (!player.rankWritesPending) {
-      try {
-        result = await this.tokenBalanceService.get(walletAddress, { fresh: true })
-      } catch {
-        // The production service resolves unknown; an injected service may reject.
-      }
+    try {
+      result = await this.tokenBalanceService.get(walletAddress, { fresh: true })
+    } catch {
+      // The production service resolves unknown; an injected service may reject.
     }
     if (!this.current(socket, generation, player) || player.rankRevision !== revision) return
     if (!(player.data.rank < Ranks.BUILDER)) return
-    if (player.rankWritesPending) result = { known: false }
     let body
     if (result.known && result.balance >= required) {
       if (!grantTokenRank({ socket, player, walletAddress, wallets: solanaGating })) return
@@ -2450,13 +2404,7 @@ export class ServerNetwork extends System {
         changes.avatar = fields.avatar
         changed = true
       }
-      if (changed) {
-        try {
-          await this.db('users').where('id', entity.data.userId).update(changes)
-        } catch (err) {
-          this.logOnce(socket, 'user-changes-save', `error saving user changes: ${briefError(err)}`)
-        }
-      }
+      if (changed) this.userRows().intend(entity.data.userId, changes)
       return
     }
     if (entity.isApp) {

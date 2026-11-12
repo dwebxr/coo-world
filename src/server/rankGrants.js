@@ -1,19 +1,17 @@
-// Session-only builder grants (a verified wallet token) and the moment a rank becomes stored.
-// Pure: the database, the wallet table and the socket are passed in, so the pieces ServerNetwork wires
+// Session-only builder grants (a verified wallet token), and what ends one.
+// Pure: the wallet table and the socket are passed in, so the pieces ServerNetwork wires
 // together can be exercised on their own.
 
-// writes the rank; once it is in the database any session-only grant is over and the user is a plain
-// stored-rank user. a failed write rejects and leaves the session as it was, for the caller to report
-// The grant is over when nothing changed the rank meanwhile, and also when something did and the session still has
-// the rank that was just written (two administrative writes of the same rank that overlap: the first to land used
-// to leave the session marked as token-granted, and ending "the grant" then took a rank the database holds).
-export async function persistRank({ db, player, rank, wallets, isCurrent }) {
-  const revision = player.rankRevision
-  await db('users').where('id', player.data.id).update({ rank })
-  if ((player.rankRevision === revision || player.data.rank === rank) && isCurrent()) {
-    player.data.tokenGrantedRank = false
-    wallets.clearWallet(player.data.id)
-  }
+// An admin (or the admin code) decided a rank for this player. From that moment it is the user's rank for this
+// server, written or not: the session has it and every later join of the user gets it (userRows.js). So the
+// session's rank is no longer one a token granted, whatever rank was decided and whatever becomes of the write: the
+// mark is cleared and the wallet's entry removed here, at the decision, and nothing looks at them when a write
+// lands or fails. A token can grant builder again afterwards, when the decided rank is below it.
+// What the database holds is another matter: when the write fails for good, the next process has the database's
+// rank, not this one.
+export function endGrantByDecision({ player, wallets }) {
+  player.data.tokenGrantedRank = false
+  wallets.clearWallet(player.data.id)
 }
 
 // marks the session as token-granted and keys its limits to the wallet. a grant that lands after the

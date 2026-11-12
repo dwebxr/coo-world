@@ -42,7 +42,8 @@ import { createEvmRpcs } from '../../src/server/evmRpc.js'
 import { createEvmHoldingService, readHoldingContractsEnv } from '../../src/server/evmHoldings.js'
 import { createTipWatcher } from '../../src/server/evmTipWatcher.js'
 import { formatUnits, isTxHash } from '../../src/core/extras/evmAbi.js'
-import { grantTokenRank, persistRank, revokeTokenRank } from '../../src/server/rankGrants.js'
+import { endGrantByDecision, grantTokenRank, revokeTokenRank } from '../../src/server/rankGrants.js'
+import { createUserRows } from '../../src/server/userRows.js'
 import { adminMode, adminWaitScale, createAdminGate } from '../../src/server/adminCode.js'
 import { createKickList, readKickEnv } from '../../src/server/kickList.js'
 import { createActionBudgets } from '../../src/core/extras/actionBudget.js'
@@ -85,6 +86,8 @@ const names = [
   'releaseApps',
   'onChatAdded',
   'onAppChat',
+  'userRows',
+  'storeRank',
   'admin',
   'kicks',
   'moderated',
@@ -232,9 +235,10 @@ function networkClass(context) {
     setTimeout,
     clearTimeout,
     clearInterval,
+    endGrantByDecision,
     grantTokenRank,
-    persistRank,
     revokeTokenRank,
+    createUserRows,
     createSolanaRpc,
     createTokenBalanceService,
     Ranks,

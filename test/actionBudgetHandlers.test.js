@@ -163,14 +163,17 @@ test('/name: the name the player has is answered and changes nothing; a flood of
   const said = s.chats(s.got(s.a)).map(m => m.body)
   assert.equal(said.filter(body => body === NAME_FAST).length, 1, 'told once')
   assert.equal(said.filter(body => body === 'You are sending commands too fast.').length, 1)
-  // one write for each name taken, and no more
+  // Written one statement at a time (userRows.js): the first name at once, and the names taken while that
+  // statement was under way as one more, with the last of them. Never a name that was not taken
+  await s.f.network.userRows().idle()
   assert.deepEqual(
     s.f.store.userUpdates.map(update => update.changes.name),
-    ['n0', 'n1', 'n2', 'n3', 'n4']
+    ['n0', 'n4']
   )
   assert.equal(s.f.users.get('a').name, 'n4')
   // two seconds later one more goes through
   await name('later', 4000)
+  await s.f.network.userRows().idle()
   assert.equal(s.a.socket.player.data.name, 'later')
   assert.equal(s.f.users.get('a').name, 'later')
 })

@@ -24,6 +24,8 @@ import { createActionBudgets } from '../src/core/extras/actionBudget.js'
 import { createPendingChanges } from '../src/core/extras/pendingChanges.js'
 import { adminMode, adminWaitScale, createAdminGate } from '../src/server/adminCode.js'
 import { isAdminCommand } from '../src/core/extras/chatCommand.js'
+import { createUserRows } from '../src/server/userRows.js'
+import { endGrantByDecision } from '../src/server/rankGrants.js'
 
 const source = fs.readFileSync(new URL('../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
 const methods = [
@@ -41,6 +43,9 @@ const methods = [
   'onSettingsModified',
   'onAi',
   'admin',
+  'saveExpired',
+  'userRows',
+  'storeRank',
   'onCommand',
   'onModifyRank',
   'defaultAvatar',
@@ -62,6 +67,8 @@ const methods = [
 function fixture() {
   const lines = []
   const calls = []
+  // plain lines of the server's log (console.error): none, unless the test says it expects some
+  const server = { lines: null }
   const entities = new Map()
   const failure = {
     get message() {
@@ -106,13 +113,14 @@ function fixture() {
     uuid: () => 'message',
     setImmediate,
     process: { env: { ADMIN_CODE: 'code' } },
-    solanaGating: { TOKEN_GATING_ENABLED: true },
-    persistRank: async () => {
-      throw failure
-    },
+    solanaGating: { TOKEN_GATING_ENABLED: true, clearWallet() {} },
+    createUserRows,
+    endGrantByDecision,
     console: {
-      error() {
-        assert.fail('refusals must go through logOnce')
+      error(line) {
+        if (!server.lines) assert.fail('refusals must go through logOnce')
+        assert.equal(typeof line, 'string')
+        server.lines.push(line)
       },
     },
   })
@@ -153,7 +161,6 @@ function fixture() {
     player: {
       data: { id, userId: id, position: [0, 0, 0], quaternion: [0, 0, 0, 1] },
       rankRevision: 0,
-      rankWritesPending: 0,
       isPlayer: true,
       isBuilder: () => true,
       isAdmin: () => true,
@@ -161,7 +168,7 @@ function fixture() {
     },
     send() {},
   })
-  return { network, lines, calls, entities, socket }
+  return { network, lines, calls, entities, socket, serverLines: () => (server.lines = []) }
 }
 
 // Packet payloads must never be coerced, serialized, inspected or enumerated for a refusal log.
@@ -325,8 +332,9 @@ test('handler logging: all refusal reasons are independently logged once per soc
   assert.equal(f.lines.length, 8)
 })
 
-test('handler logging: caught handler failures use briefError and logOnce', async () => {
+test('handler logging: caught handler failures use briefError, and logOnce or the once-per-run rule of the user rows', async () => {
   const f = fixture()
+  const serverLines = f.serverLines()
   const s = f.socket()
   f.entities.set(s.id, s.player)
   const fail = async () => {
@@ -336,9 +344,22 @@ test('handler logging: caught handler failures use briefError and logOnce', asyn
     await f.network.onModifyRank(s, { playerId: s.id, rank: Ranks.BUILDER })
     await f.network.onSpawnModified(s, 'set')
   }
+  // the user's row: a name from the player's own change, a name from the command, a rank from the admin code and a
+  // rank from an admin, each a write that fails. A plain line of the server's log, said once for the run of failures
+  // of that user (userRows.js limits it, nothing else does); the spawn goes through logOnce
   await fail()
-  assert.equal(f.lines.length, 4)
-  assert.ok(f.lines.every(line => line.endsWith(': error')))
+  await f.network.userRows().idle()
+  assert.deepEqual(serverLines, [
+    '[network] name of user "socket" not stored (kept in memory; written again with that user\'s next change or at the final save): error',
+  ])
+  assert.deepEqual(f.lines, ['[network] error saving spawn: error'])
+  assert.deepEqual(
+    f.calls.map(call => call.key),
+    ['config:spawn']
+  )
   await fail()
-  assert.equal(f.lines.length, 4)
+  await f.network.userRows().idle()
+  assert.equal(serverLines.length, 1)
+  assert.equal(f.lines.length, 1)
+  assert.deepEqual(f.network.userRows().intended('socket'), { name: 'new-name', rank: Ranks.BUILDER })
 })

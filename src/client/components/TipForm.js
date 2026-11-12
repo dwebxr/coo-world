@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { parseTipAmount, tipAmountReason } from '../../core/extras/evmTokens'
 import {
   TIP_NAME_TWIN_TEXT,
+  TIP_MARKER_PREFIX,
   TIP_MARKERS_SHOWN,
   TIP_UNCONFIRMED_TEXT,
   TIP_WALLET_VIEW_TEXT,
@@ -484,14 +485,26 @@ export function TipForm({ world, player, onClose }) {
 // line says how many more there are; dismissing one brings the next into view. Each Dismiss removes the key of
 // the note it is shown beside (by its id); the read that follows removes only notes that are expired or are not
 // notes (tipOutcome.js), never another live one. A note is this browser's memory of a request, not a record of a
-// payment. What another tab writes is shown when this page next reads the storage (its load, the end of a send of
-// its own, a Dismiss, a note's ten minutes).
+// payment. The storage is read at the page's load, at the end of a send of its own, on a Dismiss, when a note is
+// ten minutes old, and when the browser tells this page that another tab changed a note (a `storage` event): so a
+// read that another tab's change cut short is followed by one that is not. The count the line gives is of the
+// notes that could be read.
 export function TipMarkerNotice({ world }) {
   const [markers, setMarkers] = useState(() => world.evm?.getTipMarkers() ?? [])
   useEffect(() => {
     const onMarkers = value => setMarkers(Array.isArray(value) ? value : [])
     world.on('evm:tipMarkers', onMarkers)
     return () => world.off('evm:tipMarkers', onMarkers)
+  }, [world])
+  // another tab wrote or removed a note (or cleared the storage: no key): read again
+  useEffect(() => {
+    const onStorage = event => {
+      if (event?.key == null || String(event.key).startsWith(TIP_MARKER_PREFIX)) {
+        setMarkers(world.evm?.getTipMarkers() ?? [])
+      }
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
   }, [world])
   // the first note to be ten minutes old: then the storage is read again (which removes it)
   useEffect(() => {

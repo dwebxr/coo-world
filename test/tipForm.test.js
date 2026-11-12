@@ -55,6 +55,20 @@ function mount(name, { evm = {}, players = ['Bob', 'Alice'], now = 1_000_000 } =
     if (typeof type === 'function') return type({ ...props, children })
     return { type, props: props ?? {}, children: children.flat(Infinity) }
   }
+  // the page's window, as far as the notice uses it: who listens for what
+  const page = {
+    listeners: new Map(),
+    addEventListener(name, fn) {
+      if (!page.listeners.has(name)) page.listeners.set(name, new Set())
+      page.listeners.get(name).add(fn)
+    },
+    removeEventListener(name, fn) {
+      page.listeners.get(name)?.delete(fn)
+    },
+    dispatch(name, event) {
+      for (const fn of [...(page.listeners.get(name) ?? [])]) fn(event)
+    },
+  }
   const context = {
     useState(initial) {
       const index = cursor++
@@ -95,6 +109,7 @@ function mount(name, { evm = {}, players = ['Bob', 'Alice'], now = 1_000_000 } =
     },
     clearTimeout: timer => timers.delete(timer),
     Date: { now: () => clock.now },
+    window: page,
     element,
     Fragment,
   }
@@ -135,6 +150,7 @@ function mount(name, { evm = {}, players = ['Bob', 'Alice'], now = 1_000_000 } =
     unmount,
     now: () => clock.now,
     settle: outcome => settle(outcome),
+    page,
   }
 }
 
@@ -598,4 +614,28 @@ test('tip notice: a note found at page load counts its ten minutes from the requ
   stored = []
   notice.advance(1_001)
   assert.equal(notice.render(), null)
+})
+
+test('tip notice: reads the notes again when another tab changes one, and stops listening when it goes', () => {
+  let stored = []
+  let reads = 0
+  const notice = mount('TipMarkerNotice', { evm: { getTipMarkers: () => (reads++, stored) } })
+  assert.equal(notice.render(), null)
+  assert.equal(notice.page.listeners.get('storage').size, 1)
+  // another tab wrote a note: the browser's event names its key
+  stored = [NOTE]
+  const before = reads
+  notice.page.dispatch('storage', { key: `evmTipRequest:${NOTE.id}` })
+  assert.equal(reads, before + 1)
+  assert.match(text(notice.render()), /A tip may have been sent/)
+  // a change of some other key of this site is not a note's
+  notice.page.dispatch('storage', { key: 'hyperfy-settings' })
+  assert.equal(reads, before + 1)
+  // the storage was cleared (no key): read again
+  stored = []
+  notice.page.dispatch('storage', { key: null })
+  assert.equal(reads, before + 2)
+  assert.equal(notice.render(), null)
+  notice.unmount()
+  assert.equal(notice.page.listeners.get('storage').size, 0)
 })

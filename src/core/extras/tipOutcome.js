@@ -52,8 +52,11 @@ export function tipErrorOutcome(error, requested, request) {
 // removes, under the prefix, a note that is expired (ten minutes after its own time), one whose time is more than
 // ten minutes ahead of the reader's clock, a value that is not a note, longer than MARKER_TEXT_MAX or kept under a
 // key that is not its own. A read looks at every key of this origin's storage and reads the values under the prefix:
-// what bounds that is the browser's own limit on the storage (a few megabytes), nothing here. So every live note
-// is found by each read, whatever else was put under the prefix, and the count the notice gives is of all of them.
+// what bounds that is the browser's own limit on the storage (a few megabytes), nothing here. With a storage that
+// answers and that no other tab changes during the read, every live note is found, whatever else was put under the
+// prefix. A read that another tab's change cut short, or in which a value could not be read, gives fewer: the page
+// reads again when the browser tells it of another tab's change (TipForm.js), and what the notice counts is the
+// notes that could be read.
 export const TIP_MARKER_PREFIX = 'evmTipRequest:'
 export const TIP_MARKER_TTL_MS = 600_000
 // the notice shows this many, and says how many more there are

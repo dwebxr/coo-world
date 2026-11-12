@@ -234,7 +234,11 @@ function hostile({ B, root, step, body }, name) {
         return collider
       })
       touching()
-      check = () => assert.deepEqual(nodes.map(node => node.shape), [null, null, null])
+      check = () =>
+        assert.deepEqual(
+          nodes.map(node => node.shape),
+          [null, null, null]
+        )
       break
     }
     case 'geometry collider without a geometry or positions': {
@@ -284,7 +288,11 @@ function hostile({ B, root, step, body }, name) {
         return node
       })
       touching(2.5)
-      check = () => assert.ok(nodes.every(node => finitePose(node.actor)), 'every pushed body finite')
+      check = () =>
+        assert.ok(
+          nodes.every(node => finitePose(node.actor)),
+          'every pushed body finite'
+        )
       break
     }
     case 'force at a point with a far centre of mass': {
@@ -329,7 +337,10 @@ function hostile({ B, root, step, body }, name) {
       three.a.getProxy().setKinematicTarget(V(3e38, 0, 0), new B.THREE.Quaternion())
       touching(4.5)
       check = () =>
-        assert.ok([one, two, three].every(({ a, b }) => finitePose(a.actor) && finitePose(b.actor)), 'jointed bodies finite')
+        assert.ok(
+          [one, two, three].every(({ a, b }) => finitePose(a.actor) && finitePose(b.actor)),
+          'jointed bodies finite'
+        )
       break
     }
     case 'dynamic mirrored cone': {
@@ -422,20 +433,22 @@ for (const name of [
 
 // positive control: the hazard exists in this wasm when a value bypasses the node checks. (A raw Infinity-radius
 // sphere does not spread NaN in this build: measured in .notes/phase3b2/measure/m2.)
-probe('real PhysX inputs: control: a raw controller foot at 1e30 turns a bystander at the origin NaN', ({ B, PHYSX, step, body }) => {
-  const bystander = body('RigidBody', { position: [0, 0, 0] })
-  bystander.getProxy().setLinearVelocity(new B.THREE.Vector3(1, 0, 0))
-  const node = body('Controller', { position: [3, 0, 0] })
-  const foot = new PHYSX.PxExtendedVec3(1e30, 0, 0)
-  node.controller.setFootPosition(foot)
-  PHYSX.destroy(foot)
-  step(120)
-  const p = bystander.actor.getGlobalPose().p
-  assert.ok(![p.x, p.y, p.z].every(Number.isFinite), 'the raw far controller poisons the bystander')
-})
+probe(
+  'real PhysX inputs: control: a raw controller foot at 1e30 turns a bystander at the origin NaN',
+  ({ B, PHYSX, step, body }) => {
+    const bystander = body('RigidBody', { position: [0, 0, 0] })
+    bystander.getProxy().setLinearVelocity(new B.THREE.Vector3(1, 0, 0))
+    const node = body('Controller', { position: [3, 0, 0] })
+    const foot = new PHYSX.PxExtendedVec3(1e30, 0, 0)
+    node.controller.setFootPosition(foot)
+    PHYSX.destroy(foot)
+    step(120)
+    const p = bystander.actor.getGlobalPose().p
+    assert.ok(![p.x, p.y, p.z].every(Number.isFinite), 'the raw far controller poisons the bystander')
+  }
+)
 
 function legit({ B, root, step }) {
-  const V = (x, y, z) => new B.THREE.Vector3(x, y, z)
   const bounds = actor => {
     const b = actor.getWorldBounds()
     return [b.maximum.x - b.minimum.x, b.maximum.y - b.minimum.y, b.maximum.z - b.minimum.z]
@@ -521,7 +534,11 @@ probe('real PhysX inputs: setters refuse values that never mean anything and acc
   refuses(prim, 'staticFriction')
   refuses(prim, 'restitution')
   refuses(prim, 'linearDamping')
-  refuses(prim, 'size', [[NaN, 1, 1], [1, Infinity, 1], ['1', 1, 1]])
+  refuses(prim, 'size', [
+    [NaN, 1, 1],
+    [1, Infinity, 1],
+    ['1', 1, 1],
+  ])
   refuses(prim, 'layer', ['bogus'])
   assert.throws(() => (new B.Prim().getProxy().layer = 'player'), /layer invalid: player/)
   const controller = () => new B.Controller()
@@ -530,36 +547,39 @@ probe('real PhysX inputs: setters refuse values that never mean anything and acc
   controller().radius = 0
 })
 
-probe('real PhysX inputs: a skipped collider does not re-cook on moves and mounts once its value is fixed', ({ B, root }) => {
-  // a mesh that cooks but is larger than the window: one attempt, then skipped (each attempt cooks it again, because
-  // the skip releases the cooked mesh)
-  const geometry = new B.THREE.BufferGeometry()
-  geometry.setAttribute('position', new B.THREE.Float32BufferAttribute([0, 0, 0, 2e6, 0, 0, 0, 1, 0, 0, 0, 1], 3))
-  const rb = new B.RigidBody({ type: 'static' })
-  const big = new B.Collider({ type: 'geometry', geometry, convex: true })
-  let mounts = 0
-  const mount = big.mount
-  big.mount = function () {
-    mounts++
-    return mount.call(this)
+probe(
+  'real PhysX inputs: a skipped collider does not re-cook on moves and mounts once its value is fixed',
+  ({ B, root }) => {
+    // a mesh that cooks but is larger than the window: one attempt, then skipped (each attempt cooks it again, because
+    // the skip releases the cooked mesh)
+    const geometry = new B.THREE.BufferGeometry()
+    geometry.setAttribute('position', new B.THREE.Float32BufferAttribute([0, 0, 0, 2e6, 0, 0, 0, 1, 0, 0, 0, 1], 3))
+    const rb = new B.RigidBody({ type: 'static' })
+    const big = new B.Collider({ type: 'geometry', geometry, convex: true })
+    let mounts = 0
+    const mount = big.mount
+    big.mount = function () {
+      mounts++
+      return mount.call(this)
+    }
+    rb.add(big)
+    root.add(rb)
+    assert.equal(big.shape, null)
+    assert.equal(mounts, 1)
+    for (let i = 0; i < 5; i++) {
+      rb.position.x += 1
+      rb.clean()
+    }
+    assert.equal(mounts, 1, 'moves do not retry a skipped collider')
+    // a zero radius is skipped, and setting a usable radius from the script mounts it
+    const sphere = new B.Collider({ type: 'sphere', radius: 0 })
+    rb.add(sphere)
+    assert.equal(sphere.shape, null)
+    sphere.radius = 1
+    sphere.clean()
+    assert.ok(sphere.shape, 'the fixed radius mounts')
   }
-  rb.add(big)
-  root.add(rb)
-  assert.equal(big.shape, null)
-  assert.equal(mounts, 1)
-  for (let i = 0; i < 5; i++) {
-    rb.position.x += 1
-    rb.clean()
-  }
-  assert.equal(mounts, 1, 'moves do not retry a skipped collider')
-  // a zero radius is skipped, and setting a usable radius from the script mounts it
-  const sphere = new B.Collider({ type: 'sphere', radius: 0 })
-  rb.add(sphere)
-  assert.equal(sphere.shape, null)
-  sphere.radius = 1
-  sphere.clean()
-  assert.ok(sphere.shape, 'the fixed radius mounts')
-})
+)
 
 probe('real PhysX inputs: distance joint limits apply only the ends that are set', ({ B, root, step, body }) => {
   const separation = data => {
@@ -611,45 +631,51 @@ probe('real PhysX inputs: the push budget sums every push in a step and starts o
   assert.ok(second > 3e5 && second < 5e5, `the push after the step applied: ${second}`)
 })
 
-probe('real PhysX inputs: a force at a point counts the centre-of-mass lever toward the angular budget', ({ B, step, body }) => {
-  const V = (x, y, z) => new B.THREE.Vector3(x, y, z)
-  const spin = node => {
-    const { x, y, z } = node.actor.getAngularVelocity()
-    return Math.hypot(x, y, z)
+probe(
+  'real PhysX inputs: a force at a point counts the centre-of-mass lever toward the angular budget',
+  ({ B, step, body }) => {
+    const V = (x, y, z) => new B.THREE.Vector3(x, y, z)
+    const spin = node => {
+      const { x, y, z } = node.actor.getAngularVelocity()
+      return Math.hypot(x, y, z)
+    }
+    for (const [i, method] of ['addForceAtPos', 'addForceAtLocalPos'].entries()) {
+      const node = body('RigidBody', { position: [i * 50, 0, 0], linearDamping: 0, angularDamping: 0 })
+      node.getProxy().setCenterOfMass(V(0, 1e6, 0))
+      node.clean()
+      // 1e5 N·s is inside the linear budget; with the centre of mass 1e6 m away the torque is 1e11, far above it
+      // at the body's own origin: the ordinary lever is 0, so only the centre-of-mass offset can exceed the budget
+      node.getProxy()[method](V(1e5, 0, 0), method === 'addForceAtPos' ? V(i * 50, 0, 0) : V(0, 0, 0), 'impulse')
+      step(1)
+      assert.equal(spin(node), 0, `${method}: the push is ignored`)
+    }
   }
-  for (const [i, method] of ['addForceAtPos', 'addForceAtLocalPos'].entries()) {
-    const node = body('RigidBody', { position: [i * 50, 0, 0], linearDamping: 0, angularDamping: 0 })
-    node.getProxy().setCenterOfMass(V(0, 1e6, 0))
-    node.clean()
-    // 1e5 N·s is inside the linear budget; with the centre of mass 1e6 m away the torque is 1e11, far above it
-    // at the body's own origin: the ordinary lever is 0, so only the centre-of-mass offset can exceed the budget
-    node.getProxy()[method](V(1e5, 0, 0), method === 'addForceAtPos' ? V(i * 50, 0, 0) : V(0, 0, 0), 'impulse')
-    step(1)
-    assert.equal(spin(node), 0, `${method}: the push is ignored`)
-  }
-})
+)
 
-probe('real PhysX inputs: a push from a callback dispatched before the step shares the step budget', ({ B, root, step, body }) => {
-  const V = (x, y, z) => new B.THREE.Vector3(x, y, z)
-  const speed = node => {
-    const { x, y, z } = node.actor.getLinearVelocity()
-    return Math.hypot(x, y, z)
+probe(
+  'real PhysX inputs: a push from a callback dispatched before the step shares the step budget',
+  ({ B, root, step, body }) => {
+    const V = (x, y, z) => new B.THREE.Vector3(x, y, z)
+    const speed = node => {
+      const { x, y, z } = node.actor.getLinearVelocity()
+      return Math.hypot(x, y, z)
+    }
+    const a = body('RigidBody', { position: [0, 0, 0], linearDamping: 0, angularDamping: 0 })
+    const b = body('RigidBody', { position: [1.9, 0, 0] })
+    const proxy = a.getProxy()
+    a.onContactStart = () => {}
+    a.onContactEnd = () => proxy.addForce(V(0, 4e5, 0), 'velocityChange')
+    step(1) // the boxes overlap, so the contact starts
+    proxy.setLinearVelocity(V(0, 0, 0))
+    proxy.addForce(V(0, 4e5, 0), 'velocityChange')
+    proxy.addForce(V(0, 4e5, 0), 'velocityChange')
+    // removing b queues a's contact end, dispatched at the start of the next step, before simulate
+    root.remove(b)
+    step(1)
+    const v = speed(a)
+    assert.ok(v > 7e5 && v < 9e5, `the callback's push exceeds the shared budget and is ignored: ${v}`)
   }
-  const a = body('RigidBody', { position: [0, 0, 0], linearDamping: 0, angularDamping: 0 })
-  const b = body('RigidBody', { position: [1.9, 0, 0] })
-  const proxy = a.getProxy()
-  a.onContactStart = () => {}
-  a.onContactEnd = () => proxy.addForce(V(0, 4e5, 0), 'velocityChange')
-  step(1) // the boxes overlap, so the contact starts
-  proxy.setLinearVelocity(V(0, 0, 0))
-  proxy.addForce(V(0, 4e5, 0), 'velocityChange')
-  proxy.addForce(V(0, 4e5, 0), 'velocityChange')
-  // removing b queues a's contact end, dispatched at the start of the next step, before simulate
-  root.remove(b)
-  step(1)
-  const v = speed(a)
-  assert.ok(v > 7e5 && v < 9e5, `the callback's push exceeds the shared budget and is ignored: ${v}`)
-})
+)
 
 probe('real PhysX inputs: a tiny force at a far world point is ignored', ({ B, step, body }) => {
   const node = body('RigidBody', { position: [0, 0, 0], linearDamping: 0, angularDamping: 0 })

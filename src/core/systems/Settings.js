@@ -1,4 +1,3 @@
-import { isBoolean } from 'lodash-es'
 import { System } from './System'
 import { Ranks } from '../extras/ranks'
 import { normalizeSettingValue } from '../extras/settingsPolicy'

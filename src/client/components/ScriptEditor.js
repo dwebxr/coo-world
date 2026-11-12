@@ -117,7 +117,7 @@ export function ScriptEditor({ app, onHandle }) {
         editor.restoreViewState(state.viewState)
         editor.focus()
       }
-      editor.onDidChangeModelContent(event => {
+      editor.onDidChangeModelContent(_event => {
         codeRef.current = editor.getValue()
       })
       editor.addAction({

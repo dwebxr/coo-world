@@ -1,8 +1,5 @@
 // Primitive Showcase - Displays all available primitive types side by side
 
-// Spacing between primitives
-const SPACING = 3
-
 // Create floor
 const floor = app.create('prim', {
   type: 'box',

@@ -26,13 +26,13 @@ export class System extends EventEmitter {
     // - begin performance monitoring
   }
 
-  preFixedUpdate(willFixedStep) {
+  preFixedUpdate(_willFixedStep) {
     // runs before any fixed updates, eg
     // - prepare physics
     // - read input telemetry on client
   }
 
-  fixedUpdate(delta) {
+  fixedUpdate(_delta) {
     // runs at a fixed timestep using an accumulator, eg
     // - physics based changes like applying forces
   }
@@ -42,12 +42,12 @@ export class System extends EventEmitter {
     // - step physics simulation
   }
 
-  preUpdate(alpha) {
+  preUpdate(_alpha) {
     // runs before update, eg
     // - physics interpolation for remaining delta
   }
 
-  update(delta) {
+  update(_delta) {
     // runs in non-fixed time steps (refresh rate), eg
     // - regular entity updates
     // - interpolation or animations
@@ -58,7 +58,7 @@ export class System extends EventEmitter {
     // - cleaning dirty node matrices
   }
 
-  lateUpdate(delta) {
+  lateUpdate(_delta) {
     // runs late, ie after matrices have all been updated, eg
     // - attaching things to other things at the correct place
   }

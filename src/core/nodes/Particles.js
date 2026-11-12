@@ -1,5 +1,5 @@
 import * as THREE from '../extras/three'
-import { every, isArray, isFunction } from 'lodash-es'
+import { every, isArray } from 'lodash-es'
 import { isBoolean, isNumber, isPrimitive, isString } from '../extras/scriptPrimitives.js'
 import { boundedInteger, boundedNumber, boundedText } from '../extras/boundedValue.js'
 

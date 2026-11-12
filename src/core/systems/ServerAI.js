@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import Anthropic, { toFile } from '@anthropic-ai/sdk'
+import Anthropic from '@anthropic-ai/sdk'
 import { OpenAI } from 'openai'
 
 import { System } from './System'
@@ -498,7 +498,7 @@ const fencePattern = /^```(?:\w+)?\s*([\s\S]*?)\s*```$/
 function stripCodeFences(text) {
   // sometimes AI responses come back wrapped in code backticks even though
   // we ask it not to. this strips them out if they exist.
-  let cleaned = text.trim()
+  const cleaned = text.trim()
   // regex to match ```js ... ``` or ``` ... ```
   const match = cleaned.match(fencePattern)
   if (match) {

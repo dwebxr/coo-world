@@ -1,5 +1,5 @@
 import Yoga from 'yoga-layout'
-import * as THREE from '../extras/three'
+import '../extras/three'
 import { every, isArray } from 'lodash-es'
 import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
 
@@ -159,7 +159,7 @@ export class UIView extends Node {
     this.ui?.redraw()
   }
 
-  commit(didMove) {
+  commit(_didMove) {
     // ...
   }
 

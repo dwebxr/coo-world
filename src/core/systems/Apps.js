@@ -1,5 +1,5 @@
 import moment from 'moment'
-import { isArray, isEqual, isFunction } from 'lodash-es'
+import { isArray, isFunction } from 'lodash-es'
 import * as THREE from '../extras/three'
 
 import { readVec3, isFiniteF32, warnOnce } from '../extras/physxConvert.js'
@@ -113,13 +113,13 @@ export class Apps extends System {
     const world = this.world
     const allowLoaders = ['avatar', 'model']
     this.worldGetters = {
-      networkId(entity) {
+      networkId(_entity) {
         return world.network.id
       },
-      isServer(entity) {
+      isServer(_entity) {
         return world.network.isServer
       },
-      isClient(entity) {
+      isClient(_entity) {
         return world.network.isClient
       },
     }
@@ -208,7 +208,7 @@ export class Apps extends System {
         warn('world.emit() is deprecated, use app.emit() instead')
         world.events.emit(name, data)
       },
-      getTime(entity) {
+      getTime(_entity) {
         return world.network.getTime()
       },
       getTimestamp(entity, format) {

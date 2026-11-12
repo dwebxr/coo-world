@@ -13,10 +13,8 @@ const v1 = new THREE.Vector3()
 const v2 = new THREE.Vector3()
 const v3 = new THREE.Vector3()
 const v4 = new THREE.Vector3()
-const v5 = new THREE.Vector3()
 const q1 = new THREE.Quaternion()
 const e1 = new THREE.Euler(0, 0, 0, 'YXZ')
-const m1 = new THREE.Matrix4()
 
 export class ClientActions extends System {
   constructor(world) {

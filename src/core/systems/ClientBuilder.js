@@ -24,7 +24,6 @@ const PROJECT_MIN_XR = 0.1
 const PROJECT_MAX = 50
 
 const v1 = new THREE.Vector3()
-const v2 = new THREE.Vector3()
 const q1 = new THREE.Quaternion()
 const e1 = new THREE.Euler()
 
@@ -823,7 +822,7 @@ export class ClientBuilder extends System {
         menu.state = 'closed'
         $root.deactivate()
       },
-      update: delta => {
+      update: _delta => {
         if (menu.state !== 'open') return
         // attach to hand
         $root.position.copy(menu.ray.position)
@@ -872,7 +871,7 @@ export class ClientBuilder extends System {
     this.xrMenu = menu
   }
 
-  updateXRLaser(delta) {
+  updateXRLaser(_delta) {
     if (!this.beam.xr) {
       if (this.xrLaser) this.xrLaser.visible = false
       return

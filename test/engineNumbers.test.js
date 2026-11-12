@@ -252,7 +252,9 @@ test('copy, set and fromArray store numbers before the change callback runs', ()
   vector.copy(sources.vector())
   vector.fromArray([planted('[0]'), 0, 0])
   vector.setFromEuler(sources.euler())
-  vector.setFromMatrixPosition(Object.assign(new Matrix4(), { elements: [...new Array(12).fill(0), planted('e12'), 0, 0, 1] }))
+  vector.setFromMatrixPosition(
+    Object.assign(new Matrix4(), { elements: [...new Array(12).fill(0), planted('e12'), 0, 0, 1] })
+  )
   assert.deepEqual(calls, [], 'nothing read from another object was converted')
   assert.ok(seen.length > 0 && seen.every(type => type === 'number' || type === 'string'), seen.join(','))
   assert.ok(Number.isNaN(vector.x))
@@ -365,7 +367,7 @@ test("a value that is not a number in a linked instance's matrix is read as NaN:
     const model = [...world.stage.models.values()][0]
     const size = model.iMesh.instanceMatrix.array.length / 16
     const planted = model.items.findLast(item => item.node.ctx.entity === hostile)
-    assert.ok(model.items.indexOf(planted) >= size, "(an instance the grown buffer reads)")
+    assert.ok(model.items.indexOf(planted) >= size, '(an instance the grown buffer reads)')
     planted.matrix.elements[10] = Symbol('host')
     planted.matrix.elements[11] = 5n
     assert.doesNotThrow(() => world.stage.update(0.016), 'the stage reads every matrix')
@@ -377,7 +379,11 @@ test("a value that is not a number in a linked instance's matrix is read as NaN:
       .filter(([item]) => item.node.ctx.entity === benign && item.node.position.x >= 100)
     assert.equal(ours.length, 5)
     for (const [item, i] of ours) {
-      assert.equal(array[i * 16 + 12], item.node.matrixWorld.elements[12], "the other app's instance is where its node is")
+      assert.equal(
+        array[i * 16 + 12],
+        item.node.matrixWorld.elements[12],
+        "the other app's instance is where its node is"
+      )
     }
     assert.deepEqual(
       ours.map(([item]) => item.node.matrixWorld.elements[12]).sort((a, b) => a - b),
@@ -451,7 +457,8 @@ test('strings, booleans and null given to a transform or a view are numbers ther
     'matrixWorld.elements[0] = "1"': 1,
     'control.camera.position.x = "4"': 4,
     'position.x = new Number(2)': true,
-    'material.color = new String("red")': 'threw [material] color must be a string (e.g. "red", "#ff0000", "rgb(255,0,0)")',
+    'material.color = new String("red")':
+      'threw [material] color must be a string (e.g. "red", "#ff0000", "rgb(255,0,0)")',
     'rotation.set(0, 1, 0, new String("XYZ"))': 'YXZ',
     'rotation.order = 5': 'XYZ',
     'position._x = "2" (planted), then a frame': 2,
@@ -528,7 +535,11 @@ test("a control's entries are sealed: their fields can be written, the engine's 
   assert.equal(world.rig.position.x, 0, 'a camera with a zoom that is not a number does not move')
   control.camera.zoom = 2
   world.controls.postLateUpdate()
-  assert.deepEqual([world.rig.position.x, world.rig.position.y, world.rig.position.z], [1, 2, 3], 'written camera moves the rig')
+  assert.deepEqual(
+    [world.rig.position.x, world.rig.position.y, world.rig.position.z],
+    [1, 2, 3],
+    'written camera moves the rig'
+  )
   app.destroy()
 })
 

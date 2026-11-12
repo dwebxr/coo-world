@@ -186,7 +186,11 @@ test('invalid components leave read outputs unchanged and produce only numeric n
   assert.equal(coerced, false)
   for (const value of [0, -0, 1, -1, 1e-45, 3.4028234663852886e38]) assert.equal(isFiniteF32(value), true)
   // a numeric string, a boolean or null given to a setter is that number
-  for (const [given, number] of [['1', 1], [true, 1], [null, 0]]) {
+  for (const [given, number] of [
+    ['1', 1],
+    [true, 1],
+    [null, 0],
+  ]) {
     const value = new Vector3Enhanced(1, 2, 3)
     value.y = given
     const out = new Vector3()

@@ -6,7 +6,7 @@ import { System } from './System'
 import { createJWT, expiredSessionUser, readJWT } from '../utils-server'
 import { isNumber } from 'lodash-es'
 import { appPersistenceData, persistenceRecord } from '../extras/persistenceRecord.js'
-import * as THREE from '../extras/three'
+import '../extras/three'
 import { hasRank, Ranks } from '../extras/ranks'
 import {
   PLAYER_NAME_MAX_LENGTH,
@@ -230,7 +230,7 @@ export class ServerNetwork extends System {
       `[network] hydration: blueprints=${blueprints.length - skippedBlueprints.length} apps=${entities.length - skippedApps.length} repaired=${repairedApps.length} skipped=${skippedBlueprints.length + skippedApps.length} skippedBlueprints=${JSON.stringify(skippedBlueprints)} skippedApps=${JSON.stringify(skippedApps)} repairedApps=${JSON.stringify(repairedApps)}`
     )
     // hydrate settings
-    let settingsRow = await this.db('config').where('key', 'settings').first()
+    const settingsRow = await this.db('config').where('key', 'settings').first()
     // Before the stored settings are read: a settings row that cannot be parsed left this unset, and unset means
     // "no code, so everyone is admin" (Settings.effectiveRank), with a code configured.
     this.world.settings.setHasAdminCode(this.admin().mode !== 'open')
@@ -374,7 +374,7 @@ export class ServerNetwork extends System {
       ws.on('pong', onPong)
       ws.on('close', onClose)
       socket.probing = probe
-      const deadline = setTimeout(() => {
+      setTimeout(() => {
         unmark()
         finish(false)
       }, ms)
@@ -1037,7 +1037,7 @@ export class ServerNetwork extends System {
       }
 
       // check connection params
-      let name = sanitizeName(params.name)
+      const name = sanitizeName(params.name)
       // the avatar a connection asks for becomes its session avatar; whether a url outside this world is taken is
       // decided below, once the user and their rank are known
       const askedAvatar = isAvatarUrl(params.avatar) ? params.avatar : null
@@ -1332,7 +1332,7 @@ export class ServerNetwork extends System {
     // handle slash commands
     const player = socket.player
     const playerId = player.data.id
-    const [cmd, arg1, arg2] = args
+    const [cmd, arg1] = args
     // The admin command (chatCommand.js, as the client decides it): it is never handed on as a command event (the
     // code is in it). A wrong code is answered and, past a few, slowed down (adminCode.js); this socket's line only,
     // never a broadcast.
@@ -2698,7 +2698,7 @@ export class ServerNetwork extends System {
     socket.send('pong', time)
   }
 
-  onDisconnect = (socket, code) => {
+  onDisconnect = (socket, _code) => {
     socket.disconnected = true
     this.dropTipTickets(socket)
     this.scheduler.purge(socket)

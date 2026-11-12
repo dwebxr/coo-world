@@ -62,6 +62,8 @@ export function runProbe(bundle, probe, args) {
       grace = setTimeout(() => finish(), 1000)
     })
     worker.once('error', err => finish(err))
-    worker.once('exit', code => finish(done ? null : new Error(`worker exited before completing probe (${code})`), true))
+    worker.once('exit', code =>
+      finish(done ? null : new Error(`worker exited before completing probe (${code})`), true)
+    )
   })
 }

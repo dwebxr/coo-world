@@ -109,16 +109,20 @@ test('errorHandler: a 416 keeps the Content-Range header the error carries', asy
   assert.equal(r.headers['content-range'], 'bytes */6')
 })
 
-test('errorHandler: an unreadable static directory surfaces as a logged 403', { skip: process.getuid?.() === 0 }, async t => {
-  // static 10 answers 403 with the cause discarded when its spelling check cannot list a directory, so the
-  // one-line log is what shows a storage fault (EIO, EMFILE or, here, EACCES) on an ordinary path
-  const { logged, port } = await server(t)
-  assert.equal((await raw(port, '/locked/a.css')).statusCode, 403)
-  assert.deepEqual(
-    logged.map(args => args.join(' ')),
-    ['[http] 403 GET /locked/a.css']
-  )
-})
+test(
+  'errorHandler: an unreadable static directory surfaces as a logged 403',
+  { skip: process.getuid?.() === 0 },
+  async t => {
+    // static 10 answers 403 with the cause discarded when its spelling check cannot list a directory, so the
+    // one-line log is what shows a storage fault (EIO, EMFILE or, here, EACCES) on an ordinary path
+    const { logged, port } = await server(t)
+    assert.equal((await raw(port, '/locked/a.css')).statusCode, 403)
+    assert.deepEqual(
+      logged.map(args => args.join(' ')),
+      ['[http] 403 GET /locked/a.css']
+    )
+  }
+)
 
 test('errorHandler: anything else is logged and answered 500 with no body', async t => {
   const { fastify, logged } = await server(t)

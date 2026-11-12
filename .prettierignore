@@ -1,3 +1,15 @@
 *.md
-Vector3Enhanced.js
-GLTFLoader.js
+
+# vendored code: kept byte-for-byte as upstream ships it
+src/core/libs/
+src/core/physx-js-webidl.js
+# a copy of three's Vector3 with our changes, kept in three's own formatting so it can be diffed against upstream
+src/core/extras/Vector3Enhanced.js
+
+# build and test outputs
+build/
+test/e2e/out/
+
+# local tooling state (other git worktrees live under .claude/worktrees/) and world data folders
+.claude/
+/world*

@@ -40,21 +40,40 @@
     "react/prop-types": "off",
     "react/react-in-jsx-scope": "off",
     "react/no-unknown-property": ["error", { "ignore": ["css"] }],
-    "no-unused-vars": ["warn", {
+    "no-unused-vars": ["error", {
       "argsIgnorePattern": "^_",
       "varsIgnorePattern": "^_"
     }],
     "react-hooks/rules-of-hooks": "error",
     "react-hooks/exhaustive-deps": "warn",
     "no-console": ["warn", { "allow": ["warn", "error"] }],
-    "prefer-const": "warn",
-    "no-var": "error"
+    "prefer-const": "error",
+    "no-var": "error",
+    "no-implied-eval": "error",
+    "no-new-func": "error",
+    "react/no-danger": "error"
   },
   "overrides": [
     {
-      "files": ["test/e2e/**/*.mjs", "test/e2e/apps/*.js"],
+      "files": [
+        "src/server/**",
+        "src/core/systems/Server*.js",
+        "scripts/**",
+        "agent.mjs",
+        "test/**",
+        "examples/**/*.js",
+        "docs/scripting/examples/*.js"
+      ],
       "rules": {
         "no-console": "off"
+      }
+    },
+    {
+      "files": ["test/**"],
+      "rules": {
+        "no-implied-eval": "off",
+        "no-new-func": "off",
+        "react/no-danger": "off"
       }
     },
     {
@@ -85,12 +104,10 @@
   ],
   "ignorePatterns": [
     "build/**/*",
-    "world/**/*",
+    "/world*",
+    ".claude/",
     "node_modules/**/*",
     "src/core/libs/**/*",
-    "src/core/vendors/**/*",
-    "src/core/three-vrm/**/*",
-    "src/core/three/**/*",
     "src/client/public/**/*",
     "**/physx-js-webidl.js"
   ]

@@ -468,14 +468,14 @@ test('the factor on the waits is for test harnesses: never honoured in productio
 })
 
 test('the addresses a summary line tells apart are bounded', () => {
-  let time = 0
+  const time = 0
   const lines = []
   const tasks = []
   const g = createAdminGate({
     code: 'a-code-long-enough-for-this',
     now: () => time,
     log: line => lines.push(line),
-    schedule: (fn, ms) => {
+    schedule: (fn, _ms) => {
       tasks.push(fn)
       return () => {}
     },

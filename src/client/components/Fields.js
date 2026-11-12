@@ -9,7 +9,6 @@ import { Curve } from '../../core/extras/Curve'
 import { CurvePreview } from './CurvePreview'
 import { Portal } from './Portal'
 import { CurvePane } from './CurvePane'
-import { isArray } from 'lodash-es'
 import { downloadFile } from '../../core/extras/downloadFile'
 import { HexColorPicker } from 'react-colorful'
 import { toNumber, toText } from '../../core/extras/scriptText'
@@ -82,7 +81,7 @@ export function FieldText({ label, hint, placeholder, value, onChange }) {
               e.target.blur()
             }
           }}
-          onBlur={e => {
+          onBlur={_e => {
             onChange(localValue)
           }}
         />
@@ -169,7 +168,7 @@ export function FieldTextarea({ label, hint, placeholder, value, onChange }) {
               e.target.blur()
             }
           }}
-          onBlur={e => {
+          onBlur={_e => {
             if (onChange(localValue) === false) setLocalValue(value)
           }}
         />
@@ -718,7 +717,7 @@ export function FieldNumber({
             setFocused(true)
             e.target.select()
           }}
-          onBlur={e => {
+          onBlur={_e => {
             setFocused(false)
             // if blank, set back to original
             if (local === '') {
@@ -748,9 +747,9 @@ export function FieldVec3({
 }) {
   const hintProps = useHintProps(hint)
   dp = toDigits(dp)
-  let valueX = toNumber(value?.[0], 0)
-  let valueY = toNumber(value?.[1], 0)
-  let valueZ = toNumber(value?.[2], 0)
+  const valueX = toNumber(value?.[0], 0)
+  const valueY = toNumber(value?.[1], 0)
+  const valueZ = toNumber(value?.[2], 0)
   const [localX, setLocalX] = useState(valueX.toFixed(dp))
   const [localY, setLocalY] = useState(valueY.toFixed(dp))
   const [localZ, setLocalZ] = useState(valueZ.toFixed(dp))
@@ -856,7 +855,7 @@ export function FieldVec3({
               setFocused(true)
               e.target.select()
             }}
-            onBlur={e => {
+            onBlur={_e => {
               setFocused(false)
               // if blank, set back to original
               if (axis.local === '') {

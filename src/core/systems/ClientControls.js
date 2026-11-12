@@ -234,7 +234,6 @@ export class ClientControls extends System {
     if (this.xrSession) {
       const referenceSpace = this.world.graphics.renderer.xr.getReferenceSpace()
       const frame = this.world.graphics.renderer.xr.getFrame()
-      const player = this.world.entities.player
       this.xrSession.inputSources?.forEach(src => {
         if (src.gamepad && src.handedness === HandednessLeft) {
           updateXRHand(this, src, frame, referenceSpace, 'Left')
@@ -294,7 +293,7 @@ export class ClientControls extends System {
       }
     }
     // clear touch deltas
-    for (const [id, info] of this.touches) {
+    for (const [, info] of this.touches) {
       info.delta.set(0, 0, 0)
     }
   }
@@ -753,7 +752,7 @@ export class ClientControls extends System {
     this.onPointerLockEnd()
   }
 
-  onPointerLockChange = e => {
+  onPointerLockChange = _e => {
     const didPointerLock = !!document.pointerLockElement
     if (didPointerLock) {
       this.onPointerLockStart()
@@ -994,7 +993,7 @@ function createButton(controls, control, prop) {
 
 // (the vectors, quaternions and eulers of a control's entries are the engine's, written every frame: scripts get their
 // views, sealMath.js)
-function createVector(controls, control, prop) {
+function createVector(_controls, _control, _prop) {
   const entry = {
     $vector: true,
     value: scriptView(new THREE.Vector3()),
@@ -1003,7 +1002,7 @@ function createVector(controls, control, prop) {
   return fixEntry(entry, '$vector', 'value')
 }
 
-function createPose(controls, control, prop) {
+function createPose(_controls, _control, _prop) {
   return Object.freeze({
     $pose: true,
     position: scriptView(new THREE.Vector3()),
@@ -1013,7 +1012,7 @@ function createPose(controls, control, prop) {
   })
 }
 
-function createValue(controls, control, prop) {
+function createValue(_controls, _control, _prop) {
   const entry = {
     $value: true,
     value: null,
@@ -1027,7 +1026,7 @@ function snapshot(vector) {
   return new THREE.Vector3(vector.x, vector.y, vector.z)
 }
 
-function createPointer(controls, control, prop) {
+function createPointer(controls, control, _prop) {
   return Object.freeze({
     get coords() {
       return snapshot(controls.pointer.coords) // [0,0] to [1,1]
@@ -1055,7 +1054,7 @@ function createPointer(controls, control, prop) {
   })
 }
 
-function createScreen(controls, control) {
+function createScreen(controls, _control) {
   return Object.freeze({
     $screen: true,
     get width() {
@@ -1067,7 +1066,7 @@ function createScreen(controls, control) {
   })
 }
 
-function createCamera(controls, control) {
+function createCamera(controls, _control) {
   const world = controls.world
   const position = new THREE.Vector3().copy(world.rig.position)
   const quaternion = new THREE.Quaternion().copy(world.rig.quaternion)

@@ -1,4 +1,4 @@
-import { isEqual, merge } from 'lodash-es'
+import { isEqual } from 'lodash-es'
 import { System } from './System'
 import { sanitizeBlueprintAdd, sanitizeBlueprintModify, WORLD_BLUEPRINT_BYTES } from '../extras/blueprintPolicy'
 import { preflightPacket } from '../extras/clientPreflight'

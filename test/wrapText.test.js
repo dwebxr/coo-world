@@ -39,10 +39,18 @@ test('wrapText: hangs each prohibited line-start character on the previous line'
 
 test('wrapText: hangs at most one character past the edge', () => {
   assert.deepEqual(wrapText(ctx, 'あい！？う', 20), ['あい！', '？う'])
-  for (const run of ['すご' + 'ー'.repeat(40), 'あ' + 'っ'.repeat(40), 'まじで' + '！'.repeat(40), 'NO' + '!'.repeat(80)]) {
+  for (const run of [
+    'すご' + 'ー'.repeat(40),
+    'あ' + 'っ'.repeat(40),
+    'まじで' + '！'.repeat(40),
+    'NO' + '!'.repeat(80),
+  ]) {
     const lines = wrapText(ctx, run, 100)
     assert.equal(lines.join(''), run)
-    assert.ok(lines.every(line => ctx.measureText(line).width <= 110), `${run.slice(0, 4)} stays within one hanging character`)
+    assert.ok(
+      lines.every(line => ctx.measureText(line).width <= 110),
+      `${run.slice(0, 4)} stays within one hanging character`
+    )
   }
 })
 

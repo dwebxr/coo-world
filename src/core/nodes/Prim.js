@@ -1,12 +1,10 @@
 import { handlePhysicsFailure } from '../extras/physicsFailure.js'
 import * as THREE from '../extras/three'
 import { vec3ToPxPos, quatToPxRot, warnOnce } from '../extras/physxConvert.js'
-import { isArray, isObject, isFunction, isEqual } from 'lodash-es'
+import { isArray, isEqual } from 'lodash-es'
 import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
 
-import { Node, secureRef } from './Node'
-import { getTrianglesFromGeometry } from '../extras/getTrianglesFromGeometry'
-import { getTextureBytesFromMaterial } from '../extras/getTextureBytesFromMaterial'
+import { Node } from './Node'
 import { Layers } from '../extras/Layers'
 import { setDebugGlobal } from '../extras/debugGlobals'
 import { geometryToPxMesh } from '../extras/geometryToPxMesh'
@@ -79,7 +77,7 @@ const defaultSizes = {
 }
 
 // Geometry cache
-let geometryCache = new Map()
+const geometryCache = new Map()
 
 const getGeometry = (type, size) => {
   // All primitives of the same type share one unit-sized geometry

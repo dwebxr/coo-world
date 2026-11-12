@@ -299,3 +299,26 @@ test('start-up exit, real lockdown: after listening an uncaught exception is sur
   assert.match(running.out, /still running/)
   assert.equal(running.code, 0)
 })
+
+test('start-up exit, index.js: the guard comes first, every awaited step goes through it, and the world loads last', async () => {
+  const fs = await import('node:fs')
+  const source = fs.readFileSync(new URL('../src/server/index.js', import.meta.url), 'utf8')
+  const lines = source.split('\n')
+  // the first import, before lockdown
+  const imports = lines.filter(line => line.startsWith('import '))
+  assert.equal(imports[0], "import { startup } from './startupExitInstall'")
+  assert.ok(imports.indexOf("import '../core/lockdown'") > 0)
+  // every top-level await of the start-up is a step: one left out would fail as it did before (code 0, or no exit)
+  const awaits = lines.filter(line => /^(const \w+ = )?await /.test(line))
+  assert.ok(awaits.length >= 9, `${awaits.length} awaited steps`)
+  for (const line of awaits) assert.match(line, /^(const \w+ = )?await startup\.step\(/, line)
+  // uncaught exceptions stop ending the start-up only where app scripts can first run: after the world's systems
+  // were made (one that refuses a setting throws there), right before the world is loaded
+  const made = source.indexOf('\nconst world = createServerWorld()\n')
+  const scripts = source.indexOf('\nstartup.scriptsStart()\nawait startup.step(() =>\n  world.init({\n')
+  const listening = source.indexOf('\nstartup.listening()\n')
+  assert.ok(made > 0 && scripts > made && listening > scripts, `${made} ${scripts} ${listening}`)
+  assert.equal(source.split('startup.scriptsStart()').length, 2)
+  // and nothing of the start-up ends the process on its own any more
+  assert.doesNotMatch(source, /process\.exit\(/)
+})

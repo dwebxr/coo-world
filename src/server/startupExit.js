@@ -1,7 +1,7 @@
 // A server that could not start ends with exit code 1.
 //
-// explicit `.js` imports only, and none of the server's own: this module is the first thing index.js loads, before
-// SES and lockdown, and it is exercised directly by node:test
+// explicit `.js` imports only, and none of the server's own: this module is the first of the server's modules that
+// index.js loads, before lockdown runs, and it is exercised directly by node:test
 //
 // lockdown (src/core/lockdown.js) runs SES with errorTrapping 'report': SES listens for uncaught exceptions, prints
 // them, and lets the process go on. For a running server that is the choice made there. For one that is starting it
@@ -18,7 +18,8 @@
 //   are left to SES, printed and survived as in a running server, whatever their origin: content in the world must
 //   not be able to keep the server from starting, and which exceptions are the start-up's own cannot be told from
 //   the event (it depends on how Node was told to treat unhandled rejections). The steps of the start-up that can
-//   fail from then on are awaited through step(), which ends the process with 1 when one rejects.
+//   fail from then on (loading the world, listening) are awaited through step(), which ends the process with 1
+//   when one rejects.
 //   Not covered: start-up code that throws synchronously between those steps, or from a callback of its own. The
 //   exit code is still 1 if the process then ends by itself, and nothing ends it if something keeps it alive.
 // After listening(): nothing here acts any more, and the exit code is whatever the shutdown gives (shutdown.js).

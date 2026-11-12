@@ -1,4 +1,5 @@
-// first: from here until the server listens, a start-up that fails ends the process with code 1 (startupExit.js)
+// first of the server's own modules, so before lockdown runs: from here until the server listens, a start-up that
+// fails ends the process with code 1 (startupExit.js)
 import { startup } from './startupExitInstall'
 import 'ses'
 import '../core/lockdown'
@@ -166,10 +167,8 @@ await startup.step(() =>
 // init storage
 const storage = new Storage(storageFile, { limits: storageLimits })
 
-// create world
-// (its app scripts start in world.init: from here an uncaught exception no longer ends the start-up, and the
-// steps that can fail are awaited through startup.step)
-startup.scriptsStart()
+// create world (its systems read their settings as they are made: one that refuses a value throws here, which
+// still ends the start-up)
 const world = createServerWorld()
 // from now on a stop saves: world.init hydrates the apps and starts their scripts before the server listens
 shutdown.attach({
@@ -180,6 +179,10 @@ shutdown.attach({
   },
   closeServer: () => fastify.close(),
 })
+// The world's app scripts start in world.init: from here an uncaught exception no longer ends the start-up (content
+// in a world must not be able to keep its server from starting), and the steps that can fail are awaited through
+// startup.step
+startup.scriptsStart()
 await startup.step(() =>
   world.init({
     assetsDir: assets.dir,
@@ -296,13 +299,14 @@ fastify.get('/status', async (request, reply) => {
 
 fastify.setErrorHandler(errorHandler)
 
-try {
-  await fastify.listen({ port, host: '0.0.0.0' })
-} catch (err) {
-  console.error(err)
-  console.error(`failed to launch on port ${port}`)
-  process.exit(1)
-}
+await startup.step(async () => {
+  try {
+    await fastify.listen({ port, host: '0.0.0.0' })
+  } catch (err) {
+    console.error(`failed to launch on port ${port}`)
+    throw err
+  }
+})
 // start-up is over: from here the exit code is the shutdown's (shutdown.js)
 startup.listening()
 

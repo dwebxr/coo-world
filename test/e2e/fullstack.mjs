@@ -218,6 +218,11 @@ async function probes(admin, watcher) {
     ok(setting.out.includes('[envs] PUBLIC_MAX_UPLOAD_SIZE must be a positive number'), setting.out.slice(-400))
     ok(setting.out.includes('[server] start-up failed; exiting with code 1'), 'the exit is said')
     eq(setting.code, 1, 'exit code for a refused setting')
+    // a setting one of the world's systems refuses as it is made, after a timer of another was started: this is
+    // the kind of failure that stayed up without listening
+    const system = await failedStart({ port: PORT + 7, env: { AI_MAX_CONCURRENT: '0' } })
+    ok(system.out.includes('AI_MAX_CONCURRENT'), system.out.slice(-400))
+    eq(system.code, 1, 'exit code for a setting a system refuses')
     // a database it cannot read: a step of the start-up rejects after other things were set up
     const database = await failedStart({
       port: PORT + 7,

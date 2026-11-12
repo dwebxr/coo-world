@@ -748,9 +748,9 @@ export function FieldVec3({
 }) {
   const hintProps = useHintProps(hint)
   dp = toDigits(dp)
-  let valueX = toNumber(value?.[0], 0)
-  let valueY = toNumber(value?.[1], 0)
-  let valueZ = toNumber(value?.[2], 0)
+  const valueX = toNumber(value?.[0], 0)
+  const valueY = toNumber(value?.[1], 0)
+  const valueZ = toNumber(value?.[2], 0)
   const [localX, setLocalX] = useState(valueX.toFixed(dp))
   const [localY, setLocalY] = useState(valueY.toFixed(dp))
   const [localZ, setLocalZ] = useState(valueZ.toFixed(dp))

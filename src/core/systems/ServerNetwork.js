@@ -230,7 +230,7 @@ export class ServerNetwork extends System {
       `[network] hydration: blueprints=${blueprints.length - skippedBlueprints.length} apps=${entities.length - skippedApps.length} repaired=${repairedApps.length} skipped=${skippedBlueprints.length + skippedApps.length} skippedBlueprints=${JSON.stringify(skippedBlueprints)} skippedApps=${JSON.stringify(skippedApps)} repairedApps=${JSON.stringify(repairedApps)}`
     )
     // hydrate settings
-    let settingsRow = await this.db('config').where('key', 'settings').first()
+    const settingsRow = await this.db('config').where('key', 'settings').first()
     // Before the stored settings are read: a settings row that cannot be parsed left this unset, and unset means
     // "no code, so everyone is admin" (Settings.effectiveRank), with a code configured.
     this.world.settings.setHasAdminCode(this.admin().mode !== 'open')
@@ -1037,7 +1037,7 @@ export class ServerNetwork extends System {
       }
 
       // check connection params
-      let name = sanitizeName(params.name)
+      const name = sanitizeName(params.name)
       // the avatar a connection asks for becomes its session avatar; whether a url outside this world is taken is
       // decided below, once the user and their rank are known
       const askedAvatar = isAvatarUrl(params.avatar) ? params.avatar : null

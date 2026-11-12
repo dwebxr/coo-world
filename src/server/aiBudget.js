@@ -57,7 +57,7 @@ export function createAiBudget(limits = AI_LIMIT_DEFAULTS, { now = () => perform
   // key -> { running, starts: [time, ...] }
   const users = new Map()
   let running = 0
-  let starts = []
+  const starts = []
   // When the table is full, the earliest time a scan of it can find a key to forget: a key is forgotten an hour
   // after its last start (or when it ends, if it ran longer than that, see done), so until then a scan would find
   // nothing and is not made.

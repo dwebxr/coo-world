@@ -776,7 +776,7 @@ function cloneGLB(glb) {
 }
 
 function getSkinnedMeshes(scene) {
-  let meshes = []
+  const meshes = []
   scene.traverse(o => {
     if (o.isSkinnedMesh) {
       meshes.push(o)

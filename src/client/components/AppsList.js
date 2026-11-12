@@ -34,7 +34,7 @@ export function AppsList({ world, query, perf, refresh, setRefresh }) {
   const [target, setTarget] = useState(null)
   let items = useMemo(() => {
     const itemMap = new Map() // id -> { blueprint, count }
-    let items = []
+    const items = []
     for (const [_, entity] of world.entities.items) {
       if (!entity.isApp) continue
       const blueprint = world.blueprints.get(entity.data.blueprint)
@@ -42,7 +42,7 @@ export function AppsList({ world, query, perf, refresh, setRefresh }) {
       if (!blueprint.model) continue // corrupt app?
       let item = itemMap.get(blueprint.id)
       if (!item) {
-        let count = 0
+        const count = 0
         const type = blueprint.model.endsWith('.vrm') ? 'avatar' : 'model'
         const model = world.loader.get(type, blueprint.model)
         const stats = model?.getStats() || defaultStats

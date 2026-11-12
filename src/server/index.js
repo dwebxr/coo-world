@@ -16,7 +16,7 @@ import { compressOptions } from './compressOptions'
 
 import { createServerWorld } from '../core/createServerWorld'
 import { PROTOCOL_VERSION, writePacket } from '../core/packets'
-import { buildPublicEnv } from '../core/extras/publicEnv'
+import { buildPublicEnv, unlistedPublicEnvNote } from '../core/extras/publicEnv'
 import { readJWT } from '../core/utils-server'
 import { getDB } from './db'
 import { Storage, readStorageLimitsEnv } from './Storage'
@@ -201,7 +201,11 @@ await startup.step(() => world.network.ready)
 // anyone can join: world growth and visitors' joins count it (joinBudget.js)
 await startup.step(() => world.network.measureFixedBytes())
 
+// what the page is handed of the environment: the names the client reads and no other (publicEnv.js). Any other
+// PUBLIC_ name that is set is left out and said here once, by name; the server starts all the same
 const publicEnvs = buildPublicEnv(process.env)
+const unlistedPublicEnvs = unlistedPublicEnvNote(process.env)
+if (unlistedPublicEnvs) console.error(unlistedPublicEnvs)
 const envsCode = `
   if (!globalThis.env) globalThis.env = {}
   globalThis.env = ${JSON.stringify(publicEnvs)}

@@ -5,15 +5,12 @@ import * as esbuild from 'esbuild'
 import { fileURLToPath } from 'url'
 import { polyfillNode } from 'esbuild-plugin-polyfill-node'
 import { makePhysxFinalizePlugin } from './lib/finalizePhysxBuild.mjs'
-import { buildPublicEnvDefines } from '../src/core/extras/publicEnv.js'
+import { clientDefines, serverDefines } from './lib/buildDefines.mjs'
 
 const dev = process.argv.includes('--dev')
 const dirname = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = path.join(dirname, '../')
 const buildDir = path.join(rootDir, 'build')
-
-// 公開可能な PUBLIC_ 環境変数だけをクライアントに渡す
-const publicEnvDefines = buildPublicEnvDefines(process.env)
 
 // await fs.emptyDir(buildDir)
 await fs.emptyDir(path.join(buildDir, 'public'))
@@ -40,10 +37,8 @@ const clientHtmlDest = path.join(rootDir, 'build/public/index.html')
     metafile: true,
     jsx: 'automatic',
     jsxImportSource: '@firebolt-dev/jsx',
-    define: {
-      'process.env.NODE_ENV': dev ? '"development"' : '"production"',
-      ...publicEnvDefines,
-    },
+    // the build flag and the PUBLIC_ names the client reads, nothing else of the environment (lib/buildDefines.mjs)
+    define: clientDefines(process.env, { dev }),
     loader: {
       '.js': 'jsx',
     },
@@ -136,10 +131,7 @@ const clientHtmlDest = path.join(rootDir, 'build/public/index.html')
     minify: false,
     sourcemap: true,
     packages: 'external',
-    define: {
-      'process.env.CLIENT': 'false',
-      'process.env.SERVER': 'true',
-    },
+    define: serverDefines(),
     plugins: [makePhysxFinalizePlugin({ rootDir, dev, forkEntry: 'build/index.js' })],
     loader: {},
   })

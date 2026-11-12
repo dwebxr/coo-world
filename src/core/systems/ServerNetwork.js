@@ -61,6 +61,7 @@ import { grantTokenRank, persistRank, revokeTokenRank } from '../../server/rankG
 import { adminMode, adminWaitScale, createAdminGate } from '../../server/adminCode'
 import { createKickList, readKickEnv } from '../../server/kickList'
 import { createActionBudgets } from '../extras/actionBudget'
+import { createPendingChanges } from '../extras/pendingChanges'
 import { eventPayload } from '../extras/eventPayload.js'
 
 const SAVE_INTERVAL = parseInt(process.env.SAVE_INTERVAL || '60') // seconds
@@ -275,8 +276,18 @@ export class ServerNetwork extends System {
   // `skippable`: a packet a recipient can do without (writeLedger.js): left out for a connection whose backlog is
   // high, which then counts as not delivered
   broadcast(name, data, ignoreSocketId, { skippable = false } = {}) {
+    // a player that is removed takes along what was pending for it (flushPending): no change of a player is told
+    // after its removal
+    if (name === 'entityRemoved') this.pending?.drop(data)
     const packet = this.writer.prepare(writePacket(name, data), { name })
     if (packet === false) return 'refused'
+    // What the server itself tells everyone about a player (a script's effect or session avatar, health, a name,
+    // a rank, urls a former builder may not show) is later than what that player's client sent before in this
+    // tick: those fields are taken out of what is pending for the player, which would otherwise go out after this
+    // packet and set the others back to the older value. Only for a packet that was admitted: one refused reached
+    // nobody. A recipient this packet does not reach (a script's write is left out for a connection whose backlog
+    // is high) misses the client's value too, and stays on an older one.
+    if (name === 'entityModified') this.pending?.supersede(data?.id, data)
     let delivered = true
     this.sockets.forEach(socket => {
       if (socket.id === ignoreSocketId) return
@@ -437,36 +448,59 @@ export class ServerNetwork extends System {
     this.scheduler.enqueue(socket, entry)
   }
 
-  // The scheduler releases inbox credit before decoding and bounds each tick's work.
+  // The scheduler releases inbox credit before decoding and bounds each tick's work. What the players' own clients
+  // changed on their players in this tick is told to the others when it ends (flushPending), whatever happened in it.
   flush() {
-    this.scheduler.flush((socket, entry) => {
-      if (this.stopping) return
-      const { copy, bytes, nodes, name, builder } = entry
-      let decoded
-      try {
-        decoded = readInboundPacket(copy, { maxNodes: packetNodeLimit(name) })
-      } catch (err) {
-        this.gate.refuse(
-          socket,
-          'decoder-bug',
-          name,
-          `decoder bug (${err.message} at pos ${err.pos}, nodes ${err.nodes})`
-        )
-        return
-      }
-      const [method, data] = decoded
-      const failed = err => {
-        this.logOnce(socket, `${name}:handler`, `[network] ${name} from client ${socket.id} failed: ${briefError(err)}`)
-      }
-      try {
-        const meta = { bytes, nodes, socketId: socket.id, builder, at: entry.at }
-        const result = this[method]?.(socket, data, meta)
-        // async handlers reject later; keep those failures contained too
-        if (typeof result?.then === 'function') result.then(undefined, failed)
-      } catch (err) {
-        failed(err)
-      }
-    })
+    try {
+      this.scheduler.flush((socket, entry) => {
+        if (this.stopping) return
+        const { copy, bytes, nodes, name, builder } = entry
+        let decoded
+        try {
+          decoded = readInboundPacket(copy, { maxNodes: packetNodeLimit(name) })
+        } catch (err) {
+          this.gate.refuse(
+            socket,
+            'decoder-bug',
+            name,
+            `decoder bug (${err.message} at pos ${err.pos}, nodes ${err.nodes})`
+          )
+          return
+        }
+        const [method, data] = decoded
+        const failed = err => {
+          this.logOnce(
+            socket,
+            `${name}:handler`,
+            `[network] ${name} from client ${socket.id} failed: ${briefError(err)}`
+          )
+        }
+        try {
+          const meta = { bytes, nodes, socketId: socket.id, builder, at: entry.at }
+          const result = this[method]?.(socket, data, meta)
+          // async handlers reject later; keep those failures contained too
+          if (typeof result?.then === 'function') result.then(undefined, failed)
+        } catch (err) {
+          failed(err)
+        }
+      })
+    } finally {
+      this.flushPending()
+    }
+  }
+
+  // What the handlers of this flush kept for its end (onEntityModified, a player's own change): for each player, one
+  // packet with the latest value of every field its client changed in this tick, to every connection but its own.
+  // So one connection has at most one own-player packet written to each other connection per tick, however many it
+  // sent; the server applied each as it came, and the values in between are not told. Every entry is taken before
+  // any is sent, so nothing stays for a later tick, also when a write throws. When the server is stopping they are
+  // let go unsent: its connections are being closed.
+  flushPending() {
+    if (!this.pending?.size) return
+    const changes = this.pending.takeAll()
+    if (this.stopping) return
+    // (a player's id is its connection's)
+    for (const change of changes) this.send('entityModified', change, change.id)
   }
 
   getTime() {
@@ -2310,9 +2344,13 @@ export class ServerNetwork extends System {
         }
         if (Object.keys(fields).length <= 1) fields = null
       }
+      // Applied now; told to the others once, at the end of this tick's flush, merged with what else this
+      // connection changes on its player in the tick (flushPending). Kept after the apply: what a script tells
+      // everyone from inside it (the end of an effect that this change ends) goes out before this change, as it
+      // did when both were written at once.
       if (fields) {
         entity.modify(fields)
-        this.send('entityModified', fields, socket.id)
+        ;(this.pending ??= createPendingChanges()).merge(fields)
       }
       // The sender applied its session avatar before sending it. Whether it was taken or not, the sender is told the
       // session avatar the server now has, after everything the server told it before, with the number the sender

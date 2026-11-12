@@ -21,6 +21,7 @@ import { Ranks } from '../src/core/extras/ranks.js'
 import { sanitizeBlueprintModify } from '../src/core/extras/blueprintPolicy.js'
 import { previewValue } from '../src/core/extras/assetURL.js'
 import { createActionBudgets } from '../src/core/extras/actionBudget.js'
+import { createPendingChanges } from '../src/core/extras/pendingChanges.js'
 import { adminMode, adminWaitScale, createAdminGate } from '../src/server/adminCode.js'
 import { isAdminCommand } from '../src/core/extras/chatCommand.js'
 
@@ -79,6 +80,7 @@ function fixture() {
   const Network = vm.runInNewContext(`(class { ${methods} })`, {
     performance,
     createActionBudgets,
+    createPendingChanges,
     isObject: value => value !== null && typeof value === 'object',
     isExternalUrl,
     sanitizeAppModify,

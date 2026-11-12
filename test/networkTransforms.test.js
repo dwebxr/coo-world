@@ -173,6 +173,8 @@ test('entity transforms: server storage, observer broadcasts and late joins shar
   const { ws: observer } = await f.join()
   const position = [2, 3, 4]
   await f.network.onEntityModified(author, { id: author.id, p: position, q: [0, 0, 0, 1.0000001] })
+  // (the others are told at the end of the tick's flush; this handler was called outside one)
+  f.network.flushPending()
   const expected = { position, quaternion: [0, 0, 0, 1] }
   assert.deepEqual(poseOf(author.player.data), expected)
   assert.notEqual(author.player.data.position, position)
@@ -185,6 +187,7 @@ test('entity transforms: server storage, observer broadcasts and late joins shar
     },
   ])
   await f.network.onEntityModified(author, { id: author.id, p: [1e300, 0, 0], q: [1e200, 0, 0, 1], t: true })
+  f.network.flushPending()
   assert.deepEqual(poseOf(author.player.data), expected)
   assert.deepEqual(readPacket(observer.packets.at(-1)), ['onEntityModified', { id: author.id, t: true }])
   author.player.data.rank = 1

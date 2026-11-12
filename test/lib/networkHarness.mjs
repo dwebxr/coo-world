@@ -46,6 +46,7 @@ import { grantTokenRank, persistRank, revokeTokenRank } from '../../src/server/r
 import { adminMode, adminWaitScale, createAdminGate } from '../../src/server/adminCode.js'
 import { createKickList, readKickEnv } from '../../src/server/kickList.js'
 import { createActionBudgets } from '../../src/core/extras/actionBudget.js'
+import { createPendingChanges } from '../../src/core/extras/pendingChanges.js'
 import { isAdminCommand } from '../../src/core/extras/chatCommand.js'
 import { createSolanaRpc } from '../../src/server/solanaRpc.js'
 import { createTokenBalanceService } from '../../src/server/tokenBalance.js'
@@ -144,6 +145,7 @@ const names = [
   'heldAfter',
   'enqueue',
   'flush',
+  'flushPending',
   'requireBuilder',
   'onBlueprintAdded',
   'onBlueprintModified',
@@ -174,6 +176,7 @@ function networkClass(context) {
     createKickList,
     readKickEnv,
     createActionBudgets,
+    createPendingChanges,
     isAdminCommand,
     Uint8Array,
     Date,

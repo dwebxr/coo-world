@@ -329,6 +329,93 @@ test('LOD: a node inserted again has the new distance only, and a child added ag
     assert.deepEqual(levels(other), [['near', 30]])
   }))
 
+test('LOD: a child added again whose unmount throws is out of the LOD and no level of it', () =>
+  runProbe(bundle, ({ THREE, Node, LOD }) => {
+    const world = { camera: new THREE.Object3D(), stage: { dirtyNodes: new Set() } }
+    const lod = new LOD({ scaleAware: false })
+    const near = new Node({ id: 'near' })
+    const far = new Node({ id: 'far' })
+    lod.insert(near, 10)
+    lod.insert(far, 100)
+    lod.activate({ world })
+    const at = distance => {
+      world.camera.matrixWorld.makeTranslation(distance, 0, 0)
+      lod.check()
+      lod.check()
+      return [near, far].filter(node => node.mounted).map(node => node.id)
+    }
+    assert.deepEqual(at(0), ['near'])
+    near.unmount = () => {
+      throw new Error('unmount failed')
+    }
+    assert.throws(() => lod.add(near), /unmount failed/)
+    delete near.unmount
+    // (Node.add took it out before the unmount threw)
+    assert.equal(near.parent, null)
+    assert.deepEqual(
+      lod.lods.map(level => level.node),
+      [far]
+    )
+    // out of its distance and back: it is not mounted again without a parent
+    assert.deepEqual(at(1000), [])
+    assert.deepEqual(at(0), ['far'])
+  }))
+
+test('LOD: a child that leaves while it is added again (its onLoad removes it) is no level any more', () =>
+  runProbe(bundle, ({ THREE, Node, LOD, Avatar }) => {
+    const world = {
+      camera: new THREE.Object3D(),
+      stage: { dirtyNodes: new Set() },
+      setHot() {},
+      avatars: { add() {}, remove() {} },
+      // cached: the mount makes the avatar and calls onLoad before it returns
+      loader: {
+        get: () => ({
+          hooks: {},
+          factory: { create: () => ({ setEmote() {}, setVisible() {}, move() {}, destroy() {} }) },
+        }),
+      },
+    }
+    const lod = new LOD({ scaleAware: false })
+    const far = new Node({ id: 'far' })
+    let loads = 0
+    let leave = false
+    const avatar = new Avatar({
+      id: 'avatar',
+      src: 'a.vrm',
+      onLoad: () => {
+        loads++
+        if (leave) lod.remove(avatar)
+      },
+    })
+    lod.insert(avatar, 10)
+    lod.insert(far, 100)
+    lod.activate({ world })
+    const at = distance => {
+      world.camera.matrixWorld.makeTranslation(distance, 0, 0)
+      lod.check()
+      lod.check()
+      return [avatar, far].filter(node => node.mounted).map(node => node.id)
+    }
+    assert.deepEqual(at(0), ['avatar'])
+    assert.equal(loads, 1)
+    leave = true
+    lod.add(avatar)
+    leave = false
+    assert.equal(loads, 2)
+    assert.equal(avatar.parent, null)
+    assert.equal(avatar.mounted, false)
+    assert.deepEqual(
+      lod.lods.map(level => level.node),
+      [far]
+    )
+    // out of its distance and back: it is not mounted again, and its onLoad is not called again
+    assert.deepEqual(at(1000), [])
+    assert.deepEqual(at(0), ['far'])
+    assert.equal(avatar.mounted, false)
+    assert.equal(loads, 2)
+  }))
+
 test('SkinnedMesh: remount, shadows, bone names and the skeleton of an unmounted copy', () =>
   runProbe(bundle, ({ THREE, SkinnedMesh }) => {
     const root = new THREE.Group()

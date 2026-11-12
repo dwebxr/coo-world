@@ -52,6 +52,9 @@ export class LOD extends Node {
       return super.add(node)
     } finally {
       this.readding = null
+      // unless it did: an add that failed after Node.add took it out (its unmount threw), or a child that left during
+      // the add (removed, or moved elsewhere, by what its mount ran) is no child of this LOD, and no level of it
+      if (node.parent !== this) this.forget(node)
     }
   }
 

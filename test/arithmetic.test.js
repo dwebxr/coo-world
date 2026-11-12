@@ -184,25 +184,45 @@ test('number field: a number is taken as it is, text as arithmetic, and anything
 // --- the fields themselves ---
 
 // The component source of Fields.js, run without a DOM (as tipForm.test.js and clientLifecycle.test.js run theirs):
-// hooks keep their slots, and the tree that comes back is plain objects whose handlers the test calls.
-function mountField(name, props) {
+// hooks keep their slots across renders, an effect runs after a render in which its dependencies changed, and the
+// tree that comes back is plain objects whose handlers the test calls.
+function mountField(name, initial) {
   const source = fs.readFileSync(new URL('../src/client/components/Fields.js', import.meta.url), 'utf8')
   const code = transformSync(source.replace(/^import[\s\S]*?from ['"][^'"]+['"]\n/gm, '').replace(/^export /gm, ''), {
     loader: 'jsx',
     jsxFactory: 'element',
     jsxFragment: 'fragment',
   }).code
+  // (the parent takes what the field hands it: the next render has that value, as a pane's state would)
+  let props = {
+    ...initial,
+    onChange(value) {
+      initial.onChange(value)
+      props = { ...props, value }
+    },
+  }
   const slots = []
+  const effects = []
   let cursor = 0
   const context = {
-    useState(initial) {
+    useState(first) {
       const index = cursor++
-      if (!(index in slots)) slots[index] = initial
+      if (!(index in slots)) slots[index] = first
       return [slots[index], value => (slots[index] = value)]
     },
-    useEffect() {},
+    useRef(first) {
+      const index = cursor++
+      if (!(index in slots)) slots[index] = { current: first }
+      return slots[index]
+    },
+    useEffect(effect, deps) {
+      const index = cursor++
+      const previous = slots[index]
+      if (previous && deps.every((dep, i) => dep === previous[i])) return
+      slots[index] = deps
+      effects.push(effect)
+    },
     useMemo: fn => fn(),
-    useRef: current => ({ current }),
     useHintProps: () => ({}),
     css: () => '',
     fragment: 'fragment',
@@ -212,27 +232,44 @@ function mountField(name, props) {
     toText,
   }
   const Field = new Function(...Object.keys(context), `${code}\nreturn ${name}`)(...Object.values(context))
-  const inputs = () => {
+  const render = () => {
     cursor = 0
+    let tree = Field(props)
+    while (effects.length) {
+      for (const effect of effects.splice(0)) effect()
+      cursor = 0
+      tree = Field(props)
+    }
+    return tree
+  }
+  const inputs = () => {
     const found = []
     const walk = node => {
       if (!node || typeof node !== 'object') return
       if (node.type === 'input') found.push(node.props)
       for (const child of node.children || []) walk(child)
     }
-    walk(Field(props))
+    walk(render())
     return found
   }
+  const focus = index => inputs()[index].onFocus({ target: { select() {} } })
+  const leave = index => inputs()[index].onBlur({})
+  // puts `text` into input `index`, as typing does, without leaving it
+  const write = (index, text) => inputs()[index].onChange({ target: { value: text } })
   // types `text` into input `index` and leaves it
   const type = (index, text) => {
-    inputs()[index].onChange({ target: { value: text } })
-    inputs()[index].onBlur({})
+    focus(index)
+    write(index, text)
+    leave(index)
   }
-  const leave = index => inputs()[index].onBlur({})
   // (Enter leaves the field: the handler blurs its target)
   const press = (index, code, keys = {}) =>
     inputs()[index].onKeyDown({ code, preventDefault() {}, target: { blur: () => leave(index) }, ...keys })
-  return { inputs, type, press, leave, shown: () => inputs().map(input => input.value) }
+  // the parent renders the field again with other props
+  const set = next => {
+    props = { ...props, ...next }
+  }
+  return { inputs, focus, leave, write, type, press, set, shown: () => inputs().map(input => input.value) }
 }
 
 // what the fields say on the console while `fn` runs (they warn when a typed entry is not taken)
@@ -253,9 +290,9 @@ test('number field: what is typed is computed; an entry that is not taken change
   assert.deepEqual(changes, [2.5])
   field.type(0, 'globalThis.__fieldRan = 1')
   assert.equal(globalThis.__fieldRan, undefined)
-  assert.deepEqual(field.shown(), ['5.00'], 'the value the field was given')
+  assert.deepEqual(field.shown(), ['2.50'], 'the value the field has')
   field.type(0, '1000')
-  assert.deepEqual(field.shown(), ['5.00'], 'out of its range')
+  assert.deepEqual(field.shown(), ['2.50'], 'out of its range')
   assert.deepEqual(changes, [2.5], 'nothing was written for either')
   assert.deepEqual(said, [
     '[field] the entry is not taken: "g" at 1 is not read',
@@ -263,32 +300,60 @@ test('number field: what is typed is computed; an entry that is not taken change
   ])
   field.press(0, 'ArrowUp')
   field.press(0, 'ArrowDown', { shiftKey: true })
-  assert.deepEqual(changes, [2.5, 6, 3])
+  assert.deepEqual(changes, [2.5, 3.5, 1.5])
   // a step out of the range changes nothing either, and that is not worth a line
   const edge = mountField('FieldNumber', { value: 99.5, dp: 1, min: 0, max: 100, onChange: v => changes.push(v) })
   edge.press(0, 'ArrowUp')
   assert.deepEqual(edge.shown(), ['99.5'])
-  assert.deepEqual(changes, [2.5, 6, 3])
+  // (nor does it leave a half-typed text standing: the field shows its value again at once)
+  edge.focus(0)
+  edge.write(0, '50')
+  edge.press(0, 'ArrowUp')
+  assert.deepEqual(edge.shown(), ['99.5'])
+  edge.leave(0)
+  assert.deepEqual(changes, [2.5, 3.5, 1.5])
   assert.equal(said.length, 2)
-  // Leaving a field whose text is what it shows for its value writes nothing: untouched, after a refused step, and
-  // after a refused entry. (Reading that text back wrote the rounded value: 0.004 shown as "0.00" became 0.)
+  // Leaving a field in which nothing was typed writes nothing: untouched, after a refused step, and after a refused
+  // entry. (The text shown was read back, and the rounded value written: 0.004 shown as "0.00" became 0.)
   const fine = []
   const small = mountField('FieldNumber', { value: 0.004, dp: 2, min: 0, max: 10, onChange: v => fine.push(v) })
   assert.deepEqual(small.shown(), ['0.00'])
+  small.focus(0)
   small.leave(0)
   small.press(0, 'ArrowDown')
   small.leave(0)
   small.press(0, 'ArrowDown', { shiftKey: true })
   small.press(0, 'Enter')
-  small.leave(0)
   small.type(0, 'oops')
+  small.leave(0)
+  small.type(0, '')
   small.leave(0)
   assert.deepEqual(fine, [])
   assert.deepEqual(small.shown(), ['0.00'])
-  // (typing the number that is shown is an entry like any other text that differs from it)
-  small.type(0, '0.0')
-  small.type(0, '0.01')
-  assert.deepEqual(fine, [0, 0.01])
+  // ... also when the field's digits or its value change while it has the focus
+  small.focus(0)
+  small.set({ dp: 3 })
+  small.leave(0)
+  small.focus(0)
+  small.set({ dp: 2, value: 2.004 })
+  small.leave(0)
+  assert.deepEqual(fine, [])
+  assert.deepEqual(small.shown(), ['2.00'], 'and it shows the new value')
+  // What IS typed is written, also when it is the very text the field shows, or shows by then
+  small.type(0, '2.00')
+  assert.deepEqual(fine, [2])
+  small.focus(0)
+  small.write(0, '3.00')
+  small.set({ value: 3.004 })
+  small.press(0, 'Enter')
+  assert.deepEqual(fine, [2, 3])
+  // typed text is given up for a step: the step is from the value, and the text is not read afterwards
+  small.set({ value: 5 })
+  small.focus(0)
+  small.write(0, '9')
+  small.press(0, 'ArrowUp')
+  small.leave(0)
+  assert.deepEqual(fine, [2, 3, 6])
 })
 
 test('vector field: an axis whose entry is not taken keeps its value (it threw: the whole vector was put there)', t => {
@@ -301,14 +366,14 @@ test('vector field: an axis whose entry is not taken keeps its value (it threw: 
   field.type(1, 'nonsense')
   field.type(2, '99')
   field.type(0, '(1 + 1) * -2')
-  assert.deepEqual(field.shown(), ['-4.0', '2.0', '3.0'])
+  assert.deepEqual(field.shown(), ['-4.0', '6.3', '3.0'])
   field.press(2, 'ArrowUp', { shiftKey: true })
   field.press(0, 'ArrowDown', { altKey: true })
   assert.deepEqual(changes, [
     [1, 6.3, 3],
-    [-4, 2, 3],
-    [1, 2, 5],
-    [0.9, 2, 3],
+    [-4, 6.3, 3],
+    [-4, 6.3, 5],
+    [-4.1, 6.3, 5],
   ])
   assert.deepEqual(said, [
     '[field] the entry is not taken: "n" at 1 is not read',
@@ -325,9 +390,11 @@ test('vector field: an axis whose entry is not taken keeps its value (it threw: 
     onChange: v => fine.push(v),
   })
   assert.deepEqual(small.shown(), ['0.0', '-10.0', '10.0'])
+  small.focus(0)
   small.leave(0)
   small.type(0, 'oops')
   small.leave(0)
+  small.type(0, '')
   small.press(1, 'ArrowDown')
   small.leave(1)
   small.press(2, 'ArrowUp', { altKey: true })
@@ -336,5 +403,40 @@ test('vector field: an axis whose entry is not taken keeps its value (it threw: 
   small.leave(2)
   assert.deepEqual(small.shown(), ['0.0', '-10.0', '10.0'])
   assert.deepEqual(fine, [])
-  assert.equal(said.length, 3, 'one more line, for what was typed; none for the two steps')
+  // ... also when the digits or the value change while an axis has the focus
+  small.focus(0)
+  small.set({ dp: 3 })
+  small.leave(0)
+  small.focus(1)
+  small.set({ dp: 1, value: [0.004, 2.04, 9.96] })
+  small.leave(1)
+  assert.deepEqual(fine, [])
+  assert.deepEqual(small.shown(), ['0.0', '2.0', '10.0'])
+  // what is typed into an axis is written, also when it is the text shown; the other axes keep all their digits
+  small.type(1, '2.0')
+  small.focus(2)
+  small.write(2, '7')
+  small.set({ value: [0.004, 2, 7.04] })
+  small.press(2, 'Enter')
+  assert.deepEqual(fine, [
+    [0.004, 2, 9.96],
+    [0.004, 2, 7],
+  ])
+  // typed text is given up for a step, and is not read afterwards
+  small.focus(1)
+  small.write(1, '9')
+  small.press(1, 'ArrowUp')
+  small.leave(1)
+  assert.deepEqual(fine.slice(2), [[0.004, 3, 7]])
+  // a refused step shows the axis' value again at once, over a half-typed text, and says nothing
+  small.focus(2)
+  small.write(2, '1')
+  small.press(2, 'ArrowUp', { shiftKey: true })
+  small.press(2, 'ArrowUp', { shiftKey: true })
+  assert.deepEqual(small.shown(), ['0.0', '3.0', '9.0'])
+  small.write(2, '1')
+  small.press(2, 'ArrowUp', { shiftKey: true })
+  assert.deepEqual(small.shown(), ['0.0', '3.0', '9.0'])
+  small.leave(2)
+  assert.equal(said.length, 3, 'one line for each typed entry that was not taken, none for a step')
 })

@@ -637,9 +637,15 @@ export function FieldNumber({
   useEffect(() => {
     if (!focused && local !== value.toFixed(dp)) setLocal(value.toFixed(dp))
   }, [focused, value])
+  // whether the text is something the user typed and has not yet been read. Only such a text is read when the field
+  // is left: the text a field shows for its value is that value rounded to `dp` digits, and reading it back wrote
+  // the rounded value over a stored one with more digits (0.004 shown as "0.00" became 0) when the field was only
+  // clicked into, or after a step that was refused
+  const edited = useRef(false)
   // a number (the arrow keys) or what was typed, read as arithmetic. Anything else changes nothing: the field shows
   // the value it has again (it used to write that value back, rounded to the field's digits)
   const setTo = input => {
+    edited.current = false
     const read = readNumberField(input, { min, max })
     if ('refused' in read) {
       if (typeof input === 'string') console.warn(`[field] the entry is not taken: ${read.refused}`)
@@ -693,7 +699,10 @@ export function FieldNumber({
         <input
           type='text'
           value={local}
-          onChange={e => setLocal(e.target.value)}
+          onChange={e => {
+            edited.current = true
+            setLocal(e.target.value)
+          }}
           onKeyDown={e => {
             if (e.nativeEvent?.isComposing || e.keyCode === 229) return
             if (e.code === 'Enter') {
@@ -717,13 +726,12 @@ export function FieldNumber({
             setFocused(false)
             // if blank, set back to original
             if (local === '') {
+              edited.current = false
               setLocal(value.toFixed(dp))
               return
             }
-            // the text is what the field shows for the value it has (nothing was typed, or a step or an entry was
-            // refused and the text put back): nothing to write. Reading it would write the value rounded to the
-            // digits shown, in place of a stored one with more
-            if (local === value.toFixed(dp)) return
+            // nothing was typed since the text was last read (see `edited`): nothing to write
+            if (!edited.current) return
             // otherwise run through pipeline
             setTo(local)
           }}
@@ -761,9 +769,13 @@ export function FieldVec3({
       if (localZ !== valueZ.toFixed(dp)) setLocalZ(valueZ.toFixed(dp))
     }
   }, [focused, valueX, valueY, valueZ])
+  // whether the text of the axis that has the focus was typed and has not yet been read (see the number field's
+  // `edited`; one axis has the focus at a time, and leaving it reads or drops its text before the next gets it)
+  const edited = useRef(false)
   // a number (the arrow keys) or what was typed, read as arithmetic. Anything else changes nothing: the axis shows
   // the value it has again (it used to fall back to the whole vector, and the `toFixed` that followed threw)
   const setAxis = (axis, input) => {
+    edited.current = false
     const read = readNumberField(input, { min, max })
     if ('refused' in read) {
       if (typeof input === 'string') console.warn(`[field] the entry is not taken: ${read.refused}`)
@@ -826,7 +838,10 @@ export function FieldVec3({
             key={idx}
             type='text'
             value={axis.local}
-            onChange={e => axis.setLocal(e.target.value)}
+            onChange={e => {
+              edited.current = true
+              axis.setLocal(e.target.value)
+            }}
             onKeyDown={e => {
               if (e.nativeEvent?.isComposing || e.keyCode === 229) return
               if (e.code === 'Enter') {
@@ -850,11 +865,12 @@ export function FieldVec3({
               setFocused(false)
               // if blank, set back to original
               if (axis.local === '') {
+                edited.current = false
                 axis.setLocal(axis.value.toFixed(dp))
                 return
               }
-              // the text is what the axis shows for the value it has: nothing to write (see the number field)
-              if (axis.local === axis.value.toFixed(dp)) return
+              // nothing was typed since the text was last read: nothing to write
+              if (!edited.current) return
               // otherwise run through pipeline
               setAxis(axis, axis.local)
             }}

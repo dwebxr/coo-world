@@ -8,7 +8,7 @@ import { createNode } from '../extras/createNode'
 import { bindRotations } from '../extras/bindRotations'
 import { simpleCamLerp } from '../extras/simpleCamLerp'
 import { ControlPriorities } from '../extras/ControlPriorities'
-import { isBoolean, isNumber } from 'lodash-es'
+import { isBoolean } from 'lodash-es'
 import { Modes } from '../extras/locomotionModes'
 import { outranks, isAdmin, isBuilder, isMuted } from '../extras/playerRanks'
 import { createPlayerAura, chatBubble } from '../extras/playerAura'
@@ -174,6 +174,9 @@ export class PlayerLocal extends Entity {
     if (this.world.loader?.preloader) {
       await this.world.loader.preloader
     }
+    // removed while the first assets were loading (destroy()): a player that is gone gets no body, no control and
+    // no place in the frame loop, and does not tell the world it is ready. It used to be set up all the same.
+    if (this.destroyed) return
 
     this.applyAvatar()
     this.initCapsule()
@@ -182,6 +185,37 @@ export class PlayerLocal extends Entity {
     this.world.setHot(this, true)
     this.world.on('xrSession', this.onXRSession)
     this.world.emit('ready', true)
+  }
+
+  // The local player leaves the world (Entities.remove: the world is destroyed, or the server removed the entity).
+  // There was no destroy: the body stayed in the physics scene with its shape and material, the control stayed
+  // bound, the player stayed in the frame loop and went on following XR sessions. A client that makes a new world for
+  // each connection (agent.mjs) left one of each behind per world.
+  // Everything init() made is let go of once; what init() had not made yet (a player removed while the first assets
+  // load) is skipped, and init() stops when its wait ends. A load of an avatar that is under way installs nothing
+  // (isCurrentAvatarLoad reads `destroyed`). No `leave` event is emitted: that one is for the players a client sees
+  // leave, and a script that hears it for its own player would be new.
+  destroy() {
+    if (this.destroyed) return
+    this.destroyed = true
+    clearTimeout(this.chatTimer)
+    this.world.setHot(this, false)
+    this.world.off('xrSession', this.onXRSession)
+    this.control?.release()
+    this.control = null
+    // the body: out of the scene, then the body, its shape and their material
+    this.capsuleHandle?.destroy()
+    this.capsuleHandle = null
+    this.capsule?.release()
+    this.capsule = null
+    this.capsuleShape?.release()
+    this.capsuleShape = null
+    this.material?.release()
+    this.material = null
+    if (this.groundSweepGeometry) PHYSX.destroy(this.groundSweepGeometry)
+    this.groundSweepGeometry = null
+    this.base.deactivate()
+    this.aura.deactivate()
   }
 
   getAvatarUrl() {
@@ -232,7 +266,7 @@ export class PlayerLocal extends Entity {
     // material.setFrictionCombineMode(PHYSX.PxCombineModeEnum.eMIN)
     // material.setRestitutionCombineMode(PHYSX.PxCombineModeEnum.eMIN)
     const flags = new PHYSX.PxShapeFlags(PHYSX.PxShapeFlagEnum.eSCENE_QUERY_SHAPE | PHYSX.PxShapeFlagEnum.eSIMULATION_SHAPE) // prettier-ignore
-    const shape = this.world.physics.physics.createShape(geometry, this.material, true, flags)
+    const shape = (this.capsuleShape = this.world.physics.physics.createShape(geometry, this.material, true, flags))
     const localPose = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
     // rotate to stand up
     q1.set(0, 0, 0).setFromAxisAngle(BACKWARD, Math.PI / 2)
@@ -273,7 +307,6 @@ export class PlayerLocal extends Entity {
     // go straight through it. It has to be almost perfectly head on, a slight angle and everything works fine.
     // I spent days trying to figure out why, it's not CCD, it's not contact offsets, its just straight up bugged.
     // For now the best solution is to just add a sphere right in the center of our capsule to keep that problem at bay.
-    let shape2
     {
       // const geometry = new PHYSX.PxSphereGeometry(radius)
       // shape2 = this.world.physics.physics.createShape(geometry, this.material, true, flags)
@@ -291,6 +324,12 @@ export class PlayerLocal extends Entity {
         this.base.position.copy(position)
       },
     })
+    // the shape and the body have their own copies of these
+    PHYSX.destroy(geometry)
+    PHYSX.destroy(flags)
+    PHYSX.destroy(localPose)
+    PHYSX.destroy(filterData)
+    PHYSX.destroy(transform)
   }
 
   initControl() {
@@ -420,8 +459,6 @@ export class PlayerLocal extends Entity {
   }
 
   fixedUpdate(delta) {
-    const xr = this.isXR
-    const freeze = this.data.effect?.freeze
     const anchor = this.getAnchorMatrix()
     let snare = this.data.effect?.snare
     if (!Number.isFinite(snare) || snare < 0 || snare > 1) snare = 0
@@ -456,7 +493,7 @@ export class PlayerLocal extends Entity {
         origin.y += 0.2
         const hitMask = Layers.environment.group | Layers.prop.group
         const hit = this.world.physics.raycast(origin, DOWN, 2, hitMask)
-        let actor = hit?.handle?.actor || null
+        const actor = hit?.handle?.actor || null
         // if we found a new platform, set it up for tracking
         if (this.platform.actor !== actor) {
           this.platform.actor = actor
@@ -646,8 +683,8 @@ export class PlayerLocal extends Entity {
       // apply drag, orientated to ground normal
       // this prevents ice-skating & yeeting us upward when going up ramps
       const dragCoeff = 10 * delta
-      let perpComponent = v2.copy(this.groundNormal).multiplyScalar(velocity.dot(this.groundNormal))
-      let parallelComponent = v3.copy(velocity).sub(perpComponent)
+      const perpComponent = v2.copy(this.groundNormal).multiplyScalar(velocity.dot(this.groundNormal))
+      const parallelComponent = v3.copy(velocity).sub(perpComponent)
       parallelComponent.multiplyScalar(1 - dragCoeff)
       velocity.copy(parallelComponent.add(perpComponent))
       // cancel out velocity in ground normal direction (up oriented to ground normal)

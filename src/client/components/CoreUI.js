@@ -1,24 +1,14 @@
 import { css } from '@firebolt-dev/css'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import {
-  ChevronUpIcon,
-  HandCoinsIcon,
-  InfoIcon,
-  LoaderIcon,
-  MessageSquareTextIcon,
-  RefreshCwIcon,
-  SendHorizonalIcon,
-} from 'lucide-react'
-import moment from 'moment'
+import { useEffect, useRef, useState } from 'react'
+import { HandCoinsIcon, InfoIcon, MessageSquareTextIcon, RefreshCwIcon, SendHorizonalIcon } from 'lucide-react'
+import 'moment'
 
 import { AvatarPane } from './AvatarPane'
-import { useElemSize } from './useElemSize'
 import { MouseLeftIcon } from './MouseLeftIcon'
 import { MouseRightIcon } from './MouseRightIcon'
 import { MouseWheelIcon } from './MouseWheelIcon'
 import { buttons, propToLabel } from '../../core/extras/buttons'
 import { cls, isTouch } from '../utils'
-import { uuid } from '../../core/utils'
 import { ControlPriorities } from '../../core/extras/ControlPriorities'
 import { ChevronDoubleUpIcon, HandIcon } from './Icons'
 import { Sidebar } from './Sidebar'
@@ -35,12 +25,12 @@ export function CoreUI({ world }) {
   // what the world has told so far (ClientUI.latest): this interface may be made again after a render error, long after
   // `ready` and the rest were told
   const [ready, setReady] = useState(() => world.ui.latest.ready)
-  const [player, setPlayer] = useState(() => world.entities.player)
+  const [, setPlayer] = useState(() => world.entities.player)
   const [ui, setUI] = useState(world.ui.state)
-  const [menu, setMenu] = useState(null)
+  const [, setMenu] = useState(null)
   const [confirm, setConfirm] = useState(() => world.ui.latest.confirm)
   const [link, setLink] = useState(() => world.ui.latest.link)
-  const [code, setCode] = useState(false)
+  const [, setCode] = useState(false)
   const [avatar, setAvatar] = useState(() => world.ui.latest.avatar)
   const [fatal, setFatal] = useState(world.fatalError)
   const [disconnected, setDisconnected] = useState(() => world.ui.latest.disconnect)
@@ -311,7 +301,7 @@ function Chat({ world }) {
               send(e)
             }
           }}
-          onBlur={e => {
+          onBlur={_e => {
             if (!isTouch) {
               setActive(false)
             }
@@ -350,8 +340,6 @@ function MiniMessages({ world }) {
   if (!msg) return null
   return <Message msg={msg} />
 }
-
-const MESSAGES_REFRESH_RATE = 30 // every x seconds
 
 function Messages({ world, active }) {
   const initRef = useRef()

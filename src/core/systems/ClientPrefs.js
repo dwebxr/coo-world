@@ -12,8 +12,6 @@ export class ClientPrefs extends System {
   constructor(world) {
     super(world)
 
-    const isQuest = /OculusBrowser/.test(navigator.userAgent)
-
     const data = storage.get('prefs', {})
 
     // v2: reset ui scale for new mobile default (0.9)

@@ -217,7 +217,12 @@ export class Collider extends Node {
     }
     // a collider skipped for its transform tries again once that transform changed: mount() directly, since there is
     // no shape to release and an unmount would drop the held mesh
-    if (didMove && TRANSFORM_SKIPS.has(this.physicsSkipped) && !this.ctx.moving && this.transformKey() !== this.skipKey) {
+    if (
+      didMove &&
+      TRANSFORM_SKIPS.has(this.physicsSkipped) &&
+      !this.ctx.moving &&
+      this.transformKey() !== this.skipKey
+    ) {
       this.mount()
     }
   }

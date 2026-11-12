@@ -1,6 +1,6 @@
 import fs from 'fs-extra'
 import path from 'path'
-import { importApp } from '../core/extras/appTools'
+import { importApp, INVALID_HYP } from '../core/extras/appTools'
 import { assets } from './assets'
 
 class Collections {
@@ -17,7 +17,7 @@ class Collections {
     // copy over built-in collections
     await fs.copy(path.join(rootDir, 'src/world/collections'), this.dir)
     // ensure all collections apps are installed
-    let folderNames = fs.readdirSync(this.dir)
+    const folderNames = fs.readdirSync(this.dir)
     folderNames.sort((a, b) => {
       // keep "default" first then sort alphabetically
       if (a === 'default') return -1
@@ -38,7 +38,17 @@ class Collections {
         const appFile = new File([appBuffer], appFilename, {
           type: 'application/octet-stream',
         })
-        const app = await importApp(appFile)
+        let app
+        try {
+          app = await importApp(appFile)
+        } catch (err) {
+          if (err?.code !== INVALID_HYP) throw err
+          // a file importApp refuses as not a .hyp file is left out of its collection, so that the server still
+          // starts (one with a bad asset size used to load, its assets cut from the wrong bytes). Any other failure
+          // (a file that cannot be read, a bad manifest) stops the start, as before
+          console.error(`[collections] ${folderName}: ${appFilename} is left out: ${err.message}`)
+          continue
+        }
         for (const asset of app.assets) {
           // const file = asset.file
           // const assetFilename = asset.url.slice(8) // remove 'asset://' prefix

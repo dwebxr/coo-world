@@ -1,14 +1,14 @@
 import { css } from '@firebolt-dev/css'
 import { useEffect, useRef, useState } from 'react'
-import { UserIcon, XIcon } from 'lucide-react'
+import { XIcon } from 'lucide-react'
 
-import { usePane } from './usePane'
+import './usePane'
 import { AvatarPreview } from '../AvatarPreview'
 
 export function AvatarPane({ world, info }) {
   const viewportRef = useRef()
   const previewRef = useRef()
-  const [stats, setStats] = useState(null)
+  const [, setStats] = useState(null)
   useEffect(() => {
     const viewport = viewportRef.current
     const preview = new AvatarPreview(world, viewport)

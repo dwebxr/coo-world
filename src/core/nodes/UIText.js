@@ -153,7 +153,7 @@ export class UIText extends Node {
     this.ui?.redraw()
   }
 
-  commit(didMove) {
+  commit(_didMove) {
     // ...
   }
 
@@ -193,7 +193,7 @@ export class UIText extends Node {
   }
 
   measureTextFunc() {
-    return (width, widthMode, height, heightMode) => {
+    return (width, widthMode, _height, _heightMode) => {
       // asked for at each measure, not once at mount: a browser out of canvas memory gives no context (UI.js), and a
       // text measured without one takes no room until there is one
       const ctx = getOffscreenContext()
@@ -210,7 +210,6 @@ export class UIText extends Node {
       let finalWidth = 0
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i]
-        const isFirst = i === 0
         const isLast = i === lines.length - 1
         const metrics = ctx.measureText(line)
         const ascent = metrics.actualBoundingBoxAscent

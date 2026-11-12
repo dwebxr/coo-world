@@ -156,5 +156,9 @@ export class ClientStats extends System {
 
   destroy() {
     this.toggle(false)
+    // (what start() listens to: a pref change or `ready` after this would put the panel back)
+    this.world.prefs?.off('change', this.onPrefsChange)
+    this.world.off('ui', this.onUIState)
+    this.world.off('ready', this.onReady)
   }
 }

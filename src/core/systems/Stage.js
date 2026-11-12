@@ -96,7 +96,7 @@ export class Stage extends System {
     this.scene.add(this.world.rig)
   }
 
-  update(delta) {
+  update(_delta) {
     this.models.forEach(model => model.clean())
   }
 
@@ -499,7 +499,6 @@ class Model {
     this.iMesh.matrixAutoUpdate = false
     this.iMesh.matrixWorldAutoUpdate = false
     this.iMesh.frustumCulled = false
-    this.iMesh.getEntity = this.getEntity.bind(this)
     this.items = [] // { idx, node, matrix, color }
     this.dirty = true
   }
@@ -674,11 +673,6 @@ class Model {
     this.stage.models.delete(this.id)
     // its material is now trimmable, so a burst of variants that all expired comes back under the limit
     this.stage.trimLinkedMaterials()
-  }
-
-  getEntity(instanceId) {
-    console.warn('TODO: remove if you dont ever see this')
-    return this.items[instanceId]?.node.ctx.entity
   }
 
   getTriangles() {

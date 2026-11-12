@@ -3,10 +3,9 @@ import { vec3ToPxPos, quatToPxRot } from '../extras/physxConvert.js'
 import { isBoolean, isNumber, isPrimitive } from '../extras/scriptPrimitives.js'
 
 import { Node, getNodeRef } from './Node'
-import { Layers } from '../extras/Layers'
 import { bindRotations } from '../extras/bindRotations'
 import { scriptView, sealAll } from '../extras/sealMath.js'
-import { DEG2RAD, RAD2DEG } from '../extras/general'
+import { DEG2RAD } from '../extras/general'
 import { finiteNumber, normalizeQuat, positionOk, warnPhysicsOnce } from '../extras/physicsValidate.js'
 
 const _q1 = new THREE.Quaternion()

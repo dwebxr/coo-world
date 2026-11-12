@@ -1,4 +1,3 @@
-import { num } from '../utils'
 import { System } from './System'
 
 const TICK_RATE = 1 / 30
@@ -21,10 +20,12 @@ export class NodeClient extends System {
   }
 
   tick = () => {
-    if (this.world.fatalError) return
+    if (this.world.fatalError || this.destroyed) return
     const time = performance.now()
     this.world.tick(time)
-    if (!this.world.fatalError) this.timerId = setTimeout(this.tick, TICK_RATE * 1000)
+    // (a world destroyed from inside its own tick used to be scheduled again here, after destroy() had cleared the
+    // timer: it went on ticking with its physics released)
+    if (!this.world.fatalError && !this.destroyed) this.timerId = setTimeout(this.tick, TICK_RATE * 1000)
   }
 
   stopForFatal() {
@@ -32,6 +33,7 @@ export class NodeClient extends System {
   }
 
   destroy() {
+    this.destroyed = true
     clearTimeout(this.timerId)
   }
 }

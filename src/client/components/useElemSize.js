@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 export function useElemSize() {
   const elemRef = useRef(null)
@@ -9,7 +9,7 @@ export function useElemSize() {
     if (!elem) return
     setWidth(elem.offsetWidth)
     setHeight(elem.offsetHeight)
-    const observer = new ResizeObserver(entries => {
+    const observer = new ResizeObserver(_entries => {
       setWidth(elem.offsetWidth)
       setHeight(elem.offsetHeight)
     })

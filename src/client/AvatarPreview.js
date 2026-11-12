@@ -1,5 +1,4 @@
 import * as THREE from 'three'
-import { isString } from 'lodash-es'
 import { Emotes } from '../core/extras/playerEmotes'
 import { setDebugGlobal } from '../core/extras/debugGlobals'
 
@@ -8,25 +7,8 @@ const PLANE_ASPECT_RATIO = 16 / 9
 const HDR_URL = '/day2.hdr'
 
 const DEG2RAD = THREE.MathUtils.DEG2RAD
-const RAD2DEG = THREE.MathUtils.RAD2DEG
 
 const v1 = new THREE.Vector3()
-const v2 = new THREE.Vector3()
-const v3 = new THREE.Vector3()
-
-const materialSlots = [
-  'alphaMap',
-  'aoMap',
-  'bumpMap',
-  'displacementMap',
-  'emissiveMap',
-  'envMap',
-  'lightMap',
-  'map',
-  'metalnessMap',
-  'normalMap',
-  'roughnessMap',
-]
 
 let renderer = null // re-use one renderer for this
 function getRenderer() {

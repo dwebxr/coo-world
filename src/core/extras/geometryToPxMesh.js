@@ -7,7 +7,13 @@ const cache = new Map() // id -> { id, pmesh, refs, maxAbs, size, holders }
 // The production world's largest mesh has ~10k triangles. A mesh's size is its vertices plus triangles (a convex
 // mesh's input points count as vertices); each mesh, each holder (an app) and the process have a budget, so one app
 // cannot take the whole heap and leave later apps' floors without colliders.
-export const MESH_LIMITS = { vertices: 200_000, triangles: 200_000, convexPoints: 50_000, holder: 400_000, process: 2_000_000 }
+export const MESH_LIMITS = {
+  vertices: 200_000,
+  triangles: 200_000,
+  convexPoints: 50_000,
+  holder: 400_000,
+  process: 2_000_000,
+}
 let processSize = 0
 const holderSizes = new Map() // holder -> size of the distinct cached meshes it holds
 
@@ -58,6 +64,8 @@ export function geometryToPxMesh(world, geometry, convex, entity) {
     warnOnce('[physics] mesh has no geometry')
     return null
   }
+  // (a world whose physics was destroyed cooks nothing: the cooking parameters are freed with it)
+  if (world.physics?.destroyed) return null
   const id = `${geometry.uuid}_${convex ? 'convex' : 'triangles'}`
   const holder = entity ?? world
 

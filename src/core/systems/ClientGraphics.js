@@ -8,19 +8,11 @@ import {
   SMAAEffect,
   ToneMappingEffect,
   ToneMappingMode,
-  SelectiveBloomEffect,
   BlendFunction,
-  Selection,
   BloomEffect,
-  KernelSize,
-  DepthPass,
-  Pass,
-  DepthEffect,
 } from 'postprocessing'
 
 import { System } from './System'
-
-const v1 = new THREE.Vector3()
 
 let renderer
 function getRenderer() {
@@ -67,7 +59,8 @@ export class ClientGraphics extends System {
     THREE.Texture.DEFAULT_ANISOTROPY = this.maxAnisotropy
     this.usePostprocessing = this.world.prefs.postprocessing
     const context = this.renderer.getContext()
-    const maxMultisampling = context.getParameter(context.MAX_SAMPLES)
+    // the result is not used (see the multisampling option below); the call is kept as it was
+    context.getParameter(context.MAX_SAMPLES)
     this.composer = new EffectComposer(this.renderer, {
       frameBufferType: THREE.HalfFloatType,
       // multisampling: Math.min(8, maxMultisampling),
@@ -213,11 +206,6 @@ export class ClientGraphics extends System {
       // Get view information which contains projection matrices
       const views = frame.getViewerPose(referenceSpace)?.views
       if (views && views.length > 0) {
-        // Use the first view's projection matrix
-        const projectionMatrix = views[0].projectionMatrix
-        // Extract the relevant factors from the projection matrix
-        // This is a simplified approach
-        const fovFactor = projectionMatrix[5] // Approximation of FOV scale
         // You might need to consider the XR display's physical properties
         // which can be accessed via session.renderState
         const renderState = this.xrSession.renderState
@@ -249,8 +237,15 @@ export class ClientGraphics extends System {
     this.effectPass.recompile()
   }
 
+  // The listeners on the world, the prefs and the settings stayed (and with them this system, on emitters that may
+  // outlive it). They are taken off; the observer and the canvas go once, and only if init() made them.
   destroy() {
-    this.resizer.disconnect()
-    this.viewport.removeChild(this.renderer.domElement)
+    this.world.prefs?.off('change', this.onPrefsChange)
+    this.world.off('xrSession', this.onXRSession)
+    this.world.settings?.off('change', this.onSettingsChange)
+    this.resizer?.disconnect()
+    this.resizer = null
+    const canvas = this.renderer?.domElement
+    if (canvas && canvas.parentNode === this.viewport) this.viewport.removeChild(canvas)
   }
 }

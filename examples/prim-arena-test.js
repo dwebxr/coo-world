@@ -261,7 +261,7 @@ for (let i = 0; i < 4; i++) {
 }
 
 // Animate crystals
-app.on('update', dt => {
+app.on('update', _dt => {
   crystals.forEach((crystal, i) => {
     crystal.position.y = 1 + Math.sin(Date.now() * 0.001 + i) * 0.3
     crystal.emissiveIntensity = 2 + Math.sin(Date.now() * 0.002 + i * 0.5) * 1

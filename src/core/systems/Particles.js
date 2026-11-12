@@ -77,6 +77,14 @@ export class Particles extends System {
   onXRSession = session => {
     this.uOrientationFull.value = session ? this.world.xr.camera.quaternion : this.world.rig.quaternion
   }
+
+  // What start() listens to, and this system's handlers on the worker. The worker is the page's one and stays: a
+  // system made after this one sets its own handlers on it, and those are left alone.
+  destroy() {
+    this.world.off('xrSession', this.onXRSession)
+    if (this.worker?.onmessage === this.onMessage) this.worker.onmessage = null
+    if (this.worker?.onerror === this.onError) this.worker.onerror = null
+  }
 }
 
 function createEmitter(world, system, node) {
@@ -272,7 +280,7 @@ function createEmitter(world, system, node) {
   mesh.matrixWorldAutoUpdate = false
   world.stage.scene.add(mesh)
 
-  let matrixWorld = node.matrixWorld
+  const matrixWorld = node.matrixWorld
 
   let pending = false
   let skippedDelta = 0

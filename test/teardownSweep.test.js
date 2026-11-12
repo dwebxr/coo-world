@@ -641,12 +641,12 @@ const ARGUMENTS = [
   ['player.damage: an amount with a valueOf', `kept.player.damage({ valueOf() { retire(); return 10 } })`, NOT_READ],
   ['player.heal: an amount with a valueOf', `kept.player.heal({ valueOf() { retire(); return 10 } })`, NOT_READ],
   [
-    "player.teleport: a position whose x is a getter (a client moves only its own player)",
+    'player.teleport: a position whose x is a getter (a client moves only its own player)',
     `kept.player.teleport(${getterVector})`,
     clientOnlyNotRead,
   ],
   [
-    "player.push: a force whose x is a getter (a client pushes only its own player)",
+    'player.push: a force whose x is a getter (a client pushes only its own player)',
     `kept.player.push(${getterVector})`,
     clientOnlyNotRead,
   ],
@@ -717,7 +717,11 @@ const EFFECTS = [
   ['player.push', `kept.player.push(${getterVector})`, `kept.player.push(new Vector3(1, 0, 0))`],
   // (the amount is not converted at all: an object changes nothing, and nothing can end the run in the call)
   ['player.damage', `kept.player.damage({ valueOf() { retire(); return 10 } })`, `kept.player.damage(10)`],
-  ['player.heal', `kept.player.heal({ valueOf() { retire(); return 10 } })`, `kept.player.damage(20); kept.player.heal(10)`],
+  [
+    'player.heal',
+    `kept.player.heal({ valueOf() { retire(); return 10 } })`,
+    `kept.player.damage(20); kept.player.heal(10)`,
+  ],
 ]
 
 for (const [label, retiring, plain] of EFFECTS) {
@@ -734,7 +738,9 @@ for (const [label, retiring, plain] of EFFECTS) {
       const alive = () => made.run === made.app.deadHook && !made.app.destroyed
       world.storage = { get() {}, set: (key, value) => landed.push(['storage', key, JSON.stringify(value), alive()]) }
       world.network.send = (name, data) => (landed.push(['send', name, JSON.stringify(data), alive()]), true)
-      world.network.sendTo = (id, name, data) => (landed.push(['sendTo', id, name, JSON.stringify(data), alive()]), true)
+      world.network.sendTo = (id, name, data) => (
+        landed.push(['sendTo', id, name, JSON.stringify(data), alive()]), true
+      )
       const app = sweep.addApp(world, `${PRELUDE}\napp.state.go = () => { ${code} }`)
       made.app = app
       await sweep.tick()
@@ -763,7 +769,10 @@ for (const [label, retiring, plain] of EFFECTS) {
       } else {
         assert.equal(error, null, error?.stack)
         assert.ok(landed.length > 0 || player.data.health !== health, 'the plain call lands')
-        assert.ok(landed.every(entry => entry.at(-1) === true), 'while the run is alive')
+        assert.ok(
+          landed.every(entry => entry.at(-1) === true),
+          'while the run is alive'
+        )
       }
       app.destroy()
     }

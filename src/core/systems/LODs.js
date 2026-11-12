@@ -27,7 +27,7 @@ export class LODs extends System {
     this.nodes.splice(idx, 1)
   }
 
-  update(delta) {
+  update(_delta) {
     // check if lods need to switch (batched over multiple frames)
     const size = Math.min(this.nodes.length, BATCH_SIZE)
     for (let i = 0; i < size; i++) {

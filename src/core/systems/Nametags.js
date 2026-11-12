@@ -1,7 +1,6 @@
 import { fillRoundRect } from '../extras/roundRect'
 import * as THREE from '../extras/three'
 import CustomShaderMaterial from '../libs/three-custom-shader-material'
-import { uuid } from '../utils'
 import { System } from './System'
 
 /**
@@ -16,7 +15,6 @@ import { System } from './System'
 const RES = 2
 const NAMETAG_WIDTH = 200 * RES
 const NAMETAG_HEIGHT = 35 * RES
-const NAMETAG_BORDER_RADIUS = 10 * RES
 
 const NAME_FONT_SIZE = 16 * RES
 const NAME_OUTLINE_SIZE = 4 * RES
@@ -33,8 +31,6 @@ const MAX_INSTANCES = PER_ROW * PER_COLUMN
 
 const defaultQuaternion = new THREE.Quaternion(0, 0, 0, 1)
 const defaultScale = new THREE.Vector3(1, 1, 1)
-
-const v1 = new THREE.Vector3()
 
 export class Nametags extends System {
   constructor(world) {
@@ -370,5 +366,10 @@ export class Nametags extends System {
 
   onXRSession = session => {
     this.uniforms.uXR.value = session ? 1 : 0
+  }
+
+  // (what start() listens to; there was no destroy)
+  destroy() {
+    this.world.off('xrSession', this.onXRSession)
   }
 }

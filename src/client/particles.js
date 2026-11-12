@@ -16,10 +16,8 @@ const v1 = new Vector3()
 const v2 = new Vector3()
 const v3 = new Vector3()
 const v4 = new Vector3()
-const v5 = new Vector3()
 const q1 = new Quaternion()
 const q2 = new Quaternion()
-const q3 = new Quaternion()
 const m1 = new Matrix4()
 const color1 = new Color()
 
@@ -65,16 +63,15 @@ function createEmitter(config) {
   config.bursts.sort((a, b) => a.time - b.time)
 
   let elapsed = 0
-  let duration = config.duration
+  const duration = config.duration
   let newParticlesByTime = 0
-  let newParticlesByDist = 0
   let emitting = config.emitting
   let bursts = config.bursts.slice()
   let ended = false
-  let rateOverDistance = config.rateOverDistance
+  const rateOverDistance = config.rateOverDistance
   let distanceRemainder = 0
   let lastWorldPos = null
-  let moveDir = new Vector3()
+  const moveDir = new Vector3()
 
   const particles = []
   // the starts made in the current step and where its search for a free particle is (emit)
@@ -646,7 +643,6 @@ function toRGB(color) {
 
 function createShape(config) {
   const [type, ...args] = config
-  const v = new Vector3()
   const normal = new Vector3()
 
   switch (type) {
@@ -703,8 +699,8 @@ function createShape(config) {
     case 'cone':
       // Cone shape - position on base circle, direction based on cone angle
       return (pos, dir) => {
-        let [baseRadius, thickness, angleFromCenter] = args
-        angleFromCenter *= DEG2RAD
+        const [baseRadius, thickness, angleDegrees] = args
+        const angleFromCenter = angleDegrees * DEG2RAD
 
         // Random angle around the circle
         const angle = Math.random() * Math.PI * 2

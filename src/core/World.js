@@ -338,9 +338,18 @@ export class World extends EventEmitter {
     this.apps.inject(runtime)
   }
 
+  // Every system is destroyed, also after one of them throws (the later ones, physics among them, were left as they
+  // were); the first failure is thrown afterwards, and the others are logged.
   destroy() {
+    let failure
     for (const system of this.systems) {
-      system.destroy()
+      try {
+        system.destroy()
+      } catch (err) {
+        if (failure) console.error(`[world] ${system.constructor?.name}.destroy() failed:`, err)
+        else failure = { err }
+      }
     }
+    if (failure) throw failure.err
   }
 }

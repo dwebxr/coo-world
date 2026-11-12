@@ -29,6 +29,8 @@ const _overlapHit = {
 const overlapHitPool = []
 const overlapHits = []
 
+const DESTROYED = '[physics] the world was destroyed'
+
 /**
  * Physics System
  *
@@ -48,6 +50,8 @@ export class Physics extends System {
 
   async init() {
     const info = await loadPhysX()
+    // destroyed while PhysX was loading (nothing is allocated before this point): nothing is made for it
+    if (this.destroyed) return
     this.version = info.version
     this.allocator = info.allocator
     this.errorCb = info.errorCb
@@ -66,8 +70,9 @@ export class Physics extends System {
     this.callbackWarnings = new WeakMap()
     this.registrations = new WeakMap()
 
-    const contactPoints = new PHYSX.PxArray_PxContactPairPoint(64)
-    const simulationEventCallback = new PHYSX.PxSimulationEventCallbackImpl()
+    // (kept on the system, like everything else init allocates in the wasm heap: destroy() frees them)
+    const contactPoints = (this.contactPoints = new PHYSX.PxArray_PxContactPairPoint(64))
+    const simulationEventCallback = (this.simulationEventCallback = new PHYSX.PxSimulationEventCallbackImpl())
     simulationEventCallback.onContact = this.containCallback('onContact', (pairHeader, pairs, count) => {
       pairHeader = PHYSX.wrapPointer(pairHeader, PHYSX.PxContactPairHeader)
       const handle0 = this.handles.get(pairHeader.get_actors(0)?.ptr)
@@ -141,9 +146,9 @@ export class Physics extends System {
     simulationEventCallback.onWake = () => {}
     simulationEventCallback.onSleep = () => {}
 
-    const sceneDesc = new PHYSX.PxSceneDesc(this.tolerances)
-    sceneDesc.gravity = new PHYSX.PxVec3(0, -9.81, 0)
-    sceneDesc.cpuDispatcher = PHYSX.DefaultCpuDispatcherCreate(0)
+    const sceneDesc = (this.sceneDesc = new PHYSX.PxSceneDesc(this.tolerances))
+    sceneDesc.gravity = this.sceneGravity = new PHYSX.PxVec3(0, -9.81, 0)
+    sceneDesc.cpuDispatcher = this.cpuDispatcher = PHYSX.DefaultCpuDispatcherCreate(0)
     sceneDesc.filterShader = PHYSX.DefaultFilterShader()
     sceneDesc.flags.raise(PHYSX.PxSceneFlagEnum.eENABLE_CCD, true)
     sceneDesc.flags.raise(PHYSX.PxSceneFlagEnum.eENABLE_ACTIVE_ACTORS, true)
@@ -177,13 +182,14 @@ export class Physics extends System {
     const desc = new PHYSX.PxSceneDesc(this.tolerances)
     const gravity = new PHYSX.PxVec3(0, -9.81, 0)
     desc.gravity = gravity
-    desc.cpuDispatcher = PHYSX.DefaultCpuDispatcherCreate(0)
+    desc.cpuDispatcher = this.probeDispatcher = PHYSX.DefaultCpuDispatcherCreate(0)
     desc.filterShader = PHYSX.DefaultFilterShader()
     this.probeScene = this.physics.createScene(desc)
     PHYSX.destroy(desc)
     PHYSX.destroy(gravity)
     const pose = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
     const flags = new PHYSX.PxShapeFlags(PHYSX.PxShapeFlagEnum.eSIMULATION_SHAPE)
+    this.probeActors = []
     for (const dynamic of [false, true]) {
       pose.p.y = dynamic ? 2 : 0
       const geometry = dynamic ? new PHYSX.PxSphereGeometry(0.25) : new PHYSX.PxBoxGeometry(1, 0.25, 1)
@@ -191,6 +197,7 @@ export class Physics extends System {
       const shape = this.physics.createShape(geometry, this.defaultMaterial, true, flags)
       actor.attachShape(shape)
       this.probeScene.addActor(actor)
+      this.probeActors.push(actor)
       shape.release()
       PHYSX.destroy(geometry)
     }
@@ -211,6 +218,7 @@ export class Physics extends System {
   }
 
   checkHealth() {
+    if (this.destroyed) return
     if (this.world.fatalError || (!this.needsProbe && getPhysicsTrapCount() < 64)) return
     if (this.lastProbeTick === this.probeTick) return
     this.lastProbeTick = this.probeTick
@@ -230,8 +238,8 @@ export class Physics extends System {
   setupControllerManager() {
     this.controllerManager = PHYSX.PxTopLevelFunctions.prototype.CreateControllerManager(this.scene) // prettier-ignore
     this.controllerFilters = new PHYSX.PxControllerFilters()
-    this.controllerFilters.mFilterData = new PHYSX.PxFilterData(Layers.player.group, Layers.player.mask, 0, 0) // prettier-ignore
-    const filterCallback = new PHYSX.PxQueryFilterCallbackImpl()
+    this.controllerFilters.mFilterData = this.controllerFilterData = new PHYSX.PxFilterData(Layers.player.group, Layers.player.mask, 0, 0) // prettier-ignore
+    const filterCallback = (this.queryFilterCallback = new PHYSX.PxQueryFilterCallbackImpl())
     filterCallback.simplePreFilter = this.containCallback(
       'simplePreFilter',
       (filterDataPtr, shapePtr) => {
@@ -247,7 +255,7 @@ export class Physics extends System {
     )
     filterCallback.simplePostFilter = () => PHYSX.PxQueryHitType.eNONE
     this.controllerFilters.mFilterCallback = filterCallback
-    const cctFilterCallback = new PHYSX.PxControllerFilterCallbackImpl()
+    const cctFilterCallback = (this.cctFilterCallback = new PHYSX.PxControllerFilterCallbackImpl())
     cctFilterCallback.filter = this.containCallback('filter', () => true, true)
     this.controllerFilters.mCCTFilterCallback = cctFilterCallback
   }
@@ -257,6 +265,7 @@ export class Physics extends System {
   }
 
   addActor(actor, handle) {
+    if (this.destroyed) throw new Error(DESTROYED)
     handle.actor = actor
     handle.contactedHandles = new Set()
     handle.triggeredHandles = new Set()
@@ -293,7 +302,8 @@ export class Physics extends System {
     this.handles.set(actor.ptr, handle)
     return {
       move: matrix => {
-        if (this.ignoreSetGlobalPose) {
+        // (after destroy the scratch transform is freed: a body kept in the scene is not moved any more)
+        if (this.ignoreSetGlobalPose || this.destroyed) {
           return
         }
         if (!matrixToPxTransform(matrix, this.transform)) return
@@ -311,6 +321,7 @@ export class Physics extends System {
         actor.setGlobalPose(this.transform)
       },
       snap: pose => {
+        if (this.destroyed) return
         actor.setGlobalPose(pose)
         pxToVec3(handle.interpolation.prev.position, pose.p)
         pxToQuat(handle.interpolation.prev.quaternion, pose.q)
@@ -418,7 +429,8 @@ export class Physics extends System {
   dispatchCallbacks(callbacks) {
     for (const { recipients, contacts } of callbacks) {
       for (const recipient of recipients) {
-        if (this.world.fatalError) return
+        // (a callback can destroy the world: what was queued after it is not dispatched)
+        if (this.world.fatalError || this.destroyed) return
         if (!recipient) continue
         const { registration, entity, run, fn, method, tag, playerId, isLocalPlayer } = recipient
         const { handle, ptr, destroyed } = registration
@@ -470,6 +482,7 @@ export class Physics extends System {
   }
 
   preFixedUpdate(willFixedUpdate) {
+    if (this.destroyed) return
     if (willFixedUpdate) {
       // if physics will step, clear active actors so we can repopulate.
       this.active.clear()
@@ -477,10 +490,13 @@ export class Physics extends System {
   }
 
   postFixedUpdate(delta) {
-    if (this.world.fatalError) return
+    if (this.world.fatalError || this.destroyed) return
     const pending = this.pendingCallbacks
     this.pendingCallbacks = []
     this.dispatchCallbacks(pending)
+    // a callback can destroy the world (World.destroy releases this system, and the scene with it when nothing is
+    // left in it): after each dispatch the step ends there, before the next native call
+    if (this.destroyed) return
     this.checkHealth()
     if (this.world.fatalError) return
     let phase = 'simulate'
@@ -502,6 +518,7 @@ export class Physics extends System {
     if (this.world.fatalError) return
     this.processContactCallbacks()
     this.processTriggerCallbacks()
+    if (this.destroyed) return
     this.checkHealth()
     if (this.world.fatalError) return
     const activeActors = PHYSX.SupportFunctions.prototype.PxScene_getActiveActors(this.scene)
@@ -526,7 +543,7 @@ export class Physics extends System {
   }
 
   preUpdate(alpha) {
-    if (this.world.fatalError) return
+    if (this.world.fatalError || this.destroyed) return
     this.world.stage.clean()
     let failed
     for (const handle of this.active) {
@@ -579,6 +596,7 @@ export class Physics extends System {
   }
 
   raycast(origin, direction, maxDistance = Infinity, layerMask) {
+    if (this.destroyed) return null
     if (!vec3ToPx(origin, this._pv1) || !vec3ToPx(direction, this._pv2)) return null
     // this.queryFilterData.flags |= PHYSX.PxQueryFlagEnum.ePREFILTER | PHYSX.PxQueryFlagEnum.ePOSTFILTER // prettier-ignore
     this.queryFilterData.data.word0 = layerMask // what to hit, eg Layers.player.group | Layers.environment.group
@@ -606,10 +624,10 @@ export class Physics extends System {
       _raycastHit.distance = hit.distance
       return _raycastHit
     }
-    // TODO: this.raycastResult.destroy() on this.destroy()
   }
 
   sweep(geometry, origin, direction, maxDistance, layerMask) {
+    if (this.destroyed) return null
     if (!vec3ToPx(origin, this.sweepPose.p) || !vec3ToPx(direction, this._pv2)) return null
     this.queryFilterData.data.word0 = layerMask
     this.queryFilterData.data.word1 = 0
@@ -637,7 +655,6 @@ export class Physics extends System {
       _sweepHit.distance = hit.distance
       return _sweepHit
     }
-    // TODO: this.sweepResult.destroy() on this.destroy()
   }
 
   // overlap(geometry, origin, layerMask) {
@@ -654,6 +671,7 @@ export class Physics extends System {
   // }
 
   overlapSphere(radius, origin, layerMask) {
+    if (this.destroyed) return []
     if (!vec3ToPx(origin, this.overlapPose.p)) return []
     const geometry = this.overlapSphereGeometry
     geometry.set_radius(Math.fround(radius))
@@ -674,6 +692,7 @@ export class Physics extends System {
   }
 
   getMaterial(staticFriction, dynamicFriction, restitution) {
+    if (this.destroyed) throw new Error(DESTROYED)
     const id = `${staticFriction}|${dynamicFriction}|${restitution}`
     const cached = this.materials.get(id)
     if (cached) return cached
@@ -689,6 +708,76 @@ export class Physics extends System {
     }
     this.materials.set(id, material)
     return material
+  }
+
+  // Releases what init() allocated in the PhysX heap. Nothing did: a client that makes a new world for each
+  // connection (agent.mjs) left a whole scene, with its buffers, behind for every world it had been in.
+  //
+  // World.destroy() calls this after Entities.destroy(), which unmounts the apps and the players, so the scene is
+  // normally empty by now. When something is still registered in it (a handle nobody destroyed), the scene and its
+  // controller manager are left where they are, as before, and it is said once: a controller that is still held is
+  // freed with its manager, and whoever holds it would then release freed memory.
+  //
+  // Not released: the PxPhysics object. CreatePhysics hands every world of the process the same one (the foundation
+  // in loadPhysX is made once), and the cooked meshes cached for the process (geometryToPxMesh) belong to it.
+  //
+  // Afterwards the system answers without touching the heap: a step, an interpolation (preUpdate) or a health check
+  // does nothing (callbacks that were queued are not dispatched), a query finds nothing, and addActor and
+  // getMaterial throw (a node that mounts in a destroyed world fails there, in JavaScript). When a contact or
+  // trigger callback destroys the world, the step under way ends after that callback, before its next native call.
+  // A second call does nothing, a system whose init() never ran, or stopped half way, releases what it has, and an
+  // init() that still waits for PhysX to load when this is called makes nothing.
+  //
+  // A handle that is still registered (the kept scene above) can do one thing afterwards: be destroyed, which takes
+  // its actor out of the kept scene (whoever holds the actor then releases it). Its move() and snap() do nothing:
+  // move() used the scratch transform freed here, and the body is no longer placed by its node.
+  destroy() {
+    if (this.destroyed) return
+    this.destroyed = true
+    const free = key => {
+      if (this[key]) PHYSX.destroy(this[key])
+      this[key] = null
+    }
+    const release = key => {
+      this[key]?.release()
+      this[key] = null
+    }
+    if (this.handles?.size) {
+      console.warn(`[physics] destroyed with ${this.handles.size} actors still registered: its scene is kept`)
+    } else {
+      // the manager first: it holds the scene. Then what the scene was made with
+      release('controllerManager')
+      release('scene')
+      for (const key of ['cpuDispatcher', 'simulationEventCallback', 'contactPoints', 'sceneDesc', 'sceneGravity']) {
+        free(key)
+      }
+      for (const key of ['controllerFilters', 'controllerFilterData', 'queryFilterCallback', 'cctFilterCallback']) {
+        free(key)
+      }
+    }
+    for (const actor of this.probeActors || []) actor.release()
+    this.probeActors = null
+    release('probeScene')
+    free('probeDispatcher')
+    for (const key of [
+      'raycastResult',
+      'sweepPose',
+      'sweepResult',
+      'overlapPose',
+      'overlapResult',
+      'overlapSphereGeometry',
+      'queryFilterData',
+      '_pv1',
+      '_pv2',
+      'transform',
+    ]) {
+      free(key)
+    }
+    for (const material of this.materials?.values() || []) material.release()
+    this.materials?.clear()
+    release('defaultMaterial')
+    free('cookingParams')
+    free('tolerances')
   }
 }
 

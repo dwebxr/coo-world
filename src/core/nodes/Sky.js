@@ -41,7 +41,7 @@ export class Sky extends Node {
     this.handle = this.ctx.world.environment.addSky?.(this)
   }
 
-  commit(didMove) {
+  commit(_didMove) {
     if (this.needsRebuild) {
       this.handle?.destroy()
       this.handle = this.ctx.world.environment.addSky?.(this)

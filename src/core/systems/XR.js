@@ -1,5 +1,5 @@
 import { System } from './System'
-import * as THREE from '../extras/three'
+import '../extras/three'
 
 /**
  * XR System

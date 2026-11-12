@@ -10,6 +10,7 @@ import { uuid } from '../utils'
 import { ControlPriorities } from '../extras/ControlPriorities'
 import { guardTransform } from '../nodes/Node'
 import { importApp } from '../extras/appTools'
+import { fetchDroppedLink, LINK_TOO_LARGE } from '../extras/droppedLink'
 import { DEG2RAD, RAD2DEG } from '../extras/general'
 import { createNode } from '../extras/createNode'
 import { preflightPacket } from '../extras/clientPreflight'
@@ -23,7 +24,6 @@ const PROJECT_MIN_XR = 0.1
 const PROJECT_MAX = 50
 
 const v1 = new THREE.Vector3()
-const v2 = new THREE.Vector3()
 const q1 = new THREE.Quaternion()
 const e1 = new THREE.Euler()
 
@@ -307,7 +307,7 @@ export class ClientBuilder extends System {
       }
     }
     // gizmo local/world toggle
-    if (this.control.keyT.pressed & (this.mode === 'translate' || this.mode === 'rotate' || this.mode === 'scale')) {
+    if (this.control.keyT.pressed && (this.mode === 'translate' || this.mode === 'rotate' || this.mode === 'scale')) {
       this.localSpace = !this.localSpace
       this.gizmo.space = this.localSpace ? 'local' : 'world'
       this.updateActions()
@@ -822,7 +822,7 @@ export class ClientBuilder extends System {
         menu.state = 'closed'
         $root.deactivate()
       },
-      update: delta => {
+      update: _delta => {
         if (menu.state !== 'open') return
         // attach to hand
         $root.position.copy(menu.ray.position)
@@ -871,7 +871,7 @@ export class ClientBuilder extends System {
     this.xrMenu = menu
   }
 
-  updateXRLaser(delta) {
+  updateXRLaser(_delta) {
     if (!this.beam.xr) {
       if (this.xrLaser) this.xrLaser.visible = false
       return
@@ -1009,7 +1009,16 @@ export class ClientBuilder extends System {
     }
   }
 
-  onDrop = async e => {
+  // (the listener: nothing awaits it. Whatever a drop throws, a link that cannot be fetched or a .hyp file that is
+  // not one, was an unhandled rejection; it is reported and the player is told)
+  onDrop = e => {
+    this.drop(e).catch(err => {
+      console.error('[builder] a drop failed:', err)
+      this.world.emit('toast', 'That could not be added.')
+    })
+  }
+
+  async drop(e) {
     e.preventDefault()
     this.dropping = false
     // extract file from drop
@@ -1026,9 +1035,13 @@ export class ClientBuilder extends System {
         const url = text.trim().split('\n')[0] // Take first line in case of multiple
         if (url.startsWith('http')) {
           // Basic URL validation
-          const resp = await fetch(url)
-          const blob = await resp.blob()
-          file = new File([blob], new URL(url).pathname.split('/').pop(), { type: resp.headers.get('content-type') })
+          try {
+            file = await fetchDroppedLink(url, this.world.network.maxUploadSize * 1024 * 1024)
+          } catch (err) {
+            if (err?.code !== LINK_TOO_LARGE) throw err
+            this.tooLarge()
+            return
+          }
         }
       }
     } else if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
@@ -1046,15 +1059,7 @@ export class ClientBuilder extends System {
     // check file size
     const maxSize = this.world.network.maxUploadSize * 1024 * 1024
     if (file.size > maxSize) {
-      this.world.chat.add({
-        id: uuid(),
-        kind: 'system',
-        from: null,
-        fromId: null,
-        body: `File size too large (>${this.world.network.maxUploadSize}mb)`,
-        createdAt: moment().toISOString(),
-      })
-      console.error(`File too large. Maximum size is ${maxSize / (1024 * 1024)}MB`)
+      this.tooLarge()
       return
     }
     // builder rank required for non-vrm files
@@ -1074,16 +1079,31 @@ export class ClientBuilder extends System {
       this.toggle(true)
     }
     const transform = this.getSpawnTransform()
+    // (awaited, so that what they throw is the drop's failure: onDrop)
     if (ext === 'hyp') {
-      this.addApp(file, transform)
+      await this.addApp(file, transform)
     }
     if (ext === 'glb') {
-      this.addModel(file, transform)
+      await this.addModel(file, transform)
     }
     if (ext === 'vrm') {
       const canPlace = this.canBuild()
-      this.addAvatar(file, transform, canPlace)
+      await this.addAvatar(file, transform, canPlace)
     }
+  }
+
+  // what was dropped (a file, or the answer of a link) is larger than an upload may be
+  tooLarge() {
+    const maxSize = this.world.network.maxUploadSize
+    this.world.chat.add({
+      id: uuid(),
+      kind: 'system',
+      from: null,
+      fromId: null,
+      body: `File size too large (>${maxSize}mb)`,
+      createdAt: moment().toISOString(),
+    })
+    console.error(`File too large. Maximum size is ${maxSize}MB`)
   }
 
   async addApp(file, transform) {

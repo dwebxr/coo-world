@@ -347,7 +347,7 @@ for (const name of ['PlayerRemote', 'PlayerLocal']) {
   })
 
   test(`${name}: an avatar that throws while it is put in place counts as a failed load`, async () => {
-    const { p, loads } = player(m[name], 'https://example.com/b.vrm')
+    const { p } = player(m[name], 'https://example.com/b.vrm')
     const original = console.error
     const errors = []
     console.error = err => errors.push(err)

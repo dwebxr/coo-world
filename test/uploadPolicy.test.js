@@ -14,7 +14,8 @@ import {
 } from '../src/server/uploadPolicy.js'
 
 const hash = 'a'.repeat(64)
-const buf = (...parts) => Buffer.concat(parts.map(p => (typeof p === 'string' ? Buffer.from(p, 'latin1') : Buffer.from(p))))
+const buf = (...parts) =>
+  Buffer.concat(parts.map(p => (typeof p === 'string' ? Buffer.from(p, 'latin1') : Buffer.from(p))))
 
 test('parseBearer: extracts the token (scheme case-insensitive), null for anything else', () => {
   assert.equal(parseBearer('Bearer abc.def'), 'abc.def')
@@ -43,12 +44,42 @@ test('extensionOf: text after the last dot, lowercased; no dot means no extensio
 test('isAllowedExtension: the ten picker/loader types, exact match', () => {
   assert.equal(ALLOWED_EXTENSIONS.length, 10)
   for (const ext of ALLOWED_EXTENSIONS) assert.equal(isAllowedExtension(ext), true, ext)
-  const rejected = ['html', 'htm', 'svg', 'json', 'txt', 'gif', 'hyp', 'xml', 'wasm', '', 'GLB', 'glb ', ' glb', undefined, null, 1]
+  const rejected = [
+    'html',
+    'htm',
+    'svg',
+    'json',
+    'txt',
+    'gif',
+    'hyp',
+    'xml',
+    'wasm',
+    '',
+    'GLB',
+    'glb ',
+    ' glb',
+    undefined,
+    null,
+    1,
+  ]
   for (const ext of rejected) assert.equal(isAllowedExtension(ext), false, String(ext))
 })
 
 test('isAllowedExtension: separators and dot segments never pass', () => {
-  const hostile = ['glb/', '/glb', 'gl/b', 'glb\\', '\\glb', '..', '../glb', 'glb/..', '..\\glb', 'glb..', '.glb', 'js/../../x']
+  const hostile = [
+    'glb/',
+    '/glb',
+    'gl/b',
+    'glb\\',
+    '\\glb',
+    '..',
+    '../glb',
+    'glb/..',
+    '..\\glb',
+    'glb..',
+    '.glb',
+    'js/../../x',
+  ]
   for (const ext of hostile) assert.equal(isAllowedExtension(ext), false, ext)
   // the exact strings computeAssetFilename would derive from hostile upload names
   for (const name of ['x.glb/../../y', 'x.js\\..\\y', 'x./', 'x.', '..', '/etc/passwd']) {

@@ -23,8 +23,9 @@ export function CurvePane({ curve, title, xLabel, yLabel, yMin, yMax, onCommit, 
       yMax,
     })
     container.appendChild(manager.elem)
+    // (each run of the effect, a new curve, added a chart and none was taken out: they piled up in the pane)
     return () => {
-      // todo: destroy?
+      manager.elem.remove()
     }
   }, [curve])
   return (

@@ -136,7 +136,7 @@ export class AssetsS3 {
       const host = parts[0]
       const pathParts = parts.slice(1)
 
-      let config = {
+      const config = {
         accessKeyId,
         secretAccessKey,
         forcePathStyle: false,
@@ -183,7 +183,7 @@ export class AssetsS3 {
     }
   }
 
-  async init({ rootDir, worldDir }) {
+  async init({ rootDir }) {
     console.log('[assets] initializing')
     // Verify bucket access
     try {

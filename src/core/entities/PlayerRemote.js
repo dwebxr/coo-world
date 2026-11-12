@@ -141,7 +141,7 @@ export class PlayerRemote extends Entity {
     this.avatar?.instance?.setLocomotion(this.mode, this.axis, this.gaze)
   }
 
-  lateUpdate(delta) {
+  lateUpdate(_delta) {
     const anchor = this.getAnchorMatrix()
     if (anchor && readAnchorPose(anchor, anchorPosition, anchorQuaternion)) {
       this.position.snap()

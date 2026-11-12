@@ -1,8 +1,6 @@
-import * as THREE from '../extras/three'
+import '../extras/three'
 
 import { System } from './System'
-
-import { isNumber, isString } from 'lodash-es'
 
 export class NodeEnvironment extends System {
   constructor(world) {

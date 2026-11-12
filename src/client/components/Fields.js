@@ -11,6 +11,7 @@ import { Portal } from './Portal'
 import { CurvePane } from './CurvePane'
 import { downloadFile } from '../../core/extras/downloadFile'
 import { HexColorPicker } from 'react-colorful'
+import { readNumberField } from '../../core/extras/arithmetic'
 import { toNumber, toText } from '../../core/extras/scriptText'
 
 // Field values come from blueprint props (any JSON a builder stored, or a field's initial value) and labels from
@@ -635,23 +636,23 @@ export function FieldNumber({
   useEffect(() => {
     if (!focused && local !== value.toFixed(dp)) setLocal(value.toFixed(dp))
   }, [focused, value])
-  const setTo = str => {
-    // try parse math
-    let num
-    try {
-      num = (0, eval)(str)
-      if (typeof num !== 'number') {
-        throw new Error('input number parse fail')
-      }
-    } catch (err) {
-      console.error(err)
-      num = value // revert back to original
+  // whether the text is something the user typed and has not yet been read. Only such a text is read when the field
+  // is left: the text a field shows for its value is that value rounded to `dp` digits, and reading it back wrote
+  // the rounded value over a stored one with more digits (0.004 shown as "0.00" became 0) when the field was only
+  // clicked into, or after a step that was refused
+  const edited = useRef(false)
+  // a number (the arrow keys) or what was typed, read as arithmetic. Anything else changes nothing: the field shows
+  // the value it has again (it used to write that value back, rounded to the field's digits)
+  const setTo = input => {
+    edited.current = false
+    const read = readNumberField(input, { min, max })
+    if ('refused' in read) {
+      if (typeof input === 'string') console.warn(`[field] the entry is not taken: ${read.refused}`)
+      setLocal(value.toFixed(dp))
+      return
     }
-    if (num < min || num > max) {
-      num = value
-    }
-    setLocal(num.toFixed(dp))
-    onChange(+num.toFixed(dp))
+    setLocal(read.value.toFixed(dp))
+    onChange(+read.value.toFixed(dp))
   }
   return (
     <label
@@ -697,7 +698,10 @@ export function FieldNumber({
         <input
           type='text'
           value={local}
-          onChange={e => setLocal(e.target.value)}
+          onChange={e => {
+            edited.current = true
+            setLocal(e.target.value)
+          }}
           onKeyDown={e => {
             if (e.nativeEvent?.isComposing || e.keyCode === 229) return
             if (e.code === 'Enter') {
@@ -721,9 +725,12 @@ export function FieldNumber({
             setFocused(false)
             // if blank, set back to original
             if (local === '') {
+              edited.current = false
               setLocal(value.toFixed(dp))
               return
             }
+            // nothing was typed since the text was last read (see `edited`): nothing to write
+            if (!edited.current) return
             // otherwise run through pipeline
             setTo(local)
           }}
@@ -761,22 +768,21 @@ export function FieldVec3({
       if (localZ !== valueZ.toFixed(dp)) setLocalZ(valueZ.toFixed(dp))
     }
   }, [focused, valueX, valueY, valueZ])
-  const parseStr = str => {
-    // try parse math
-    let num
-    try {
-      num = (0, eval)(str)
-      if (typeof num !== 'number') {
-        throw new Error('input number parse fail')
-      }
-    } catch (err) {
-      console.error(err)
-      num = value // revert back to original
+  // whether the text of the axis that has the focus was typed and has not yet been read (see the number field's
+  // `edited`; one axis has the focus at a time, and leaving it reads or drops its text before the next gets it)
+  const edited = useRef(false)
+  // a number (the arrow keys) or what was typed, read as arithmetic. Anything else changes nothing: the axis shows
+  // the value it has again (it used to fall back to the whole vector, and the `toFixed` that followed threw)
+  const setAxis = (axis, input) => {
+    edited.current = false
+    const read = readNumberField(input, { min, max })
+    if ('refused' in read) {
+      if (typeof input === 'string') console.warn(`[field] the entry is not taken: ${read.refused}`)
+      axis.setLocal(axis.value.toFixed(dp))
+      return
     }
-    if (num < min || num > max) {
-      num = value
-    }
-    return num
+    axis.setLocal(read.value.toFixed(dp))
+    onChange(axis.build(+read.value.toFixed(dp)))
   }
   return (
     <label
@@ -831,7 +837,10 @@ export function FieldVec3({
             key={idx}
             type='text'
             value={axis.local}
-            onChange={e => axis.setLocal(e.target.value)}
+            onChange={e => {
+              edited.current = true
+              axis.setLocal(e.target.value)
+            }}
             onKeyDown={e => {
               if (e.nativeEvent?.isComposing || e.keyCode === 229) return
               if (e.code === 'Enter') {
@@ -840,15 +849,11 @@ export function FieldVec3({
               }
               if (e.code === 'ArrowUp') {
                 const amount = e.shiftKey ? bigStep : e.altKey ? smallStep : step
-                const num = parseStr(axis.value + amount)
-                axis.setLocal(num.toFixed(dp))
-                onChange(axis.build(+num.toFixed(dp)))
+                setAxis(axis, axis.value + amount)
               }
               if (e.code === 'ArrowDown') {
                 const amount = e.shiftKey ? bigStep : e.altKey ? smallStep : step
-                const num = parseStr(axis.value - amount)
-                axis.setLocal(num.toFixed(dp))
-                onChange(axis.build(+num.toFixed(dp)))
+                setAxis(axis, axis.value - amount)
               }
             }}
             onFocus={e => {
@@ -859,13 +864,14 @@ export function FieldVec3({
               setFocused(false)
               // if blank, set back to original
               if (axis.local === '') {
+                edited.current = false
                 axis.setLocal(axis.value.toFixed(dp))
                 return
               }
+              // nothing was typed since the text was last read: nothing to write
+              if (!edited.current) return
               // otherwise run through pipeline
-              const num = parseStr(axis.local)
-              axis.setLocal(num.toFixed(dp))
-              onChange(axis.build(+num.toFixed(dp)))
+              setAxis(axis, axis.local)
             }}
           />
         ))}

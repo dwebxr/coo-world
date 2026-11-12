@@ -15,8 +15,8 @@
 //
 // The server asks only about contracts in the world's EVM_HOLDING_CONTRACTS. Not set, that list is this
 // OpenPay contract on Polygon, so the defaults work; a world that sets the variable has to keep
-// 137:0x1c652241Cc820Ce897F0d8D9351Df9AD8a0916cc in it. With another Contract in the settings, or without
-// this one in the list, every answer is "unknown" and the sign says TRY AGAIN.
+// 137:0x1c652241Cc820Ce897F0d8D9351Df9AD8a0916cc in it. With a Contract in the settings that is not in the
+// list, every answer is "unknown" and the sign says TRY AGAIN.
 
 const OPENPAY_LICENSE_CONTRACT = '0x1c652241Cc820Ce897F0d8D9351Df9AD8a0916cc'
 // keccak256('openpay:license:h_dc83087ae6050a26540f963151de4c1f')

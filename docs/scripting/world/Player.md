@@ -140,9 +140,11 @@ address, so what it learns is whatever the listed contracts say:
   address). The server cannot tell. This is why the operator names the contracts: listing one means trusting
   its `balanceOf` / `ownerOf` not to encode the owner, now and later. A contract that can be upgraded, or that
   whoever asked for the listing controls, can start doing so after it was listed. The default list has one
-  contract, OpenPay's license contract: the project's notes of 2026-11-10
-  (goals/phase7-openpay-nft-door-design.md) record that, read on chain then, it was not an upgradeable proxy
-  and its `balanceOf` was the standard ERC-1155 one. Nothing checks that again.
+  contract, OpenPay's license contract. It has not been verified here: the project's notes of 2026-11-10
+  (goals/phase7-openpay-nft-door-design.md) record only that its EIP-1967 proxy slots were empty when read then
+  and that its published source has the standard ERC-1155 `balanceOf`; whether the deployed code is that source,
+  and whether it can change, was not established, and nothing checks either. With it listed, a script can read a
+  player's balance of any license id of that contract.
 - **A contract that is not listed.** Nothing: `known: false`, and no request is made.
 
 For world operators: `EVM_HOLDING_CONTRACTS` is the list of contracts you let every script in your world, by

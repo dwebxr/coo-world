@@ -228,8 +228,11 @@ function mountField(name, props) {
     inputs()[index].onChange({ target: { value: text } })
     inputs()[index].onBlur({})
   }
-  const press = (index, code, keys = {}) => inputs()[index].onKeyDown({ code, preventDefault() {}, ...keys })
-  return { inputs, type, press, shown: () => inputs().map(input => input.value) }
+  const leave = index => inputs()[index].onBlur({})
+  // (Enter leaves the field: the handler blurs its target)
+  const press = (index, code, keys = {}) =>
+    inputs()[index].onKeyDown({ code, preventDefault() {}, target: { blur: () => leave(index) }, ...keys })
+  return { inputs, type, press, leave, shown: () => inputs().map(input => input.value) }
 }
 
 // what the fields say on the console while `fn` runs (they warn when a typed entry is not taken)
@@ -267,6 +270,25 @@ test('number field: what is typed is computed; an entry that is not taken change
   assert.deepEqual(edge.shown(), ['99.5'])
   assert.deepEqual(changes, [2.5, 6, 3])
   assert.equal(said.length, 2)
+  // Leaving a field whose text is what it shows for its value writes nothing: untouched, after a refused step, and
+  // after a refused entry. (Reading that text back wrote the rounded value: 0.004 shown as "0.00" became 0.)
+  const fine = []
+  const small = mountField('FieldNumber', { value: 0.004, dp: 2, min: 0, max: 10, onChange: v => fine.push(v) })
+  assert.deepEqual(small.shown(), ['0.00'])
+  small.leave(0)
+  small.press(0, 'ArrowDown')
+  small.leave(0)
+  small.press(0, 'ArrowDown', { shiftKey: true })
+  small.press(0, 'Enter')
+  small.leave(0)
+  small.type(0, 'oops')
+  small.leave(0)
+  assert.deepEqual(fine, [])
+  assert.deepEqual(small.shown(), ['0.00'])
+  // (typing the number that is shown is an entry like any other text that differs from it)
+  small.type(0, '0.0')
+  small.type(0, '0.01')
+  assert.deepEqual(fine, [0, 0.01])
 })
 
 test('vector field: an axis whose entry is not taken keeps its value (it threw: the whole vector was put there)', t => {
@@ -303,9 +325,15 @@ test('vector field: an axis whose entry is not taken keeps its value (it threw: 
     onChange: v => fine.push(v),
   })
   assert.deepEqual(small.shown(), ['0.0', '-10.0', '10.0'])
+  small.leave(0)
   small.type(0, 'oops')
+  small.leave(0)
   small.press(1, 'ArrowDown')
+  small.leave(1)
+  small.press(2, 'ArrowUp', { altKey: true })
   small.press(2, 'ArrowUp')
+  small.press(2, 'Enter')
+  small.leave(2)
   assert.deepEqual(small.shown(), ['0.0', '-10.0', '10.0'])
   assert.deepEqual(fine, [])
   assert.equal(said.length, 3, 'one more line, for what was typed; none for the two steps')

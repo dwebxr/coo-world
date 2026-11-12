@@ -720,6 +720,10 @@ export function FieldNumber({
               setLocal(value.toFixed(dp))
               return
             }
+            // the text is what the field shows for the value it has (nothing was typed, or a step or an entry was
+            // refused and the text put back): nothing to write. Reading it would write the value rounded to the
+            // digits shown, in place of a stored one with more
+            if (local === value.toFixed(dp)) return
             // otherwise run through pipeline
             setTo(local)
           }}
@@ -849,6 +853,8 @@ export function FieldVec3({
                 axis.setLocal(axis.value.toFixed(dp))
                 return
               }
+              // the text is what the axis shows for the value it has: nothing to write (see the number field)
+              if (axis.local === axis.value.toFixed(dp)) return
               // otherwise run through pipeline
               setAxis(axis, axis.local)
             }}

@@ -273,6 +273,62 @@ test('LOD: a child taken out is no level any more and is not mounted again', () 
     assert.equal(far.mounted, false)
   }))
 
+test('LOD: a node inserted again has the new distance only, and a child added again keeps its level', () =>
+  runProbe(bundle, ({ THREE, Node, LOD }) => {
+    const world = { camera: new THREE.Object3D(), stage: { dirtyNodes: new Set() } }
+    const lod = new LOD({ scaleAware: false })
+    const near = new Node({ id: 'near' })
+    const far = new Node({ id: 'far' })
+    lod.insert(near, 10)
+    lod.insert(far, 100)
+    lod.activate({ world })
+    const at = distance => {
+      world.camera.matrixWorld.makeTranslation(distance, 0, 0)
+      lod.check()
+      lod.check()
+      return [near, far].filter(node => node.mounted).map(node => node.id)
+    }
+    const levels = owner => owner.lods.map(level => [level.node.id, level.maxDistance])
+    assert.deepEqual(at(0), ['near'])
+    // inserted again, while it shows, with another distance (was: no level at all, and never shown again)
+    lod.insert(near, 20)
+    assert.deepEqual(levels(lod), [
+      ['near', 20],
+      ['far', 100],
+    ])
+    assert.equal(near.parent, lod)
+    assert.deepEqual(at(15), ['near'])
+    assert.deepEqual(at(50), ['far'])
+    assert.deepEqual(at(0), ['near'])
+    // the same distance again is still one level
+    lod.insert(near, 20)
+    assert.equal(lod.lods.length, 2)
+    assert.deepEqual(at(0), ['near'])
+    // added again with add (Node.add takes it out of this LOD and puts it back): the level that is off and the one that
+    // shows keep their levels, and the LOD still switches them
+    lod.add(far)
+    lod.add(near)
+    assert.deepEqual(levels(lod), [
+      ['near', 20],
+      ['far', 100],
+    ])
+    assert.deepEqual(at(0), ['near'])
+    assert.deepEqual(at(50), ['far'])
+    assert.deepEqual(at(0), ['near'])
+    // inserted into another LOD: a level of that one only
+    const other = new LOD({ scaleAware: false })
+    other.insert(near, 30)
+    assert.equal(near.parent, other)
+    assert.deepEqual(levels(lod), [['far', 100]])
+    assert.deepEqual(levels(other), [['near', 30]])
+    assert.deepEqual(at(0), ['far'])
+    // a node that cannot be added (the LOD's own parent) is no level of it
+    const holder = new Node({ id: 'holder' })
+    holder.add(other)
+    assert.throws(() => other.insert(holder, 5), /cannot add a node to itself or to one of its descendants/)
+    assert.deepEqual(levels(other), [['near', 30]])
+  }))
+
 test('SkinnedMesh: remount, shadows, bone names and the skeleton of an unmounted copy', () =>
   runProbe(bundle, ({ THREE, SkinnedMesh }) => {
     const root = new THREE.Group()
@@ -433,6 +489,72 @@ test('Avatar: after its src is set to null a remount makes no avatar', () =>
     own.unmount()
     await own.mount()
     assert.deepEqual(made.slice(3), ['+own', '-own', '+own'])
+  }))
+
+test('Avatar: a load still on its way when the src changes makes no avatar and calls no onLoad', () =>
+  runProbe(bundle, async ({ Avatar }) => {
+    const made = []
+    const loaded = []
+    const resolvers = new Map()
+    const factoryOf = name => ({
+      create() {
+        made.push(`+${name}`)
+        return {
+          setEmote() {},
+          setVisible() {},
+          move() {},
+          destroy() {
+            made.push(`-${name}`)
+          },
+        }
+      },
+    })
+    const world = {
+      setHot() {},
+      avatars: { add() {}, remove() {} },
+      stage: { dirtyNodes: new Set() },
+      // nothing is cached: every avatar is loaded, and arrives when the test says
+      loader: {
+        get: () => null,
+        load: (type, src) =>
+          new Promise(resolve => resolvers.set(src, () => resolve({ factory: factoryOf(src), hooks: { of: src } }))),
+      },
+    }
+    const avatarOf = src => {
+      const node = new Avatar({ src, onLoad: () => loaded.push(node.hooks?.of) })
+      node.ctx = { world, entity: {} }
+      node.mounted = true
+      return node
+    }
+    // src set to null before the file arrives, and before the stage cleans the node
+    const node = avatarOf('a.vrm')
+    const first = node.mount()
+    node.src = null
+    resolvers.get('a.vrm')()
+    await first
+    assert.deepEqual(made, [])
+    assert.deepEqual(loaded, [])
+    assert.equal(node.instance, null)
+    assert.equal(node.factory, null)
+    assert.equal(node.hooks, null)
+    // (and the rebuild that the src asked for makes none either)
+    node.commit(false)
+    await node.mounting
+    assert.deepEqual(made, [])
+    assert.deepEqual(loaded, [])
+    // set to another src: only that one is made, and its onLoad is the only one
+    const other = avatarOf('b.vrm')
+    const pending = other.mount()
+    other.src = 'c.vrm'
+    resolvers.get('b.vrm')()
+    await pending
+    assert.deepEqual(made, [])
+    other.commit(false)
+    resolvers.get('c.vrm')()
+    await other.mounting
+    assert.deepEqual(made, ['+c.vrm'])
+    assert.deepEqual(loaded, ['c.vrm'])
+    assert.deepEqual(other.hooks, { of: 'c.vrm' })
   }))
 
 test('Controller: a visible one mounts without a renderer (the server) and shows its capsule where there is one', () =>
@@ -676,6 +798,69 @@ test('Audio: another src plays from its start, and the file that was still loadi
     pending.get('slow-5.mp3')()
     await new Promise(resolve => setTimeout(resolve, 0))
     assert.deepEqual(started.at(-1), ['slow-5.mp3', 9])
+  }))
+
+test('Audio: paused right after another src is set, it stays paused when the file arrives; a play then plays it', () =>
+  runProbe(bundle, async ({ Audio }) => {
+    const started = []
+    const loads = new Map()
+    const resolvers = new Map()
+    const context = {
+      currentTime: 0,
+      createBufferSource: () => ({
+        connect() {},
+        start(when, offset) {
+          started.push([this.buffer.name, offset])
+        },
+        stop() {},
+      }),
+      createGain: () => ({ gain: { value: 1 }, connect() {}, disconnect() {} }),
+    }
+    const world = {
+      stage: { dirtyNodes: new Set() },
+      audio: { ctx: context, groupGains: { music: {}, sfx: {} }, lastDelta: 0, ready: fn => fn() },
+      loader: {
+        get: (type, src) => (src.startsWith('slow') ? null : { name: src }),
+        // (one request per file, as the loader's: another load of a file on its way waits for the same one)
+        load: (type, src) => {
+          if (!loads.has(src)) loads.set(src, new Promise(resolve => resolvers.set(src, () => resolve({ name: src }))))
+          return loads.get(src)
+        },
+      },
+    }
+    const settle = () => new Promise(resolve => setTimeout(resolve, 0))
+    const node = new Audio({ src: 'a.mp3', spatial: false })
+    node.ctx = { world, entity: {} }
+    node.mounted = true
+    await node.play()
+    context.currentTime = 4
+    // `audio.src = 'slow-b.mp3'; audio.pause()` while a.mp3 plays (was: b started when it arrived)
+    node.src = 'slow-b.mp3'
+    node.pause()
+    resolvers.get('slow-b.mp3')()
+    await settle()
+    assert.deepEqual(started, [['a.mp3', 0]])
+    assert.equal(node.isPlaying, false)
+    assert.equal(node.currentTime, 0)
+    await node.play()
+    assert.deepEqual(started.at(-1), ['slow-b.mp3', 0])
+    // a play called while the file is still on its way starts it once, when it arrives
+    node.src = 'slow-c.mp3'
+    node.pause()
+    const playing = node.play()
+    assert.equal(started.length, 2)
+    resolvers.get('slow-c.mp3')()
+    await playing
+    await settle()
+    assert.deepEqual(started.slice(2), [['slow-c.mp3', 0]])
+    assert.equal(node.isPlaying, true)
+    // a stop in place of the pause holds too (it did)
+    node.src = 'slow-d.mp3'
+    node.stop()
+    resolvers.get('slow-d.mp3')()
+    await settle()
+    assert.equal(started.length, 3)
+    assert.equal(node.isPlaying, false)
   }))
 
 test('UI: a child drawn outside its parent is hit where it is drawn', () =>

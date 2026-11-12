@@ -401,8 +401,10 @@ export class Audio extends Node {
   pause() {
     const audio = this.ctx.world.audio
     if (!audio) return
+    // also when there is no source yet: a play still waiting for its file is called off, as stop() calls it off (a src
+    // set while the node played starts one at once, and `src = …; pause()` played the new file when it arrived)
+    this.n++
     if (this.source) {
-      this.n++
       // (a source still waiting for the audio unlock has played nothing: the offset stays)
       if (this.sourceStarted) this.offset = audio.ctx.currentTime - this.startTime
       this.releaseSource()

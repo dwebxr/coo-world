@@ -298,7 +298,7 @@ test('agent.mjs: the id, the token file, the log and a failed start go through t
     /\.then\(\(\) =>\n\s+world\.init\(\{[^]*?\}\)\n\s+\)\n\s+\.catch\(err => \{\n[^\n]*\n\s+retry\(world\)\n\s+\}\)/
   )
   assert.match(source, /world\.on\('disconnect', \(\) => retry\(world\)\)/)
-  assert.match(source, /^function retry\(world\) \{\n  if \(currentWorld !== world\) return\n/m)
+  assert.match(source, /^function retry\(world\) \{\n {2}if \(currentWorld !== world\) return\n/m)
 })
 
 test('agent: another player’s text reaches the terminal without its control characters, and cut', () => {

@@ -1890,6 +1890,44 @@ async function probes(admin, watcher) {
     await popup.close()
     eq(page.url(), urlBefore, 'page url')
   })
+  await step('B9b world.open: another origin is asked about first; Cancel opens nothing, Open opens it', async () => {
+    const pages = () => context.pages().length
+    const before = pages()
+    const external = `127.0.0.1:${server.port}`
+    ok((await probeCommand('openExternal')).ok)
+    const dialog = page.locator('.link-confirm-dialog')
+    await dialog.waitFor({ timeout: 15000 })
+    eq(await dialog.locator('.link-confirm-host').innerText(), external, 'the host the visitor is shown')
+    eq(await dialog.locator('.link-confirm-address').innerText(), `http://${external}/status`, 'the address')
+    await sleep(800)
+    eq(pages(), before, 'nothing opened while the question waits')
+    await dialog.getByRole('button', { name: 'Cancel' }).click()
+    await dialog.waitFor({ state: 'detached', timeout: 5000 })
+    await sleep(800)
+    eq(pages(), before, 'nothing opened after Cancel')
+    eq(page.url(), urlBefore, 'page url')
+
+    const dropped = () =>
+      consoleLines.filter(l => l.includes('[world.open] not opened: another link is waiting')).length
+    const droppedBefore = dropped()
+    const popupPromise = context.waitForEvent('page', { timeout: 20000 })
+    ok((await probeCommand('openExternalTwice')).ok)
+    await dialog.waitFor({ timeout: 15000 })
+    eq(await dialog.locator('.link-confirm-address').innerText(), `http://${external}/status`, 'the first request')
+    eq(dropped(), droppedBefore + 1, 'the second request was dropped and said so in the console')
+    // Open works once the question has been on screen for a second
+    await page.waitForSelector('.link-confirm-action.open:not(.waiting)', { timeout: 10000 })
+    eq(pages(), before, 'still nothing opened')
+    await dialog.getByRole('button', { name: 'Open' }).click()
+    const popup = await popupPromise
+    await popup.waitForLoadState('domcontentloaded')
+    const info = await popup.evaluate(() => ({ opener: window.opener, url: location.href }))
+    eq(info.opener, null, 'opener')
+    eq(info.url, `http://${external}/status`, 'the address that was shown is the one that opened')
+    await popup.close()
+    await dialog.waitFor({ state: 'detached', timeout: 5000 })
+    eq(page.url(), urlBefore, 'page url')
+  })
   await step('B10 world.open (d): a slice that asked for text/html is served as octet-stream', async () => {
     const r = await probeCommand('blobType')
     ok(r.ok, r.error)

@@ -14,7 +14,7 @@ import { ControlPriorities } from '../extras/ControlPriorities'
 import { warn } from '../extras/warn'
 import { applyCreateOptions, splitCreateOptions } from '../extras/createOptions'
 import { internalEvents } from '../extras/internalEvents'
-import { resolveOpenURL } from '../extras/worldOpenPolicy'
+import { describeOpenURL, resolveOpenURL } from '../extras/worldOpenPolicy'
 import { toScriptError } from '../extras/scriptValues'
 import { createEventLedger } from '../extras/appEventQueue'
 import { applyInitials, copyFields } from '../extras/appFields'
@@ -342,13 +342,32 @@ export class Apps extends System {
               return
             }
 
-            setTimeout(() => {
+            const target = describeOpenURL(resolvedUrl, window.location.href)
+            if (!target) return
+            const go = () => {
               if (newWindow) {
-                window.open(resolvedUrl, '_blank', 'noopener,noreferrer')
+                window.open(target.href, '_blank', 'noopener,noreferrer')
               } else {
-                window.location.href = resolvedUrl
+                window.location.href = target.href
               }
-            }, 0)
+            }
+            if (!target.external) {
+              // a page of this world's own origin: as before, with no question
+              setTimeout(go, 0)
+              return
+            }
+            // another site: the visitor is asked first, and it opens from their click. A script chooses the
+            // address and the moment; it does not get to answer
+            const asked = world.ui?.askOpen?.({
+              href: target.href,
+              host: target.host,
+              shown: target.shown,
+              newTab: !!newWindow,
+              go,
+            })
+            if (asked !== true) {
+              console.warn(`[world.open] not opened: ${asked || 'this client has no way to ask the visitor'}`)
+            }
           } catch (e) {
             console.error('[world.open] Failed to open URL:', e)
           }

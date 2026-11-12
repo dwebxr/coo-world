@@ -178,6 +178,7 @@ export class UIImage extends Node {
     this._left = source._left
     this._objectFit = source._objectFit
     this._backgroundColor = source._backgroundColor
+    this._borderRadius = source._borderRadius
     this._margin = isArray(source._margin) ? Object.freeze([...source._margin]) : source._margin
     return this
   }

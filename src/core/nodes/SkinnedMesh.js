@@ -32,7 +32,8 @@ export class SkinnedMesh extends Node {
     this.actions = {}
     this.bones = null
     this.animNames = []
-    this.boneHandles = {}
+    // by bone name, a script's string: no prototype, or `getBone('constructor')` found Object's own and handed it out
+    this.boneHandles = Object.create(null)
   }
 
   mount() {
@@ -82,11 +83,31 @@ export class SkinnedMesh extends Node {
         this.clips = {}
         this.actions = {}
       }
+      // the action that played belonged to that mixer: kept, it made play() of the same clip return at once after a
+      // remount ("already playing"), with nothing playing
+      this.action = null
       this.ctx.world.stage.scene.remove(this.obj)
+      // each mount clones the skeletons (mount: SkeletonUtils.clone), and a renderer makes a bone texture for each:
+      // disposing the clone's frees it. Geometry and materials are the model's, shared with every other copy, and stay.
+      this.obj.traverse(n => {
+        if (n.isSkinnedMesh) n.skeleton?.dispose()
+      })
       this.obj = null
       this.bones = null
       this.animNames = []
     }
+  }
+
+  // a shadow setting changed while mounted goes to the meshes of the mounted copy. The setters used to ask for a
+  // rebuild when `this.handle` was set, which this class never sets: the change waited for the next mount. Nothing is
+  // rebuilt for it: a rebuild would make a new copy, and the animation that plays belongs to this one.
+  applyShadows() {
+    this.obj?.traverse(n => {
+      if (n.isMesh) {
+        n.castShadow = this._castShadow
+        n.receiveShadow = this._receiveShadow
+      }
+    })
   }
 
   update(delta) {
@@ -116,10 +137,7 @@ export class SkinnedMesh extends Node {
     }
     if (this._castShadow === value) return
     this._castShadow = value
-    if (this.handle) {
-      this.needsRebuild = true
-      this.setDirty()
-    }
+    this.applyShadows()
   }
 
   get receiveShadow() {
@@ -132,10 +150,7 @@ export class SkinnedMesh extends Node {
     }
     if (this._receiveShadow === value) return
     this._receiveShadow = value
-    if (this.handle) {
-      this.needsRebuild = true
-      this.setDirty()
-    }
+    this.applyShadows()
   }
 
   // only a mounted skinned mesh animates (its mixer, and its place in world.hot, go with its unmount). The options are
@@ -180,7 +195,8 @@ export class SkinnedMesh extends Node {
   readBone(name) {
     if (!this.obj) return null
     if (!this.bones) {
-      this.bones = {}
+      // (by name, no prototype: `constructor` is a bone only if the model has one of that name)
+      this.bones = Object.create(null)
       this.obj.traverse(obj => {
         if (obj.isBone) {
           this.bones[obj.name] = obj

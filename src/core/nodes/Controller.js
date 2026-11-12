@@ -52,7 +52,10 @@ export class Controller extends Node {
 
   mount() {
     this.needsRebuild = false
-    if (this._visible) {
+    // the capsule is made where something can show it (a world with graphics: not the server), and goes into the
+    // stage's scene. It was added to `world.graphics.scene`: the server has no graphics and the client's graphics has
+    // no scene, so a visible controller threw on mount on both.
+    if (this._visible && this.ctx.world.graphics) {
       const geometry = new THREE.CapsuleGeometry(this._radius, this._height, 2, 8)
       geometry.translate(0, this._height / 2 + this._radius, 0)
       geometry.computeBoundsTree()
@@ -65,7 +68,7 @@ export class Controller extends Node {
       this.mesh.matrix.copy(this.matrix)
       this.mesh.matrixWorld.copy(this.matrixWorld)
       this.mesh.node = this
-      this.ctx.world.graphics.scene.add(this.mesh)
+      this.ctx.world.stage.scene.add(this.mesh)
     }
     this.controller = null
     // a capsule or a foot position outside the physics range corrupts the shared scene (a controller placed at 1e30
@@ -168,7 +171,7 @@ export class Controller extends Node {
 
   unmount() {
     if (this.mesh) {
-      this.ctx.world.graphics.scene.remove(this.mesh)
+      this.ctx.world.stage.scene.remove(this.mesh)
       // the capsule is built per mount, so its buffers, BVH and material go with it
       this.mesh.geometry.disposeBoundsTree?.()
       this.mesh.geometry.dispose()

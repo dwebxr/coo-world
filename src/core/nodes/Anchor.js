@@ -16,8 +16,9 @@ export class Anchor extends Node {
     this.ctx.world.anchors.add(this.anchorId, this.matrixWorld)
   }
 
+  // (its own matrix, not the id: a clone keeps the node's id, so two mounted anchors can have one anchorId)
   unmount() {
-    this.ctx.world.anchors.remove(this.anchorId)
+    this.ctx.world.anchors.remove(this.anchorId, this.matrixWorld)
   }
 
   getProxy() {

@@ -26,10 +26,26 @@ export class LOD extends Node {
     // there, in the middle of a mount or of the LOD system's update)
     if (!isPrimitive(maxDistance)) throw new Error('[lod.insert] maxDistance must be a number')
     maxDistance = Number(maxDistance)
-    this.lods.push({ node, maxDistance })
-    this.lods.sort((a, b) => a.maxDistance - b.maxDistance) // ascending
+    // a distance that is not a number (NaN: `insert(node)` without one) is no level: no distance is within it, so its
+    // node was never shown, and in the list it broke the order of the others (a sort cannot place a NaN: [10, NaN, 5]
+    // stayed as it was, and 10 was found before 5). The node is still added, switched off, as before.
+    if (!Number.isNaN(maxDistance)) {
+      this.lods.push({ node, maxDistance })
+      this.lods.sort((a, b) => a.maxDistance - b.maxDistance) // ascending
+    }
     node.active = false
     this.add(node)
+  }
+
+  // A child that leaves (removed, or added to another node) is no level any more. It used to stay in the list: the
+  // next time the camera came within its distance, check() switched it on again, and a node without a parent that is
+  // switched on mounts by itself, with the context it had here.
+  remove(node) {
+    this.lods = this.lods.filter(lod => lod.node !== node)
+    // (nor is it this LOD's to switch off later: it stays as it left)
+    if (this.lod?.node === node) this.lod = null
+    if (this.prevLod?.node === node) this.prevLod = null
+    return super.remove(node)
   }
 
   mount() {
@@ -72,15 +88,15 @@ export class LOD extends Node {
   copy(source, recursive) {
     super.copy(source, recursive)
     this._scaleAware = source._scaleAware
-    this.lods = source.lods.map(lod => {
+    // the levels are the clone's own children: a clone made without them (`clone()`, not `clone(true)`) has none (it
+    // threw here, looking for them)
+    this.lods = []
+    for (const lod of source.lods) {
       const node = this.children.find(node => node.id === lod.node.id)
+      if (!node) continue
       node.active = false
-      const maxDistance = lod.maxDistance
-      return {
-        node,
-        maxDistance,
-      }
-    })
+      this.lods.push({ node, maxDistance: lod.maxDistance })
+    }
     return this
   }
 

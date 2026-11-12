@@ -90,7 +90,9 @@ export class Image extends Node {
   async build() {
     this.needsRebuild = false
     if (this.ctx.world.network.isServer) return
-    if (!this._src) return
+    // no src: nothing to show. What the previous src showed goes, and a load of it that is still on its way is dropped
+    // (unbuild moves `n` on): the return used to come first, and the old image stayed in the scene
+    if (!this._src) return this.unbuild()
     const n = ++this.n
     let image = this.ctx.world.loader.get('image', this._src)
     if (!image) image = await this.ctx.world.loader.load('image', this._src)
@@ -245,6 +247,12 @@ export class Image extends Node {
       this.mesh.material.dispose()
       this.mesh.geometry.dispose()
       this.mesh = null
+    }
+    // the texture is made per build (the loader's image under it is shared and stays): disposing it lets the renderer
+    // free its copy on the GPU, which every rebuild used to leave behind
+    if (this.texture) {
+      this.texture.dispose()
+      this.texture = null
     }
     if (this.sItem) {
       this.ctx.world.stage.octree.remove(this.sItem)

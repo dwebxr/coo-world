@@ -38,6 +38,7 @@ export class Nametag extends Node {
   copy(source, recursive) {
     super.copy(source, recursive)
     this._label = source._label
+    this._health = source._health
     return this
   }
 

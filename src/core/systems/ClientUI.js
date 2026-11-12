@@ -135,13 +135,14 @@ export class ClientUI extends System {
   // - One question at a time. A request made while one is on screen is dropped: not queued (a script could line up
   //   any number) and not shown in its place (the address under the visitor's pointer would change).
   // - Nothing is asked in an immersive session, where this interface is not visible, and a question that waits
-  //   when one starts, or when the interface is hidden (Z), is cancelled. An interface that is hidden when the
-  //   question comes is shown.
+  //   when one starts, or when the interface is hidden (Z), is cancelled. Nothing is asked while it is hidden.
   // What this does not do: judge the page, stop a script from asking again after a Cancel, or stop it from drawing
   // its own text in the world around the question.
   askOpen({ href, host, shown, newTab, go }) {
     if (this.latest.link) return 'another link is waiting for the visitor'
     if (this.world.xr?.session) return 'links are not offered in an immersive session'
+    // not shown for the question: a script that asks on every frame would undo the visitor's choice to hide it
+    if (!this.state.visible) return 'the interface is hidden'
     let answered = false
     const close = () => {
       if (answered) return false
@@ -166,7 +167,6 @@ export class ClientUI extends System {
       },
     }
     this.world.emit('link', link)
-    if (!this.state.visible) this.toggleVisible(true)
     // the buttons cannot be reached with the pointer held by the world
     this.world.controls?.unlockPointer?.()
     return true

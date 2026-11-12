@@ -6,7 +6,10 @@ import { createOpenGuard } from '../../core/extras/worldOpenPolicy'
 // line of its own, shows the address, and opens only from a press on Open that comes after the question has been
 // on screen untouched for a moment (createOpenGuard): time the page spent hidden does not count. Escape cancels
 // (ClientUI). The dialog focuses nothing and a pointer press does not focus a button either, so a key the visitor
-// uses in the world (Space, Enter) answers nothing unless they moved the focus to a button themselves, with Tab.
+// uses in the world (Space, Enter) answers nothing. Tab does not move the focus in the world (ClientControls keeps
+// it for scripts), only out of a text field such as the chat: Open is, in practice, a pointer or touch press, and
+// a visitor who cannot make one cannot open the link. A key on a button that did get the focus is a press like any
+// other, and waits for the same second.
 
 // no focus from a pointer press, and a focus the browser gave anyway is let go
 const keepFocus = e => e.preventDefault()

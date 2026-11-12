@@ -37,7 +37,10 @@ test('open policy: a host name longer than any that resolves is refused', () => 
   const longest = `${label}.${label}.${label}.${'a'.repeat(61)}`
   assert.equal(longest.length, 253)
   assert.equal(open(`https://${longest}/`), `https://${longest}/`)
+  // the dot of a fully qualified name is not part of the 253
+  assert.equal(open(`https://${longest}./`), `https://${longest}./`)
   assert.equal(open(`https://a${longest}/`), null)
+  assert.equal(open(`https://a${longest}./`), null)
   // thousands of characters of host would push the buttons of the question off the screen
   assert.equal(open(`https://${'a.'.repeat(4000)}example/`), null)
 })
@@ -287,16 +290,22 @@ test('askOpen: a question that waits when an immersive session starts is cancell
   assert.equal(w.listenerCount('xrSession'), 0)
 })
 
-test('askOpen: a hidden interface is shown for the question, and hiding it cancels the question', () => {
+test('askOpen: nothing is asked while the interface is hidden, and hiding it cancels the question', () => {
   const w = world()
   w.ui.toggleVisible(false)
   const seen = []
   w.on('ui', state => seen.push(state.visible))
+  const hiddenRequest = request()
+  // a script that asks on every frame does not bring back an interface the visitor hid
+  for (let i = 0; i < 50; i++) assert.equal(w.ui.askOpen(hiddenRequest), 'the interface is hidden')
+  assert.equal(w.ui.state.visible, false)
+  assert.deepEqual(seen, [])
+  assert.equal(w.ui.latest.link, null)
+  assert.equal(w.unlocks, 0)
+  assert.deepEqual(hiddenRequest.went, [])
+  w.ui.toggleVisible(true)
   const r = request()
   assert.equal(w.ui.askOpen(r), true)
-  assert.equal(w.ui.state.visible, true, 'the visitor can see what is asked')
-  assert.deepEqual(seen, [true])
-  assert.notEqual(w.ui.latest.link, null)
   // hidden with the menu or with Z: nobody can see the question, so it is not left waiting behind the world
   const link = w.ui.latest.link
   w.ui.toggleVisible(false)

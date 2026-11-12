@@ -244,9 +244,11 @@ press Open (Cancel and Escape close the dialog). Nothing tells the script which 
 - One question at a time: a call made while a question is on screen is dropped, with a console warning. It is not
   queued.
 - Open works once the question has been on screen for a second, and a press before that starts the second again.
-  A pointer press does not focus a button, so keys the visitor uses in the world do not answer.
-- Nothing is asked, and nothing opens, in an immersive (VR) session, or in a client without the interface. A
-  question that waits when a session starts, or when the visitor hides the interface, is cancelled.
+  A pointer press does not focus a button, so keys the visitor uses in the world do not answer: Open takes a
+  pointer or touch press.
+- Nothing is asked, and nothing opens, in an immersive (VR) session, while the visitor has the interface hidden,
+  or in a client without the interface. A question that waits when a session starts, or when the visitor hides
+  the interface, is cancelled.
 - The question is the visitor's chance to see where a link goes. It does not check the page, and a script can
   still ask again after a Cancel and can show its own text in the world around the dialog: do not tell visitors
   that a link is safe because the world asked.

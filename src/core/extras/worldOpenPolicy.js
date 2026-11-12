@@ -73,8 +73,9 @@ export function resolveOpenURL(url, { resolve, base, assetsUrl } = {}) {
   if (!target || !OPEN_PROTOCOLS.includes(target.protocol)) return null
   // `https://this-world.example@other.example/` reads as this world and goes to the other host
   if (target.username || target.password) return null
-  // no name a resolver answers is longer than 253 characters; a longer one is only there to fill the question
-  if (target.hostname.length > OPEN_HOST_MAX) return null
+  // DNS has no name longer than 253 characters (the dot of a fully qualified name not counted); a longer host
+  // is only there to fill the question
+  if (target.hostname.replace(/\.$/, '').length > OPEN_HOST_MAX) return null
   if (isAssetURL(target, base, assetsUrl)) return null
   return target.href
 }

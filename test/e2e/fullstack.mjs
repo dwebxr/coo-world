@@ -1910,19 +1910,17 @@ async function probes(admin, watcher) {
     const dropped = () =>
       consoleLines.filter(l => l.includes('[world.open] not opened: another link is waiting')).length
     const droppedBefore = dropped()
-    // Presses that come before the question has been up for a second: the first as the button appears, then three
-    // more, 400 ms apart. They are made in the page so that none of them can be late
+    // Presses that come before the question has been up for a second: four of them, in one go, as the button
+    // appears (made in the page, in the turn that sees the button, so a slow machine cannot make them late)
     await page.evaluate(() => {
       window.__earlyOpen = 0
       const observer = new MutationObserver(() => {
-        const open = document.querySelector('.link-confirm-action.open')
-        if (!open) return
+        if (!document.querySelector('.link-confirm-action.open')) return
         observer.disconnect()
-        const press = () => {
+        for (let i = 0; i < 4; i++) {
           document.querySelector('.link-confirm-action.open')?.click()
-          if (++window.__earlyOpen < 4) setTimeout(press, 400)
+          window.__earlyOpen++
         }
-        press()
       })
       observer.observe(document.body, { childList: true, subtree: true })
     })

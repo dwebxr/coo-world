@@ -292,7 +292,8 @@ test('holding contracts: the server reads the variable at start-up, before it cr
   const source = fs.readFileSync(new URL('../src/server/index.js', import.meta.url), 'utf8')
   const at = source.indexOf('\nconst holdingContracts = readHoldingContractsEnv(process.env)\n')
   assert.ok(at > 0, 'read at the top level, not inside a condition')
-  assert.ok(at < source.indexOf('await fs.ensureDir(worldDir)'), 'before the world folder')
+  const folder = source.indexOf('fs.ensureDir(worldDir)')
+  assert.ok(folder > 0 && at < folder, 'before the world folder')
   assert.ok(at < source.indexOf('installShutdown()'), 'with the other [envs] checks')
 })
 

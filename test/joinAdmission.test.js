@@ -110,8 +110,11 @@ test('join budget: the snapshot carries the upload size the server parsed, never
   assert.ok(joined.bytes < 10000, `${joined.bytes}`)
   // index.js parses it once and hands world.init the number
   assert.match(serverSource, /^const maxUploadSize = Number\(process\.env\.PUBLIC_MAX_UPLOAD_SIZE\)/m)
-  assert.match(serverSource, /^await world\.init\(\{\n[^}]*^ {2}maxUploadSize,\n\}\)/m)
-  assert.match(serverSource, /^await world\.network\.ready\n[^]*?^await world\.network\.measureFixedBytes\(\)/m)
+  assert.match(serverSource, /^ {2}world\.init\(\{\n[^}]*^ {4}maxUploadSize,\n {2}\}\)/m)
+  assert.match(
+    serverSource,
+    /^await startup\.step\(\(\) => world\.network\.ready\)\n[^]*?^await startup\.step\(\(\) => world\.network\.measureFixedBytes\(\)\)/m
+  )
 })
 
 // The general formula is the per-player and fixed bounds test above; these cases cross the bound with small player

@@ -111,17 +111,18 @@ Subscribes to both engine events (eg when players `enter` or `leave` the world) 
   one: only this event is.
 
   What the server counts once is one sender's transfer in one transaction, for as long as one server process
-  remembers it (in memory: 4096 entries, 30 minutes each), and it refuses a transfer from a block older than the
+  remembers it (in memory: the newest 4096, 30 minutes each), and it refuses a transfer from a block older than the
   process. A script must still tolerate a repeat. The same transfer can raise the event again when two server
   processes run the world at the same time (a deploy that overlaps), when the server restarts and its clock and
   the block times of its RPC node disagree, or when that node answers wrongly. (Its entry is also dropped once
   more than 4096 other transfers were counted after it; with the server's own budget of chain calls that cannot
   happen within the minutes in which a second request could still match the transfer.) And not every tip raises
-  it: one that was being confirmed when the server restarted, or that the server stopped watching after 180 s,
-  may never be counted, unless its sender's page reports it again and it is confirmed then. The event not coming
-  says nothing about the transfer: it may have gone through, be pending still, or never have been mined. So do
-  not give for a tip what you could not afford to give twice, or to miss, and check the chain before making good
-  by hand a tip the world did not count: the event can still come afterwards.
+  it: one that was being confirmed when the server restarted is not counted (the tip request went with the old
+  process), and one that the server stopped watching after about 180 s is counted only if its sender's page
+  reports it once more and it is confirmed then. The event not coming says nothing about the transfer: it may
+  have gone through, be pending still, or never have been mined. So do not give for a tip what you could not
+  afford to give twice, or to miss, and check the chain before making good by hand a tip the world did not
+  count: the event can still come afterwards.
 
   The two players may be one person. The server only refuses a tip between two connections verified with the
   same wallet: one person with two wallets, or with two accounts, can tip themselves for the network fee alone,

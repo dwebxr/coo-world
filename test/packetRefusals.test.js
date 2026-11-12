@@ -466,21 +466,31 @@ test("refused whoever sends it: a player's own fields that only the server sets;
 
 test("refused whoever sends it: a player added through entityAdded, or an app under a player's id", async () => {
   const f = await stage()
-  const player = id => ({ ...app(id), type: 'player', userId: id, owner: id, name: id, health: 100, rank: 2 })
-  for (const [sender, id] of [
-    [f.maker, 'player0001'],
-    [f.admin, 'player0002'],
-    [f.visitor, 'player0003'],
-  ]) {
-    f.network.onEntityAdded(sender, player(id))
-    assert.equal(f.world.entities.get(id), undefined, `${id} from ${sender.id}`)
+  // one complete app record: each refused packet differs from it in one field, and the control is the record itself
+  const record = app('appAdded01')
+  const announced = id =>
+    [f.admin, f.maker, f.visitor, f.other]
+      .flatMap(socket => told(socket))
+      .filter(([method, data]) => method === 'onEntityAdded' && data?.id === id)
+  for (const sender of [f.maker, f.admin, f.visitor]) {
+    f.network.onEntityAdded(sender, { ...record, type: 'player' })
+    assert.equal(f.world.entities.get(record.id), undefined, `a player from ${sender.id}`)
   }
-  assert.ok(f.logged('onEntityAdded: invalid entity: "player0001"'))
-  f.network.onEntityAdded(f.maker, app(f.visitor.id))
-  assert.equal(f.world.entities.get(f.visitor.id), f.player(f.visitor), "the visitor's id is its player's")
-  // the control: the builder's app
-  f.network.onEntityAdded(f.maker, app('appAdded01'))
-  assert.equal(f.world.entities.get('appAdded01')?.isApp, true)
+  assert.ok(f.logged('onEntityAdded: invalid entity: "appAdded01"'))
+  assert.deepEqual(announced(record.id), [], 'a player was announced')
+  assert.equal(f.network.dirtyApps.has(record.id), false, 'a player is to be stored as an app')
+  // the same record under the id of a player who is here
+  const player = f.world.entities.get(f.visitor.id)
+  assert.equal(player?.isPlayer, true)
+  f.network.onEntityAdded(f.maker, { ...record, id: f.visitor.id })
+  assert.equal(f.world.entities.get(f.visitor.id), player, 'the player is still the entity registered under its id')
+  assert.deepEqual(announced(f.visitor.id), [], "an app under the player's id was announced")
+  assert.equal(f.network.dirtyApps.has(f.visitor.id), false, "an app is to be stored under the player's id")
+  // the control: the record itself, from the builder, is added, announced to the three others and to be stored
+  f.network.onEntityAdded(f.maker, record)
+  assert.equal(f.world.entities.get(record.id)?.isApp, true)
+  assert.equal(announced(record.id).length, 3)
+  assert.equal(f.network.dirtyApps.has(record.id), true)
 })
 
 // ---- the wallet flows: open to anyone where the world has the feature, ignored where it has not ----

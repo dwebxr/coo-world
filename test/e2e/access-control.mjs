@@ -20,11 +20,13 @@
 //   secret (but DB_URI, which has to stay `local`). No sentinel is in what the run gets from it: the page, /env.js,
 //   /status, /health; the error answers of a page that does not exist, an asset that does not exist, /api/upload
 //   and /api/upload-check (no token, a forged one, a malformed request) and /csp-report (a report, and three it
-//   refuses), and a plain GET of /ws; a visitor's and an admin's join snapshot, any packet any connection of the
-//   run received, the close frame (code and reason) of every connection the run made, a refused one included; and
-//   the server's log. Bodies and headers alike, and also what the tokens found there decode to, two levels deep
-//   (JWT segments, base64 and base64url, percent escapes, JSON escapes, JSON parsed and its strings read). The
-//   search is tried on itself first: a planted sentinel in each of those encodings is found. A second server with
+//   refuses), and a plain GET of /ws; a visitor's and an admin's join snapshot; and, once every connection of the
+//   run has been closed and the server has stopped, every packet each connection received, the close frame (code
+//   and reason) of each, a refused one included, and the server's whole log. Bodies and headers alike, and also
+//   every decoding of the tokens found there, two levels deep (JWT segments, base64 and base64url read as UTF-8 and
+//   as Latin-1, percent escapes, JSON escapes, JSON parsed and its strings read): each decoding is searched, and
+//   one that reads as text, in any script, is decoded once more. The search is tried on itself first: a planted
+//   sentinel in each of those encodings is found, also among text that is mostly not ASCII. A second server with
 //   the wallet features on is searched the same way.
 //
 // What it does not ask (the tables name the tests that do): uploads and response headers (gate-extras.mjs,
@@ -202,14 +204,18 @@ const sessionPayload = userId => {
   return { userId, iat, exp: iat + 3600 }
 }
 
-const printable = text => {
+// Whether a decoding reads as text, and so is worth decoding once more: few control characters and few characters
+// the UTF-8 decoder could not read. Any script counts (a JSON message in Japanese is text); bytes decoded at a wrong
+// alignment are not. It decides only what is decoded again: every decoding is searched (readings, below).
+const readsAsText = text => {
   if (!text.length) return false
-  let good = 0
+  let bad = 0
   for (let i = 0; i < text.length; i++) {
     const code = text.charCodeAt(i)
-    if (code === 9 || code === 10 || code === 13 || (code >= 32 && code < 127)) good++
+    const control = (code < 32 && code !== 9 && code !== 10 && code !== 13) || (code >= 127 && code < 160)
+    if (control || code === 0xfffd) bad++
   }
-  return good / text.length > 0.9
+  return bad / text.length < 0.1
 }
 // JSON's escapes undone wherever they are (a JSON body, a JSON string inside a packet's string, a log line)
 const JSON_ESCAPES = { b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' }
@@ -237,20 +243,17 @@ function jsonStrings(text) {
 }
 // What a text says once its tokens are read: the first two segments of anything shaped like a JWT, every run of
 // base64 or base64url characters (at each of the four alignments, since a run can begin inside a longer word),
-// percent escapes, JSON escapes, and the strings of what parses as JSON. Only decodings that are text are kept.
+// percent escapes, JSON escapes, and the strings of what parses as JSON. Decoded bytes are read as UTF-8 and as
+// Latin-1 (one byte, one character: an ASCII sentinel among bytes that are not UTF-8 is still whole), and every
+// decoding is kept, text or not.
 function decodings(text) {
   const out = []
+  const bytes = buffer => out.push(buffer.toString('utf8'), buffer.toString('latin1'))
   for (const match of text.matchAll(/[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g)) {
-    for (const part of match[0].split('.').slice(0, 2)) {
-      const decoded = Buffer.from(part, 'base64url').toString('utf8')
-      if (printable(decoded)) out.push(decoded)
-    }
+    for (const part of match[0].split('.').slice(0, 2)) bytes(Buffer.from(part, 'base64url'))
   }
   for (const match of text.matchAll(/[A-Za-z0-9+/_-]{16,}/g)) {
-    for (let offset = 0; offset < 4; offset++) {
-      const decoded = Buffer.from(match[0].slice(offset), 'base64url').toString('latin1')
-      if (printable(decoded)) out.push(decoded)
-    }
+    for (let offset = 0; offset < 4; offset++) bytes(Buffer.from(match[0].slice(offset), 'base64url'))
   }
   if (/%[0-9A-Fa-f]{2}/.test(text)) {
     out.push(text.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16))))
@@ -261,12 +264,13 @@ function decodings(text) {
   }
   const parsed = jsonStrings(text)
   if (parsed.length) out.push(parsed.join('\n'))
-  return out
+  return [...new Set(out)].filter(decoded => decoded && decoded !== text)
 }
-// a text and what its tokens decode to, two levels deep (a token inside a token)
+// A text and what its tokens decode to, two levels deep (a token inside a token). Every decoding is searched; only
+// one that reads as text is decoded again.
 function readings(text) {
   const first = decodings(text)
-  return [text, ...first, ...first.flatMap(decodings)]
+  return [text, ...first, ...first.filter(readsAsText).flatMap(decodings)]
 }
 const needlesOf = () => [
   ...Object.entries(SECRETS).flatMap(([name, secret]) =>
@@ -485,6 +489,7 @@ try {
       const hexOf = (c, width) => c.charCodeAt(0).toString(16).padStart(width, '0')
       const percent = value => [...value].map(c => `%${hexOf(c, 2)}`).join('')
       const jsonEscaped = value => [...value].map(c => `\\u${hexOf(c, 4)}`).join('')
+      const unicode = value => `{"message":"${'エラー'.repeat(20)}","k":"${value}"}`
       const planted = {
         'as it is': `before ${needle} after`,
         'percent escapes': `/path?k=${percent(needle)}&x=1`,
@@ -497,6 +502,11 @@ try {
         'JSON in a string of JSON': JSON.stringify({ outer: `{"k":"${jsonEscaped(needle)}"}` }),
         'base64 in JSON': JSON.stringify({ blob: Buffer.from(needle).toString('base64') }),
         'base64 of base64': `x.${b64u(b64u(needle))}`,
+        // a payload that is mostly not ASCII (a message in Japanese) around the sentinel
+        'base64 of JSON in Japanese': `x ${Buffer.from(unicode(needle)).toString('base64')} y`,
+        'base64url of JSON in Japanese': `x ${b64u(unicode(needle))} y`,
+        'a JWT payload of JSON in Japanese': signToken(JSON.parse(unicode(needle)), 'p14-self-test-key'),
+        'a JSON escape in base64url of JSON in Japanese': `x ${b64u(unicode(jsonEscaped(needle)))} y`,
       }
       for (const [label, text] of Object.entries(planted)) {
         if (label !== 'as it is') ok(!text.includes(SENTINEL), `${label}: the sentinel is there as it is`)
@@ -512,6 +522,7 @@ try {
   // the first server: the harness's world (no wallet features), every secret set
   // ====================================================================================================
   main = await startServer({ port: PORT, env: baseEnv, logPath: path.join(OUT, 'access-control-server.log') })
+  const firstServer = main
   const w = world(main)
   const { connect, barrier, send, fresh, logFrom, logged, close } = w
   const base = `http://localhost:${PORT}`
@@ -700,28 +711,24 @@ try {
       await logged(log, `onAppChat: no such app from ${visitor.id}`)
       await barrier(admin)
       eq(appLines(from, 'P14 line for no app').length, 0, 'nothing for an app that does not exist, or for a player')
-      // the limit: a connection of its own sends 20 lines at once
+      // The limit, asked whatever became of the lines above: lines as any connection's client sends them for an app
+      // of the world (a client script's world.chat(): the app's id and a text, nothing claimed), 20 at once from a
+      // connection of its own. They are also the positive control of the refusal for an app that does not exist.
       const chatter = await connect('chatter')
       from = admin.mark()
       const budgetLog = logFrom()
       for (let i = 0; i < 20; i++) chatter.send('appChat', { id: 'p14-probe', body: `P14 burst ${i}` })
       await barrier(chatter)
       await barrier(admin)
-      const burst = appLines(from, 'P14 burst ').length
-      let limit = 'not shown: no app line was relayed in this run'
-      if (relayed.length) {
-        ok(
-          burst >= 10 && burst <= 12,
-          `${burst} of 20 lines sent at once were relayed (a burst of 10, then 2 a second)`
-        )
-        await logged(budgetLog, `"${chatter.id}" is over its appChat budget`)
-        limit = `${burst} of 20 lines sent at once were relayed, and the log says the rest were over the budget`
-      }
+      const burst = appLines(from, 'P14 burst ')
+      ok(
+        burst.length >= 10 && burst.length <= 12,
+        `${burst.length} of 20 lines sent at once were relayed (a burst of 10, then 2 a second)`
+      )
+      for (const { data } of burst) eq(data.kind, 'app', `${data.body}: the kind`)
+      await logged(budgetLog, `"${chatter.id}" is over its appChat budget`)
       await close(chatter)
-      const control = relayed.length
-        ? 'positive control of the refusal: the same packet naming the probe app was relayed'
-        : `${NONE}: no app line was relayed in this run`
-      return `${relayed.length} of 3 lines relayed, each checked; ${control}; the limit: ${limit}; the line under another app's name: see the GAP line`
+      return `the limit: ${burst.length} of 20 lines a client sends at once for an app were relayed and the log says the rest were over the budget (the positive control of the refusal for an app that does not exist); ${relayed.length} of 3 lines with claimed fields relayed, each checked; the line under another app's name: see the GAP line`
     }
   )
   gap(
@@ -826,36 +833,33 @@ try {
   })
 
   await run('player-add', 'nobody adds a player through entityAdded, a builder or an admin neither', async () => {
-    const player = id => ({
-      id,
-      type: 'player',
-      position: [0, 0, 0],
-      quaternion: [0, 0, 0, 1],
-      owner: id,
-      userId: id,
-      name: id,
-      health: 100,
-      avatar: 'asset://avatar.vrm',
-      rank: 2,
-      enteredAt: Date.now(),
-    })
+    // one complete app record: each refused packet differs from it in one field, and the control is the record itself
+    const record = appEntity('p14-added', 'p14-bp')
+    const added = (from, id) => got(admin, from, 'onEntityAdded', data => data?.id === id)
     const from = logFrom()
-    await send(builder, 'entityAdded', player('p14-player-1'))
-    await logged(from, 'onEntityAdded: invalid entity: "p14-player-1"')
-    await send(admin, 'entityAdded', player('p14-player-2'))
-    await send(visitor, 'entityAdded', player('p14-player-3'))
-    // an app under the id of a player who is here
-    await send(builder, 'entityAdded', appEntity(visitor.id, 'p14-bp'))
+    const seen = admin.mark()
+    for (const sender of [builder, admin, visitor]) await send(sender, 'entityAdded', { ...record, type: 'player' })
+    await logged(from, `onEntityAdded: invalid entity: "${record.id}"`)
+    // the same record under the id of a player who is here
+    await send(builder, 'entityAdded', { ...record, id: visitor.id })
+    await barrier(admin)
     let now = await fresh()
-    for (const id of ['p14-player-1', 'p14-player-2', 'p14-player-3']) ok(!entityOf(now, id), `${id} was not added`)
+    ok(!entityOf(now, record.id), 'no entity from the record sent as a player')
     const named = now.entities.filter(entity => entity.id === visitor.id)
     ok(named.length === 1 && named[0].type === 'player', "the visitor's id is still its player's alone")
+    eq(
+      added(seen, record.id).length + added(seen, visitor.id).length,
+      0,
+      'nothing was announced (as the admin was told it)'
+    )
     eq(now.entities.filter(entity => entity.type === 'player' && entity.rank === 2).length, 1, 'one admin, as before')
-    // the positive control: the builder's app
-    await send(builder, 'entityAdded', appEntity('p14-app-2', 'p14-bp'))
+    // the positive control: the record itself, from the builder
+    await send(builder, 'entityAdded', record)
+    await barrier(admin)
     now = await fresh()
-    eq(entityOf(now, 'p14-app-2')?.type, 'app', 'the app from the builder')
-    return 'positive control: the builder adds an app (a player is refused for the builder and the admin too)'
+    eq(entityOf(now, record.id)?.type, 'app', 'the app from the builder')
+    eq(added(seen, record.id).length, 1, 'announced (the admin was told it)')
+    return 'positive control: the same record as an app, from the builder (sent as a player it is refused for the builder and the admin too)'
   })
 
   await run('settings', "a visitor cannot change a world setting; a builder can change a builder's", async () => {
@@ -1467,8 +1471,11 @@ try {
       ['/csp-report too long', '/csp-report', post(csp, 'x'.repeat(9000)), 413],
     ]
   }
-  // the surfaces of one server -> { findings, texts, counts }
-  const surfaces = async (origin, server, w, joins, session) => {
+  // The surfaces of one server -> { findings, texts, counts }. The routes are asked while the server runs; then every
+  // connection of the run is closed (each close awaited, within a wait) and the server is stopped (`stop`), and only
+  // then are the packets, the close frames and the server's log searched: all of each, the log up to the end of the
+  // server's output.
+  const surfaces = async ({ origin, server, w, joins, session, stop }) => {
     const findings = []
     const texts = {}
     const statuses = []
@@ -1485,11 +1492,19 @@ try {
       statuses.push(`${route.split('?')[0]} ${status}`)
       findings.push(...search(`the answer of ${label}`, `${headers}\n${body}`))
     }
-    // a connection the server refuses after the upgrade: its kick packet is searched with the others below, and
-    // its close frame (code and reason) with every other close frame of the run
+    // a connection the server refuses after the upgrade: its kick packet and its close frame (code and reason) are
+    // searched with every other connection's below
     const outdated = await w.refused('outdated', { version: 1 })
     eq(outdated.closeFrame?.code, 1008, 'an outdated client: the close code')
     eq(outdated.closeFrame?.reason, 'outdated', 'and the reason (the control that a reason is read)')
+    // every connection closed, then the server stopped, before anything of theirs is searched
+    await Promise.all(w.clients.map(w.close))
+    await stop()
+    await waitUntil(() => server.child.stdout.readableEnded && server.child.stderr.readableEnded, {
+      timeout: 5000,
+      interval: 50,
+      message: "the end of the server's output",
+    })
     for (const [label, client] of Object.entries(joins)) {
       // the join snapshot: its bytes as they came, and every string of what they decode to
       eq(client.raw.length > 0 && client.inbox[0]?.method, 'onSnapshot', `${label}: the first packet is the snapshot`)
@@ -1498,21 +1513,19 @@ try {
       findings.push(...search(label, texts[label]))
     }
     let packets = 0
-    let closes = 0
     for (const client of w.clients) {
       for (const raw of client.raw)
         findings.push(...search(`a packet ${client.label} received`, raw.toString('latin1')))
       for (const message of client.inbox)
         findings.push(...search(`a packet ${client.label} received`, strings(message.data).join('\n')))
       packets += client.raw.length
-      if (!client.closeFrame) continue
+      ok(client.closeFrame, `${client.label}: closed before the search`)
       findings.push(
         ...search(`the close frame of ${client.label}`, `${client.closeFrame.code} ${client.closeFrame.reason}`)
       )
-      closes++
     }
     findings.push(...search('the server log', server.out))
-    const counts = `${packets} packets, ${closes} close frames, ${statuses.length} refusals of routes (${statuses.join(', ')}) and ${server.out.length} bytes of log searched`
+    const counts = `${w.clients.length} connections, each closed before the search: ${packets} packets they received and their ${w.clients.length} close frames; ${statuses.length} refusals of routes (${statuses.join(', ')}); the server's whole log, read once the server had stopped (${server.out.length} bytes)`
     return { findings: [...new Set(findings)], texts, counts }
   }
   // the settings of SECRETS the run never uses, as the result lines say it
@@ -1538,16 +1551,17 @@ try {
 
       const visitorJoin = await connect('visitor-join')
       await close(visitorJoin)
-      const { findings, texts, counts } = await surfaces(
-        base,
-        main,
+      const { findings, texts, counts } = await surfaces({
+        origin: base,
+        server: firstServer,
         w,
-        {
-          "a visitor's join snapshot": visitorJoin,
-          "an admin's join snapshot": adminJoin,
+        joins: { "a visitor's join snapshot": visitorJoin, "an admin's join snapshot": adminJoin },
+        session: builder,
+        stop: async () => {
+          await main.stop()
+          main = null
         },
-        builder
-      )
+      })
       eq(findings.length, 0, findings.join('; '))
 
       // the controls of the search: it finds what is there
@@ -1581,8 +1595,12 @@ try {
       )
       // the PUBLIC_ name nothing reads is named once at start-up, without its value; the RPC fallback, which is
       // set, is not named
-      eq(main.count(`[envs] not handed to the page (/env.js): ${UNLISTED.name}.`), 1, 'named once in the start log')
-      eq(main.count('PUBLIC_RPC_URL'), 0, 'PUBLIC_RPC_URL is left out without a word')
+      eq(
+        firstServer.count(`[envs] not handed to the page (/env.js): ${UNLISTED.name}.`),
+        1,
+        'named once in the start log'
+      )
+      eq(firstServer.count('PUBLIC_RPC_URL'), 0, 'PUBLIC_RPC_URL is left out without a word')
 
       // each sentinel is a value the server uses (where the run can show it)
       ok(verifies(visitorJoin.authToken, SECRETS.JWT_SECRET.value), `JWT_SECRET: ${SECRETS.JWT_SECRET.live}`)
@@ -1600,13 +1618,18 @@ try {
   )
 
   await step('the server handled every packet of the run without an error of its own', async () => {
-    const lines = main.lines(/\] \w+ from client \S+ failed:|UnhandledPromiseRejection|SES_UNHANDLED|decoder bug/)
+    const lines = firstServer.lines(
+      /\] \w+ from client \S+ failed:|UnhandledPromiseRejection|SES_UNHANDLED|decoder bug/
+    )
     eq(lines.length, 0, lines.slice(0, 3).join(' | '))
   })
 
-  for (const client of w.clients) client.close()
-  await main.stop()
-  main = null
+  // (stopped in [secrets], unless that case failed before)
+  if (main) {
+    for (const client of w.clients) client.close()
+    await main.stop()
+    main = null
+  }
 
   // ====================================================================================================
   // the second server: the same secrets, in a world with the token gate, EVM sign-in and tips
@@ -1616,6 +1639,7 @@ try {
     env: walletEnv,
     logPath: path.join(OUT, 'access-control-wallet-server.log'),
   })
+  const secondServer = second
   const w2 = world(second)
   const origin = `http://localhost:${PORT + 1}`
 
@@ -1651,16 +1675,17 @@ try {
         return again
       })()
       const visitorJoin = await w2.connect('visitor-join')
-      const { findings, texts, counts } = await surfaces(
+      const { findings, texts, counts } = await surfaces({
         origin,
-        second,
-        w2,
-        {
-          "a visitor's join snapshot": visitorJoin,
-          "an admin's join snapshot": adminJoin2,
+        server: secondServer,
+        w: w2,
+        joins: { "a visitor's join snapshot": visitorJoin, "an admin's join snapshot": adminJoin2 },
+        session: adminJoin2,
+        stop: async () => {
+          await second.stop()
+          second = null
         },
-        adminJoin2
-      )
+      })
       eq(findings.length, 0, findings.join('; '))
       const served = servedEnv(texts['/env.js'])
       eq(served.PUBLIC_TOKEN_MINT, SOL_MINT, 'the mint is public')
@@ -1670,12 +1695,17 @@ try {
         Object.keys(served).every(name => SERVED_ENV_NAMES.includes(name)),
         'only served names'
       )
-      ok(second.out.includes('[envs] player.getEvmHolding() asks only about'), 'EVM is on in this world')
+      ok(secondServer.out.includes('[envs] player.getEvmHolding() asks only about'), 'EVM is on in this world')
       return `${counts}. ${unused()}`
     }
   )
 
-  for (const client of w2.clients) client.close()
+  // (stopped in [secrets-wallet-world], unless that case failed before)
+  if (second) {
+    for (const client of w2.clients) client.close()
+    await second.stop()
+    second = null
+  }
 
   // every case the tables name ran, and every case that ran is named there
   await step('every case the rules name ran, and passed', async () => {

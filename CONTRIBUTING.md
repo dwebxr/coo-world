@@ -37,6 +37,12 @@ node test/e2e/fullstack.mjs --engine=chromium   # or --engine=webkit, --engine=f
 
 The workflow (`.github/workflows/e2e.yml`) runs every suite on Chromium, WebKit and Firefox. Chromium and WebKit decide the result. Firefox is advisory: a suite that fails there does not fail the job, except the WebSocket frame probe (`ws-frames.mjs`), which is required on all three. The workflow runs for pull requests that touch `src/`, `scripts/`, `test/e2e/`, `docs/scripting/examples/`, `package.json`, `package-lock.json` or the workflow itself, on pushes to `main`, weekly and when started by hand; a pull request that touches none of those paths skips it, so run the suites your change concerns locally, on Chromium and on WebKit.
 
+## Dependencies
+
+- `npm run audit:prod` runs `npm audit --omit=dev` and fails on a high or critical advisory in what a production install holds. A weekly workflow runs it, and so does a pull request that changes `package.json`, the lock file, the allowlist, the script or the workflow.
+- `audit-allowlist.json` is for an advisory that is tolerated until a date: its id, the reason and the date. An entry past its date fails the job, and so does one that matches nothing any more. It is empty today.
+- A package that only the builds or the tests need belongs in `devDependencies`. The last step of the `ci` job installs a production tree (`npm ci --omit=dev`) in a temporary folder and starts the built server from it (`scripts/prod-smoke.mjs`); a run-time import of a dev-only package fails there. It does not build or start the Docker image.
+
 ## Changelog
 
 Record a change of behaviour in `CHANGELOG.md` under `## [Unreleased]`, in the section it belongs to (`Added`, `Changed`, `Fixed`, `Security`), as one entry that starts with the area (`server:`, `client:`, `docs:` ...). Upgrade notes go there too (see `MIGRATIONS.md`).

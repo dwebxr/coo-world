@@ -1,4 +1,6 @@
 // Session-only builder grants (a verified wallet token), and what ends one.
+// The mark `tokenGrantedRank` is on the player object, not in its `data`: a player's data is what the join snapshot
+// gives every later joiner, and the mark in it told them who builds by a token and who by a stored rank.
 // Pure: the wallet table and the socket are passed in, so the pieces ServerNetwork wires
 // together can be exercised on their own.
 
@@ -10,7 +12,7 @@
 // What the database holds is another matter: when the write fails for good, the next process has the database's
 // rank, not this one.
 export function endGrantByDecision({ player, wallets }) {
-  player.data.tokenGrantedRank = false
+  player.tokenGrantedRank = false
   wallets.clearWallet(player.data.id)
 }
 
@@ -19,12 +21,12 @@ export function endGrantByDecision({ player, wallets }) {
 // and the wallet table was already cleared for that socket
 export function grantTokenRank({ socket, player, walletAddress, wallets }) {
   if (socket.disconnected) return false
-  player.data.tokenGrantedRank = true
+  player.tokenGrantedRank = true
   wallets.recordWallet(socket.id, walletAddress)
   return true
 }
 
 export function revokeTokenRank({ socket, player, wallets }) {
-  player.data.tokenGrantedRank = false
+  player.tokenGrantedRank = false
   wallets.clearWallet(socket.id)
 }

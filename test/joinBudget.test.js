@@ -542,7 +542,6 @@ function worstRest(count = 64) {
     emote: null,
     effect: null,
     evmTips: true,
-    tokenGrantedRank: true,
   })
   const players = Array.from({ length: count }, (_, i) => player(i, i === 0))
   return {

@@ -132,7 +132,7 @@ test('join budget: the visitor rule reads the stored rank, not a free-build worl
   f.users.set('wallet1', { id: 'wallet1', name: 'w', avatar: null, rank: Ranks.VISITOR })
   assert.equal((await f.join({ authToken: 'wallet1' })).method, 'onSnapshot')
   const holder = f.world.entities.get('wallet1')
-  holder.data.tokenGrantedRank = true
+  holder.tokenGrantedRank = true
   holder.modify({ rank: Ranks.BUILDER })
   let count = 0
   while (f.world.entities.players.size < visitorLimit(f.world)) f.world.entities.add(crowd(count++))

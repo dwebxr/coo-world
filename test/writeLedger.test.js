@@ -1,4 +1,5 @@
 import { callForScript } from '../src/core/extras/scriptValues.js'
+import { holdEffect } from './lib/effectPlayer.mjs'
 import * as runTeardown from '../src/core/extras/runTeardown.js'
 import { stoppedError } from '../src/core/extras/physicsFailure.js'
 import { chatEnvelope, scriptChatMessage } from '../src/core/extras/chatPolicy.js'
@@ -30,6 +31,7 @@ import {
   WRITE_OVERHEAD,
 } from '../src/core/extras/writeLedger.js'
 import { fakeWs, makeNetwork, Socket, connectionMethod } from './lib/networkHarness.mjs'
+import { writePacket } from '../src/core/packets.js'
 import { readPacket } from '../src/core/packets.js'
 import { readScriptData } from '../src/core/extras/scriptData.js'
 import { toEngineNumber } from '../src/core/extras/engineNumber.js'
@@ -290,7 +292,7 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
     modify(data) {
       Object.assign(this.data, data)
     },
-    setEffect() {},
+    setEffect: holdEffect,
   }
   const Chat = loadClass('systems/Chat.js', 'Chat')
   const Apps = loadClass('systems/Apps.js', 'Apps')
@@ -320,8 +322,23 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
     }
   )
   const proxy = createProxy(entity, player)
+  // an effect given while there is room, to be ended when there is none
+  const effect = proxy.applyEffect({ snare: 0.5 })
+  assert.equal(effect.active, true)
+  assert.equal(socket.ws.packets.length, 1)
+  socket.ws.packets.length = 0
+  // (a new tick: the write above took some of the last one's room)
+  network.writer.resetTick()
   // Exhaust only the unique script bytes; every accidental system write would still go through.
   network.writer.prepare(bytes(SCRIPT_TICK_CAP), { script: true })
+  // ending an effect is a script's write too: refused, nobody is told, and the effect stays as it is
+  assert.equal(effect.cancel(), false)
+  assert.equal(proxy.cancelEffect(), false)
+  assert.equal(effect.active, true)
+  // and so is giving one: refused, the player does not get it, and keeps the one it has with its handle
+  assert.equal(proxy.applyEffect({ freeze: true }), false)
+  assert.deepEqual(player.data.effect, { snare: 0.5 })
+  assert.equal(effect.active, true)
   for (const call of [
     () => apps.appMethods.send(entity, 'event', 1),
     () => apps.appMethods.sendTo(entity, socket.id, 'event', 1),
@@ -331,20 +348,25 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
     () => proxy.setSessionAvatar('asset://avatar.vrm'),
     () => proxy.damage(1),
     () => proxy.heal(1),
-    () => proxy.applyEffect({ freeze: true }),
     () => proxy.setVoiceLevel('global'),
     () => proxy.setVoiceLevel('spatial'),
     () => proxy.setVoiceLevel(null),
   ])
     assert.equal(call(), false)
   assert.equal(socket.ws.packets.length, 0)
-  // Engine teardown must undo voice overrides even when scripts exhausted their tick budget.
+  // Engine teardown must undo voice overrides and give back the effect even when scripts exhausted their tick
+  // budget: those two writes are the engine's own.
   proxy.setVoiceLevel('global')
   cleanupPlayerProxy(proxy)
-  assert.equal(socket.ws.packets.length, 1)
+  assert.equal(effect.active, false)
+  assert.equal(socket.ws.packets.length, 2)
+  assert.deepEqual(
+    socket.ws.packets.map(packet => readPacket(packet)).find(([name]) => name === 'onEntityModified'),
+    ['onEntityModified', { id: socket.id, ef: null }]
+  )
   assert.equal(network.writer.state(socket.ws).queued > 0, true)
   assert.equal(network.send('chatAdded', { body: 'system' }), true)
-  assert.equal(socket.ws.packets.length, 2)
+  assert.equal(socket.ws.packets.length, 3)
   assert.equal(socket.ws.terminations, 0)
 })
 
@@ -478,4 +500,34 @@ test('writeLedger: explicit system option cannot bypass script attribution and c
     }, {}),
     false
   )
+})
+
+test('ServerNetwork.reserve: a packet is admitted once, when it is reserved, and sent later with the room it took', () => {
+  const network = makeNetwork()
+  const socket = addSocket(network)
+  const data = { id: socket.id, ef: { freeze: true } }
+  const size = writePacket('entityModified', data).length
+  network.asScript(
+    () => {
+      // room for exactly one such packet is left in this tick
+      network.writer.prepare(bytes(SCRIPT_TICK_CAP - size), { script: true })
+      const send = network.reserve('entityModified', data)
+      assert.equal(typeof send, 'function')
+      // it holds its room from now on: a second one is refused, and nothing was written yet
+      assert.equal(network.reserve('entityModified', data), null)
+      assert.equal(socket.ws.packets.length, 0)
+      // sending it does not ask for the room again
+      assert.equal(send(), 'delivered')
+    },
+    { id: 'script' },
+    'reserve'
+  )
+  assert.deepEqual(
+    socket.ws.packets.map(packet => readPacket(packet)),
+    [['onEntityModified', data]]
+  )
+  // outside a script it is the engine's write, which the tick's room for scripts does not concern
+  const engine = network.reserve('entityModified', data)
+  assert.equal(engine(), 'delivered')
+  assert.equal(socket.ws.packets.length, 2)
 })

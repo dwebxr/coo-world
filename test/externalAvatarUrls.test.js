@@ -2,6 +2,7 @@
 // isExternalUrl and the rule in sanitizePlayerSelfModify; ServerNetwork onEntityModified and onConnection;
 // createPlayerProxy on the server). A file of the world's own store: anyone. A url outside the world: a builder, or
 // the very url a server script chose for that player.
+import { reserveLike } from './lib/effectPlayer.mjs'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -714,7 +715,7 @@ const demotions = {
   'the token grant ends': {
     make: who => {
       who.player.data.rank = Ranks.BUILDER
-      who.player.data.tokenGrantedRank = true
+      who.player.tokenGrantedRank = true
     },
     lower: (w, who) => w.f.network.onRevokeBuilderByToken(who.socket, {}),
   },
@@ -811,6 +812,7 @@ function serverProxy() {
       // (the real one also counts what the call wrote against the script's budget)
       asScript: fn => fn(),
       broadcast: (name, data) => (sent.push([name, data]), 'delivered'),
+      reserve: reserveLike,
       send: (name, data) => (sent.push([name, data]), true),
       sendTo: (id, name, data) => (sent.push([name, data, id]), true),
     },

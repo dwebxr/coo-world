@@ -20,8 +20,8 @@ import { clientIpKey } from './uploadLimits.js'
 //   keeps and parses a body of REPORT_MAX_BYTES at most, as sent: a compressed body is refused (415) and never
 //   decompressed (a browser does not compress a report, and a decompressor reads input that the byte count never
 //   sees). KINDS_MAX different lines an hour, each written when first seen and again at 10, 100, 1000 … of the
-//   same; one line of totals when an hour with posts has passed (written when the next post comes: there is no
-//   timer).
+//   same; one line of totals when an hour that had a report or a post over the rate has passed (written when the
+//   next post comes: there is no timer).
 // - a post refused for the rate, its encoding, its type or its length is answered with `Connection: close`, so that
 //   the HTTP layer does not read the body to its end for the sake of a next request. That is a courtesy to the
 //   server, not a limit: bytes sent on a connection are read and thrown away in cases no route sees or decides, here

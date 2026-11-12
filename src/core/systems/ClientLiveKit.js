@@ -625,7 +625,7 @@ function createPlayerScreen({ world, playerId, targetId, track }) {
     return true
     // return elem.currentTime > 0 && !elem.paused && !elem.ended && elem.readyState > 2
   }
-  function play(restartIfPlaying = false) {
+  function play(_restartIfPlaying = false) {
     // if (restartIfPlaying) elem.currentTime = 0
     // elem.play()
   }

@@ -8,7 +8,7 @@ import { createNode } from '../extras/createNode'
 import { bindRotations } from '../extras/bindRotations'
 import { simpleCamLerp } from '../extras/simpleCamLerp'
 import { ControlPriorities } from '../extras/ControlPriorities'
-import { isBoolean, isNumber } from 'lodash-es'
+import { isBoolean } from 'lodash-es'
 import { Modes } from '../extras/locomotionModes'
 import { outranks, isAdmin, isBuilder, isMuted } from '../extras/playerRanks'
 import { createPlayerAura, chatBubble } from '../extras/playerAura'
@@ -307,7 +307,6 @@ export class PlayerLocal extends Entity {
     // go straight through it. It has to be almost perfectly head on, a slight angle and everything works fine.
     // I spent days trying to figure out why, it's not CCD, it's not contact offsets, its just straight up bugged.
     // For now the best solution is to just add a sphere right in the center of our capsule to keep that problem at bay.
-    let shape2
     {
       // const geometry = new PHYSX.PxSphereGeometry(radius)
       // shape2 = this.world.physics.physics.createShape(geometry, this.material, true, flags)
@@ -460,8 +459,6 @@ export class PlayerLocal extends Entity {
   }
 
   fixedUpdate(delta) {
-    const xr = this.isXR
-    const freeze = this.data.effect?.freeze
     const anchor = this.getAnchorMatrix()
     let snare = this.data.effect?.snare
     if (!Number.isFinite(snare) || snare < 0 || snare > 1) snare = 0

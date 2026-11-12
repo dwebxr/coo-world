@@ -9,12 +9,12 @@ export class Entity {
     }
   }
 
-  modify(data) {
+  modify(_data) {
     // called when remote receives entity changes
     // or applying local changes
   }
 
-  onEvent(version, name, data, networkId) {
+  onEvent(_version, _name, _data, _networkId) {
     // ...
   }
 
@@ -22,7 +22,7 @@ export class Entity {
     return this.data
   }
 
-  destroy(local) {
+  destroy(_local) {
     // ...
   }
 }

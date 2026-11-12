@@ -96,7 +96,7 @@ export class Stage extends System {
     this.scene.add(this.world.rig)
   }
 
-  update(delta) {
+  update(_delta) {
     this.models.forEach(model => model.clean())
   }
 

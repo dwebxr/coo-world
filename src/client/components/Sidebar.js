@@ -1,34 +1,27 @@
 import { css } from '@firebolt-dev/css'
-import { MenuIcon, MicIcon, MicOffIcon, SettingsIcon, VRIcon } from './Icons'
+import { MenuIcon, MicIcon, MicOffIcon, VRIcon } from './Icons'
 import {
-  BookTextIcon,
   BoxIcon,
-  ChevronDownIcon,
   ChevronsUpDownIcon,
   CirclePlusIcon,
   CodeIcon,
   DownloadIcon,
   EarthIcon,
   UsersIcon,
-  InfoIcon,
   LayersIcon,
   ListTreeIcon,
   LoaderPinwheelIcon,
   MessageSquareTextIcon,
-  Move3DIcon,
   OctagonXIcon,
   PinIcon,
   RocketIcon,
   SaveIcon,
   SearchIcon,
   SparkleIcon,
-  SquareCheckBigIcon,
-  SquareIcon,
   SquareMenuIcon,
   TagIcon,
   Trash2Icon,
   UserXIcon,
-  ShieldBanIcon,
   Volume2Icon,
   HammerIcon,
   CircleArrowRightIcon,
@@ -88,7 +81,7 @@ backdrop-filter: blur(5px);
 
 export function Sidebar({ world, ui }) {
   const player = world.entities.player
-  const { isAdmin, isBuilder } = useRank(world, player)
+  const { isBuilder } = useRank(world, player)
   const [livekit, setLiveKit] = useState(() => world.livekit.status)
   useEffect(() => {
     const onLiveKitStatus = status => {
@@ -339,33 +332,6 @@ function Btn({ disabled, suspended, active, muted, children, ...props }) {
   )
 }
 
-function Content({ width = '20rem', hidden, children }) {
-  return (
-    <div
-      className={cls('sidebar-content', { hidden })}
-      css={css`
-        width: ${width};
-        pointer-events: auto;
-        .sidebar-content-main {
-          background: rgba(11, 10, 21, 0.85);
-          border: 0.0625rem solid #2a2b39;
-          backdrop-filter: blur(5px);
-          border-radius: 1rem;
-          display: flex;
-          align-items: stretch;
-        }
-        &.hidden {
-          opacity: 0;
-          pointer-events: none;
-        }
-      `}
-    >
-      <div className='sidebar-content-main'>{children}</div>
-      <Hint />
-    </div>
-  )
-}
-
 function Pane({ width = '20rem', hidden, children }) {
   return (
     <div
@@ -449,7 +415,7 @@ const shadowOptions = [
 ]
 function Prefs({ world, hidden }) {
   const player = world.entities.player
-  const { isAdmin, isBuilder } = useRank(world, player)
+  const { isBuilder } = useRank(world, player)
   const [name, setName] = useState(() => player.data.name)
   const [dpr, setDPR] = useState(world.prefs.dpr)
   const [shadows, setShadows] = useState(world.prefs.shadows)
@@ -461,16 +427,14 @@ function Prefs({ world, hidden }) {
   const [voice, setVoice] = useState(world.prefs.voice)
   const [lipsync, setLipsync] = useState(world.prefs.lipsync)
   const [ui, setUI] = useState(world.prefs.ui)
-  const [canFullscreen, isFullscreen, toggleFullscreen] = useFullscreen()
+  const [, isFullscreen, toggleFullscreen] = useFullscreen()
   const [actions, setActions] = useState(world.prefs.actions)
-  const [stats, setStats] = useState(world.prefs.stats)
+  const [, setStats] = useState(world.prefs.stats)
   const changeName = name => {
     if (!name) return setName(player.data.name)
     player.setName(name)
   }
   const dprOptions = useMemo(() => {
-    const width = world.graphics.width
-    const height = world.graphics.height
     const dpr = window.devicePixelRatio
     const options = []
     const add = (label, dpr) => {
@@ -649,11 +613,6 @@ const voiceChatOptions = [
   { label: 'Disabled', value: 'disabled' },
   { label: 'Spatial', value: 'spatial' },
   { label: 'Global', value: 'global' },
-]
-const rankOptions = [
-  { label: 'Admins', value: 2 },
-  { label: 'Builders', value: 1 },
-  { label: 'Visitors', value: 0 },
 ]
 function World({ world, hidden }) {
   const player = world.entities.player
@@ -900,7 +859,7 @@ function Apps({ world, hidden }) {
         <div
           ref={contentRef}
           className='apps-content noscrollbar'
-          onScroll={e => {
+          onScroll={_e => {
             appsState.scrollTop = contentRef.current.scrollTop
           }}
         >
@@ -1530,9 +1489,7 @@ function Script({ world, hidden }) {
     const elem = resizeRef.current
     const container = containerRef.current
     container.style.width = `${storage.get('code-editor-width', 500)}px`
-    let active
     function onPointerDown(e) {
-      active = true
       elem.addEventListener('pointermove', onPointerMove)
       elem.addEventListener('pointerup', onPointerUp)
       e.currentTarget.setPointerCapture(e.pointerId)

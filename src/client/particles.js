@@ -16,10 +16,8 @@ const v1 = new Vector3()
 const v2 = new Vector3()
 const v3 = new Vector3()
 const v4 = new Vector3()
-const v5 = new Vector3()
 const q1 = new Quaternion()
 const q2 = new Quaternion()
-const q3 = new Quaternion()
 const m1 = new Matrix4()
 const color1 = new Color()
 
@@ -67,7 +65,6 @@ function createEmitter(config) {
   let elapsed = 0
   const duration = config.duration
   let newParticlesByTime = 0
-  const newParticlesByDist = 0
   let emitting = config.emitting
   let bursts = config.bursts.slice()
   let ended = false
@@ -646,7 +643,6 @@ function toRGB(color) {
 
 function createShape(config) {
   const [type, ...args] = config
-  const v = new Vector3()
   const normal = new Vector3()
 
   switch (type) {

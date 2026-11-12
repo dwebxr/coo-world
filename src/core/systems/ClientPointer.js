@@ -34,7 +34,7 @@ export class ClientPointer extends System {
 
   // the pointer path runs host code over script-owned nodes (hit resolution, cursors, callbacks): if it throws,
   // the hit node's app crashes, the path is reset and the frame goes on
-  update(delta) {
+  update(_delta) {
     try {
       this.updatePointer()
     } catch (err) {

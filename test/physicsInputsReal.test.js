@@ -449,7 +449,6 @@ probe(
 )
 
 function legit({ B, root, step }) {
-  const V = (x, y, z) => new B.THREE.Vector3(x, y, z)
   const bounds = actor => {
     const b = actor.getWorldBounds()
     return [b.maximum.x - b.minimum.x, b.maximum.y - b.minimum.y, b.maximum.z - b.minimum.z]

@@ -1,12 +1,11 @@
 import fs from 'fs-extra'
-import path from 'path'
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js'
 // import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { GLTFLoader } from '../libs/gltfloader/GLTFLoader.js'
 // import { VRMLoaderPlugin } from '@pixiv/three-vrm'
 
 import { System } from './System'
-import { createVRMFactory } from '../extras/createVRMFactory'
+import '../extras/createVRMFactory'
 import { glbToNodes } from '../extras/glbToNodes'
 import { createNode } from '../extras/createNode'
 import { createEmoteFactory } from '../extras/createEmoteFactory'

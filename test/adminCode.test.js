@@ -475,7 +475,7 @@ test('the addresses a summary line tells apart are bounded', () => {
     code: 'a-code-long-enough-for-this',
     now: () => time,
     log: line => lines.push(line),
-    schedule: (fn, ms) => {
+    schedule: (fn, _ms) => {
       tasks.push(fn)
       return () => {}
     },

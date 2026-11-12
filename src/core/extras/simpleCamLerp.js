@@ -8,7 +8,6 @@ const v1 = new THREE.Vector3()
 let sweepGeometry
 
 const smoothing = 20
-const MAX_CAM_DISTANCE = 0.4
 
 export function simpleCamLerp(world, camera, target, delta) {
   // interpolate camera rotation

@@ -6,7 +6,7 @@ import { System } from './System'
 import { createJWT, expiredSessionUser, readJWT } from '../utils-server'
 import { isNumber } from 'lodash-es'
 import { appPersistenceData, persistenceRecord } from '../extras/persistenceRecord.js'
-import * as THREE from '../extras/three'
+import '../extras/three'
 import { hasRank, Ranks } from '../extras/ranks'
 import {
   PLAYER_NAME_MAX_LENGTH,
@@ -374,7 +374,7 @@ export class ServerNetwork extends System {
       ws.on('pong', onPong)
       ws.on('close', onClose)
       socket.probing = probe
-      const deadline = setTimeout(() => {
+      setTimeout(() => {
         unmark()
         finish(false)
       }, ms)
@@ -1332,7 +1332,7 @@ export class ServerNetwork extends System {
     // handle slash commands
     const player = socket.player
     const playerId = player.data.id
-    const [cmd, arg1, arg2] = args
+    const [cmd, arg1] = args
     // The admin command (chatCommand.js, as the client decides it): it is never handed on as a command event (the
     // code is in it). A wrong code is answered and, past a few, slowed down (adminCode.js); this socket's line only,
     // never a broadcast.
@@ -2698,7 +2698,7 @@ export class ServerNetwork extends System {
     socket.send('pong', time)
   }
 
-  onDisconnect = (socket, code) => {
+  onDisconnect = (socket, _code) => {
     socket.disconnected = true
     this.dropTipTickets(socket)
     this.scheduler.purge(socket)

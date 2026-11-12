@@ -161,7 +161,6 @@ class LFSR {
   }
   shift() {
     const tapsNum = this.taps.length
-    let i
     let bit = this.register >> (this.n - this.taps[0])
     for (let i = 1; i < tapsNum; i++) {
       bit = bit ^ (this.register >> (this.n - this.taps[i]))

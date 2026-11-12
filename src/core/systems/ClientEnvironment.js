@@ -233,11 +233,11 @@ export class ClientEnvironment extends System {
     }
   }
 
-  update(delta) {
+  update(_delta) {
     this.csm.update()
   }
 
-  lateUpdate(delta) {
+  lateUpdate(_delta) {
     this.sky.position.x = this.world.rig.position.x
     this.sky.position.z = this.world.rig.position.z
     this.sky.matrixWorld.setPosition(this.sky.position)

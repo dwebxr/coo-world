@@ -1,4 +1,3 @@
-import { num } from '../utils'
 import { System } from './System'
 
 const TICK_RATE = 1 / 30

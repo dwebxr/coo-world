@@ -11,9 +11,6 @@ import { collectMouthBinds, createMouth } from './vrmMouth'
 const v1 = new THREE.Vector3()
 const v2 = new THREE.Vector3()
 const q1 = new THREE.Quaternion()
-const m1 = new THREE.Matrix4()
-
-const FORWARD = new THREE.Vector3(0, 0, -1)
 
 const DIST_MIN_RATE = 1 / 5 // 5 times per second
 const DIST_MAX_RATE = 1 / 60 // 40 times per second
@@ -223,7 +220,6 @@ export function createVRMFactory(glb, setupMaterial) {
     const vrm = cloneGLB(glb)
     // before the root bone leaves the clone: until then its traversal order matches the template
     const mouth = createMouth(vrm.scene, mouthBinds)
-    const tvrm = vrm.userData.vrm
     const skinnedMeshes = getSkinnedMeshes(vrm.scene)
     const skeleton = skinnedMeshes[0].skeleton // should be same across all skinnedMeshes
     // the root above the hips (checked at load), not the first joint: the joints may be listed in any order
@@ -551,17 +547,6 @@ export function createVRMFactory(glb, setupMaterial) {
         bone.updateMatrixWorld(true)
       }
     })()
-
-    // position target equivalent of aimBone()
-    const aimBoneDir = new THREE.Vector3()
-    function aimBoneAt(boneName, targetPos, delta, options = {}) {
-      const bone = findBone(boneName)
-      if (!bone) return console.warn(`aimBone: missing bone (${boneName})`)
-      const boneWorldMatrix = getBoneTransform(boneName)
-      const boneWorldPos = v1.setFromMatrixPosition(boneWorldMatrix)
-      aimBoneDir.subVectors(targetPos, boneWorldPos).normalize()
-      aimBone(boneName, aimBoneDir, delta, options)
-    }
 
     // hooks.loader.load('emote', 'asset://rifle-aim.glb').then(emo => {
     //   const clip = emo.toClip({

@@ -1,17 +1,13 @@
 import { css } from '@firebolt-dev/css'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   BoxIcon,
   BrickWallIcon,
   CrosshairIcon,
-  EyeIcon,
-  EyeOffIcon,
   FileCode2Icon,
   HardDriveIcon,
   HashIcon,
   OctagonXIcon,
-  Rows3Icon,
-  SettingsIcon,
   TriangleIcon,
 } from 'lucide-react'
 

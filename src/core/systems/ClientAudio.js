@@ -93,7 +93,7 @@ export class ClientAudio extends System {
             video.remove()
             console.log('[audio] video played')
           })
-          .catch(err => {
+          .catch(_err => {
             console.log('[audio] video failed')
           })
       } catch (err) {

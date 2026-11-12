@@ -79,7 +79,7 @@ test('kick: KICK_MINUTES=0 only disconnects', async t => {
 test('kick and mute: only a player who outranks the target, by the rank the players pane shows', async () => {
   const { f, muted, enter } = await stage()
   const admin = await enter('admin', Ranks.ADMIN)
-  const admin2 = await enter('admin2', Ranks.ADMIN)
+  await enter('admin2', Ranks.ADMIN)
   const builder = await enter('builder1', Ranks.BUILDER)
   const visitor = await enter('visitor', Ranks.VISITOR)
   const visitor2 = await enter('visitor2', Ranks.VISITOR)

@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import Anthropic, { toFile } from '@anthropic-ai/sdk'
+import Anthropic from '@anthropic-ai/sdk'
 import { OpenAI } from 'openai'
 
 import { System } from './System'

@@ -555,7 +555,7 @@ export class Node {
     // called when transforms are ready and this thing should be added to the scene
   }
 
-  commit(didTransform) {
+  commit(_didTransform) {
     // called when dirty (either transform changed or node-specific)
     // if the transform changed it should be moved in the same (this.matrixWorld)
   }
@@ -654,7 +654,7 @@ export class Node {
     return stats
   }
 
-  applyStats(stats) {
+  applyStats(_stats) {
     // nodes should override this and add their stats
   }
 

@@ -19,7 +19,7 @@ import {
   isJustifyContent,
   JustifyContent,
 } from '../extras/yoga'
-import CustomShaderMaterial from '../libs/three-custom-shader-material'
+import '../libs/three-custom-shader-material'
 import { borderRoundRect } from '../extras/borderRoundRect'
 import { clamp } from '../utils'
 
@@ -28,16 +28,11 @@ const v2 = new THREE.Vector3()
 const v3 = new THREE.Vector3()
 const v4 = new THREE.Vector3()
 const v5 = new THREE.Vector3()
-const v6 = new THREE.Vector3()
 const q1 = new THREE.Quaternion()
-const q2 = new THREE.Quaternion()
 const e1 = new THREE.Euler(0, 0, 0, 'YXZ')
 const m1 = new THREE.Matrix4()
 
 const FORWARD = new THREE.Vector3(0, 0, 1)
-
-const iQuaternion = new THREE.Quaternion(0, 0, 0, 1)
-const iScale = new THREE.Vector3(1, 1, 1)
 
 const isBrowser = typeof window !== 'undefined'
 
@@ -225,7 +220,7 @@ export class UI extends Node {
           hit.coords.x = x
           hit.coords.y = y
         }
-        const onPointerLeave = e => {
+        const onPointerLeave = _e => {
           hit = null
           world.pointer.setScreenHit(null)
         }
@@ -362,7 +357,7 @@ export class UI extends Node {
     }
   }
 
-  lateUpdate(delta) {
+  lateUpdate(_delta) {
     if (this._space === 'world') {
       const world = this.ctx.world
       const camera = world.camera
@@ -1052,7 +1047,7 @@ function pivotGeometry(pivot, geometry, width, height) {
   }
 }
 
-function pivotCanvas(pivot, canvas, width, height) {
+function pivotCanvas(pivot, canvas, _width, _height) {
   // const halfWidth = width / 2
   // const halfHeight = height / 2
   switch (pivot) {

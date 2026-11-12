@@ -113,7 +113,7 @@ CHANGELOG.md       - Version history and changes
 
 ## 🔐 Solana Token Gating
 
-This world implements token gating via Solana wallet connection. Users holding a specified amount of a particular token are automatically granted builder permissions.
+This world implements token gating via Solana wallet connection. A visitor whose verified wallet holds the required amount of a token is made a builder for the session.
 
 ### Try it Live (Coo World)
 
@@ -129,26 +129,35 @@ Connect a Solana wallet holding **100,000 COO** tokens to receive builder permis
 Add the following environment variables to your `.env` file:
 
 ```bash
+# Token mint address (SPL token address). Setting it turns token gating on
+PUBLIC_TOKEN_MINT=8MXWPUCmxtmaxNSmAve3YvQNAKmAbZJ1XxSnrqN9pump
+
 # Solana RPC URL (Helius recommended). Server only: it is never sent to browsers
 SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_API_KEY
 
-# Token mint address (SPL token address)
-PUBLIC_TOKEN_MINT=8MXWPUCmxtmaxNSmAve3YvQNAKmAbZJ1XxSnrqN9pump
-
-# Required token amount for builder permissions
+# Required token amount for builder permissions: a number above 0
 PUBLIC_REQUIRED_TOKEN_AMOUNT=100000
 
 # Token decimals
 PUBLIC_TOKEN_DECIMALS=6
 ```
 
+- **`PUBLIC_REQUIRED_TOKEN_AMOUNT`** is a number above 0. When the line is absent it is 10,000. When it is empty, `0`, negative or not a number (`100,000`), wallets are still verified and scripts can still read balances, but no wallet is granted builder access: the wallet panel and a chat line say so, and the server logs an error at start-up. (An empty value used to read as 0, which made every verified wallet a builder, also one that never held the token.)
+- **`SOLANA_RPC_URL`** has no fallback. Without it (and without the deprecated `PUBLIC_RPC_URL`) no node is asked: every balance is unknown, nothing is granted, and the server logs an error at start-up. (It used to ask the public devnet node, which is another chain.)
+- **The RPC is believed.** Whoever answers at that URL, or can change its answers on the way, decides which wallets are builders. Use `https` and a provider you trust.
+
 ### Features
 
 - **Connect Wallet**: Connect Solana wallets like Phantom
 - **Server-Side Balance Check**: The server reads the token balance; browsers never contact the RPC
-- **Automatic Permission Grant**: Builder permissions are automatically granted when holding the required token amount
+- **Automatic Permission Grant**: Builder permissions are granted when the wallet is verified (a signature, no transaction) and its balance, read at that moment, is at least the required amount
 - **Session-Only**: Permissions granted via token are valid only for the current session (reset on reload)
-- **Wallet Disconnect**: Builder permissions are automatically revoked when wallet is disconnected
+
+### What ends a grant, and what does not
+
+- **Ends it**: the page reporting that the wallet was disconnected or its account changed; a new wallet sign-in on the same connection (the rank is gone as soon as the sign-in starts, and comes back when the new signature is verified and the balance read again); a reload; the connection ending.
+- **Does not end it**: the tokens leaving the wallet. The balance is read when the grant is made and not again, so a wallet that sells or moves its tokens stays a builder until its session ends, and the same tokens moved to a second wallet can make that one a builder too. The disconnect report comes from the page: a visitor who changes the page does not send it.
+- So the gate shows that a wallet held the amount at one moment, not that it holds it. What a builder made stays in the world when the grant ends.
 
 ### Notes
 

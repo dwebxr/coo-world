@@ -367,7 +367,6 @@ test('RPC: URL precedence and one boot fallback warning', async () => {
   for (const [env, explicit, expected, warningCount] of [
     [{ SOLANA_RPC_URL: url, PUBLIC_RPC_URL: 'https://legacy.invalid/' }, undefined, url, 0],
     [{ PUBLIC_RPC_URL: url }, undefined, url, 1],
-    [{}, undefined, 'https://api.devnet.solana.com/', 0],
     [{ SOLANA_RPC_URL: 'https://server.invalid/' }, url, url, 0],
   ]) {
     const warnings = []
@@ -394,13 +393,40 @@ test('RPC: invalid URL fails closed with one redacted boot error', async () => {
       log: { error: message => errors.push(message), warn: () => assert.fail('must not use fallback') },
     })
     assert.equal(errors.length, 1)
-    await assert.rejects(f.readRaw(wallet), /invalid RPC URL/)
-    await assert.rejects(f.readRaw(wallet), /invalid RPC URL/)
+    assert.equal(errors[0], '[solanaRpc] invalid RPC URL; balance reads disabled')
+    await assert.rejects(f.readRaw(wallet), /no usable RPC URL/)
+    await assert.rejects(f.readRaw(wallet), /no usable RPC URL/)
     const service = createTokenBalanceService({ readRaw: f.readRaw, decimals: 6 })
     assert.deepEqual(await service.get(wallet), { known: false })
     assert.equal(f.calls.length, 0)
     assert.equal(errors.length, 1)
     assert.ok(!errors[0].includes('secret'))
     assert.ok(!errors[0].includes(invalid))
+  }
+})
+
+test('RPC: no URL asks no node (it used to ask the public devnet one) and every balance is unknown', async () => {
+  for (const [env, explicit] of [
+    [{}, undefined],
+    [{ SOLANA_RPC_URL: '' }, undefined],
+    [{ SOLANA_RPC_URL: '', PUBLIC_RPC_URL: '' }, undefined],
+    [{ SOLANA_RPC_URL: url }, ''],
+  ]) {
+    const errors = []
+    const f = fixture(undefined, {
+      url: explicit,
+      env,
+      log: { error: message => errors.push(message), warn: () => assert.fail('nothing to fall back to') },
+    })
+    assert.deepEqual(errors, [
+      '[solanaRpc] no SOLANA_RPC_URL; balances are unknown and no wallet is granted builder access by token',
+    ])
+    await assert.rejects(f.readRaw(wallet), /no usable RPC URL/)
+    const service = createTokenBalanceService({ readRaw: f.readRaw, decimals: 6 })
+    // unknown, not a known 0: a wallet is not told that it holds nothing
+    assert.deepEqual(await service.get(wallet), { known: false })
+    assert.deepEqual(await service.get(wallet, { fresh: true }), { known: false })
+    assert.equal(f.calls.length, 0, 'no request left the process')
+    assert.equal(errors.length, 1)
   }
 })

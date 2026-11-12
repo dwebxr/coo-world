@@ -1,13 +1,23 @@
 import { PublicKey } from '@solana/web3.js'
 import nacl from 'tweetnacl'
-
-const numOr = (v, d) => {
-  const n = Number(v)
-  return Number.isFinite(n) ? n : d
-}
+import { parseRequiredTokenAmount } from '../core/extras/tokenRequirement.js'
 
 export const TOKEN_GATING_ENABLED = !!process.env.PUBLIC_TOKEN_MINT
-export const REQUIRED_TOKEN_AMOUNT = numOr(process.env.PUBLIC_REQUIRED_TOKEN_AMOUNT, 10000)
+
+// null when PUBLIC_REQUIRED_TOKEN_AMOUNT is set to something that is not a number above 0: wallets are still
+// verified and balances still read, but nobody is granted builder access by token (ServerNetwork checks the
+// amount again where it grants). The value is not printed.
+export function readRequiredTokenAmount(env = process.env, log = console) {
+  const amount = parseRequiredTokenAmount(env.PUBLIC_REQUIRED_TOKEN_AMOUNT)
+  if (amount === null && env.PUBLIC_TOKEN_MINT) {
+    log.error(
+      '[solana] PUBLIC_REQUIRED_TOKEN_AMOUNT is not a number above 0: no wallet is granted builder access by token'
+    )
+  }
+  return amount
+}
+
+export const REQUIRED_TOKEN_AMOUNT = readRequiredTokenAmount()
 export const CHALLENGE_TTL_MS = 60_000
 export const CHALLENGE_COOLDOWN_MS = 5_000
 export const BUILDER_RECHECK_MS = 10_000

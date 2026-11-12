@@ -1572,6 +1572,9 @@ export class ServerNetwork extends System {
     const wasVerified = !!state.verified
     this.invalidateWallet(socket, { clearVerified: true })
     if (wasVerified) socket.send('walletStatus', { verified: false })
+    // a new sign-in takes the verification away, and the grant made on it goes with it: the rank used to stay
+    // with a session that no longer had a verified wallet. A request refused by the cooldown above changes nothing
+    this.endTokenGrant(socket, 'Signing in with a wallet again: builder access removed until the wallet is verified.')
     state.lastChallengeAt = now
     state.challengeCooldownReplied = false
     const challenge = solanaGating.buildChallenge(walletAddress, solanaGating.WALLET_HOST, now, solanaGating.WALLET_URI)
@@ -1619,6 +1622,20 @@ export class ServerNetwork extends System {
   async checkBuilderBalance(socket, notifyInsufficient) {
     const player = socket.player
     const { generation, verified: walletAddress } = socket.wallet
+    // checked here, where the grant is made, and not only where the setting is read: with an amount of 0 a known
+    // balance of 0 (a wallet without a token account) would be enough. The chain is not asked
+    const required = solanaGating.REQUIRED_TOKEN_AMOUNT
+    if (!(Number.isFinite(required) && required > 0)) {
+      if (notifyInsufficient) {
+        socket.send('chatAdded', {
+          id: uuid(),
+          kind: 'system',
+          body: 'Wallet verified. Builder access by token is not set up in this world.',
+          createdAt: moment().toISOString(),
+        })
+      }
+      return
+    }
     const revision = player.rankRevision
     let result = { known: false }
     if (!player.rankWritesPending) {
@@ -1632,16 +1649,16 @@ export class ServerNetwork extends System {
     if (!(player.data.rank < Ranks.BUILDER)) return
     if (player.rankWritesPending) result = { known: false }
     let body
-    if (result.known && result.balance >= solanaGating.REQUIRED_TOKEN_AMOUNT) {
+    if (result.known && result.balance >= required) {
       if (!grantTokenRank({ socket, player, walletAddress, wallets: solanaGating })) return
       const rank = Ranks.BUILDER
       player.rankRevision++
       player.modify({ rank })
       this.send('entityModified', { id: player.data.id, rank })
       body = `Token verified! Builder access granted (${Number(result.balance).toLocaleString()} tokens)`
-    } else if (result.known && result.balance < solanaGating.REQUIRED_TOKEN_AMOUNT) {
+    } else if (result.known && result.balance < required) {
       if (!notifyInsufficient) return
-      body = `Builder access requires ${solanaGating.REQUIRED_TOKEN_AMOUNT.toLocaleString()} tokens (current: ${Number(result.balance).toLocaleString()})`
+      body = `Builder access requires ${required.toLocaleString()} tokens (current: ${Number(result.balance).toLocaleString()})`
     } else {
       body = 'Could not check your balance. Press refresh in a moment.'
     }
@@ -1710,22 +1727,23 @@ export class ServerNetwork extends System {
     this.invalidateWallet(socket, { clearVerified: true })
     if (!this.current(socket, state.generation, socket.player)) return
     if (changed) socket.send('walletStatus', { verified: false })
+    this.endTokenGrant(socket, 'Wallet disconnected: builder access removed.')
+  }
+
+  // takes back a builder rank that was granted for a token balance in this session, and says so to that player.
+  // A rank that is stored (given by an admin, or by the admin code) is not a grant and is left alone
+  endTokenGrant(socket, body) {
     const player = socket.player
-    if (!player) return
-    if (player.data.rank === Ranks.BUILDER && player.data.tokenGrantedRank) {
-      const rank = Ranks.VISITOR
-      player.rankRevision++
-      player.modify({ rank })
-      revokeTokenRank({ socket, player, wallets: solanaGating })
-      this.send('entityModified', { id: player.data.id, rank })
-      this.dropBuilderUrls(player)
-      socket.send('chatAdded', {
-        id: uuid(),
-        kind: 'system',
-        body: 'Wallet disconnected: builder access removed.',
-        createdAt: moment().toISOString(),
-      })
-    }
+    if (!player) return false
+    if (!(player.data.rank === Ranks.BUILDER && player.data.tokenGrantedRank)) return false
+    const rank = Ranks.VISITOR
+    player.rankRevision++
+    player.modify({ rank })
+    revokeTokenRank({ socket, player, wallets: solanaGating })
+    this.send('entityModified', { id: player.data.id, rank })
+    this.dropBuilderUrls(player)
+    socket.send('chatAdded', { id: uuid(), kind: 'system', body, createdAt: moment().toISOString() })
+    return true
   }
 
   // EVM (SIWE) の所有証明。Solana の socket.wallet とは世代もクールダウンも独立させ、互いの試行を取り消さない。

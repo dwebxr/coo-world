@@ -41,7 +41,10 @@ const clear = socket => {
   socket.ws.packets.length = 0
 }
 
-function fixture(t, { result = { known: true, balance: 0 } } = {}) {
+function fixture(t, options = {}) {
+  const { result = { known: true, balance: 0 } } = options
+  // REQUIRED_TOKEN_AMOUNT as the network sees it; `required: undefined` is passed on as undefined
+  const required = 'required' in options ? options.required : 10000
   t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 })
   const calls = []
   const users = new Map()
@@ -56,7 +59,10 @@ function fixture(t, { result = { known: true, balance: 0 } } = {}) {
   }
   const network = makeNetwork(() => {}, {
     tokenBalanceService: service,
-    context: { solanaGating: enabled, process: { env: { ADMIN_CODE: 'code' } } },
+    context: {
+      solanaGating: { ...enabled, REQUIRED_TOKEN_AMOUNT: required },
+      process: { env: { ADMIN_CODE: 'code' } },
+    },
   })
   f.network = network
   network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
@@ -838,4 +844,126 @@ test('wallet compatibility: a pre-attempt client (protocol v2, release A) is ign
   assert.equal(socket.wallet.challenge, null)
   assert.equal(socket.wallet.generation, generation + 1)
   assert.equal(f.calls.length, 0)
+})
+
+for (const required of [null, 0, -1, NaN, Infinity, '10000', undefined]) {
+  const label = `${String(required)} (${typeof required})`
+  test(`wallet requirement: an amount of ${label} grants nothing and asks the chain nothing`, async t => {
+    // a balance that any usable amount would accept; with an amount of 0 even a wallet without a token account
+    // (a known balance of 0) used to be made a builder
+    const f = fixture(t, { required, result: { known: true, balance: 1e12 } })
+    const socket = await f.connect()
+    clear(socket)
+    await f.verify(socket)
+    assert.equal(socket.wallet.verified, address, 'the wallet is still verified')
+    assert.equal(socket.player.data.rank, Ranks.VISITOR)
+    assert.ok(!socket.player.data.tokenGrantedRank)
+    assert.equal(socket.player.rankRevision, 0)
+    assert.equal(gating.walletOf(socket.id), null)
+    assert.equal(f.calls.length, 0, 'no balance read')
+    assert.deepEqual(replies(socket, 'onEntityModified'), [])
+    assert.deepEqual(
+      replies(socket, 'onChatAdded').map(chat => chat.body),
+      ['Wallet verified. Builder access by token is not set up in this world.']
+    )
+    // the refresh button: silent, and still no read
+    clear(socket)
+    f.advance(10000)
+    await f.network.onRequestBuilderRecheck(socket, {})
+    assert.deepEqual(packets(socket), [])
+    assert.equal(f.calls.length, 0)
+    assert.equal(socket.player.data.rank, Ranks.VISITOR)
+    // a script's balance question is not the grant and is still answered
+    f.network.onTokenBalanceRequest(socket, { id: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    assert.deepEqual(replies(socket, 'onTokenBalance'), [{ id: 1, verified: true, known: true, balance: 1e12 }])
+  })
+}
+
+test('wallet requirement: the smallest usable amounts still grant at exactly that balance', async t => {
+  for (const [required, balance, granted] of [
+    [0.5, 0.5, true],
+    [0.5, 0.49, false],
+    [1, 0, false],
+    [Number.MIN_VALUE, 0, false],
+  ]) {
+    const f = fixture(t, { required, result: { known: true, balance } })
+    const socket = await f.connect()
+    await f.verify(socket)
+    assert.equal(socket.player.data.rank, granted ? Ranks.BUILDER : Ranks.VISITOR, `${required} / ${balance}`)
+    assert.equal(f.calls.length, 1)
+    socket.disconnect()
+    t.mock.timers.reset()
+  }
+})
+
+test('wallet grant: a new sign-in ends it, a request the cooldown refuses does not', async t => {
+  const f = fixture(t, { result: { known: true, balance: 10000 } })
+  const socket = await f.connect()
+  const watcher = await f.connect('watcher')
+  await f.verify(socket)
+  assert.equal(socket.player.data.rank, Ranks.BUILDER)
+  assert.equal(socket.player.data.tokenGrantedRank, true)
+  assert.equal(gating.walletOf(socket.id), address)
+  clear(socket)
+  clear(watcher)
+  // inside the cooldown: refused, and nothing is taken
+  f.network.onRequestBuilderNonce(socket, { walletAddress: address, attempt: 2 })
+  assert.deepEqual(packets(socket), [['onBuilderNonce', { attempt: 2, retryAfterMs: 5000 }]])
+  assert.equal(socket.player.data.rank, Ranks.BUILDER)
+  assert.equal(socket.wallet.verified, address)
+  assert.equal(gating.walletOf(socket.id), address)
+  // a malformed request: the same
+  f.advance(5000)
+  f.network.onRequestBuilderNonce(socket, { walletAddress: 'nope', attempt: 3 })
+  assert.equal(socket.player.data.rank, Ranks.BUILDER)
+  assert.equal(socket.wallet.verified, address)
+  clear(socket)
+  // an accepted one, here for another wallet: the verification is gone and the rank with it, before any signature
+  f.network.onRequestBuilderNonce(socket, { walletAddress: addressOf(keyB), attempt: 4 })
+  assert.equal(socket.wallet.verified, null)
+  assert.equal(socket.player.data.rank, Ranks.VISITOR)
+  assert.equal(socket.player.data.tokenGrantedRank, false)
+  assert.equal(socket.player.rankRevision, 2)
+  assert.equal(gating.walletOf(socket.id), null)
+  const sent = packets(socket)
+  assert.deepEqual(
+    sent.map(([name]) => name),
+    ['onWalletStatus', 'onEntityModified', 'onChatAdded', 'onBuilderNonce']
+  )
+  assert.deepEqual(sent[0][1], { verified: false })
+  assert.deepEqual(sent[1][1], { id: socket.player.data.id, rank: Ranks.VISITOR })
+  assert.equal(sent[2][1].body, 'Signing in with a wallet again: builder access removed until the wallet is verified.')
+  assert.deepEqual(replies(watcher, 'onEntityModified'), [{ id: socket.player.data.id, rank: Ranks.VISITOR }])
+  assert.deepEqual(replies(watcher, 'onChatAdded'), [], 'only that player is told')
+  // the signature for the new wallet is checked against the balance of the new wallet
+  f.result = { known: true, balance: 0 }
+  const calls = f.calls.length
+  const challenge = socket.wallet.challenge
+  await f.network.onRequestBuilderByToken(socket, {
+    walletAddress: addressOf(keyB),
+    attempt: 4,
+    nonce: challenge.nonce,
+    signature: Buffer.from(nacl.sign.detached(new TextEncoder().encode(challenge.message), keyB.secretKey)).toString(
+      'base64'
+    ),
+  })
+  assert.equal(socket.wallet.verified, addressOf(keyB))
+  assert.equal(f.calls.length, calls + 1)
+  assert.equal(f.calls.at(-1).wallet, addressOf(keyB))
+  assert.equal(socket.player.data.rank, Ranks.VISITOR)
+})
+
+test('wallet grant: a new sign-in leaves a stored rank alone', async t => {
+  const f = fixture(t, { result: { known: true, balance: 10000 } })
+  const socket = await f.connect('builder', Ranks.BUILDER)
+  await f.verify(socket)
+  clear(socket)
+  f.advance(5000)
+  f.challenge(socket, 2)
+  assert.equal(socket.player.data.rank, Ranks.BUILDER)
+  assert.equal(socket.player.rankRevision, 0)
+  assert.deepEqual(replies(socket, 'onEntityModified'), [])
+  assert.deepEqual(replies(socket, 'onChatAdded'), [])
 })

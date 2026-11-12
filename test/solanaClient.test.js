@@ -396,3 +396,20 @@ test('client: hex nonce and 1024-byte bounds; signing rejection', async t => {
     assert.equal(requests(h.world, 'RequestBuilderByToken').length, 0)
   }
 })
+
+test('client: the required amount is read as the server reads it', t => {
+  for (const [env, amount] of [
+    [{}, 10000],
+    [{ PUBLIC_REQUIRED_TOKEN_AMOUNT: '100000' }, 100000],
+    [{ PUBLIC_REQUIRED_TOKEN_AMOUNT: '0.5' }, 0.5],
+    // each of these was shown as "requires 0 tokens" or as 10,000 while the server granted to everyone or to nobody
+    [{ PUBLIC_REQUIRED_TOKEN_AMOUNT: '' }, null],
+    [{ PUBLIC_REQUIRED_TOKEN_AMOUNT: '0' }, null],
+    [{ PUBLIC_REQUIRED_TOKEN_AMOUNT: '-1' }, null],
+    [{ PUBLIC_REQUIRED_TOKEN_AMOUNT: '100,000' }, null],
+  ]) {
+    const h = setup(t, env)
+    assert.equal(h.solana.getRequiredTokenAmount(), amount, JSON.stringify(env))
+    assert.equal(h.solana.getConfig().requiredTokenAmount, amount)
+  }
+})

@@ -33,6 +33,7 @@ import { createEventLedger } from '../../src/core/extras/appEventQueue.js'
 import { applyInitials, copyFields, copyProps } from '../../src/core/extras/appFields.js'
 import { scriptChatMessage } from '../../src/core/extras/chatPolicy.js'
 import { createLogOnce } from '../../src/core/extras/logOnce.js'
+import { ACTION_BUDGETS, createActionBudgets } from '../../src/core/extras/actionBudget.js'
 import { callForScript, toScriptError } from '../../src/core/extras/scriptValues.js'
 import { stoppedError } from '../../src/core/extras/physicsFailure.js'
 import { eventPayload } from '../../src/core/extras/eventPayload.js'
@@ -127,6 +128,8 @@ export function loadClient(file, name, context = {}) {
     copyProps,
     scriptChatMessage,
     createLogOnce,
+    ACTION_BUDGETS,
+    createActionBudgets,
     toScriptError,
     callForScript,
     stoppedError,

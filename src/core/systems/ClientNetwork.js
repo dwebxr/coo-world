@@ -17,6 +17,7 @@ import { System } from './System'
 import { BUILDER_ONLY_PACKETS, packetByteLimit, packetNodeLimit } from '../extras/inboundPolicy'
 import { strictDecode } from '../extras/strictDecode'
 import { CHANGE_TOO_LARGE } from '../extras/clientPreflight'
+import { ACTION_BUDGETS, createActionBudgets } from '../extras/actionBudget'
 
 /**
  * Client Network System
@@ -88,7 +89,24 @@ export class ClientNetwork extends System {
       return false
     }
     this.ws.send(packet)
+    if (name === 'entityEvent') this.countEvent()
     return true
+  }
+
+  // Of the script events one connection sends (app.send), the server's apps take 320 a second, 1280 at once
+  // (actionBudget.js event), and drop what goes over without an answer: app.send has returned true by then. The
+  // same count is kept here to say so, once, in the console. An estimate, not the server's count: this is this
+  // client's clock and not the time the packets arrive, and every event sent is counted here, while the server
+  // counts those an app takes. The event has been sent either way.
+  countEvent() {
+    if (this.eventsWarned) return
+    this.eventEstimate ??= createActionBudgets({ event: ACTION_BUDGETS.event })
+    if (this.eventEstimate.spend(this, 'event', performance.now()).ok) return
+    this.eventsWarned = true
+    const { rate, burst } = ACTION_BUDGETS.event
+    console.warn(
+      `[network] this connection sends script events (app.send) faster than the server takes them from one connection (${rate} a second, ${burst} at once): by this client's count some may be dropped before the server script gets them. Send at a fixed rate, not on every frame.`
+    )
   }
 
   // uploads run one at a time per tab: the server admits one transfer per user. callers uploading a batch

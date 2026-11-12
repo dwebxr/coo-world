@@ -652,7 +652,15 @@ export class App extends Entity {
     // An optimistic upload can run its cached script before announcing the next blueprint version.
     const keep = version === latest + 1
     if (version > latest && (!keep || !meta?.builder)) return this.dropEvent('future version')
-    if (this.building || version > this.blueprint.version) {
+    const queued = this.building || version > this.blueprint.version
+    // On the server, an event from a connection that this app takes (it is kept for the build, or the script
+    // listens for its name) uses that connection's budget for script events (ServerNetwork.onEntityEvent `allow`,
+    // actionBudget.js). One over the budget is dropped here and counted with this app's other drops: the sending
+    // script is not told. An event nothing listens to uses none
+    if ((queued || this.listeners[name]?.size) && meta?.allow && !meta.allow()) {
+      return this.dropEvent('sender over its event budget')
+    }
+    if (queued) {
       this.eventQueue.push({ version, name, data, networkId }, meta, { keep, blueprintId: this.data.blueprint })
     } else {
       try {

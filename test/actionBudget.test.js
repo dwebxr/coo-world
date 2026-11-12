@@ -13,8 +13,34 @@ test('the budgets: one for each kind of thing a person does by hand', () => {
     command: { rate: 2, burst: 10 },
     settings: { rate: 5, burst: 30 },
     moderation: { rate: 2, burst: 10 },
+    event: { rate: 320, burst: 1280 },
   })
   assert.ok(Object.isFrozen(ACTION_BUDGETS) && Object.isFrozen(ACTION_BUDGETS.chat))
+  assert.ok(Object.isFrozen(ACTION_BUDGETS.event))
+})
+
+test('script events: 1280 at once, then 320 a second; two apps sending every frame at 144 Hz are never refused', () => {
+  const budgets = createActionBudgets()
+  const flooder = {}
+  assert.equal(spendMany(budgets, flooder, 'event', 1000, 5000), 1280, 'the burst')
+  assert.equal(spendMany(budgets, flooder, 'event', 1500, 5000), 160)
+  assert.equal(spendMany(budgets, flooder, 'event', 2500, 5000), 320)
+  assert.equal(spendMany(budgets, flooder, 'event', 2750, 5000), 80)
+  // a long quiet time refills to the burst and no further
+  assert.equal(spendMany(budgets, flooder, 'event', 10_000_000, 5000), 1280)
+  // 288 a second for a minute, two at each frame
+  const honest = {}
+  let refused = 0
+  for (let frame = 0; frame < 144 * 60; frame++) {
+    refused += 2 - spendMany(budgets, honest, 'event', (frame * 1000) / 144, 2)
+  }
+  assert.equal(refused, 0)
+  assert.equal(budgets.refused(honest, 'event'), 0)
+  // a thousand a second for a minute, as the inbound gate lets small packets through: the burst and the rate
+  const hostile = {}
+  let passed = 0
+  for (let ms = 0; ms < 60000; ms++) if (budgets.spend(hostile, 'event', ms).ok) passed++
+  assert.ok(Math.abs(passed - (1280 + 320 * 59.999)) <= 1, `${passed} passed`)
 })
 
 test('a burst is let through, then the rate; what waited is not lost beyond the burst', () => {

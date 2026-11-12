@@ -71,6 +71,56 @@ export function resolveOpenURL(url, { resolve, base, assetsUrl } = {}) {
   if (typeof resolved !== 'string') return null
   const target = parseURL(resolved, base)
   if (!target || !OPEN_PROTOCOLS.includes(target.protocol)) return null
+  // `https://this-world.example@other.example/` reads as this world and goes to the other host
+  if (target.username || target.password) return null
+  // DNS has no name longer than 253 characters (the dot of a fully qualified name not counted); a longer host
+  // is only there to fill the question
+  if (target.hostname.replace(/\.$/, '').length > OPEN_HOST_MAX) return null
   if (isAssetURL(target, base, assetsUrl)) return null
   return target.href
+}
+
+// What the visitor is shown before a script's link leaves the world's origin (scheme, host and port of the page).
+// `host` and `href` come from the URL parser: the host is lower case with international names in their ASCII
+// (xn--) form, and everything else that is not ASCII is percent-encoded, so neither can carry a look-alike letter
+// or a character that reorders the text. A long address is cut in what is shown, never in what is opened.
+export const OPEN_SHOWN_MAX = 300
+export const OPEN_HOST_MAX = 253
+
+export function describeOpenURL(href, base) {
+  const target = parseURL(href)
+  const page = base ? parseURL(base) : null
+  if (!target || !OPEN_PROTOCOLS.includes(target.protocol)) return null
+  return {
+    href: target.href,
+    host: target.host,
+    shown: target.href.length > OPEN_SHOWN_MAX ? `${target.href.slice(0, OPEN_SHOWN_MAX)}…` : target.href,
+    // a page this cannot place (no base) is treated as another site
+    external: !page || target.origin !== page.origin,
+  }
+}
+
+// The Open button of that question works only after the question has been on screen, untouched, for a moment: a
+// press before that is not an answer, and starts the moment again. A visitor who is clicking fast where the button
+// appears (a script can time the question, and can draw where it will appear) does not answer it by those clicks.
+// This is a hurdle against an accidental answer, not a judgement of the page that is opened.
+export const OPEN_ARM_MS = 1000
+
+export function createOpenGuard(now, delayMs = OPEN_ARM_MS) {
+  let since = now
+  return {
+    armed: at => at - since >= delayMs,
+    // true when this press is an answer; false when it came too soon (and the wait starts over)
+    press(at) {
+      if (at - since >= delayMs) return true
+      since = at
+      return false
+    },
+    // ms until the button works, as of `at`
+    remaining: at => Math.max(0, delayMs - (at - since)),
+    // the question came (back) into view: time it spent where the visitor could not see it does not count
+    restart(at) {
+      since = at
+    },
+  }
 }

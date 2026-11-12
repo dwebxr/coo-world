@@ -26,6 +26,7 @@ import { WalletButton } from './WalletButton'
 import { toText } from '../../core/extras/scriptText'
 import { cssImage } from '../../core/extras/cssImage'
 import { ErrorBoundary } from './ErrorBoundary'
+import { LinkConfirm } from './LinkConfirm'
 import { CHAT_APP_NAME_MAX_LENGTH, CHAT_BODY_MAX_LENGTH } from '../../core/extras/chatPolicy'
 import { NAME_MAX_LENGTH } from '../../core/extras/entityModifyPolicy'
 
@@ -38,6 +39,7 @@ export function CoreUI({ world }) {
   const [ui, setUI] = useState(world.ui.state)
   const [menu, setMenu] = useState(null)
   const [confirm, setConfirm] = useState(() => world.ui.latest.confirm)
+  const [link, setLink] = useState(() => world.ui.latest.link)
   const [code, setCode] = useState(false)
   const [avatar, setAvatar] = useState(() => world.ui.latest.avatar)
   const [fatal, setFatal] = useState(world.fatalError)
@@ -49,6 +51,7 @@ export function CoreUI({ world }) {
     world.on('ui', setUI)
     world.on('menu', setMenu)
     world.on('confirm', setConfirm)
+    world.on('link', setLink)
     world.on('code', setCode)
     world.on('avatar', setAvatar)
     world.on('kick', setKicked)
@@ -58,6 +61,7 @@ export function CoreUI({ world }) {
     const latest = world.ui.latest
     setReady(latest.ready)
     setConfirm(latest.confirm)
+    setLink(latest.link)
     setAvatar(latest.avatar)
     setDisconnected(latest.disconnect)
     setKicked(latest.kick)
@@ -68,6 +72,7 @@ export function CoreUI({ world }) {
       world.off('ui', setUI)
       world.off('menu', setMenu)
       world.off('confirm', setConfirm)
+      world.off('link', setLink)
       world.off('code', setCode)
       world.off('avatar', setAvatar)
       world.off('kick', setKicked)
@@ -135,6 +140,10 @@ export function CoreUI({ world }) {
         {confirm && <Confirm options={confirm} />}
       </ErrorBoundary>
       <Part name='wallet'>{ready && (world.solana || world.evm) && <WalletButton world={world} />}</Part>
+      {/* a question that cannot be shown is answered "cancel": the page is not opened */}
+      <ErrorBoundary name='link confirm' mode='once' resetKey={link} onError={() => link?.cancel?.()}>
+        {link && <LinkConfirm key={link.id} link={link} />}
+      </ErrorBoundary>
       <div id='core-ui-portal' />
     </div>
   )

@@ -23,6 +23,8 @@ export const CLASSES = {
   relay: 'server to client; a copy a client sends is dropped, with a log line',
   'no-handler': 'server to client; the server has no handler for it, so a copy a client sends does nothing',
   nobody: 'refused whoever sends it, an admin included',
+  'app-line':
+    "a client script's line of chat: any connection may send it, and a line the server relays is the line of the app it names, never a player's",
   world: "depends on the world's settings: what is refused in one world is allowed in another",
 }
 
@@ -87,9 +89,17 @@ export const PACKET_RULES = {
   blueprintModified: [
     e2e('builder', 'a change to a blueprint (refused at the inbound gate already)', 'blueprint-modify'),
   ],
-  entityAdded: [e2e('builder', 'a new app', 'entity-add')],
+  entityAdded: [
+    e2e('builder', 'a new app', 'entity-add'),
+    e2e('nobody', 'a player, or an app under the id of a player (an added entity is a new app)', 'player-add'),
+  ],
   entityModified: [
     e2e('any', "the sender's own player: its movement fields and its name", 'any-connection'),
+    e2e(
+      'nobody',
+      "the sender's own player: a field only the server sets (rank, userId, owner, health, type, enteredAt, evmTips, and position, quaternion, emote, effect under the server's own names)",
+      'own-player'
+    ),
     e2e('nobody', "another player's fields", 'other-player'),
     e2e('builder', 'an app', 'entity-modify'),
     e2e(
@@ -163,9 +173,9 @@ export const PACKET_RULES = {
   evmTipStatus: serverToClient('what became of a reported tip'),
   appChat: [
     e2e(
-      'any',
-      'a client script\'s world.chat(): an app line under any app\'s name (known: CHANGELOG "What remains")',
-      'any-connection'
+      'app-line',
+      "a client script's world.chat(): relayed, if at all, as the line of an app that exists (kind app, no player id, the app's name from the server's blueprint), within the connection's budget. Not checked by anything: which app's script sent it (a known gap, CHANGELOG \"What remains\"; the suite says in a GAP line what the server did)",
+      'app-chat'
     ),
   ],
 }

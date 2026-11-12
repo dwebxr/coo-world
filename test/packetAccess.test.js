@@ -274,7 +274,7 @@ test('refused whoever sends it: another player, a player as an app, an engine ev
 })
 
 test('any connection: these handlers ask for no rank at all', () => {
-  for (const name of ['chatAdded', 'appChat', 'ping']) {
+  for (const name of ['chatAdded', 'ping']) {
     assert.deepEqual(
       PACKET_RULES[name].map(rule => rule.class),
       ['any'],

@@ -13,6 +13,9 @@
 //   payload would do too. Each case says in its result line whether it has one, and why not when it has none.
 // - Identity: a session token with a forged signature, and one for a user that does not exist, do not connect as
 //   the user they name.
+// - A known gap is not a case: a visitor's `appChat` under the name of an app whose script did not send it (CHANGELOG,
+//   "What remains"). What the server does with it is printed in a GAP line, which passes or fails nothing; what is a
+//   guarantee about app lines today is asserted in [app-chat].
 // - Secrets: the server runs with a distinct sentinel value in every variable test/lib/envTable.mjs classes as a
 //   secret (but DB_URI, which has to stay `local`). No sentinel is in what a visitor can get: the page, /env.js,
 //   /status, /health, a visitor's and an admin's join snapshot, any packet any connection of the run received, and
@@ -468,17 +471,11 @@ try {
       from = visitor.mark()
       await send(visitor, 'entityEvent', event('probe', { n: 1 }))
       ok(said(visitor, from, 'P14_APP_EVENT {"name":"probe"').length === 1, 'the app took the event')
-      // an app line (a client script's world.chat()) and a command that is no command of the server's: the probe is
-      // handed the `command` world event, with the id the server gives it
+      // a command that is no command of the server's: the probe is handed the `command` world event, with the id
+      // the server gives it
       from = admin.mark()
-      await send(visitor, 'appChat', { id: 'p14-probe', body: 'P14 app line', from: 'anyone' })
       await send(visitor, 'command', { args: ['p14-hello', 'world'] })
       await barrier(admin)
-      eq(
-        got(admin, from, 'onChatAdded', data => data.body === 'P14 app line' && data.kind === 'app').length,
-        1,
-        'the app line'
-      )
       const told = said(admin, from, 'P14_WORLD_EVENT {"name":"command"')[0]?.data.body
       ok(
         told?.includes(`"playerId":"${visitor.id}"`) && told.includes('"args":["p14-hello","world"]'),
@@ -491,8 +488,126 @@ try {
         now.chat.some(msg => msg.body === 'P14 a line to keep'),
         'its line is in the chat a newcomer gets'
       )
-      return 'chat, /name, own position, entityEvent, appChat, a command for scripts: all taken from a visitor'
+      return 'chat, /name, own position, entityEvent, a command for scripts: all taken from a visitor'
     }
+  )
+
+  // ---------- a player's own fields ----------
+
+  await run(
+    'own-player',
+    "a player's own fields that only the server sets are not taken from its client; a field it may set, sent along, is",
+    async () => {
+      // every field of a player's record that sanitizePlayerSelfModify (entityModifyPolicy.js) does not copy: the
+      // ones the server alone sets, and the movement fields under the server's own names (a client sends p, q, e, ef)
+      const forbidden = {
+        rank: 2,
+        userId: 'p14-someone-else',
+        owner: 'p14-someone-else',
+        health: 0,
+        type: 'app',
+        enteredAt: 1,
+        evmTips: true,
+        position: [99, 0, 99],
+        quaternion: [0, 1, 0, 0],
+        emote: 'asset://p14-emote.glb',
+        effect: { freeze: true },
+      }
+      let now = await fresh()
+      const before = { visitor: entityOf(now, visitor.id), admin: entityOf(now, admin.id) }
+      await send(visitor, 'entityModified', { id: visitor.id, ...forbidden, name: 'p14-own-fields' })
+      // an admin's own player is held to the same rule (its rank is left out: taken, it would end the admin of the run)
+      const { rank: _rank, ...forAdmin } = forbidden
+      await send(admin, 'entityModified', { id: admin.id, ...forAdmin, name: 'p14-admin-own-fields' })
+      now = await fresh()
+      const after = { visitor: entityOf(now, visitor.id), admin: entityOf(now, admin.id) }
+      eq(after.visitor.name, 'p14-own-fields', "the visitor's permitted change (its name) was taken")
+      eq(after.admin.name, 'p14-admin-own-fields', "the admin's permitted change (its name) was taken")
+      for (const who of ['visitor', 'admin']) {
+        for (const key of Object.keys(forbidden)) {
+          ok(same(after[who][key], before[who][key]), `${who}: ${key} is ${JSON.stringify(after[who][key])}`)
+        }
+      }
+      eq(now.entities.filter(entity => entity.rank === 2).length, 1, 'one admin, as before')
+      return `${Object.keys(forbidden).length} fields refused for the visitor, all but rank for the admin. ${NONE} by rank: refused for everyone; the control is the permitted field sent in the same packet`
+    }
+  )
+
+  // ---------- an app's line of chat (a client script's world.chat(), relayed by the server) ----------
+
+  // What the server guarantees today is asserted: a line it relays is an app line, with no player id and never the
+  // system's or a tip's kind; an app that does not exist gets none; a connection's lines are limited (actionBudget.js
+  // appChat: a burst of 10, then 2 a second). What it does not guarantee is not asserted: the server checks that the
+  // app named exists, not that its script sent the line, so a modified client can post a line under any app's name
+  // (CHANGELOG, Security, the `world.chat()` entry: "What remains"). Whether such a line was relayed is said in a GAP
+  // line of its own, which is neither a pass nor a failure: the suite passes either way.
+  const gap = text => console.log(`GAP   ${text}`)
+  let appLinesRelayed = null
+  await run(
+    'app-chat',
+    "a visitor's app line: never a player's, the system's or a tip's; none for an app that does not exist; limited",
+    async () => {
+      const appLines = (from, prefix) => got(admin, from, 'onChatAdded', data => String(data?.body).startsWith(prefix))
+      // a visitor names an app it did not script, and claims a kind, a player id and an app name
+      let from = admin.mark()
+      for (const kind of ['system', 'tip', 'player']) {
+        await send(visitor, 'appChat', {
+          id: 'p14-probe',
+          body: `P14 app line ${kind}`,
+          from: 'anyone',
+          kind,
+          fromId: admin.id,
+          app: 'System',
+        })
+      }
+      await barrier(admin)
+      const relayed = appLines(from, 'P14 app line ')
+      appLinesRelayed = relayed.length
+      for (const { data } of relayed) {
+        eq(data.kind, 'app', `${data.body}: the kind`)
+        eq(data.fromId ?? null, null, `${data.body}: the player id`)
+        eq(data.app, 'p14-probe', `${data.body}: the app's name, from the server's blueprint`)
+      }
+      // an app that does not exist, and a player's id in the place of an app's
+      from = admin.mark()
+      const log = logFrom()
+      await send(visitor, 'appChat', { id: 'p14-no-such-app', body: 'P14 line for no app' })
+      await send(visitor, 'appChat', { id: admin.id, body: 'P14 line for no app (a player)' })
+      await logged(log, `onAppChat: no such app from ${visitor.id}`)
+      await barrier(admin)
+      eq(appLines(from, 'P14 line for no app').length, 0, 'nothing for an app that does not exist, or for a player')
+      // the limit: a connection of its own sends 20 lines at once
+      const chatter = await connect('chatter')
+      from = admin.mark()
+      const budgetLog = logFrom()
+      for (let i = 0; i < 20; i++) chatter.send('appChat', { id: 'p14-probe', body: `P14 burst ${i}` })
+      await barrier(chatter)
+      await barrier(admin)
+      const burst = appLines(from, 'P14 burst ').length
+      let limit = 'not shown: no app line was relayed in this run'
+      if (relayed.length) {
+        ok(
+          burst >= 10 && burst <= 12,
+          `${burst} of 20 lines sent at once were relayed (a burst of 10, then 2 a second)`
+        )
+        await logged(budgetLog, `"${chatter.id}" is over its appChat budget`)
+        limit = `${burst} of 20 lines sent at once were relayed, and the log says the rest were over the budget`
+      }
+      await close(chatter)
+      const control = relayed.length
+        ? 'positive control of the refusal: the same packet naming the probe app was relayed'
+        : `${NONE}: no app line was relayed in this run`
+      return `${relayed.length} of 3 lines relayed, each checked; ${control}; the limit: ${limit}; the line under another app's name: see the GAP line`
+    }
+  )
+  gap(
+    `[app-chat] known gap, not a result: a visitor's appChat under the name of an app it did not script was ${
+      appLinesRelayed
+        ? 'relayed to the others'
+        : appLinesRelayed === 0
+          ? 'not relayed'
+          : 'not tried (the case failed first)'
+    } (CHANGELOG, Security, the world.chat() entry: "What remains")`
   )
 
   // ---------- builder ----------
@@ -584,6 +699,39 @@ try {
       changed: now => ok(!entityOf(now, 'p14-app'), 'removed'),
     })
     return 'positive control: the builder'
+  })
+
+  await run('player-add', 'nobody adds a player through entityAdded, a builder or an admin neither', async () => {
+    const player = id => ({
+      id,
+      type: 'player',
+      position: [0, 0, 0],
+      quaternion: [0, 0, 0, 1],
+      owner: id,
+      userId: id,
+      name: id,
+      health: 100,
+      avatar: 'asset://avatar.vrm',
+      rank: 2,
+      enteredAt: Date.now(),
+    })
+    const from = logFrom()
+    await send(builder, 'entityAdded', player('p14-player-1'))
+    await logged(from, 'onEntityAdded: invalid entity: "p14-player-1"')
+    await send(admin, 'entityAdded', player('p14-player-2'))
+    await send(visitor, 'entityAdded', player('p14-player-3'))
+    // an app under the id of a player who is here
+    await send(builder, 'entityAdded', appEntity(visitor.id, 'p14-bp'))
+    let now = await fresh()
+    for (const id of ['p14-player-1', 'p14-player-2', 'p14-player-3']) ok(!entityOf(now, id), `${id} was not added`)
+    const named = now.entities.filter(entity => entity.id === visitor.id)
+    ok(named.length === 1 && named[0].type === 'player', "the visitor's id is still its player's alone")
+    eq(now.entities.filter(entity => entity.type === 'player' && entity.rank === 2).length, 1, 'one admin, as before')
+    // the positive control: the builder's app
+    await send(builder, 'entityAdded', appEntity('p14-app-2', 'p14-bp'))
+    now = await fresh()
+    eq(entityOf(now, 'p14-app-2')?.type, 'app', 'the app from the builder')
+    return 'positive control: the builder adds an app (a player is refused for the builder and the admin too)'
   })
 
   await run('settings', "a visitor cannot change a world setting; a builder can change a builder's", async () => {

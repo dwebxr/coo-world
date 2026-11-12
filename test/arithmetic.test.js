@@ -156,25 +156,29 @@ test('arithmetic: a text beyond the length a field holds is not read, however si
   assert.throws(() => evaluateArithmetic('1'.repeat(1_000_000)), /too long/)
 })
 
-test('number field: a number is taken as it is, text as arithmetic, and anything else leaves the value there was', () => {
-  const read = (input, options) => readNumberField(input, { fallback: 7, ...options })
-  assert.equal(read('1 + 2'), 3)
-  assert.equal(read(4.5), 4.5, 'the arrow keys hand in a number')
-  assert.equal(read('nonsense'), 7)
-  assert.equal(read('1 / 0'), 7)
-  assert.equal(read(Infinity), 7)
-  assert.equal(read(NaN), 7)
-  assert.equal(read(undefined), 7)
-  assert.equal(read(null), 7)
-  assert.equal(read({ valueOf: () => 1 }), 7)
+test('number field: a number is taken as it is, text as arithmetic, and anything else is refused with its reason', () => {
+  const read = (input, options) => readNumberField(input, options)
+  assert.deepEqual(read('1 + 2'), { value: 3 })
+  assert.deepEqual(read(4.5), { value: 4.5 }, 'the arrow keys hand in a number')
+  assert.deepEqual(read(0), { value: 0 })
+  assert.deepEqual(read('0'), { value: 0 })
+  assert.deepEqual(read('nonsense'), { refused: '"n" at 1 is not read' })
+  assert.deepEqual(read('1 +'), { refused: 'it ends too early' })
+  assert.deepEqual(read('1 / 0'), { refused: 'not a finite number' })
+  assert.deepEqual(read(Infinity), { refused: 'not a finite number' })
+  assert.deepEqual(read(NaN), { refused: 'not a finite number' })
+  for (const input of [undefined, null, { valueOf: () => 1 }, ['1']]) {
+    assert.deepEqual(read(input), { refused: 'not a text' })
+  }
   // the range of the field, both ends included
-  assert.equal(read('5', { min: 0, max: 10 }), 5)
-  assert.equal(read('0', { min: 0, max: 10 }), 0)
-  assert.equal(read('10', { min: 0, max: 10 }), 10)
-  assert.equal(read('10.001', { min: 0, max: 10 }), 7)
-  assert.equal(read('-0.001', { min: 0, max: 10 }), 7)
-  assert.equal(read(11, { min: 0, max: 10 }), 7)
-  assert.equal(read(-1, { min: 0, max: 10 }), 7)
+  const range = { min: 0, max: 10 }
+  assert.deepEqual(read('5', range), { value: 5 })
+  assert.deepEqual(read('0', range), { value: 0 })
+  assert.deepEqual(read('10', range), { value: 10 })
+  assert.deepEqual(read('10.001', range), { refused: 'above 10' })
+  assert.deepEqual(read('-0.001', range), { refused: 'below 0' })
+  assert.deepEqual(read(11, range), { refused: 'above 10' })
+  assert.deepEqual(read(-1, range), { refused: 'below 0' })
 })
 
 // --- the fields themselves ---
@@ -228,25 +232,48 @@ function mountField(name, props) {
   return { inputs, type, press, shown: () => inputs().map(input => input.value) }
 }
 
-test('number field: what is typed is computed, and what cannot be read puts the value back', () => {
+// what the fields say on the console while `fn` runs (they warn when a typed entry is not taken)
+function warnings(t) {
+  const said = []
+  t.mock.method(console, 'warn', line => said.push(line))
+  return said
+}
+
+test('number field: what is typed is computed; an entry that is not taken changes nothing and is said', t => {
+  const said = warnings(t)
   const changes = []
-  const field = mountField('FieldNumber', { value: 5, dp: 2, min: 0, max: 100, onChange: v => changes.push(v) })
+  // (a value with more digits than the field shows: putting it "back" must not write the rounded one)
+  const field = mountField('FieldNumber', { value: 5.004, dp: 2, min: 0, max: 100, onChange: v => changes.push(v) })
   assert.deepEqual(field.shown(), ['5.00'])
   field.type(0, '10 / 4')
   assert.deepEqual(field.shown(), ['2.50'])
+  assert.deepEqual(changes, [2.5])
   field.type(0, 'globalThis.__fieldRan = 1')
   assert.equal(globalThis.__fieldRan, undefined)
   assert.deepEqual(field.shown(), ['5.00'], 'the value the field was given')
   field.type(0, '1000')
   assert.deepEqual(field.shown(), ['5.00'], 'out of its range')
+  assert.deepEqual(changes, [2.5], 'nothing was written for either')
+  assert.deepEqual(said, [
+    '[field] the entry is not taken: "g" at 1 is not read',
+    '[field] the entry is not taken: above 100',
+  ])
   field.press(0, 'ArrowUp')
   field.press(0, 'ArrowDown', { shiftKey: true })
-  assert.deepEqual(changes, [2.5, 5, 5, 6, 3])
+  assert.deepEqual(changes, [2.5, 6, 3])
+  // a step out of the range changes nothing either, and that is not worth a line
+  const edge = mountField('FieldNumber', { value: 99.5, dp: 1, min: 0, max: 100, onChange: v => changes.push(v) })
+  edge.press(0, 'ArrowUp')
+  assert.deepEqual(edge.shown(), ['99.5'])
+  assert.deepEqual(changes, [2.5, 6, 3])
+  assert.equal(said.length, 2)
 })
 
-test('vector field: an axis that cannot be read keeps its own value (it threw: the whole vector was put there)', () => {
+test('vector field: an axis whose entry is not taken keeps its value (it threw: the whole vector was put there)', t => {
+  const said = warnings(t)
   const changes = []
-  const field = mountField('FieldVec3', { value: [1, 2, 3], dp: 1, min: -10, max: 10, onChange: v => changes.push(v) })
+  const props = { value: [1, 2, 3], dp: 1, min: -10, max: 10, onChange: v => changes.push(v) }
+  const field = mountField('FieldVec3', props)
   assert.deepEqual(field.shown(), ['1.0', '2.0', '3.0'])
   field.type(1, 'PI * 2')
   field.type(1, 'nonsense')
@@ -255,24 +282,31 @@ test('vector field: an axis that cannot be read keeps its own value (it threw: t
   assert.deepEqual(field.shown(), ['-4.0', '2.0', '3.0'])
   field.press(2, 'ArrowUp', { shiftKey: true })
   field.press(0, 'ArrowDown', { altKey: true })
-  // a step out of the range leaves the axis where it was
-  const edge = mountField('FieldVec3', {
-    value: [-9.5, 0, 9.5],
-    dp: 1,
-    min: -10,
-    max: 10,
-    onChange: v => changes.push(v),
-  })
-  edge.press(2, 'ArrowUp')
-  edge.press(0, 'ArrowDown')
   assert.deepEqual(changes, [
     [1, 6.3, 3],
-    [1, 2, 3],
-    [1, 2, 3],
     [-4, 2, 3],
     [1, 2, 5],
     [0.9, 2, 3],
-    [-9.5, 0, 9.5],
-    [-9.5, 0, 9.5],
   ])
+  assert.deepEqual(said, [
+    '[field] the entry is not taken: "n" at 1 is not read',
+    '[field] the entry is not taken: above 10',
+  ])
+  // a value with more digits than the field shows (a scale of 0.004 in a field of two digits): an entry that is
+  // not taken, or a step out of the range, must not write the rounded value, which here would be zero
+  const fine = []
+  const small = mountField('FieldVec3', {
+    value: [0.004, -9.96, 9.96],
+    dp: 1,
+    min: -10,
+    max: 10,
+    onChange: v => fine.push(v),
+  })
+  assert.deepEqual(small.shown(), ['0.0', '-10.0', '10.0'])
+  small.type(0, 'oops')
+  small.press(1, 'ArrowDown')
+  small.press(2, 'ArrowUp')
+  assert.deepEqual(small.shown(), ['0.0', '-10.0', '10.0'])
+  assert.deepEqual(fine, [])
+  assert.equal(said.length, 3, 'one more line, for what was typed; none for the two steps')
 })

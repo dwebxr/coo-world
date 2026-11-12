@@ -113,20 +113,22 @@ export function evaluateArithmetic(text) {
   return value
 }
 
-// What a number field takes from its input: the number itself when it was handed one (the arrow keys add a step to
-// the current value), the value of the arithmetic when it was handed text. `fallback` (the value the field had) is
-// returned for anything that is not read, is not finite, or lies outside [min, max].
-export function readNumberField(input, { fallback, min = -Infinity, max = Infinity }) {
+// What a number field takes from its input: `{ value }`, the number itself when it was handed one (the arrow keys
+// add a step to the current value) or the value of the arithmetic when it was handed text; or `{ refused }`, with
+// the reason, for what is not read, is not finite or lies outside [min, max]. The field then keeps what it had.
+export function readNumberField(input, { min = -Infinity, max = Infinity } = {}) {
   let value
   if (typeof input === 'number') {
     value = input
   } else {
     try {
       value = evaluateArithmetic(input)
-    } catch {
-      return fallback
+    } catch (err) {
+      return { refused: err.message }
     }
   }
-  if (!Number.isFinite(value) || value < min || value > max) return fallback
-  return value
+  if (!Number.isFinite(value)) return { refused: 'not a finite number' }
+  if (value < min) return { refused: `below ${min}` }
+  if (value > max) return { refused: `above ${max}` }
+  return { value }
 }

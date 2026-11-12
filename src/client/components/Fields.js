@@ -637,11 +637,17 @@ export function FieldNumber({
   useEffect(() => {
     if (!focused && local !== value.toFixed(dp)) setLocal(value.toFixed(dp))
   }, [focused, value])
+  // a number (the arrow keys) or what was typed, read as arithmetic. Anything else changes nothing: the field shows
+  // the value it has again (it used to write that value back, rounded to the field's digits)
   const setTo = input => {
-    // a number (the arrow keys) or what was typed, read as arithmetic; anything else keeps the value there was
-    const num = readNumberField(input, { fallback: value, min, max })
-    setLocal(num.toFixed(dp))
-    onChange(+num.toFixed(dp))
+    const read = readNumberField(input, { min, max })
+    if ('refused' in read) {
+      if (typeof input === 'string') console.warn(`[field] the entry is not taken: ${read.refused}`)
+      setLocal(value.toFixed(dp))
+      return
+    }
+    setLocal(read.value.toFixed(dp))
+    onChange(+read.value.toFixed(dp))
   }
   return (
     <label
@@ -751,9 +757,18 @@ export function FieldVec3({
       if (localZ !== valueZ.toFixed(dp)) setLocalZ(valueZ.toFixed(dp))
     }
   }, [focused, valueX, valueY, valueZ])
-  // a number (the arrow keys) or what was typed, read as arithmetic; anything else keeps the value that axis had
-  // (it used to fall back to the whole vector, and the `toFixed` that follows threw)
-  const parseStr = (input, fallback) => readNumberField(input, { fallback, min, max })
+  // a number (the arrow keys) or what was typed, read as arithmetic. Anything else changes nothing: the axis shows
+  // the value it has again (it used to fall back to the whole vector, and the `toFixed` that followed threw)
+  const setAxis = (axis, input) => {
+    const read = readNumberField(input, { min, max })
+    if ('refused' in read) {
+      if (typeof input === 'string') console.warn(`[field] the entry is not taken: ${read.refused}`)
+      axis.setLocal(axis.value.toFixed(dp))
+      return
+    }
+    axis.setLocal(read.value.toFixed(dp))
+    onChange(axis.build(+read.value.toFixed(dp)))
+  }
   return (
     <label
       className='fieldvec3'
@@ -816,15 +831,11 @@ export function FieldVec3({
               }
               if (e.code === 'ArrowUp') {
                 const amount = e.shiftKey ? bigStep : e.altKey ? smallStep : step
-                const num = parseStr(axis.value + amount, axis.value)
-                axis.setLocal(num.toFixed(dp))
-                onChange(axis.build(+num.toFixed(dp)))
+                setAxis(axis, axis.value + amount)
               }
               if (e.code === 'ArrowDown') {
                 const amount = e.shiftKey ? bigStep : e.altKey ? smallStep : step
-                const num = parseStr(axis.value - amount, axis.value)
-                axis.setLocal(num.toFixed(dp))
-                onChange(axis.build(+num.toFixed(dp)))
+                setAxis(axis, axis.value - amount)
               }
             }}
             onFocus={e => {
@@ -839,9 +850,7 @@ export function FieldVec3({
                 return
               }
               // otherwise run through pipeline
-              const num = parseStr(axis.local, axis.value)
-              axis.setLocal(num.toFixed(dp))
-              onChange(axis.build(+num.toFixed(dp)))
+              setAxis(axis, axis.local)
             }}
           />
         ))}

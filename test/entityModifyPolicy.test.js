@@ -9,6 +9,7 @@ import {
   sanitizeAppRelease,
   sanitizeEntityAdd,
   sanitizeName,
+  STORED_AVATAR_MAX_LENGTH,
   sanitizePlayerSelfModify,
   sanitizeSpawn,
   TRANSFORM_LIMIT,
@@ -885,4 +886,22 @@ test('sanitizeName: blank or invisible-only names are refused so a user message 
   // A blank name in a self-modify is dropped, not applied.
   assert.equal(sanitizePlayerSelfModify({ name: ' ' }, 'socket'), null)
   assert.deepEqual(sanitizePlayerSelfModify({ name: '\u200b', m: 1 }, 'socket'), { id: 'socket', m: 1 })
+})
+
+test('sanitizePlayerSelfModify: the stored avatar is at most the 255 characters its column holds', () => {
+  const store = 'https://assets.example/world'
+  const named = n => `${store}/${'a'.repeat(n - store.length - 5)}.vrm`
+  const options = { allowAvatar: true, assetsUrl: store }
+  assert.equal(STORED_AVATAR_MAX_LENGTH, 255)
+  assert.equal(named(255).length, 255)
+  assert.equal(sanitizePlayerSelfModify({ id: me, avatar: named(255) }, me, options).avatar, named(255))
+  // one more is a valid avatar reference still, and not one to store
+  assert.equal(sanitizePlayerSelfModify({ id: me, avatar: named(256) }, me, options), null)
+  assert.equal(sanitizePlayerSelfModify({ id: me, avatar: named(512) }, me, options), null)
+  // the rest of the packet goes on without it
+  const moved = sanitizePlayerSelfModify({ id: me, avatar: named(256), p: [1, 2, 3] }, me, options)
+  assert.deepEqual(moved, { id: me, p: [1, 2, 3] })
+  // a session avatar is not stored, and keeps the longer limit
+  const session = sanitizePlayerSelfModify({ id: me, sessionAvatar: named(512) }, me, options)
+  assert.equal(session.sessionAvatar, named(512))
 })

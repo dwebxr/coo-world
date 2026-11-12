@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import { createTokenBalanceClient } from '../../src/core/extras/tokenBalanceClient.js'
+import { parseRequiredTokenAmount } from '../../src/core/extras/tokenRequirement.js'
 import { internalEvents } from '../../src/core/extras/internalEvents.js'
 import { EventEmitter } from 'node:events'
 import * as THREE from 'three'
@@ -92,6 +93,7 @@ export function loadClient(file, name, context = {}) {
     createDispatchQueue,
     createUploadQueue,
     createTokenBalanceClient,
+    parseRequiredTokenAmount,
     writeClientPacket,
     writePacket,
     readScriptData,

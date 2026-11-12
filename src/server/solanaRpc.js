@@ -10,24 +10,30 @@ export function createSolanaRpc({
   maxBodyBytes = 16_384,
 } = {}) {
   if (url === undefined) {
-    url = env.SOLANA_RPC_URL || env.PUBLIC_RPC_URL || 'https://api.devnet.solana.com'
+    url = env.SOLANA_RPC_URL || env.PUBLIC_RPC_URL
     if (!env.SOLANA_RPC_URL && env.PUBLIC_RPC_URL) {
       log.warn('using PUBLIC_RPC_URL on the server; set SOLANA_RPC_URL')
     }
   }
-  let endpoint
-  try {
-    endpoint = new URL(url)
-    if (endpoint.protocol !== 'https:' && endpoint.protocol !== 'http:') throw new Error('invalid protocol')
-  } catch {
-    endpoint = null
-    // Never include the URL or parser error: either may contain an RPC credential.
-    log.error('[solanaRpc] invalid RPC URL; balance reads disabled')
+  let endpoint = null
+  if (!url) {
+    // No URL used to mean the public devnet node: another chain, where the mint's accounts are not the ones the
+    // world means, read as if they were. Now every read is unknown, and an unknown balance grants nothing.
+    log.error('[solanaRpc] no SOLANA_RPC_URL; balances are unknown and no wallet is granted builder access by token')
+  } else {
+    try {
+      endpoint = new URL(url)
+      if (endpoint.protocol !== 'https:' && endpoint.protocol !== 'http:') throw new Error('invalid protocol')
+    } catch {
+      endpoint = null
+      // Never include the URL or parser error: either may contain an RPC credential.
+      log.error('[solanaRpc] invalid RPC URL; balance reads disabled')
+    }
   }
   let nextId = 0
 
   async function readRaw(wallet, signal) {
-    if (!endpoint) throw new Error('invalid RPC URL')
+    if (!endpoint) throw new Error('no usable RPC URL')
     signal?.throwIfAborted()
     const tokenMint = new PublicKey(mint)
     const owner = new PublicKey(wallet)

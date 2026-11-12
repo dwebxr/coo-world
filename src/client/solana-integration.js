@@ -1,5 +1,6 @@
 import { PublicKey } from '@solana/web3.js'
 import { Ranks } from '../core/extras/ranks'
+import { parseRequiredTokenAmount } from '../core/extras/tokenRequirement'
 
 // デフォルト設定
 // nonce の返事を待つ上限 (サーバーのクールダウンは 5 秒)
@@ -8,8 +9,6 @@ const NONCE_WAIT_MS = 15000
 const DEFAULT_CONFIG = {
   // HYPERトークンのミントアドレス (未設定なら機能無効)
   tokenMint: null,
-  // ビルダー権限に必要な最小トークン量
-  requiredTokenAmount: 10000,
 }
 
 // 実行時に環境変数を解決する。
@@ -22,17 +21,12 @@ const resolveEnv = key => {
   return fromBuild ?? fromRuntime
 }
 
-// 数値env解決 (0 を明示的に設定できるよう Number.isFinite を使う)
-const resolveNum = (key, fallback) => {
-  const raw = resolveEnv(key)
-  const n = Number(raw)
-  return Number.isFinite(n) ? n : fallback
-}
-
+// requiredTokenAmount はサーバーと同じ読み方 (未設定なら 10,000、0 より大きい数でなければ null)。
+// null のワールドではトークンでビルダー権限は付かない。決めるのはサーバーで、ここは表示のためだけ
 const buildConfig = () => ({
   ...DEFAULT_CONFIG,
   tokenMint: resolveEnv('PUBLIC_TOKEN_MINT') ?? DEFAULT_CONFIG.tokenMint,
-  requiredTokenAmount: resolveNum('PUBLIC_REQUIRED_TOKEN_AMOUNT', DEFAULT_CONFIG.requiredTokenAmount),
+  requiredTokenAmount: parseRequiredTokenAmount(resolveEnv('PUBLIC_REQUIRED_TOKEN_AMOUNT')),
 })
 
 // Solana統合が設定済み (=有効) かどうか

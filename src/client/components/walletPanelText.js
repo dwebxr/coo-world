@@ -27,7 +27,8 @@ export function walletPanelText(walletState, { effectiveBuilder, rawRank, thresh
       wallet = 'Wallet not connected'
   }
   let build = effectiveBuilder ? 'Builder access' : 'No builder access'
-  if (status === 'verified' && known && balance >= threshold && rawRank < Ranks.BUILDER) {
+  // threshold is null in a world that grants nothing by token: null >= compares as 0, so it is asked for first
+  if (status === 'verified' && known && threshold > 0 && balance >= threshold && rawRank < Ranks.BUILDER) {
     build += ' · press refresh to check builder access'
   }
   return { wallet, build }

@@ -70,7 +70,8 @@ export function SolanaWalletPanel({ world, walletState, isBuilder }) {
     }
   }
 
-  const requiredAmount = world.solana?.getRequiredTokenAmount() ?? 10000
+  // null: this world grants no builder access by token (its PUBLIC_REQUIRED_TOKEN_AMOUNT is not a number above 0)
+  const requiredAmount = world.solana ? world.solana.getRequiredTokenAmount() : null
   const text = walletPanelText(walletState, {
     effectiveBuilder: isBuilder,
     rawRank: world.entities.player.data.rank,
@@ -210,7 +211,11 @@ export function SolanaWalletPanel({ world, walletState, isBuilder }) {
               ) : (
                 <AlertCircleIcon size='0.9rem' color='#ff9800' />
               )}
-              <span>Builder access requires {requiredAmount.toLocaleString()} tokens</span>
+              <span>
+                {requiredAmount > 0
+                  ? `Builder access requires ${requiredAmount.toLocaleString()} tokens`
+                  : 'Builder access by token is not set up in this world'}
+              </span>
             </div>
             <button
               type='button'

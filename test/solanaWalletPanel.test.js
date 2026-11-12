@@ -5,7 +5,7 @@ import { transformSync } from 'esbuild'
 import { walletPanelText } from '../src/client/components/walletPanelText.js'
 
 // Exercise the actual JSX handler and disabled prop with persistent hook state, without a DOM.
-function panel(refreshBalance) {
+function panel(refreshBalance, { required = 10000, walletState: state } = {}) {
   const source = fs.readFileSync(new URL('../src/client/components/SolanaWalletPanel.js', import.meta.url), 'utf8')
   const code = transformSync(source.replace(/^import .*\n/gm, '').replace(/^export /gm, ''), {
     loader: 'jsx',
@@ -38,10 +38,10 @@ function panel(refreshBalance) {
   const Component = new Function(...Object.keys(context), `${code}\nreturn SolanaWalletPanel`)(
     ...Object.values(context)
   )
-  const walletState = { address: 'wallet', status: 'verified', verified: true, known: false }
+  const walletState = state ?? { address: 'wallet', status: 'verified', verified: true, known: false }
   const world = {
     solana: {
-      getRequiredTokenAmount: () => 10000,
+      getRequiredTokenAmount: () => required,
       refreshBalance,
     },
     entities: { player: { data: { rank: 0 } } },
@@ -54,10 +54,23 @@ function panel(refreshBalance) {
       if (found) return found
     }
   }
-  return () => {
+  const render = () => {
     cursor = 0
     return find(Component({ world, walletState, isBuilder: false }))
   }
+  // every string the panel would show, in order
+  render.texts = () => {
+    cursor = 0
+    const out = []
+    const walk = node => {
+      if (typeof node === 'string') out.push(node)
+      else if (Array.isArray(node)) node.forEach(walk)
+      else if (node?.children) node.children.forEach(walk)
+    }
+    walk(Component({ world, walletState, isBuilder: false }))
+    return out
+  }
+  return render
 }
 
 const flush = async () => {
@@ -112,3 +125,17 @@ for (const mode of ['fast', 'slow', 'reject', 'throw']) {
     assert.equal(render().disabled, false)
   })
 }
+
+test('panel requirement: the amount is shown, and a world that grants nothing by token says so', () => {
+  const rich = { address: 'wallet', status: 'verified', verified: true, known: true, balance: 50000 }
+  const shown = panel(async () => {}, { required: 10000, walletState: rich }).texts()
+  assert.ok(shown.includes(`Builder access requires ${(10000).toLocaleString()} tokens`))
+  assert.ok(shown.includes('No builder access · press refresh to check builder access'))
+  for (const required of [null, 0, -5, NaN]) {
+    const texts = panel(async () => {}, { required, walletState: rich }).texts()
+    assert.ok(texts.includes('Builder access by token is not set up in this world'), String(required))
+    assert.ok(!texts.some(text => /requires/.test(text)), String(required))
+    // no hint to press refresh for a rank this world does not give
+    assert.ok(texts.includes('No builder access'), String(required))
+  }
+})

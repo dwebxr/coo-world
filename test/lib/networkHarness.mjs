@@ -100,6 +100,7 @@ const names = [
   'onRequestBuilderRecheck',
   'onTokenBalanceRequest',
   'onRevokeBuilderByToken',
+  'endTokenGrant',
   'invalidateEvmWallet',
   'currentEvm',
   'onRequestEvmNonce',

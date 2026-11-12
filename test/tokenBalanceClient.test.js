@@ -138,13 +138,26 @@ test('panel: every row and open-build hint', () => {
       }
     }
   }
+  // an open-build world (everyone builds, the raw rank is still visitor) keeps the hint
   assert.match(
     walletPanelText(
-      { status: 'verified', known: true, balance: 0 },
-      { effectiveBuilder: true, rawRank: 0, threshold: 0 }
+      { status: 'verified', known: true, balance: 0.5 },
+      { effectiveBuilder: true, rawRank: 0, threshold: 0.5 }
     ).build,
     /press refresh/
   )
+  // a world that grants nothing by token (its amount is not a number above 0) gives no hint to press refresh:
+  // an amount of 0 used to give it to a wallet holding nothing, and null compares as 0
+  for (const threshold of [0, null, undefined, NaN, -1]) {
+    assert.equal(
+      walletPanelText(
+        { status: 'verified', known: true, balance: 1e9 },
+        { effectiveBuilder: false, rawRank: 0, threshold }
+      ).build,
+      'No builder access',
+      String(threshold)
+    )
+  }
 })
 
 const warnings = []

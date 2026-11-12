@@ -155,7 +155,7 @@ PUBLIC_TOKEN_DECIMALS=6
 
 ### What ends a grant, and what does not
 
-- **Ends it**: the page reporting that the wallet was disconnected or its account changed; a new wallet sign-in on the same connection (the rank is gone as soon as the sign-in starts, and comes back when the new signature is verified and the balance read again); a reload; the connection ending.
+- **Ends it**: the page reporting that the wallet was disconnected or its account changed; a new wallet sign-in on the same connection (the rank is gone when the server accepts the sign-in request, which it does not within 5 s of the one before, and comes back only if the new signature is verified and the balance read then is enough); a reload; the connection ending.
 - **Does not end it**: the tokens leaving the wallet. The balance is read when the grant is made and not again, so a wallet that sells or moves its tokens stays a builder until its session ends, and the same tokens moved to a second wallet can make that one a builder too. The disconnect report comes from the page: a visitor who changes the page does not send it.
 - So the gate shows that a wallet held the amount at one moment, not that it holds it. What a builder made stays in the world when the grant ends.
 

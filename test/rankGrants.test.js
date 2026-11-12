@@ -70,13 +70,29 @@ test('persist: helper fault injection preserves a newer revision after an older 
   const db = () => ({ where: () => ({ update: () => new Promise(resolve => (finish = resolve)) }) })
   const p = player('revision-race')
   const pending = persistRank({ db, player: p, rank: 0, wallets, isCurrent: () => true })
+  // what a grant does to the session after the write began: a new revision and the builder rank
   p.rankRevision++
+  p.data.rank = 1
   grantTokenRank({ socket: { id: p.data.id }, player: p, walletAddress: 'NEW_WALLET', wallets })
   finish()
   await pending
   assert.equal(p.data.tokenGrantedRank, true)
   assert.equal(wallets.walletOf(p.data.id), 'NEW_WALLET')
   wallets.clearSocket(p.data.id)
+})
+
+test('persist: a write that lands after another change of the same rank still ends the grant', async () => {
+  let finish
+  const db = () => ({ where: () => ({ update: () => new Promise(resolve => (finish = resolve)) }) })
+  const p = player('same-rank-race', { rank: 1, tokenGrantedRank: true })
+  wallets.recordWallet(p.data.id, 'GRANT_WALLET')
+  const pending = persistRank({ db, player: p, rank: 1, wallets, isCurrent: () => true })
+  // a second administrative write of the same rank began meanwhile
+  p.rankRevision++
+  finish()
+  await pending
+  assert.equal(p.data.tokenGrantedRank, false, 'the rank the session has is the one in the database')
+  assert.equal(wallets.walletOf(p.data.id), null)
 })
 
 test('persist: helper fault injection preserves a replacement session at the same revision', async () => {

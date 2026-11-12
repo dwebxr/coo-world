@@ -20,7 +20,7 @@ function sources(dir, out = []) {
   return out
 }
 
-test('.env.example: every setting it offers is one that something reads', () => {
+test('.env.example: every setting it offers is a name the source uses as a whole word', () => {
   assert.ok(keys.length > 40, 'the keys were found')
   // src/client/public holds build output next to the pages; it is not where a setting is read
   const files = [
@@ -30,15 +30,27 @@ test('.env.example: every setting it offers is one that something reads', () => 
   ]
     .filter(file => !file.includes(`${path.sep}public${path.sep}`) || file.endsWith('.html'))
     .filter(file => fs.existsSync(file))
-  const text = files.map(file => fs.readFileSync(file, 'utf8')).join('\n')
-  const unread = [...new Set(keys)].filter(key => {
-    if (text.includes(key)) return false
-    // a setting with one variable per chain is read by its stem: EVM_RPC_URL_137 as `EVM_RPC_URL_${chainId}`
+  // a comment is not a reader: whole-line comments are left out (block comments and a comment after code on its
+  // line are not, so this is a floor under the claim, not a parse)
+  const text = files
+    .map(file => fs.readFileSync(file, 'utf8'))
+    .join('\n')
+    .replace(/^\s*\/\/.*$/gm, '')
+  const used = key => new RegExp(`(?<![A-Za-z0-9_])${key}(?![A-Za-z0-9_])`).test(text)
+  // a setting with one variable per chain is read by its stem: EVM_RPC_URL_137 as `EVM_RPC_URL_${chainId}`
+  const usedByStem = key => {
     const stem = key.replace(/\d+$/, '')
-    return !(stem !== key && stem.endsWith('_') && text.includes(stem + '$'))
-  })
+    return stem !== key && stem.endsWith('_') && new RegExp(`(?<![A-Za-z0-9_])${stem}\\$\\{`).test(text)
+  }
+  const unread = [...new Set(keys)].filter(key => !used(key) && !usedByStem(key))
   // a line nothing reads invites a value nothing uses; SOLANA_PKEY_ARRAY asked for a wallet's private key
   assert.deepEqual(unread, [])
+  // the rule itself: part of a longer name is not a use, and neither is a comment
+  assert.equal(used('TOKEN'), false)
+  assert.equal(used('PUBLIC_TOKEN'), false)
+  assert.equal(used('PUBLIC_TOKEN_MINT'), true)
+  assert.equal(usedByStem('EVM_RPC_URL_137'), true)
+  assert.equal(usedByStem('SOLANA_RPC_URL_1'), false)
 })
 
 test('.env.example: token gating is off as copied, and its amount is one the server accepts', () => {

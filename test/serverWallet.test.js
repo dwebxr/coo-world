@@ -967,3 +967,34 @@ test('wallet grant: a new sign-in leaves a stored rank alone', async t => {
   assert.deepEqual(replies(socket, 'onEntityModified'), [])
   assert.deepEqual(replies(socket, 'onChatAdded'), [])
 })
+
+test('wallet grant: a rank an admin stored is not taken by a new sign-in, also when two such writes overlap', async t => {
+  const f = fixture(t, { result: { known: true, balance: 10000 } })
+  const socket = await f.connect('subject')
+  const admin = await f.connect('admin', Ranks.ADMIN)
+  await f.verify(socket)
+  assert.equal(socket.player.data.tokenGrantedRank, true)
+  const first = deferred(),
+    second = deferred()
+  f.write = () => first.promise
+  const a = f.network.onModifyRank(admin, { playerId: socket.id, rank: Ranks.BUILDER })
+  f.write = () => second.promise
+  const b = f.network.onModifyRank(admin, { playerId: socket.id, rank: Ranks.BUILDER })
+  first.resolve()
+  await a
+  // the database holds builder now; the second write is still under way
+  assert.equal(f.users.get('subject').rank, Ranks.BUILDER)
+  assert.equal(socket.player.rankWritesPending, 1)
+  assert.equal(socket.player.data.tokenGrantedRank, false)
+  f.advance(5000)
+  clear(socket)
+  f.challenge(socket, 2)
+  assert.equal(socket.wallet.verified, null)
+  assert.equal(socket.player.data.rank, Ranks.BUILDER, 'the stored rank stays')
+  assert.deepEqual(replies(socket, 'onEntityModified'), [])
+  second.resolve()
+  await b
+  assert.equal(socket.player.data.rank, Ranks.BUILDER)
+  assert.equal(f.users.get('subject').rank, Ranks.BUILDER)
+  assert.equal(socket.player.rankWritesPending, 0)
+})

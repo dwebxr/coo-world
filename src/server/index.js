@@ -1,5 +1,7 @@
 import 'ses'
 import '../core/lockdown'
+// from here until the server listens, a start-up that fails ends the process with code 1 (startupExit.js)
+import { startup } from './startupExitInstall'
 import './fetchGuardInstall'
 import './bootstrap'
 
@@ -33,14 +35,14 @@ import { assetRoutes, uploadRoutes } from './uploadRoutes'
 import { readKickEnv } from './kickList'
 import { describeHoldingContracts, readHoldingContractsEnv } from './evmHoldings'
 
-const rootDir = path.join(__dirname, '../')
-const worldDir = path.join(rootDir, process.env.WORLD)
-const port = process.env.PORT
-
 // check envs
 if (!process.env.WORLD) {
   throw new Error('[envs] WORLD not set')
 }
+const rootDir = path.join(__dirname, '../')
+// (after the check: path.join throws its own error for a missing name, which said nothing about WORLD)
+const worldDir = path.join(rootDir, process.env.WORLD)
+const port = process.env.PORT
 if (!process.env.PORT) {
   throw new Error('[envs] PORT not set')
 }
@@ -163,6 +165,8 @@ await cleaner.init({
 const storage = new Storage(storageFile, { limits: storageLimits })
 
 // create world
+// (its app scripts start in world.init: from here an exception thrown from a callback no longer ends the start-up)
+startup.scriptsStart()
 const world = createServerWorld()
 // from now on a stop saves: world.init hydrates the apps and starts their scripts before the server listens
 shutdown.attach({
@@ -294,6 +298,8 @@ try {
   console.error(`failed to launch on port ${port}`)
   process.exit(1)
 }
+// start-up is over: from here the exit code is the shutdown's (shutdown.js)
+startup.listening()
 
 function admitConnection(request, reply, done) {
   if (request.ws !== true) return done()

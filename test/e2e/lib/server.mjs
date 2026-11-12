@@ -126,6 +126,35 @@ export async function startServer({
   return server
 }
 
+// Starts the built server with settings (or a world directory) it cannot start with, and waits for the process to
+// end by itself. -> { code, out }: the exit code, or 'hung' when it was still up after `timeout` and had to be
+// killed. `prepare(worldDir)` runs before the start, eg to put an unreadable database there.
+export async function failedStart({ port, env = {}, prepare, timeout = 30000 }) {
+  const world = `world-e2e-${Math.random().toString(36).slice(2, 8)}`
+  const worldDir = path.join(BUILD_ROOT, world)
+  fs.mkdirSync(worldDir, { recursive: true })
+  try {
+    prepare?.(worldDir)
+    const child = spawn(process.execPath, [path.join(BUILD_ROOT, 'build/index.js')], {
+      cwd: E2E_DIR,
+      env: serverEnv(port, world, env),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let out = ''
+    child.stdout.on('data', data => (out += data))
+    child.stderr.on('data', data => (out += data))
+    const exited = once(child, 'exit').then(([code]) => code ?? 'signal')
+    const code = await Promise.race([exited, sleep(timeout).then(() => 'hung')])
+    if (code === 'hung') {
+      child.kill('SIGKILL')
+      await exited
+    }
+    return { code, out }
+  } finally {
+    fs.rmSync(worldDir, { recursive: true, force: true })
+  }
+}
+
 export function worldAssetsDir(server) {
   return path.join(server.worldDir, 'assets')
 }

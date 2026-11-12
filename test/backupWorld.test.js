@@ -6,7 +6,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 import { BACKUPS_KEPT, backupWorld, oldBackups, worldFolder } from '../scripts/lib/backupWorld.mjs'
 
@@ -102,6 +103,148 @@ test('backup: a database that stays locked is a failed backup, not an archive wi
   const file = await backupWorld({ rootDir, world, log: line => said.push(line), busyTimeout: 50 })
   assert.ok(tree(unpack(t, file)).includes('world/db.sqlite'))
   assert.equal(said.filter(line => /holds no database/.test(line)).length, 0)
+})
+
+test('backup: a database written without pause fails the run when its time is up', async t => {
+  const { rootDir, dir, world } = project(t)
+  const live = new Database(path.join(dir, 'db.sqlite'))
+  t.after(() => live.close())
+  live.exec('CREATE TABLE blobs (id INTEGER PRIMARY KEY, body BLOB)')
+  const insert = live.prepare('INSERT INTO blobs (body) VALUES (?)')
+  for (let i = 0; i < 300; i++) insert.run(Buffer.alloc(4096, i))
+  // more than one step of the copy, and the time was up before the first
+  assert.ok(live.pragma('page_count', { simple: true }) > 200)
+  await assert.rejects(backupWorld({ rootDir, world, log: quiet, copyTimeout: -1 }), /in time/)
+  assert.deepEqual(fs.readdirSync(path.join(dir, 'backups')), [])
+  const file = await backupWorld({ rootDir, world, log: quiet })
+  const copy = new Database(path.join(unpack(t, file), 'world/db.sqlite'), { readonly: true })
+  t.after(() => copy.close())
+  assert.equal(copy.prepare('SELECT COUNT(*) AS n FROM blobs').get().n, 300)
+})
+
+test('backup: the copy of the database has the database’s permissions; PostgreSQL’s database is said not to be in it', async t => {
+  const { rootDir, dir, world } = project(t)
+  const live = new Database(path.join(dir, 'db.sqlite'))
+  live.exec('CREATE TABLE users (id TEXT PRIMARY KEY)')
+  live.close()
+  for (const mode of [0o600, 0o640]) {
+    fs.chmodSync(path.join(dir, 'db.sqlite'), mode)
+    const file = await backupWorld({ rootDir, world, log: quiet, now: new Date(2026, 0, 1, 0, 0, mode & 0o77) })
+    assert.equal(fs.statSync(path.join(unpack(t, file), 'world/db.sqlite')).mode & 0o777, mode)
+  }
+  // DB_URI: the file left in the folder is archived like any, and is not the database
+  const lines = async options => {
+    const said = []
+    const file = await backupWorld({ rootDir, world, log: line => said.push(line), ...options })
+    return { said: said.filter(line => /DB_URI|holds no database/.test(line)), names: tree(unpack(t, file)) }
+  }
+  const left = await lines({ postgres: true, now: new Date(2026, 1, 1) })
+  assert.deepEqual(left.said, [
+    'DB_URI is set: the database is in PostgreSQL and is not in this archive. Back it up by its own means.',
+  ])
+  assert.ok(left.names.includes('world/db.sqlite'))
+  fs.rmSync(path.join(dir, 'db.sqlite'))
+  const none = await lines({ postgres: true, now: new Date(2026, 1, 2) })
+  assert.equal(none.said.length, 1)
+  assert.match(none.said[0], /^DB_URI is set/)
+  assert.ok(!none.names.includes('world/db.sqlite'))
+})
+
+test('backup: what the run makes anew is given its owner back, or says that it could not be', async t => {
+  const { rootDir, dir, world } = project(t)
+  const live = new Database(path.join(dir, 'db.sqlite'))
+  live.exec('CREATE TABLE users (id TEXT PRIMARY KEY)')
+  live.close()
+  // a folder of another group than new folders get here (a user may give a file to a group it is in)
+  const group = process.getgroups().find(gid => gid !== fs.statSync(dir).gid)
+  if (group === undefined) return t.skip('this user is in one group only')
+  fs.chownSync(path.join(dir, 'assets'), process.getuid(), group)
+  fs.chownSync(path.join(dir, 'db.sqlite'), process.getuid(), group)
+  const given = []
+  const chown = (target, uid, gid) => (given.push([path.basename(target), uid, gid]), fs.chownSync(target, uid, gid))
+  await backupWorld({ rootDir, world, log: quiet, chown, now: new Date(2026, 0, 1) })
+  // those two and no other: the files are the world's own (links), and the rest has the owner it would get anyway
+  assert.deepEqual(given.sort(), [
+    ['assets', process.getuid(), group],
+    ['db.sqlite', process.getuid(), group],
+  ])
+  // not allowed (the run is neither the owner's nor root's): said once, and the archive is made
+  const refused = () => {
+    throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+  }
+  const said = []
+  const file = await backupWorld({
+    rootDir,
+    world,
+    log: line => said.push(line),
+    chown: refused,
+    now: new Date(2026, 0, 2),
+  })
+  assert.equal(said.filter(line => /owned by the user running this backup/.test(line)).length, 1)
+  assert.ok(tree(unpack(t, file)).includes('world/db.sqlite'))
+  // any other failure fails the run
+  const broken = () => {
+    throw Object.assign(new Error('EIO'), { code: 'EIO' })
+  }
+  await assert.rejects(backupWorld({ rootDir, world, log: quiet, chown: broken, now: new Date(2026, 0, 3) }), /EIO/)
+})
+
+test('backup: a backups folder that is a link is not walked into, wherever it leads', async t => {
+  const { rootDir, dir, world } = project(t)
+  // the archives are kept in another folder of the world: the working folder is made there, inside what is walked
+  fs.mkdirSync(path.join(dir, 'cache', 'kept'), { recursive: true })
+  fs.writeFileSync(path.join(dir, 'cache', 'kept', 'note.txt'), 'x')
+  fs.symlinkSync(path.join('cache', 'kept'), path.join(dir, 'backups'))
+  const file = await backupWorld({ rootDir, world, log: quiet })
+  assert.equal(path.dirname(file), path.join(dir, 'backups'))
+  assert.deepEqual(tree(unpack(t, file)), [
+    'world',
+    'world/assets',
+    'world/assets/model.glb',
+    'world/cache',
+    'world/storage.json',
+  ])
+  assert.deepEqual(fs.readdirSync(path.join(dir, 'cache', 'kept')).sort(), [path.basename(file), 'note.txt'])
+  // and one that is the world's folder itself is refused: everything in the world would be "the backups"
+  fs.rmSync(path.join(dir, 'backups'))
+  fs.symlinkSync('.', path.join(dir, 'backups'))
+  await assert.rejects(backupWorld({ rootDir, world, log: quiet }), /world's folder itself/)
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['assets', 'backups', 'cache', 'storage.json'])
+})
+
+test('backup: the script fails with what went wrong, and speaks of tar only when tar is missing', t => {
+  const script = fileURLToPath(new URL('../scripts/backup-world.mjs', import.meta.url))
+  // (run from an empty folder: the script reads the .env of where it is run)
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'backup-cwd-'))
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }))
+  const env = { ...process.env, WORLD: `no-such-world-${process.pid}`, DB_URI: '' }
+  // (should the script ever make it again, it is not left in the project)
+  t.after(() => fs.rmSync(path.join(path.dirname(script), '..', env.WORLD), { recursive: true, force: true }))
+  const run = spawnSync(process.execPath, [script], { cwd, env, encoding: 'utf8' })
+  assert.equal(run.status, 1)
+  assert.match(run.stderr, /Error creating backup: World directory not found/)
+  assert.doesNotMatch(run.stderr, /tar is installed/)
+  assert.ok(!fs.existsSync(path.join(path.dirname(script), '..', env.WORLD)), 'and the folder of that name is not made')
+  // a world of the test's own, named from the project as WORLD is: the database is PostgreSQL's when DB_URI says so
+  const { dir } = project(t)
+  const WORLD = path.relative(path.join(path.dirname(script), '..'), dir)
+  for (const [DB_URI, said] of [
+    ['postgres://user@host/db', true],
+    ['postgresql://user@host/db', true],
+    ['', false],
+    ['mysql://postgres://x', false],
+  ]) {
+    fs.rmSync(path.join(dir, 'backups'), { recursive: true, force: true })
+    const made = spawnSync(process.execPath, [script], {
+      cwd,
+      env: { ...process.env, WORLD, DB_URI },
+      encoding: 'utf8',
+    })
+    assert.equal(made.status, 0, made.stderr)
+    assert.equal(/DB_URI is set/.test(made.stdout), said, DB_URI)
+    assert.match(made.stdout, /Backup process completed!/)
+    assert.equal(fs.readdirSync(path.join(dir, 'backups')).length, 1)
+  }
 })
 
 test('backup: links in the world’s folder stay links, and the files are not copied to be read', async t => {
@@ -241,6 +384,11 @@ test('backup: WORLD is read as the server reads it, and one that names no folder
   fs.writeFileSync(path.join(rootDir, 'worlds', 'a', 'storage.json'), '{}')
   const nested = await backupWorld({ rootDir, world: 'worlds/a', log: quiet })
   assert.deepEqual(tree(unpack(t, nested)), ['worlds', 'worlds/a', 'worlds/a/storage.json'])
+  // (a folder whose name begins with two dots is a folder like any)
+  fs.mkdirSync(path.join(rootDir, '..hidden', 'a'), { recursive: true })
+  fs.writeFileSync(path.join(rootDir, '..hidden', 'a', 'storage.json'), '{}')
+  const dotted = await backupWorld({ rootDir, world: '..hidden/a', log: quiet })
+  assert.deepEqual(tree(unpack(t, dotted)), ['..hidden', '..hidden/a', '..hidden/a/storage.json'])
   // a world beside the project, which the server runs too, is archived under its own name
   const beside = fs.mkdtempSync(path.join(os.tmpdir(), 'backup-beside-'))
   t.after(() => fs.rmSync(beside, { recursive: true, force: true }))
@@ -303,6 +451,11 @@ test('backup: a tar that fails leaves no archive behind; the newest seven are ke
   for (let i = 1; i <= 7; i++) fs.writeFileSync(path.join(backups, `backup_2031-01-0${i}_00-00-00.tar.gz`), 'later')
   const early = await backupWorld({ rootDir, world, now: taken, log: quiet })
   assert.ok(fs.existsSync(early))
+  assert.deepEqual(
+    fs.readdirSync(backups).sort(),
+    [path.basename(early), ...[2, 3, 4, 5, 6, 7].map(i => `backup_2031-01-0${i}_00-00-00.tar.gz`)],
+    'and seven are kept with it, not eight'
+  )
   for (const name of fs.readdirSync(backups)) fs.rmSync(path.join(backups, name))
   // a folder with an archive's name is not an archive: it neither counts nor is removed
   fs.mkdirSync(path.join(backups, 'backup_2032-01-01_00-00-00.tar.gz'))
@@ -334,4 +487,11 @@ test('backup: a tar that fails leaves no archive behind; the newest seven are ke
   assert.equal(deleted.length, 3)
   assert.deepEqual(oldBackups(backups), [])
   assert.deepEqual(oldBackups(backups, 5), ['backup_2026-06-05_12-00-00.tar.gz', 'backup_2026-06-04_12-00-00.tar.gz'])
+  // with the archive just made named, it is one of the kept: none of it, and one fewer of the others
+  assert.deepEqual(oldBackups(backups, 5, 'backup_2026-06-04_12-00-00.tar.gz'), [
+    'backup_2026-06-06_12-00-00.tar.gz',
+    'backup_2026-06-05_12-00-00.tar.gz',
+  ])
+  assert.equal(oldBackups(backups, 0, 'backup_2026-06-04_12-00-00.tar.gz').length, 6)
+  assert.equal(oldBackups(backups, -3, 'backup_2026-06-04_12-00-00.tar.gz').length, 6)
 })

@@ -18,7 +18,7 @@ Coo World is a customized 3D virtual world built by forking and extending [Hyper
 - **Standalone persistent worlds** - Host on your own domain
 - **Realtime content creation** - Build directly in-world
 - **Interactive app system** - Create dynamic applications with JavaScript
-- **Portable avatars** - Connect via Hyperfy for consistent identity
+- **Portable avatars** - VRM avatars; visitors can upload their own when the world's Custom Avatars setting is on
 - **Physics-based interactions** - Built on PhysX for realistic simulation
 - **WebXR support** - Experience worlds in VR
 - **Extensible architecture** - Highly customizable for various use cases
@@ -29,7 +29,7 @@ Based on [Hyperfy](https://github.com/hyperfy-xyz/hyperfy) v0.16.0
 
 ### Prerequisites
 
-- Node.js 22.23.5+ (via [nvm](https://github.com/nvm-sh/nvm) or direct install)
+- Node.js 22.23.5, the version in `.nvmrc` and in `engines` of `package.json` (via [nvm](https://github.com/nvm-sh/nvm) or direct install)
 
 ### Installation
 
@@ -63,7 +63,7 @@ Files enter a world through `/api/upload` and are served back from `/assets/`:
 - Only `glb`, `vrm`, `js`, `jpg`, `jpeg`, `png`, `webp`, `mp4`, `mp3` and `hdr` files are accepted; binary types must carry the matching file signature, and `PUBLIC_MAX_UPLOAD_SIZE` (MB) is enforced server-side. A request must declare its `Content-Length` (411 otherwise) and must not be compressed (`Content-Encoding` other than identity is 415).
 - Rate limits and quotas (`UPLOAD_*` in `.env.example`, `0` disables one): one upload in flight per user and a global cap of in-flight uploads; uploads per minute and new bytes per 24 h per user, with a builder tier and a visitor tier chosen by the effective rank; per-address limits at 4x the visitor values, a share of the in-flight slots and a shared daily budget for everyone without a builder rank stored on their user (an identity minted by a fresh connection never counts as a builder here, even in a world whose settings grant builder to everyone). An admitted upload must deliver its body within `UPLOAD_SLOT_TIMEOUT_S`. A refusal that concerns the user or their network is a `429`, one that concerns the whole server a `503`; both carry `Retry-After` and `retryAfter` (seconds) in the JSON body, and the client retries once when that is five seconds or less. Counters live in memory and reset when the server restarts; `UPLOAD_MAX_TRACKED` bounds how many untrusted identities and addresses are kept, and while that table is full of records with live windows, untrusted identities not yet in it are answered `503` until one expires (stored-rank builders and admins are never held to it). A builder rank granted for the session by a verified wallet token is trusted like a stored rank, with its rate and quota keyed to the wallet rather than the user: identities minted under one wallet share one builder bucket. A rank that comes only from the world setting stays untrusted. Because tokens can move between wallets, `UPLOAD_RESERVED_TRUSTED` slots of the total are kept for stored-rank builders and admins: untrusted and wallet-backed sessions together never hold more than the rest. `/api/upload-check` answers `429`/`503` with `retryAfter` when the upload that would follow it would be refused, so a refusal reaches the client on a request without a body; the upload itself still decides. The client sends uploads one at a time per tab.
 - Free space (`ASSETS=local`): an upload that would leave less than `UPLOAD_MIN_FREE_MB` (or a fifth of the volume, whichever is smaller, so a host that grows volumes at 75% used still can) is refused with `507`, keeping the volume writable for the world database that shares it. If free space cannot be read, uploads are refused with `507` as well, and a warning is logged once per kind of failure.
-- Behind a proxy, the per-address limits key on `UPLOAD_CLIENT_IP_HEADER` when it is set, or on `Fly-Client-IP` when the server runs on Fly; otherwise on the socket address. IPv6 addresses are grouped by `/64`.
+- Behind a proxy, the per-address limits key on the header `UPLOAD_CLIENT_IP_HEADER` names. When that variable is not set at all and `FLY_APP_NAME` is (the server takes that to mean it runs on Fly), they key on `Fly-Client-IP`. Otherwise, and when the variable is set but empty as in `.env.example`, they key on the socket address. IPv6 addresses are grouped by `/64`.
 - Assets served by this server (`ASSETS=local`) carry `X-Content-Type-Options: nosniff` and an explicit content type. Scripts, HDRs and anything that is not plain image/video/audio/model media are delivered as sandboxed downloads, so a file served under these rules cannot run as a page on the world's origin. Scripts are served as plain text: the loaders read their text, and with `nosniff` a browser refuses one as a `<script>`, a worker or a module.
 - Pages: the world page and the static pages (on every answer, a 304 included) say who may frame them (nobody: `frame-ancestors 'none'` and `X-Frame-Options: DENY`), forbid `<base>`, plugins and forms posting to other sites, and say a `Permissions-Policy` that, in browsers that implement it (Firefox does not), keeps the camera, the location, the Payment Request API (not wallet requests, which do not use it) and USB devices from the page and its frames. Every reply a route of the server makes says `nosniff`; a WebSocket upgrade and the errors the HTTP layer writes itself before any route runs (a 400 for a URL it cannot decode, a 408, a 431) do not. This is not a policy on scripts or connections (see the changelog). `HSTS_MAX_AGE` (seconds) turns on `Strict-Transport-Security`.
 - Pages, the policy being tried: the world page also says `Content-Security-Policy-Report-Only` with a policy on scripts, styles, frames and workers. **It protects nothing**: browsers load and run everything as before and post what the policy would have refused to `POST /csp-report`, and the server writes a line for each kind of report when an hour first sees it and again at 10, 100, 1000 of it (`[csp] report-only: <directive> would refuse <origin, scheme or word>, asked by <file>`) so an operator can see what enforcing it would break (wallet extensions, wallet in-app browsers) before it is enforced. Anyone can post to that route, so a line says what was posted, not what a browser did; an address gets 20 posts a minute and the server takes 600 a minute (counted before a body is read), a report is 8 KiB at most and may not be compressed, and an hour writes at most 100 kinds. Nothing of a report is kept but the directive's name, an origin or scheme, and the path of one of the page's own files.
@@ -77,7 +77,7 @@ Files enter a world through `/api/upload` and are served back from `/assets/`:
 
 ### Connections and inbound packets
 
-- Per client address, `/ws` admits `WS_CONNECT_BURST` new connections at once (default 20) and `WS_CONNECT_RATE_PER_MIN` sustained (10/min), with at most `WS_CONNECT_CONCURRENT_PER_IP` open at a time (8). IPv6 also has `WS_CONNECT_CONCURRENT_PER_56` (16) and `WS_CONNECT_CONCURRENT_PER_48` (32) concurrent limits. Its parent rate buckets use `WS_CONNECT_RATE_PER_MIN_56=20`, `WS_CONNECT_BURST_56=40`, `WS_CONNECT_RATE_PER_MIN_48=40` and `WS_CONNECT_BURST_48=80`. Setting either rate or burst to `0` disables that parent bucket. Every bucket and concurrency cap must pass before any tokens are charged. `WS_MAX_SOCKETS` (64) caps all admitted transports, including closing sockets, until TCP closes. `0` disables a limit; `WS_CONNECT_BURST=0` also requires `WS_CONNECT_RATE_PER_MIN=0`. Raising `WS_MAX_SOCKETS` raises the total write-backlog bound of 64 MiB at the default; setting it to `0` removes that bound. `WS_CONNECT_MAX_TRACKED` (40000) bounds the shared table of address and IPv6 parent buckets; newcomers are refused while the table has no idle entries. Refused upgrades receive HTTP 503 with `Retry-After: 10`, before any database lookup or snapshot. Ordinary HTTP GETs take no slot. Addresses use `UPLOAD_CLIENT_IP_HEADER`, `Fly-Client-IP` on Fly, or the socket address; IPv6 uses `/64`, and both IPv4-mapped spellings count as IPv4.
+- Per client address, `/ws` admits `WS_CONNECT_BURST` new connections at once (default 20) and `WS_CONNECT_RATE_PER_MIN` sustained (10/min), with at most `WS_CONNECT_CONCURRENT_PER_IP` open at a time (8). IPv6 also has `WS_CONNECT_CONCURRENT_PER_56` (16) and `WS_CONNECT_CONCURRENT_PER_48` (32) concurrent limits. Its parent rate buckets use `WS_CONNECT_RATE_PER_MIN_56=20`, `WS_CONNECT_BURST_56=40`, `WS_CONNECT_RATE_PER_MIN_48=40` and `WS_CONNECT_BURST_48=80`. Setting either rate or burst to `0` disables that parent bucket. Every bucket and concurrency cap must pass before any tokens are charged. `WS_MAX_SOCKETS` (64) caps all admitted transports, including closing sockets, until TCP closes. `0` disables a limit; `WS_CONNECT_BURST=0` also requires `WS_CONNECT_RATE_PER_MIN=0`. Raising `WS_MAX_SOCKETS` raises the total write-backlog bound of 64 MiB at the default; setting it to `0` removes that bound. `WS_CONNECT_MAX_TRACKED` (40000) bounds the shared table of address and IPv6 parent buckets; newcomers are refused while the table has no idle entries. Refused upgrades receive HTTP 503 with `Retry-After: 10`, before any database lookup or snapshot. Ordinary HTTP GETs take no slot. Addresses are read as for uploads (`UPLOAD_CLIENT_IP_HEADER`, `Fly-Client-IP` where `FLY_APP_NAME` is set, or the socket address); IPv6 uses `/64`, and both IPv4-mapped spellings count as IPv4.
 - A client message above 64 KiB closes the connection (1009). Below that, every packet is checked before its values are built: `entityEvent` (a script's `app.send`) up to 64 KiB; `blueprintAdded`, `blueprintModified` and `ai` up to 64 KiB and only from builders; everything else up to 32 KiB. Each connection has a token bucket of 2048 units refilled at 1024 a second; a packet costs one unit plus one per full 2 KiB and one per 32 decoded nodes, including failed scans. A refused packet is counted and logged once per connection and reason; the connection stays open. A blueprint, including its props, must fit in 64 KiB; an oversized change is refused in the client with a toast. On a world whose settings grant builder rank to everyone, every connection counts as a builder.
 - All world blueprints together have a 512 KiB budget (`WORLD_BLUEPRINT_BYTES`), measured as the sum of their encoded server `blueprintAdded` packets. An add that exceeds it is refused and its optimistic entity removed; a modification that exceeds it is reverted. Existing worlds over budget still load with a warning and permit changes that do not grow the total. Blueprints, app entities, settings and collections together have a 768 KiB budget (`WORLD_JOIN_BYTES`, `src/core/extras/joinBudget.js`, with the same growth-only rule), so the join snapshot always fits its 1 MiB cap: what no budget tracks (chat history, players' effects and avatars, app state set by server scripts, voice state of players who left) is dropped from a snapshot that would not fit, step by step, and logged; what cannot be dropped is counted as 1 KiB per player plus the snapshot's fixed part, which the server measures at start-up for its configuration (about 9 KiB; it logs when that is over 24 KiB, which a very long `LIVEKIT_API_KEY` can cause). World growth leaves room for the players present (at least 64). A visitor (no rank of builder or above stored on the user) is refused with `player_limit` once their join would leave less room than 8 more players and 64 KiB of world growth need, so a crowd of visitors cannot keep ranked users out or stop building: a full world takes about 174 visitors, an empty one about 940, whatever `WS_MAX_SOCKETS` allows. A user with a stored rank is admitted whenever the real snapshot fits, also in a world stored over its budget, so an admin can always come in to shrink or moderate it. Builders should keep large text out of props.
 - The strict plain-msgpack decoder counts nodes at admission and builds values when the inbox is flushed. Fair per-socket scheduling spends at most 9,216 work units per tick (`work = nodes + floor(bytes / 128)`); under a full flood, a socket waits up to about 2 s for service at the default 64 slots. Each inbox has a guaranteed 160 KiB reserve and can grow to 1 MiB using a 16 MiB shared pool. Server-to-client output is capped at 512 KiB per packet and 1 MiB of backlog per client. The initial snapshot alone may use up to 1 MiB minus 1 KiB of write overhead (`SNAPSHOT_CAP`); crossing half that size logs a warning once per process. Scripts share 512 KiB of output per tick and skip recipients whose backlog would exceed 512 KiB. The protocol is now `v=2`; old tabs must reload. See [app.send](docs/scripting/app/App.md#sendname-data-skipnetworkid) for data types and return values.
@@ -96,10 +96,15 @@ Files enter a world through `/api/upload` and are served back from `/assets/`:
 
 ## 📚 Documentation & Resources
 
-- **[Community Documentation](https://docs.hyperfy.xyz)** - Comprehensive guides and reference
-- **[Website](https://hyperfy.io/)** - Official Hyperfy website
-- **[Sandbox](https://play.hyperfy.xyz/)** - Try Hyperfy in your browser
-- **[Twitter/X](https://x.com/hyperfy_io)** - Latest updates and announcements
+- **[Docs](docs/README.md)** - This repository's documentation: commands, supported files and the app scripting API
+- **[Changelog](CHANGELOG.md)** - What this fork changed, under `[Unreleased]`
+- **[Docker](DOCKER.md)**, **[Migration notes](MIGRATIONS.md)**, **[Contributing](CONTRIBUTING.md)**
+
+Upstream Hyperfy, the engine this world is forked from. These pages are upstream's and describe upstream, not this fork:
+
+- **[Hyperfy documentation](https://docs.hyperfy.xyz)**
+- **[Hyperfy website](https://hyperfy.io/)**
+- **[Hyperfy sandbox](https://play.hyperfy.xyz/)** - Try upstream Hyperfy in your browser
 
 ## 📏 Project Structure
 
@@ -164,7 +169,7 @@ PUBLIC_TOKEN_DECIMALS=6
 
 - Free public RPCs have rate limits; using an RPC provider like [Helius](https://helius.dev/) is recommended
 - Token mint address should be a Solana SPL token address
-- Environment variables with `PUBLIC_` prefix are exposed to the client
+- Environment variables with `PUBLIC_` prefix are exposed to the client (all but the deprecated `PUBLIC_RPC_URL`, which is never sent)
 
 ## 🦊 EVM Wallets (Sign-In with Ethereum)
 
@@ -274,8 +279,8 @@ npm run dev
 npm run build
 npm start
 
-# Clean orphaned assets (experimental)
-npm run world:clean
+# Archive the world's folder into <world>/backups (see "Backups" below)
+npm run world:backup
 
 # List the model, avatar and emote files the loaders' limits refuse (read-only; run before upgrading a world)
 npm run models:check -- world/assets
@@ -289,7 +294,23 @@ npm run client:dev
 # Linting
 npm run lint
 npm run lint:fix
+
+# Unit tests, and the lint + format check CI runs
+npm test
+npm run check
 ```
+
+There is no command that cleans a world: unused blueprints and assets are removed when the server starts, with `CLEAN=true` (`CLEAN=dryrun` only logs what would be removed; any other value, or none, does nothing). See Clean-up under [Uploads](#uploads).
+
+### Backups
+
+`npm run world:backup` writes one archive, `backup_<date>_<time>.tar.gz`, into `<world>/backups` and keeps the seven newest. The world is the folder `WORLD` names (`world` when it is not set), and it must exist. The server can be running.
+
+- **What goes in.** The world's folder as it is at that moment (assets, collections, `storage.json`, the clean-up's trash), without `backups/` itself. The SQLite database goes in as a copy made by SQLite's own backup, which is one consistent state of it; the live `db.sqlite` and the files SQLite keeps beside it are left out.
+- **PostgreSQL is not included.** With `DB_URI` set to a PostgreSQL address the world's database is not in the folder and not in the archive (the script says so). Back it up by its own means.
+- **It is not a backup until it is copied elsewhere.** The archive stays in the world's own folder, on the same disk as what it holds, and is lost with it.
+- **Room it needs.** While it runs, a working folder in `<world>/backups` (`.staging-…`) holds the copy of the database, uncompressed; the other files are hard links, not second copies, except where hard links cannot be made: there they are copied and need their room too. The archive comes on top. A run that is killed leaves the working folder, to be removed by hand.
+- Run one backup of a world at a time. It needs `tar`.
 
 ## 🖊️ Contributing
 
@@ -303,6 +324,5 @@ Contributions are welcome! Please check out our [contributing guidelines](CONTRI
 
 ## 🌱 Project Status
 
-This project is still in alpha as we transition all of our [reference platform](https://github.com/hyperfy-xyz/hyperfy-ref) code into fully self hostable worlds.
-Most features are already here in this repo but still need to be connected up to work with self hosting in mind.
-Note that APIs are highly likely to change during this time.
+Coo World is a fork of Hyperfy v0.16.0 (the version `package.json` still carries). Upstream's README at that version called the project alpha, with APIs likely to change.
+What this fork changed since then is recorded in [CHANGELOG.md](CHANGELOG.md) under `[Unreleased]`, and what is known to be unfinished is in its "Still open" section.

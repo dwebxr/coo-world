@@ -79,6 +79,7 @@ const names = [
   'saveDirty',
   'saveExpired',
   'onDisconnect',
+  'releaseApps',
   'onChatAdded',
   'onAppChat',
   'admin',
@@ -266,6 +267,8 @@ export function makeNetwork(log = () => {}, { context, tokenBalanceService, evmH
   network.world = {
     apps: { eventLedger: createEventLedger() },
     livekit: { clearModifiers() {} },
+    // no apps unless a test brings its own entities (onDisconnect looks for what the connection held)
+    entities: { items: new Map() },
   }
   return network
 }

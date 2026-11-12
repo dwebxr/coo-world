@@ -79,6 +79,7 @@ function fixture(t, { result = { known: true, balance: 0 } } = {}) {
     blueprints: { serialize: () => [] },
     events: { emit() {} },
     entities: {
+      items: entities,
       add(data) {
         const player = {
           data,

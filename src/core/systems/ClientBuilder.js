@@ -685,7 +685,9 @@ export class ClientBuilder extends System {
     if (this.selected === app) return
     // deselect existing
     if (this.selected && this.selected !== app) {
-      if (!this.selected.dead && this.selected.data.mover === this.world.network.id) {
+      // an app removed while selected (by another builder, or by the server when its uploader left) is gone: it is
+      // not placed, announced or built again
+      if (!this.selected.destroyed && this.selected.data.mover === this.world.network.id) {
         const app = this.selected
         app.data.mover = null
         guardTransform(app.root)

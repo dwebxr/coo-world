@@ -150,21 +150,27 @@ export function fixture({ env = {}, context = {} } = {}) {
     socket.ws.emit('message', writeClientPacket(name, data))
     network.flush()
   }
-  // `origin`: where the connection comes from ({ key, parents }), as the route gives it
-  const join = async (params = {}, origin) => {
+  // a connection as the route hands it over: the server's close is recorded, and `terminate()` is the client going
+  // away (the transport reports its close)
+  const connection = () => {
     const ws = fakeWs()
     ws.closeCodes = []
     ws.close = code => {
       ws.closeCodes.push(code)
       ws.readyState = 3
     }
+    return ws
+  }
+  // `origin`: where the connection comes from ({ key, parents }), as the route gives it; `ws`: a test's own
+  // connection, to close while the join waits
+  const join = async (params = {}, origin, ws = connection()) => {
     await network.onConnection(ws, params, origin)
     ws.drain()
     const [method, snapshot] = ws.packets.length ? readPacket(ws.packets[0]) : []
     return { ws, method, snapshot, bytes: ws.packets[0]?.length }
   }
   world.blueprints.add({ id: 'bp', version: 0, name: 'Box' })
-  return { logs, network, world, builder, send, join, users, store }
+  return { logs, network, world, builder, send, join, connection, users, store }
 }
 
 // lets a save that is stuck on a hanging write show where it stopped

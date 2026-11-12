@@ -77,6 +77,7 @@ function fixture({ pause, fail, existing = false, auth = { userId: 'player' }, l
     ai: serial,
     blueprints: serial,
     entities: {
+      items: players,
       add(data) {
         if (fail === 'add-before') throw failure
         const player = {
@@ -573,17 +574,20 @@ test('answersPing: the mark stays until its own deadline, and a later probe keep
   f.ws.finishClose()
 })
 
-test('playersPresent: a player being replaced counts once, whether its old connection is still there or not', () => {
+test('playersPresent: a user counts once, registered or joining, and a join of no known user counts on its own', () => {
   const f = fixture()
   f.network.sockets.set('player', {})
   f.network.sockets.set('other', {})
   assert.equal(f.network.playersPresent(), 2)
-  f.network.replacing = new Set(['player'])
+  // two joins of `player` (a reload, and its replacement of the old connection)
+  f.network.joining = new Map([['player', 2]])
   assert.equal(f.network.playersPresent(), 2, 'old connection still registered: not counted twice')
   f.network.sockets.delete('player')
   assert.equal(f.network.playersPresent(), 2, 'old connection gone: its place is kept')
-  f.network.replacing.delete('player')
+  f.network.joining.delete('player')
   assert.equal(f.network.playersPresent(), 1)
+  f.network.arriving = 2
+  assert.equal(f.network.playersPresent(), 3)
 })
 
 test('onConnection: in a full world, nobody else can take the place of a player being replaced', async () => {
@@ -617,9 +621,52 @@ test('onConnection: in a full world, nobody else can take the place of a player 
   await replacement
   assert.equal(readPacket(ws.packets[0])[0], 'onSnapshot')
   assert.equal(f.network.sockets.size, 1)
-  assert.equal(f.network.replacing.size, 0)
+  assert.equal(f.network.joining.size, 0)
   stranger.finishClose()
   ws.finishClose()
+  f.ws.finishClose()
+})
+
+test('onConnection: a replacement that closes while it reads the user again gives back the place and the id at once', async () => {
+  const f = fixture({ existing: true })
+  f.network.takeoverPingMs = 20
+  f.network.world.settings.playerLimit = 1
+  const stored = { id: 'player', name: 'Saved', rank: 0 }
+  let lookups = 0
+  let release
+  const held = new Promise(resolve => (release = resolve))
+  f.network.db = () => ({
+    where: () => ({
+      first: async () => {
+        // the replacement's second read does not answer until the end of the test
+        if (++lookups === 3) await held
+        return { ...stored }
+      },
+    }),
+    insert: async () => {},
+  })
+  await f.run()
+  const ws = f.peer()
+  const replacement = f.run({ authToken: 'token' }, ws)
+  for (let i = 0; i < 50 && lookups < 3; i++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(lookups, 3, 'the replacement is reading the user again')
+  assert.equal(f.network.sockets.size, 0, 'the old connection is gone')
+  ws.finishClose()
+  assert.equal(f.network.playersPresent(), 0, 'its place is free')
+  assert.equal(f.network.connecting.size, 0, 'and its user id')
+  // the player again: neither refused as a duplicate of the closed join nor for want of a place
+  const again = f.peer()
+  await f.run({ authToken: 'token' }, again)
+  assert.equal(readPacket(again.packets[0])[0], 'onSnapshot')
+  const current = f.network.sockets.get('player')
+  release()
+  await replacement
+  assert.deepEqual(ws.packets, [])
+  assert.equal(f.network.sockets.get('player'), current, 'the closed join registers nothing')
+  assert.equal(f.network.playersPresent(), 1)
+  assert.equal(f.network.joining.size, 0)
+  assert.equal(f.network.connecting.size, 0)
+  again.finishClose()
   f.ws.finishClose()
 })
 

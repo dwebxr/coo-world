@@ -2,6 +2,14 @@ import { isEvmAddress, isEvmSigninSignature, parseEvmChainIds, sameEvmAddress } 
 import { encodeTransfer, isTxHash } from '../core/extras/evmAbi'
 import { KNOWN_CHAINS, explorerTxUrl, parseTipAmount, parseTipTokens, tipAmountReason } from '../core/extras/evmTokens'
 import { WALLET_LINKS, isAppScheme, sameHost } from '../core/extras/walletLinks'
+import {
+  clearTipMarker,
+  readTipMarkers,
+  shortTipAddress,
+  tipErrorOutcome,
+  tipUnknownOutcome,
+  writeTipMarker,
+} from '../core/extras/tipOutcome'
 
 // EVM ウォレット (EIP-1193 / EIP-6963) の所有証明。依存ライブラリなし。
 // 流れと世代管理は solana-integration.js と同じ。状態は Solana と独立で、ビルド権限には関与しない
@@ -10,6 +18,13 @@ import { WALLET_LINKS, isAppScheme, sameHost } from '../core/extras/walletLinks'
 const NONCE_WAIT_MS = 15000
 const ACK_WAIT_MS = 15000
 const INTENT_WAIT_MS = 10000
+// How long the "not confirming" step's answer can act on the intent it was shown for: 5 minutes of time elapsed
+// in this page since the intent arrived (performance.now(), which a change of the wall clock does not move). The
+// server keeps the tip request (its ticket) for 10 minutes from when it issued it (TIP_TICKET_TTL_MS = 600_000,
+// evm-gating.js), and the intent carries neither that time nor an expiry; half of it leaves the wallet's prompt
+// and the report of the hash the rest. A later answer asks nothing of the wallet: the form does not act on a
+// request that old, and Send tip asks the server for a new one.
+const UNCONFIRMED_ANSWER_MS = 300_000
 // 発見したウォレットの保持上限と、受け入れるアイコンの大きさ
 const MAX_PROVIDERS = 16
 const MAX_ICON_LENGTH = 64 * 1024
@@ -64,12 +79,19 @@ const failureMessage = (reason, error) => {
 
 const isTipTicket = value => typeof value === 'string' && /^[0-9a-f]{32}$/.test(value)
 
-// loadWalletConnect: replaced in tests; in the browser it loads src/client/walletconnect.js on demand
-export function createEvmIntegration(world, { loadWalletConnect = () => import('./walletconnect.js') } = {}) {
+// loadWalletConnect: replaced in tests; in the browser it loads src/client/walletconnect.js on demand.
+// tipStorage: returns the Storage that keeps the notes of tip requests (tipOutcome.js); replaced in tests.
+// pageClock: the time elapsed in this page, in ms (performance.now); replaced in tests
+export function createEvmIntegration(
+  world,
+  { loadWalletConnect = () => import('./walletconnect.js'), tipStorage, pageClock = () => performance.now() } = {}
+) {
   const config = buildConfig()
   if (!config.chainIds.length) return null
 
   const win = typeof window !== 'undefined' ? window : null
+  // read on each use: reading localStorage can itself throw (every use is inside tipOutcome.js's try)
+  const markerStorage = tipStorage ?? (() => win.localStorage)
   const discovered = new Map()
   let generation = 0
   let nextAttempt = 0
@@ -83,6 +105,8 @@ export function createEvmIntegration(world, { loadWalletConnect = () => import('
   let selectedId = null
   let nextIntent = 0
   let tipping = false
+  // whether the world confirms tips, as it last said (sign-in, a tip intent, a tip's status); null: not said
+  let tipsConfirmed = null
   // WalletConnect: the adapter once loaded, and its last status for the panel ({ state, uri?, qr?, method? })
   let walletConnect = null
   let walletConnectLoading = null
@@ -278,6 +302,7 @@ export function createEvmIntegration(world, { loadWalletConnect = () => import('
       // 表示はサーバーが付けたチェックサム形にそろえる
       address = data.wallet
       status = 'verified'
+      if (typeof data.confirmsTips === 'boolean') tipsConfirmed = data.confirmsTips
     } else if (!active || status === 'verified') {
       status = address ? 'unverified' : 'disconnected'
     }
@@ -449,8 +474,22 @@ export function createEvmIntegration(world, { loadWalletConnect = () => import('
 
   // 投げゼニ: 受取人のアドレスはサーバーの tip intent から受け取り、ウォレットから直接送る。
   // 送金先は intent の受取人だけ。金額はクライアントでも解析して intent と一致するときだけ送る。
-  // 戻り値は { ok: true, txHash, explorerUrl } か { ok: false, reason }
-  const tip = async ({ playerId, token, amount } = {}) => {
+  // 戻り値は { ok: true, txHash, explorerUrl, request } か { ok: false, reason }
+  //
+  // What the payer is told (tipOutcome.js): `onIntent({ request, confirms })` is called once the intent has
+  // arrived and before the wallet is asked anything, with whom the transfer will name (display name and short
+  // address) and whether the world says it confirms tips. Once eth_sendTransaction was handed to the wallet,
+  // only a transaction hash or an explicit rejection is a known result; anything else is `outcome_unknown`
+  // (the transfer may have been sent) and carries the same `request`.
+  // When the intent says that the world is not confirming tips and the form had not said so before Send was
+  // pressed (`unconfirmedShown`), the send waits before the wallet is asked anything: `onUnconfirmed({ request })`
+  // shows that and resolves true when the payer chose "Send anyway". Anything else (no callback, false, a
+  // callback that throws) ends the send as `declined`, with nothing asked of the wallet. This does not rely on
+  // the screen having been drawn before the wallet's prompt: the prompt cannot come before the payer's choice.
+  // "Send anyway" that comes UNCONFIRMED_ANSWER_MS or more (of this page's time) after the intent arrived ends it
+  // as `intent_expired`, with nothing asked of the wallet either. The send without that step goes on at once and
+  // has no such check.
+  const tip = async ({ playerId, token, amount, onIntent, unconfirmedShown = false, onUnconfirmed } = {}) => {
     if (disposed || world.fatalError) return { ok: false, reason: 'unavailable' }
     if (!verified || !address || !provider) return { ok: false, reason: 'not_verified' }
     if (tipping) return { ok: false, reason: 'busy' }
@@ -475,6 +514,10 @@ export function createEvmIntegration(world, { loadWalletConnect = () => import('
         chainMoved = true
       }
     }
+    // what the wallet is asked for, whether it has been asked, and the id of the note of the request (or null)
+    let request = null
+    let requested = false
+    let markerId = null
     try {
       if (nextIntent === 0x7fffffff) nextIntent = 0
       const id = ++nextIntent
@@ -501,6 +544,33 @@ export function createEvmIntegration(world, { loadWalletConnect = () => import('
       }
       // サーバーの控え (P2b)。送金後にこれで tx を報告し、確定の結果を受け取る。無い (古いサーバー) なら報告しない
       const ticket = isTipTicket(intent.ticket) ? intent.ticket : null
+      if (typeof intent.confirms === 'boolean') tipsConfirmed = intent.confirms
+      const name = world.entities?.players?.get(playerId)?.data?.name
+      request = Object.freeze({
+        name: typeof name === 'string' ? name : '',
+        address: shortTipAddress(intent.recipient),
+        amount,
+        token: info.symbol,
+        at: Date.now(),
+      })
+      try {
+        onIntent?.({ request, confirms: tipsConfirmed })
+      } catch {
+        // the screen's problem, not the send's
+      }
+      if (intent.confirms === false && unconfirmedShown !== true) {
+        // the intent has just arrived (nothing has been awaited since)
+        const shownAt = pageClock()
+        let go = false
+        try {
+          go = (await onUnconfirmed?.({ request })) === true
+        } catch {
+          // no choice was made: nothing is sent
+        }
+        if (!stillCurrent()) return { ok: false, reason: 'cancelled' }
+        if (!go) return { ok: false, reason: 'declined' }
+        if (pageClock() - shownAt >= UNCONFIRMED_ANSWER_MS) return { ok: false, reason: 'intent_expired' }
+      }
       // ウォレットの今のアカウントが検証済みアドレスであること
       const accounts = await wallet.request({ method: 'eth_accounts' })
       if (!stillCurrent()) return { ok: false, reason: 'cancelled' }
@@ -511,6 +581,11 @@ export function createEvmIntegration(world, { loadWalletConnect = () => import('
       wallet.on?.('chainChanged', onChainChanged)
       if (!stillCurrent()) return { ok: false, reason: 'cancelled' }
       if (chainMoved) return { ok: false, reason: 'chain_changed' }
+      // the note goes first: a page that is gone when the wallet answers (a reload on the way back from the
+      // wallet app, a lost connection) has nothing else left of this request. Its time is now, not when the
+      // intent came: the account and network prompts and the "not confirming" step before this can take minutes
+      markerId = writeTipMarker(markerStorage, { ...request, at: Date.now() })
+      requested = true
       const txHash = await wallet.request({
         method: 'eth_sendTransaction',
         params: [
@@ -523,14 +598,24 @@ export function createEvmIntegration(world, { loadWalletConnect = () => import('
           },
         ],
       })
-      if (!isTxHash(txHash)) return { ok: false, reason: 'bad_tx' }
+      // not a transaction hash (some smart wallets answer with something else): nothing to report or to link,
+      // and no reason to think that nothing was sent
+      if (!isTxHash(txHash)) return tipUnknownOutcome(request)
       // 確定の確認はサーバーがチェーンで行う (別のチェーンに出ていれば見つからず、未確認になる)
       const reported = ticket ? send('evmTip', { ticket, txHash }) : false
+      // the result reached the world: the note has done its work (if it is still this request's). A hash that
+      // could not be handed over (the connection went meanwhile) leaves it, for the page that comes after this one
+      if (reported) clearTipMarker(markerStorage, markerId)
       // 送信中に切り替わった場合、どのチェーンに出たか分からないのでリンクは出さない
-      if (chainMoved) return { ok: true, txHash, explorerUrl: null, warning: 'chain_changed', ticket, reported }
-      return { ok: true, txHash, explorerUrl: explorerTxUrl(chainId, txHash), ticket, reported }
+      if (chainMoved) {
+        return { ok: true, txHash, explorerUrl: null, warning: 'chain_changed', ticket, reported, request }
+      }
+      return { ok: true, txHash, explorerUrl: explorerTxUrl(chainId, txHash), ticket, reported, request }
     } catch (error) {
-      return { ok: false, reason: error?.code === 4001 ? 'rejected' : 'failed' }
+      const outcome = tipErrorOutcome(error, requested, request)
+      // an explicit rejection after the request is a known result too
+      if (requested && outcome.reason === 'rejected') clearTipMarker(markerStorage, markerId)
+      return outcome
     } finally {
       try {
         wallet.removeListener?.('chainChanged', onChainChanged)
@@ -538,13 +623,36 @@ export function createEvmIntegration(world, { loadWalletConnect = () => import('
         // プロバイダー側の例外は無視
       }
       tipping = false
+      // the notice (TipMarkerNotice) shows what is left of this request, if anything
+      if (requested) tellTipMarkers()
     }
+  }
+
+  // the notes of requests whose result this world did not get, newest first, each for ten minutes
+  // (tipOutcome.js); [] when there are none
+  const getTipMarkers = () => readTipMarkers(markerStorage, Date.now())
+  const tellTipMarkers = () => {
+    try {
+      world.emit('evm:tipMarkers', getTipMarkers())
+    } catch {
+      // a listener's error must not turn a tip's result into a failure
+    }
+  }
+  // Dismiss of one note: the key of the note with the id the notice shows it beside, and no other note's
+  const dismissTipMarker = id => {
+    clearTipMarker(markerStorage, id)
+    tellTipMarkers()
   }
 
   // サーバーから届いた投げゼニの状態をチケットごとに控える (表示が購読する前に届いても失わない)
   const tipStatuses = new Map()
   const onTipStatus = data => {
     if (!isTipTicket(data?.ticket) || typeof data.state !== 'string') return
+    // a tip of this player's that the world could not confirm for want of an RPC or of finality: the next
+    // confirmation step says so before the server is asked again
+    if (data.state === 'unverified' && (data.reason === 'no_rpc' || data.reason === 'no_finality')) {
+      tipsConfirmed = false
+    }
     tipStatuses.delete(data.ticket)
     if (tipStatuses.size >= 32) tipStatuses.delete(tipStatuses.keys().next().value)
     tipStatuses.set(data.ticket, Object.freeze({ ...data }))
@@ -623,6 +731,9 @@ export function createEvmIntegration(world, { loadWalletConnect = () => import('
     tip,
     recheckTip,
     getTipStatus,
+    getTipsConfirmed: () => tipsConfirmed,
+    getTipMarkers,
+    dismissTipMarker,
     getState,
     getProviders,
     connect,

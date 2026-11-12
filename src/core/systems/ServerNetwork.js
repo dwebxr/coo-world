@@ -1824,7 +1824,14 @@ export class ServerNetwork extends System {
     state.verified = challenge.address
     // a contract account's ownership is proven on the sign-in chain only
     state.verifiedContract = result.contract === true
-    socket.send('evmWalletStatus', { verified: true, wallet: challenge.address, attempt, reason: 'ok' })
+    socket.send('evmWalletStatus', {
+      verified: true,
+      wallet: challenge.address,
+      attempt,
+      reason: 'ok',
+      // only where tips are on: whether a tip sent now would be confirmed (the form says so before it asks)
+      ...(evmGating.EVM_TIP_TOKENS.length ? { confirmsTips: this.confirmsTips() } : {}),
+    })
     this.world.events?.emit('evmWallet', Object.freeze({ playerId: player.data.id, verified: true }))
   }
 
@@ -1858,6 +1865,16 @@ export class ServerNetwork extends System {
     state.receiveTips = enabled
     player.modify({ evmTips: enabled })
     this.send('entityModified', { id: player.data.id, evmTips: enabled })
+  }
+
+  // Whether this world, as last observed, is confirming tips: it has a chain RPC to watch with (a watcher exists),
+  // and that RPC answered the `finalized` tag the last time it was asked (evmTipWatcher.js: while it does not, a
+  // watched tip ends `no_finality`; the watcher asks again later, and a tip sent meanwhile can still be confirmed
+  // if the RPC has recovered by then). Told to clients with the sign-in result and with each tip intent, so the
+  // form can say that the tip "may not be confirmed or announced here" before the wallet is asked. The transfer
+  // itself never depends on it.
+  confirmsTips() {
+    return !!this.tipWatcher && this.tipWatcher.canConfirm()
   }
 
   // 送金の意思表示 (tip intent)。受取人のアドレスは、検証済みの送り手にだけ、ここで返す。
@@ -1917,6 +1934,7 @@ export class ServerNetwork extends System {
       amount,
       units: units.toString(),
       ticket,
+      confirms: this.confirmsTips(),
     })
   }
 

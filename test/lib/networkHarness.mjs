@@ -106,6 +106,7 @@ const names = [
   'onRequestEvmVerify',
   'onRevokeEvmWallet',
   'onSetEvmTipReceive',
+  'confirmsTips',
   'onRequestEvmTipIntent',
   'issueTipTicket',
   'onEvmTip',

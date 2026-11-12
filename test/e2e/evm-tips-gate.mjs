@@ -7,6 +7,11 @@
 //   recipient's panel (the Receive tips switch) is covered in evm-wallet.mjs.
 // - Confirmation (P2b): the fake wallet's transaction gets a receipt and a finalized block from the mock RPC;
 //   the server confirms it, announces it in chat and fires the server-script `tip` event.
+// - What the payer is told (P12): the sending step names the address inside the transfer the wallet is asked for;
+//   a wallet that takes the request and then fails without a rejection gives "may have been sent" with no send
+//   on offer; a page reloaded while the wallet holds the request says so again from its note in localStorage;
+//   when the RPC stops answering the `finalized` tag after the sender signed in, her next send stops on a step
+//   that says the world is not confirming tips, with nothing asked of the wallet until she presses Send anyway.
 // - NFT door: the OpenPay door example (docs/scripting/examples/nft-door.js) on the token-door fixture's frame
 //   and panels, read from the sender's page: the status on load, Open, the store link for a token id she does
 //   not hold, and the update after her wallet disconnects.
@@ -57,7 +62,10 @@ const TOKEN_ID = keccak256(toHex('openpay:license:h_e2e'))
 const alice = privateKeyToAccount(`0x${'11'.repeat(32)}`)
 const bob = privateKeyToAccount(`0x${'22'.repeat(32)}`)
 const carol = privateKeyToAccount(`0x${'33'.repeat(32)}`)
+const dave = privateKeyToAccount(`0x${'44'.repeat(32)}`)
 const holders = new Map([[alice.address.toLowerCase(), 2n]])
+// Bob's address as the tip form shows it (first six and last four characters of the EIP-55 form)
+const SHORT_BOB = `${bob.address.slice(0, 6)}…${bob.address.slice(-4)}`
 // transactions the fake wallets sent: hash → { receipt, block }. Each lands in its own block, finalized at once.
 const chainTxs = new Map()
 let nextTx = 0
@@ -94,6 +102,8 @@ function mine(tx) {
 
 const { step, finish } = createResults(`evm-tips-gate (${ENGINE})`)
 const rpcCalls = []
+// false: the mock RPC refuses the `finalized` block tag (the watcher then says tips end `no_finality`)
+let finalityAnswered = true
 let rpc
 let server
 let browser
@@ -117,7 +127,14 @@ function startRpc() {
         return reply(chainTxs.has(request.params[0]) ? { hash: request.params[0] } : null)
       }
       if (request.method === 'eth_getBlockByNumber') {
-        if (request.params[0] === 'finalized') return reply({ number: `0x${(100 + nextTx).toString(16)}` })
+        if (request.params[0] === 'finalized') {
+          if (!finalityAnswered) {
+            return res.end(
+              JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32602, message: 'invalid block tag' } })
+            )
+          }
+          return reply({ number: `0x${(100 + nextTx).toString(16)}` })
+        }
         const found = [...chainTxs.values()].find(entry => entry.block.number === request.params[0])
         return reply(found?.block ?? null)
       }
@@ -171,6 +188,13 @@ async function gateResult(wire, timeout = 10000) {
 }
 
 const isConnected = page => page.evaluate(() => window.world?.network?.ws?.readyState === 1).catch(() => false)
+// the notes of tip requests in a page's localStorage (one key each, src/core/extras/tipOutcome.js)
+const storedNotes = page =>
+  page.evaluate(() =>
+    Object.keys(localStorage)
+      .filter(key => key.startsWith('evmTipRequest:'))
+      .map(key => JSON.parse(localStorage.getItem(key)))
+  )
 
 // A page that loads while another one renders can lose its socket on a slow runner: the busy page stops
 // answering pings and the server drops it (token-gate.mjs retries its admin page for the same reason). A
@@ -206,26 +230,39 @@ async function openPage(account, name) {
   const context = await browser.newContext({ viewport: { width: 480, height: 320 }, serviceWorkers: 'block' })
   const page = await context.newPage()
   page.setDefaultTimeout(30000 * TIMEOUT_SCALE)
-  const entry = { page, context, account, consoleLines: [], pageErrors: [], sent: [] }
+  // pageErrorAt: when each page error arrived (the reload step allows one, in a time window)
+  const entry = { page, context, account, consoleLines: [], pageErrors: [], pageErrorAt: [], sent: [] }
   pages.push(entry)
   page.on('console', m => entry.consoleLines.push(`[${m.type()}] ${m.text()}`))
-  page.on('pageerror', e => entry.pageErrors.push(String(e)))
+  page.on('pageerror', e => {
+    entry.pageErrors.push(String(e))
+    entry.pageErrorAt.push(Date.now())
+  })
   await page.exposeFunction('__evmSign', hex =>
     account.signMessage({ message: Buffer.from(hex.slice(2), 'hex').toString() })
   )
+  // entry.onSend decides what the wallet does with a request it has taken: nothing set, it mines the transfer
+  // and answers with the hash; { error } is thrown in the page as the wallet's error; a promise holds the request
   await page.exposeFunction('__evmSend', tx => {
     entry.sent.push(tx)
-    return mine(tx)
+    return entry.onSend ? entry.onSend(tx) : mine(tx)
   })
   await page.addInitScript({
     content: `(() => {
       const address = ${JSON.stringify(account.address.toLowerCase())}
+      // every method this page asked the wallet for, in order
+      const asked = (window.__walletAsked = [])
       const provider = {
         async request({ method, params }) {
+          asked.push(method)
           if (method === 'eth_requestAccounts' || method === 'eth_accounts') return [address]
           if (method === 'eth_chainId') return '0x89'
           if (method === 'personal_sign') return window.__evmSign(params[0])
-          if (method === 'eth_sendTransaction') return window.__evmSend(params[0])
+          if (method === 'eth_sendTransaction') {
+            const answer = await window.__evmSend(params[0])
+            if (answer && answer.error) throw Object.assign(new Error(answer.error.message), { code: answer.error.code })
+            return answer
+          }
           if (method === 'wallet_revokePermissions') return null
           throw Object.assign(new Error('unsupported ' + method), { code: 4200 })
         },
@@ -298,7 +335,14 @@ try {
       await sleep(5200)
       eq(
         JSON.stringify(await attempt(3, SMART_SIGNATURES.valid)),
-        JSON.stringify({ verified: true, wallet: getAddress(SMART_ACCOUNT), attempt: 3, reason: 'ok' }),
+        // tips are on and the world has a chain RPC: it says that it confirms them
+        JSON.stringify({
+          verified: true,
+          wallet: getAddress(SMART_ACCOUNT),
+          attempt: 3,
+          reason: 'ok',
+          confirmsTips: true,
+        }),
         'verified as the contract account'
       )
       ok(!/0x5a11|abababab/i.test(server.out), 'neither the account nor the signature is logged')
@@ -431,11 +475,16 @@ try {
     const confirm = page.locator('.tip-confirm')
     ok((await confirm.innerText()).includes('not a party to it and takes no fee'), 'no-fee wording')
     eq(await confirm.locator('a.tip-terms').getAttribute('href'), '/terms.html#en', 'terms link')
+    // this world has a chain RPC: nothing says that tips are not confirmed; Bob is the only Bob
+    eq(await page.locator('.tip-unconfirmed').count(), 0, 'no "not confirming" notice')
+    eq(await page.locator('.tip-twin').count(), 0, 'no same-name warning')
     await page.getByRole('button', { name: 'Send tip', exact: true }).click()
     await page
       .getByRole('status')
-      .filter({ hasText: 'Sent 100 JPYC to Bob.' })
+      .filter({ hasText: `Sent 100 JPYC to Bob (${SHORT_BOB}).` })
       .waitFor({ timeout: 30000 * TIMEOUT_SCALE })
+    eq(await page.locator('.tip-marker').count(), 0, 'no notice after a tip whose hash reached the server')
+    eq(JSON.stringify(await storedNotes(page)), '[]', 'no note left')
     await page.screenshot({ path: `${PREFIX}-tip-sent.png` })
     const href = await page.getByRole('link', { name: 'View transaction' }).getAttribute('href')
     ok(href.startsWith('https://polygonscan.com/tx/0x'), 'explorer link')
@@ -516,7 +565,10 @@ try {
       .waitFor({ state: 'detached', timeout: 30000 * TIMEOUT_SCALE })
     // the form the sender already opened keeps the result of the tip that was sent
     ok(
-      await sender.page.getByRole('status').filter({ hasText: 'Sent 100 JPYC to Bob.' }).isVisible(),
+      await sender.page
+        .getByRole('status')
+        .filter({ hasText: `Sent 100 JPYC to Bob (${SHORT_BOB}).` })
+        .isVisible(),
       'sent result kept'
     )
     ok(await sender.page.getByRole('link', { name: 'View transaction' }).isVisible(), 'link kept')
@@ -533,6 +585,294 @@ try {
     eq(JSON.stringify(outcome), JSON.stringify({ ok: false, reason: 'recipient_unavailable' }))
     eq(sender.sent.length, 1, 'no new transaction')
   })
+
+  // --- what the payer is told about a send (P12) ---
+  // Each send below asks the server for an intent: three at once, then one every ten seconds (per connection).
+  let lastIntentAt = Date.now()
+  const intentBudget = async () => {
+    await sleep(Math.max(0, lastIntentAt + 10500 - Date.now()))
+    lastIntentAt = Date.now()
+  }
+  // The mock wallet holding a request, as a person reading the prompt would: `held` answers it.
+  let held = null
+  const holdSend = () => {
+    sender.onSend = () => new Promise(resolve => (held = resolve))
+  }
+  // Each of these steps starts from a closed form, a wallet that answers and no note, whatever the step before
+  // it did: a step that failed half way must not be the reason the next one fails.
+  const payerStep = (name, fn) =>
+    step(name, async () => {
+      try {
+        await fn()
+      } finally {
+        sender.onSend = null
+        held?.({ error: { code: 4001, message: 'User rejected the request.' } })
+        held = null
+        await sender.page
+          .evaluate(() => {
+            for (const note of window.world?.evm?.getTipMarkers() ?? []) window.world.evm.dismissTipMarker(note.id)
+          })
+          .catch(() => {})
+      }
+    })
+  // open Bob's form, enter the amount and go to the confirmation step
+  const toConfirm = async (page, amount) => {
+    // the button toggles the form: one left open is closed first
+    if (await page.locator('.tip-form').count()) await page.getByRole('button', { name: 'Tip Bob' }).click()
+    await page.locator('.tip-form').waitFor({ state: 'detached', timeout: 10000 * TIMEOUT_SCALE })
+    await page.getByRole('button', { name: 'Tip Bob' }).click()
+    await page.getByLabel('Amount').fill(amount)
+    await page.getByRole('button', { name: 'Next', exact: true }).click()
+    await page.locator('.tip-confirm').waitFor({ timeout: 10000 * TIMEOUT_SCALE })
+  }
+  // the recipient inside an ERC-20 transfer's call data, in the form's short spelling (lower case)
+  const shortRecipient = tx => `0x${tx.data.slice(34, 38)}…${tx.data.slice(70, 74)}`
+
+  await payerStep('tips: the sending step shows the address the wallet is asked to pay', async () => {
+    const page = sender.page
+    // Bob receives again (the server takes a switch back on a second after the last change at the earliest)
+    await sleep(1100)
+    await receiving(true)
+    await page.getByRole('button', { name: 'Tip Bob' }).waitFor({ state: 'visible', timeout: 30000 * TIMEOUT_SCALE })
+    await intentBudget()
+    holdSend()
+    const before = sender.sent.length
+    await toConfirm(page, '5')
+    await page.getByRole('button', { name: 'Send tip', exact: true }).click()
+    const shown = await page.locator('.tip-recipient').innerText({ timeout: 30000 * TIMEOUT_SCALE })
+    eq(shown, `To Bob · ${SHORT_BOB}`, 'the name and the short address')
+    await waitUntil(() => sender.sent.length === before + 1, { timeout: 30000, message: 'the wallet is asked' })
+    const tx = sender.sent.at(-1)
+    // what the form shows is what the request holds: the recipient is in the call data, and the request's own
+    // "to" is the token contract (which is what a wallet shows as the destination: the form says so)
+    eq(shown.split(' · ')[1].toLowerCase(), shortRecipient(tx), 'the address in the transfer')
+    eq(tx.data, encodeTransfer(bob.address, 5n * 10n ** 18n), 'the transfer')
+    eq(tx.to, JPYC, 'sent to the token contract')
+    ok((await page.locator('.tip-wallet-view').innerText()).includes('may show the token contract'), 'the caveat')
+    eq(await page.locator('.tip-form button').count(), 0, 'no button while the wallet is asked')
+    // the note of the request is written before the wallet answers, and nothing is said while it is open
+    const notes = await storedNotes(page)
+    eq(notes.length, 1, 'one note')
+    const note = notes[0]
+    eq(
+      JSON.stringify({ ...note, at: typeof note.at, id: /^[0-9a-f]{16}$/.test(note.id) }),
+      JSON.stringify({ name: 'Bob', address: SHORT_BOB, amount: '5', token: 'JPYC', at: 'number', id: true }),
+      'the note'
+    )
+    eq(await page.locator('.tip-marker').count(), 0, 'no notice while the request is open')
+    held(mine(tx))
+    held = null
+    await page
+      .getByRole('status')
+      .filter({ hasText: `Sent 5 JPYC to Bob (${SHORT_BOB}).` })
+      .waitFor({ timeout: 30000 * TIMEOUT_SCALE })
+    eq(JSON.stringify(await storedNotes(page)), '[]', 'the note is gone with the result')
+    await page.getByRole('button', { name: 'Close', exact: true }).click()
+    await page.getByLabel('Amount').waitFor({ state: 'detached' })
+  })
+
+  await payerStep(
+    'tips: a wallet that fails after taking the request: "may have been sent", and no send on offer',
+    async () => {
+      const page = sender.page
+      await intentBudget()
+      // not a rejection (no code 4001): a wallet session that dropped after the request went out
+      sender.onSend = () => ({ error: { code: -32603, message: 'WalletConnect request failed' } })
+      const before = sender.sent.length
+      await toConfirm(page, '7')
+      await page.getByRole('button', { name: 'Send tip', exact: true }).click()
+      const unknown = page.locator('.tip-unknown')
+      await unknown.waitFor({ timeout: 30000 * TIMEOUT_SCALE })
+      eq(sender.sent.length, before + 1, 'the wallet had taken the request')
+      eq(
+        await unknown.innerText(),
+        `The wallet did not give a clear answer. Your tip of 7 JPYC to Bob (${SHORT_BOB}) may have been sent: check your wallet's activity before trying again.`,
+        'the text'
+      )
+      // the same send is not one press away: no amount, no Next, no Send tip, nothing that says "try again"
+      eq(JSON.stringify(await page.locator('.tip-form button').allInnerTexts()), JSON.stringify(['Close']), 'buttons')
+      eq(await page.getByLabel('Amount').count(), 0, 'no amount field')
+      ok(!/Try again|not sent|Could not send/.test(await page.locator('.tip-form').innerText()), 'not a failure text')
+      await page.screenshot({ path: `${PREFIX}-tip-unknown.png` })
+      // the notice under the wallet button says the same, and stays when the form is closed
+      const marker = page.locator('.tip-marker')
+      await marker.waitFor({ timeout: 10000 * TIMEOUT_SCALE })
+      ok(
+        (await marker.locator('.tip-marker-text').innerText()).startsWith(
+          `A tip may have been sent: 7 JPYC to Bob (${SHORT_BOB}).`
+        ),
+        'the notice'
+      )
+      await page.getByRole('button', { name: 'Close', exact: true }).click()
+      await page.getByLabel('Amount').waitFor({ state: 'detached' })
+      ok(await marker.isVisible(), 'the notice outlives the form')
+      // going back through the form is a new tip from its first step
+      await page.getByRole('button', { name: 'Tip Bob' }).click()
+      eq(await page.getByLabel('Amount').inputValue(), '', 'an empty form')
+      await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+      await marker.getByRole('button', { name: 'Dismiss', exact: true }).click()
+      await marker.waitFor({ state: 'detached', timeout: 10000 * TIMEOUT_SCALE })
+      eq(JSON.stringify(await storedNotes(page)), '[]', 'dismissed: the note is removed')
+      eq(sender.sent.length, before + 1, 'nothing was sent again')
+    }
+  )
+
+  // WebKit hides the page it is leaving, and the client starts its background-tick worker (Client.js, from a
+  // blob: URL) the first time its page is hidden: the document is gone before the worker loads, which WebKit
+  // reports as a page error of the page that was left. Any reload of the world page does this, with or without a
+  // tip. Allowed: on WebKit only, that one message for a blob: URL of this world's host, arriving between the
+  // start of the reload and the new document's load event, once. Every other page error still fails the last
+  // "no page errors" step.
+  const allowLeftPageError = (entry, from, to) => {
+    if (ENGINE !== 'webkit') return
+    // WebKit writes the URL in this message as "blob: ttp://localhost:…/<uuid>"
+    const host = new URL(server.url).host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const left = new RegExp(`^Cannot load blob: ?h?ttp://${host}/[0-9a-f-]{36} due to access control checks\\.$`)
+    const index = entry.pageErrors.findIndex(
+      (line, i) => left.test(line) && entry.pageErrorAt[i] >= from && entry.pageErrorAt[i] <= to
+    )
+    if (index === -1) return
+    entry.pageErrors.splice(index, 1)
+    entry.pageErrorAt.splice(index, 1)
+  }
+
+  // what the page that comes back shows, before any wallet is connected again
+  const afterReload = async page => {
+    await page.waitForSelector('.sidebar', { timeout: 180000 })
+    const marker = page.locator('.tip-marker')
+    await marker.waitFor({ timeout: 60000 * TIMEOUT_SCALE })
+    eq(
+      await marker.locator('.tip-marker-text').innerText(),
+      `A tip may have been sent: 3 JPYC to Bob (${SHORT_BOB}). This browser asked your wallet for it and this world did not get the result. Check your wallet's activity before sending it again.`,
+      'the notice'
+    )
+    eq(await page.evaluate(() => window.world.evm.isVerified()), false, 'shown without a sign-in')
+    await page.screenshot({ path: `${PREFIX}-tip-marker.png` })
+    await marker.getByRole('button', { name: 'Dismiss', exact: true }).click()
+    await marker.waitFor({ state: 'detached', timeout: 10000 * TIMEOUT_SCALE })
+    eq(JSON.stringify(await storedNotes(page)), '[]', 'the note is removed')
+  }
+
+  await payerStep(
+    'tips: a page reloaded while the wallet holds the request says that a tip may have been sent',
+    async () => {
+      const page = sender.page
+      await intentBudget()
+      // the wallet does not answer this page (the player is in the wallet app when the page is reloaded)
+      holdSend()
+      const before = sender.sent.length
+      await toConfirm(page, '3')
+      await page.getByRole('button', { name: 'Send tip', exact: true }).click()
+      await page.locator('.tip-recipient').waitFor({ timeout: 30000 * TIMEOUT_SCALE })
+      await waitUntil(() => sender.sent.length === before + 1, { timeout: 30000, message: 'the wallet is asked' })
+      eq(await page.locator('.tip-marker').count(), 0, 'nothing is said while the request is open')
+      const reloadAt = Date.now()
+      // when the new document's load event came (the old document's came long ago)
+      const loadedAt = page.waitForEvent('load', { timeout: 180000 }).then(
+        () => Date.now(),
+        () => -Infinity
+      )
+      await page.reload({ waitUntil: 'domcontentloaded' })
+      // the page that asked is gone: its request is never answered
+      held = null
+      try {
+        await afterReload(page)
+        allowLeftPageError(sender, reloadAt, await loadedAt)
+      } finally {
+        // the rest of the suite uses this page as Alice with her wallet verified, whatever this step found
+        await page.waitForFunction(() => window.world?.ui?.state?.active === true && !!window.world.evm, null, {
+          timeout: 60000 * TIMEOUT_SCALE,
+        })
+        await page.evaluate(() => window.world.entities.player.setName('Alice'))
+        await page.locator('#solana-wallet-panel').waitFor({ state: 'visible' })
+        await connectWallet(sender)
+      }
+      eq(sender.sent.length, before + 1, 'one request, never repeated')
+    }
+  )
+
+  // The mock RPC stops answering the `finalized` tag after Alice signed in, so her page last heard that the world
+  // confirms tips. Another sender's tip (Dave, a wire client) then ends `no_finality`, and the next intent says that
+  // the world is not confirming them: Alice's send stops on a step that says so, with nothing asked of her wallet
+  // until she presses Send anyway.
+  await payerStep(
+    'tips: the intent is the first to say the world is not confirming: nothing is asked of the wallet until Send anyway',
+    async () => {
+      const page = sender.page
+      const wire = await new WireClient(PORT, 'Dave').connect()
+      try {
+        finalityAnswered = false
+        await wireVerify(wire, dave)
+        const from = wire.mark()
+        wire.send('requestEvmTipIntent', { id: 1, to: recipient.id, token: 'JPYC', amount: '1' })
+        const { data: intent } = await wire.waitFor(m => m.method === 'onEvmTipIntent' && m.data?.id === 1, { from })
+        eq(intent.ok, true, "Dave's intent")
+        eq(intent.confirms, true, 'the world still says that it confirms tips')
+        // his wallet sends the transfer (mined here) and his client reports it: the watcher finds no finality
+        const hash = mine({
+          from: dave.address,
+          to: JPYC,
+          data: encodeTransfer(intent.recipient, BigInt(intent.units)),
+        })
+        wire.send('evmTip', { ticket: intent.ticket, txHash: hash })
+        const status = await wire.waitFor(
+          m => m.method === 'onEvmTipStatus' && m.data?.ticket === intent.ticket && m.data.state !== 'watching',
+          { from, timeout: 60000 * TIMEOUT_SCALE }
+        )
+        eq(`${status.data.state}/${status.data.reason}`, 'unverified/no_finality', "Dave's tip")
+
+        eq(await page.evaluate(() => window.world.evm.getTipsConfirmed()), true, 'what Alice last heard')
+        await intentBudget()
+        // the Players list, which the reload in the step before may have left closed
+        const tipBob = page.getByRole('button', { name: 'Tip Bob' })
+        if (!(await tipBob.isVisible())) await page.evaluate(() => window.world.ui.togglePane('players'))
+        await tipBob.waitFor({ state: 'visible', timeout: 30000 * TIMEOUT_SCALE })
+        await toConfirm(page, '2')
+        eq(await page.locator('.tip-unconfirmed').count(), 0, 'the confirmation step does not say it')
+        const askedBefore = await page.evaluate(() => window.__walletAsked.length)
+        const asked = () => page.evaluate(n => JSON.stringify(window.__walletAsked.slice(n)), askedBefore)
+        const before = sender.sent.length
+        await page.getByRole('button', { name: 'Send tip', exact: true }).click()
+        const notice = page.locator('.tip-unconfirmed')
+        await notice.waitFor({ timeout: 30000 * TIMEOUT_SCALE })
+        eq(
+          await notice.innerText(),
+          'This world is not confirming tips right now. The transfer still goes through your wallet and may not be confirmed or announced here.',
+          'the notice'
+        )
+        eq(await page.locator('.tip-recipient').innerText(), `To Bob · ${SHORT_BOB}`, 'whom the transfer would name')
+        eq(
+          JSON.stringify(await page.locator('.tip-form button').allInnerTexts()),
+          JSON.stringify(['Send anyway', 'Cancel']),
+          'the buttons'
+        )
+        // the step waits for her: a second later the wallet has been asked nothing
+        await sleep(1000)
+        eq(await asked(), '[]', 'nothing asked of the wallet')
+        eq(sender.sent.length, before, 'no transfer')
+        eq(JSON.stringify(await storedNotes(page)), '[]', 'no note')
+        await page.screenshot({ path: `${PREFIX}-tip-not-confirming.png` })
+        await page.getByRole('button', { name: 'Send anyway', exact: true }).click()
+        await page
+          .getByRole('status')
+          .filter({ hasText: `Sent 2 JPYC to Bob (${SHORT_BOB}).` })
+          .waitFor({ timeout: 30000 * TIMEOUT_SCALE })
+        eq(await asked(), JSON.stringify(['eth_accounts', 'eth_chainId', 'eth_sendTransaction']), 'then the wallet')
+        eq(sender.sent.length, before + 1, 'one transfer')
+        eq(sender.sent.at(-1).data, encodeTransfer(bob.address, 2n * 10n ** 18n), 'the transfer')
+        // and what became of it, as the world says
+        await page
+          .locator('.tip-confirmation.unverified')
+          .filter({ hasText: 'this world cannot confirm tips right now.' })
+          .waitFor({ timeout: 60000 * TIMEOUT_SCALE })
+        await page.getByRole('button', { name: 'Close', exact: true }).click()
+        await page.getByLabel('Amount').waitFor({ state: 'detached' })
+      } finally {
+        finalityAnswered = true
+        wire.close()
+      }
+    }
+  )
 
   // The OpenPay door example on the token-door fixture's frame and panels (the owner's model is not in the repo):
   // one door for the NFT Alice holds, one for a token id nobody holds.

@@ -11,6 +11,9 @@ import { sanitizeName, isAvatarUrl } from '../src/core/extras/entityModifyPolicy
 import * as solana from '../src/server/solana-gating.js'
 import * as evm from '../src/server/evm-gating.js'
 import { parseTipTokens } from '../src/core/extras/evmTokens.js'
+import { TRANSFER_TOPIC, encodeAddressWord, encodeUintWord } from '../src/core/extras/evmAbi.js'
+import { RpcError } from '../src/server/evmRpc.js'
+import { createTipWatcher } from '../src/server/evmTipWatcher.js'
 
 const host = { WALLET_HOST: 'test.example', WALLET_URI: 'https://test.example' }
 const solanaEnabled = { ...solana, ...host, TOKEN_GATING_ENABLED: true, REQUIRED_TOKEN_AMOUNT: 10000 }
@@ -426,7 +429,12 @@ test('evm tips: an intent gives only the verified sender the opted-in recipient 
     return replies(socket, 'onEvmTipIntent')
   }
   assert.deepEqual(intent(a), [{ id: 1, ok: false, reason: 'not_verified' }])
+  clear(a)
   await f.verify(a)
+  // tips are on, so the sign-in result says whether this world confirms them: not without a chain RPC
+  assert.deepEqual(replies(a, 'onEvmWalletStatus'), [
+    { verified: true, wallet: account.address, attempt: 1, reason: 'ok', confirmsTips: false },
+  ])
   f.advance(10_000)
   const [granted] = intent(a)
   // the ticket names the server's copy of this intent (P2b); the reply is otherwise the intent itself
@@ -441,6 +449,8 @@ test('evm tips: an intent gives only the verified sender the opted-in recipient 
     token: { symbol: 'JPYC', address: '0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29', decimals: 18 },
     amount: '100',
     units: (100n * 10n ** 18n).toString(),
+    // this fixture has no chain RPC (no watcher)
+    confirms: false,
   })
   assert.equal(replies(b, 'onEvmTipIntent').length, 0, 'nobody else gets the address')
   assert.equal(replies(c, 'onEvmTipIntent').length, 0)
@@ -760,6 +770,8 @@ function fakeWatcher() {
       watcher.jobs = watcher.jobs.filter(job => !predicate(job))
     },
     size: () => watcher.jobs.length,
+    confirms: true,
+    canConfirm: () => watcher.confirms,
     stop: () => watcher.stopped++,
   }
   return watcher
@@ -888,10 +900,127 @@ test('evm tip report: without an RPC the tip is sent but unconfirmed', async t =
   f.network.onSetEvmTipReceive(b, { enabled: true })
   clear(a)
   f.network.onRequestEvmTipIntent(a, { id: 1, to: 'b', token: 'JPYC', amount: '1' })
-  const { ticket } = replies(a, 'onEvmTipIntent')[0]
+  // said with the intent, before the wallet is asked: this world will not confirm the tip
+  const { ticket, confirms } = replies(a, 'onEvmTipIntent')[0]
+  assert.equal(confirms, false)
   clear(a)
   f.network.onEvmTip(a, { ticket, txHash: hashOf(1) })
   assert.deepEqual(replies(a, 'onEvmTipStatus'), [{ ticket, txHash: hashOf(1), state: 'unverified', reason: 'no_rpc' }])
+})
+
+test('evm tips: the world says whether it confirms tips, at sign-in and with each intent', async t => {
+  const f = await tipFixture(t)
+  const intent = () => {
+    f.a.evmWallet.intentBucket.tokens = evm.TIP_INTENT_BURST
+    clear(f.a)
+    f.network.onRequestEvmTipIntent(f.a, { id: 1, to: 'b', token: 'JPYC', amount: '1' })
+    return replies(f.a, 'onEvmTipIntent')[0]
+  }
+  const signIn = async attempt => {
+    f.a.evmWallet.lastChallengeAt = 0
+    clear(f.a)
+    await f.verify(f.a, { attempt })
+    return replies(f.a, 'onEvmWalletStatus').at(-1)
+  }
+  // a watcher whose RPC answers
+  assert.equal(f.network.confirmsTips(), true)
+  assert.equal(intent().confirms, true)
+  assert.deepEqual(await signIn(2), {
+    verified: true,
+    wallet: account.address,
+    attempt: 2,
+    reason: 'ok',
+    confirmsTips: true,
+  })
+  // the watcher found the `finalized` tag unanswered: the next intent and the next sign-in say so
+  f.watcher.confirms = false
+  assert.equal(f.network.confirmsTips(), false)
+  assert.equal(intent().confirms, false)
+  assert.equal((await signIn(3)).confirmsTips, false)
+  // and it is still an intent: the transfer does not depend on the confirmation
+  const granted = intent()
+  assert.equal(granted.ok, true)
+  assert.equal(granted.recipient, other.address)
+  f.watcher.confirms = true
+  assert.equal(intent().confirms, true)
+})
+
+test('evm tips: after a tip ended no_finality the next intent says the world does not confirm', async t => {
+  // the real watcher on a chain whose RPC refuses the `finalized` tag, with a manual clock
+  let clock = 0
+  const pending = new Set()
+  const receipt = {
+    transactionHash: hashOf(1),
+    status: '0x1',
+    blockNumber: '0x10',
+    blockHash: hashOf(2),
+    logs: [
+      {
+        address: '0xe7c3d8c9a439fede00d2600032d5db0be71c3c29',
+        topics: [TRANSFER_TOPIC, `0x${encodeAddressWord(account.address)}`, `0x${encodeAddressWord(other.address)}`],
+        data: `0x${encodeUintWord(10n ** 18n)}`,
+        logIndex: '0x0',
+      },
+    ],
+  }
+  let finality = new RpcError(-32602)
+  const watcher = createTipWatcher({
+    rpc: {
+      async call(method, params) {
+        if (method === 'eth_getTransactionReceipt') return receipt
+        if (params[0] === 'finalized') {
+          if (finality instanceof Error) throw finality
+          return finality
+        }
+        return { number: '0x10', hash: hashOf(2), timestamp: `0x${(2_000).toString(16)}` }
+      },
+    },
+    now: () => clock,
+    setTimeout: (fn, ms) => {
+      const timer = { fn, at: clock + ms }
+      pending.add(timer)
+      return timer
+    },
+    clearTimeout: timer => pending.delete(timer),
+    log: { error() {} },
+  })
+  const advance = async ms => {
+    for (const end = clock + ms; clock < end; ) {
+      clock += 1000
+      for (const timer of [...pending]) {
+        if (timer.at > clock) continue
+        pending.delete(timer)
+        timer.fn()
+      }
+      for (let i = 0; i < 20; i++) await Promise.resolve()
+    }
+  }
+  const f = await tipFixture(t, { watcher })
+  const intent = () => {
+    f.a.evmWallet.intentBucket.tokens = evm.TIP_INTENT_BURST
+    clear(f.a)
+    f.network.onRequestEvmTipIntent(f.a, { id: 1, to: 'b', token: 'JPYC', amount: '1' })
+    return replies(f.a, 'onEvmTipIntent')[0]
+  }
+  const first = intent()
+  assert.equal(first.confirms, true, 'nothing is known against the RPC yet')
+  f.network.onEvmTip(f.a, { ticket: first.ticket, txHash: hashOf(1) })
+  await advance(3000)
+  assert.deepEqual(replies(f.a, 'onEvmTipStatus').at(-1), {
+    ticket: first.ticket,
+    txHash: hashOf(1),
+    state: 'unverified',
+    reason: 'no_finality',
+  })
+  assert.equal(intent().confirms, false)
+  // the RPC answers the tag later: the tip reported again is confirmed, and the world says it confirms again
+  finality = { number: '0x10' }
+  await advance(61_000)
+  f.network.onEvmTip(f.a, { ticket: first.ticket, txHash: hashOf(1) })
+  await advance(3000)
+  assert.equal(replies(f.a, 'onEvmTipStatus').at(-1).state, 'confirmed')
+  assert.equal(intent().confirms, true)
+  watcher.stop()
 })
 
 test('evm tip result: confirmed tips reply, fire a frozen tip event without addresses and are announced', async t => {

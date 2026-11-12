@@ -64,6 +64,7 @@ const lib = file => import(pathToFileURL(path.join(REPO_ROOT, file)))
 const { PACKET_RULES, REFUSED_EVENT_NAMES, namedCases, namesOfCase, namesOfClass } =
   await lib('test/lib/packetAccess.mjs')
 const { ENV_TABLE, envNamesOf } = await lib('test/lib/envTable.mjs')
+const { ACTION_BUDGETS } = await lib('src/core/extras/actionBudget.js')
 const { SERVED_AS_BEFORE_ENV_NAMES, SERVED_ENV_NAMES } = await lib('src/core/extras/publicEnv.js')
 
 const PORT = Number(arg('port', 3131))
@@ -241,11 +242,22 @@ function jsonStrings(text) {
   }
   return out
 }
+// a text with its percent escapes turned into the bytes they stand for (the rest of it as UTF-8)
+const percentBytes = text => {
+  const parts = []
+  let last = 0
+  for (const match of text.matchAll(/%([0-9A-Fa-f]{2})/g)) {
+    parts.push(Buffer.from(text.slice(last, match.index), 'utf8'), Buffer.from([parseInt(match[1], 16)]))
+    last = match.index + 3
+  }
+  parts.push(Buffer.from(text.slice(last), 'utf8'))
+  return Buffer.concat(parts)
+}
 // What a text says once its tokens are read: the first two segments of anything shaped like a JWT, every run of
 // base64 or base64url characters (at each of the four alignments, since a run can begin inside a longer word),
-// percent escapes, JSON escapes, and the strings of what parses as JSON. Decoded bytes are read as UTF-8 and as
-// Latin-1 (one byte, one character: an ASCII sentinel among bytes that are not UTF-8 is still whole), and every
-// decoding is kept, text or not.
+// percent escapes, JSON escapes, and the strings of what parses as JSON. Decoded bytes (also those of percent
+// escapes) are read as UTF-8 and as Latin-1 (one byte, one character: an ASCII sentinel among bytes that are not
+// UTF-8 is still whole), and every decoding is kept, text or not.
 function decodings(text) {
   const out = []
   const bytes = buffer => out.push(buffer.toString('utf8'), buffer.toString('latin1'))
@@ -256,6 +268,7 @@ function decodings(text) {
     for (let offset = 0; offset < 4; offset++) bytes(Buffer.from(match[0].slice(offset), 'base64url'))
   }
   if (/%[0-9A-Fa-f]{2}/.test(text)) {
+    out.push(percentBytes(text).toString('utf8'))
     out.push(text.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16))))
   }
   if (/\\[u"\\/bfnrt]/.test(text)) {
@@ -506,7 +519,16 @@ try {
         'base64 of JSON in Japanese': `x ${Buffer.from(unicode(needle)).toString('base64')} y`,
         'base64url of JSON in Japanese': `x ${b64u(unicode(needle))} y`,
         'a JWT payload of JSON in Japanese': signToken(JSON.parse(unicode(needle)), 'p14-self-test-key'),
-        'a JSON escape in base64url of JSON in Japanese': `x ${b64u(unicode(jsonEscaped(needle)))} y`,
+        // each pair of encodings, the outer one first, with text that is not ASCII around the sentinel
+        'base64 of a JSON escape, in Japanese': `x ${Buffer.from(unicode(jsonEscaped(needle))).toString('base64')} y`,
+        'base64url of a JSON escape, in Japanese': `x ${b64u(unicode(jsonEscaped(needle)))} y`,
+        'a JWT payload of a JSON escape, in Japanese': `${b64u('{"alg":"HS256","typ":"JWT"}')}.${b64u(
+          unicode(jsonEscaped(needle))
+        )}.${hmac('p14-self-test', 'key')}`,
+        'percent escapes of a JSON escape, in Japanese': `/x?k=${encodeURIComponent(unicode(jsonEscaped(needle)))}`,
+        'percent escapes of base64, in Japanese': `/x?k=${encodeURIComponent(
+          `${'エラー'.repeat(20)} ${Buffer.from(unicode(needle)).toString('base64')} ${'エラー'.repeat(20)}`
+        )}`,
       }
       for (const [label, text] of Object.entries(planted)) {
         if (label !== 'as it is') ok(!text.includes(SENTINEL), `${label}: the sentinel is there as it is`)
@@ -714,21 +736,49 @@ try {
       // The limit, asked whatever became of the lines above: lines as any connection's client sends them for an app
       // of the world (a client script's world.chat(): the app's id and a text, nothing claimed), 20 at once from a
       // connection of its own. They are also the positive control of the refusal for an app that does not exist.
-      const chatter = await connect('chatter')
-      from = admin.mark()
-      const budgetLog = logFrom()
-      for (let i = 0; i < 20; i++) chatter.send('appChat', { id: 'p14-probe', body: `P14 burst ${i}` })
-      await barrier(chatter)
-      await barrier(admin)
-      const burst = appLines(from, 'P14 burst ')
+      // The budget is a bucket (actionBudget.js appChat): `burst` lines at once, refilled at `rate` a second by when
+      // the lines reach the server. The lines reach it between the first send and the answer to the ping sent after
+      // the last, so at most burst + rate x that interval (rounded up) can be relayed. When that is 20 or more (a
+      // runner that paused for seconds), the burst shows nothing and is tried again on a new connection.
+      const { burst: BURST, rate: RATE } = ACTION_BUDGETS.appChat
+      const LINES = 20
+      const ATTEMPTS = 3
+      const allowance = ms => BURST + Math.ceil((RATE * ms) / 1000)
+      let shown = null
+      const intervals = []
+      for (let attempt = 1; attempt <= ATTEMPTS && !shown; attempt++) {
+        const chatter = await connect(`chatter-${attempt}`)
+        const mark = admin.mark()
+        const budgetLog = logFrom()
+        const started = performance.now()
+        for (let i = 0; i < LINES; i++) chatter.send('appChat', { id: 'p14-probe', body: `P14 burst ${attempt}-${i}` })
+        await barrier(chatter)
+        const ms = performance.now() - started
+        await barrier(admin)
+        intervals.push(Math.round(ms))
+        if (allowance(ms) < LINES) {
+          shown = {
+            attempt,
+            ms,
+            allowed: allowance(ms),
+            lines: appLines(mark, `P14 burst ${attempt}-`),
+            chatter,
+            budgetLog,
+          }
+        }
+        await close(chatter)
+      }
       ok(
-        burst.length >= 10 && burst.length <= 12,
-        `${burst.length} of 20 lines sent at once were relayed (a burst of 10, then 2 a second)`
+        shown,
+        `the runner was too slow to show the budget: ${ATTEMPTS} bursts of ${LINES} took ${intervals.join(', ')} ms, in which a bucket of ${BURST} refilled at ${RATE} a second lets all ${LINES} through`
       )
-      for (const { data } of burst) eq(data.kind, 'app', `${data.body}: the kind`)
-      await logged(budgetLog, `"${chatter.id}" is over its appChat budget`)
-      await close(chatter)
-      return `the limit: ${burst.length} of 20 lines a client sends at once for an app were relayed and the log says the rest were over the budget (the positive control of the refusal for an app that does not exist); ${relayed.length} of 3 lines with claimed fields relayed, each checked; the line under another app's name: see the GAP line`
+      const { lines, allowed } = shown
+      const measured = `${Math.round(shown.ms)} ms for the burst (attempt ${shown.attempt}), allowance ${allowed} (${BURST} + ${RATE}/s), ${lines.length} of ${LINES} relayed`
+      ok(lines.length >= BURST, `fewer than the ${BURST} the bucket starts with: ${measured}`)
+      ok(lines.length <= allowed, `more than the bucket lets through in the time measured: ${measured}`)
+      for (const { data } of lines) eq(data.kind, 'app', `${data.body}: the kind`)
+      await logged(shown.budgetLog, `"${shown.chatter.id}" is over its appChat budget`)
+      return `the limit: ${measured}, and the log says the rest were over the budget (the positive control of the refusal for an app that does not exist); ${relayed.length} of 3 lines with claimed fields relayed, each checked; the line under another app's name: see the GAP line`
     }
   )
   gap(

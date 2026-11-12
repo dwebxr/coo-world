@@ -1,4 +1,5 @@
 import { test, before, after } from 'node:test'
+import { holdEffect } from './lib/effectPlayer.mjs'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { bundleProbe } from './lib/workerProbe.mjs'
@@ -97,7 +98,7 @@ function makeWorld(script, { isServer = false, livekit = false } = {}) {
     effects: [],
     setEffect(effect, onEnd) {
       this.effects.push(effect)
-      this.onEnd = onEnd
+      holdEffect.call(this, effect, onEnd)
     },
     modify(data) {
       Object.assign(this.data, data)
@@ -677,16 +678,7 @@ function effectWorld(script, { isServer = true, localId } = {}) {
   }
   network.send = (name, data) => network.broadcast(name, data) === 'delivered'
   for (const player of Object.values(made.players)) {
-    player.setEffect = function (effect, onEnd) {
-      if (this.data.effect) {
-        this.data.effect = null
-        const ended = this.onEffectEnd
-        this.onEffectEnd = null
-        ended?.()
-      }
-      this.data.effect = effect ?? null
-      this.onEffectEnd = onEnd
-    }
+    player.setEffect = holdEffect
     // the player's client said its effect ended (ServerNetwork onEntityModified -> PlayerRemote.modify)
     player.endsByItself = function () {
       this.setEffect(null)
@@ -849,11 +841,62 @@ test('effects: an end the clients could not be told of does not happen: the effe
   assert.deepEqual(players.p1.data.effect, FREEZE, 'the server has what the clients have')
   assert.deepEqual(seen, [])
   assert.deepEqual(efs(), [{ id: 'p1', ef: FREEZE }])
-  // a message that reached some connections and not others was sent: the effect ends
+  // a message that reached some connections and not others was sent: the effect ends. (What the call answers then
+  // is the ledger's business: with the real one it is false too, for a write that did not reach everyone;
+  // handle.active says whether the effect is over)
   world.network.outcome = 'partial'
-  assert.notEqual(handle.cancel(), false)
+  handle.cancel()
   assert.equal(handle.active, false)
   assert.equal(players.p1.data.effect, null)
   assert.deepEqual(seen, ['ended'])
   assert.deepEqual(efs().slice(1), [{ id: 'p1', ef: null }])
+})
+
+test('effects: a handle whose effect another app replaced does not end that app’s effect', async () => {
+  const seen = []
+  let a, handleA
+  const { world, players, efs } = effectWorld(world => {
+    a = world.getPlayer('p1')
+    handleA = a.applyEffect({ freeze: true, onEnd: () => seen.push('a ended') })
+  })
+  // a second app, with its own handle of the same player
+  let b
+  addApp(world, 'other', world => {
+    b = world.getPlayer('p1')
+  })
+  await tick()
+  const handleB = b.applyEffect({ snare: 0.5, onEnd: () => seen.push('b ended') })
+  assert.deepEqual(seen, ['a ended'], 'the first app is told its effect is over')
+  assert.equal(handleA.active, false)
+  assert.equal(handleB.active, true)
+  const sentSoFar = efs().length
+  // the first app ends "its effect": it has none, and the other app's stays, on the server and for the clients
+  a.cancelEffect()
+  handleA.cancel()
+  assert.deepEqual(players.p1.data.effect, { snare: 0.5 })
+  assert.equal(handleB.active, true)
+  assert.deepEqual(seen, ['a ended'])
+  assert.equal(efs().length, sentSoFar, 'nothing was told')
+})
+
+test('effects: a handle left believing in an effect the player no longer has ends nothing but itself', async () => {
+  const seen = []
+  let a
+  const { players, efs } = effectWorld(world => {
+    a = world.getPlayer('p1')
+  })
+  await tick()
+  const handle = a.applyEffect({ freeze: true, onEnd: () => seen.push('ended') })
+  // the player's effect is replaced without this handle hearing of it (what a callback wiped by the old
+  // PlayerRemote.setEffect looked like): the player now holds an effect that is not this handle's
+  const others = { snare: 0.5 }
+  players.p1.data.effect = others
+  players.p1.onEffectEnd = () => seen.push('the other effect ended')
+  assert.equal(handle.active, true)
+  const sentSoFar = efs().length
+  handle.cancel()
+  assert.equal(handle.active, false, 'the handle is done')
+  assert.deepEqual(seen, ['ended'], 'and its script is told')
+  assert.equal(players.p1.data.effect, others, 'the effect the player has is left alone')
+  assert.equal(efs().length, sentSoFar, 'and nobody is told it ended')
 })

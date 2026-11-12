@@ -1,4 +1,5 @@
 import { test, before, after } from 'node:test'
+import { holdEffect } from './lib/effectPlayer.mjs'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 
@@ -78,7 +79,7 @@ function makeWorld({ isServer = false } = {}) {
     effects: [],
     setEffect(effect, onEnd) {
       this.effects.push(effect)
-      this.onEnd = onEnd
+      holdEffect.call(this, effect, onEnd)
     },
     modify(data) {
       Object.assign(this.data, data)

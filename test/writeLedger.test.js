@@ -1,4 +1,5 @@
 import { callForScript } from '../src/core/extras/scriptValues.js'
+import { holdEffect } from './lib/effectPlayer.mjs'
 import * as runTeardown from '../src/core/extras/runTeardown.js'
 import { stoppedError } from '../src/core/extras/physicsFailure.js'
 import { chatEnvelope, scriptChatMessage } from '../src/core/extras/chatPolicy.js'
@@ -290,7 +291,7 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
     modify(data) {
       Object.assign(this.data, data)
     },
-    setEffect() {},
+    setEffect: holdEffect,
   }
   const Chat = loadClass('systems/Chat.js', 'Chat')
   const Apps = loadClass('systems/Apps.js', 'Apps')

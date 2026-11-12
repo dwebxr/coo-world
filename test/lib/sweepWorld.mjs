@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { holdEffect } from './effectPlayer.mjs'
 import { EventEmitter } from 'node:events'
 import { resolveObjectURL } from 'node:buffer'
 
@@ -81,14 +82,7 @@ export function createSweep({ m, scripts, requests }) {
       onEffectEnd: null,
       setEffect(effect, onEnd) {
         if (effect) effect = JSON.parse(JSON.stringify(effect))
-        if (this.data.effect) {
-          this.data.effect = null
-          const end = this.onEffectEnd
-          this.onEffectEnd = null
-          end?.()
-        }
-        this.data.effect = effect
-        this.onEffectEnd = onEnd
+        holdEffect.call(this, effect, onEnd)
       },
       modify(data) {
         Object.assign(this.data, data)

@@ -2410,7 +2410,15 @@ export class ServerNetwork extends System {
       // did when both were written at once.
       if (fields) {
         entity.modify(fields)
-        ;(this.pending ??= createPendingChanges()).merge(fields)
+        // An effect the client set (or ended) that a script answered with one of its own: applying it ended the
+        // script's effect, whose onEnd gave the player another. That one is the player's effect now, and everyone
+        // was told it from inside the apply, the sender too. The client's is not told after it: the others would
+        // end on an effect the server does not have.
+        if (has(fields, 'ef') && (entity.data.effect ?? null) !== (fields.ef ?? null)) {
+          fields = { ...fields }
+          delete fields.ef
+        }
+        if (Object.keys(fields).length > 1) (this.pending ??= createPendingChanges()).merge(fields)
       }
       // The sender applied its session avatar before sending it. Whether it was taken or not, the sender is told the
       // session avatar the server now has, after everything the server told it before, with the number the sender

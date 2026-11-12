@@ -441,15 +441,37 @@ test('a change that ends an effect whose end starts another: told in the order t
   s.ask(s.b, 'chain')
   s.tick()
   assert.deepEqual(s.told(s.settle().b, s.a), [{ id: 'a', ef: { freeze: true } }])
-  // the player's client ends the effect (ef: null): applying that runs the script's onEnd, which tells everyone the
-  // next effect, and then the server's player has none, as the client said
+  // The player's client ends the effect (ef: null): applying that runs the script's onEnd, which gives the player
+  // the next effect and tells everyone, the player's own client too. That is the player's effect now: the end the
+  // client sent is not told after it. (The server used to drop the script's effect again, "as the client said",
+  // and tell the others so, while the player's client had been told the snare and kept it.)
   s.own(s.a, { p: [3, 0, 0], ef: null })
   s.tick()
-  assert.deepEqual(s.told(s.settle().b, s.a), [
+  const seen = s.settle()
+  assert.deepEqual(s.told(seen.b, s.a), [
     { id: 'a', ef: { snare: 0.5 } },
-    { id: 'a', p: [3, 0, 0], ef: null },
+    { id: 'a', p: [3, 0, 0] },
   ])
-  assert.equal(s.a.player.data.effect, null)
+  assert.deepEqual(s.a.player.data.effect, { snare: 0.5 })
+  assert.deepEqual(
+    s.told(seen.a, s.a),
+    [{ id: 'a', ef: { snare: 0.5 } }],
+    'the player is told the effect the script gave'
+  )
+  s.assertInStep()
+  // the same with a change that says nothing else: the client's end is not told, and no empty change is either
+  s.ask(s.b, 'chain')
+  s.tick()
+  s.settle()
+  s.own(s.a, { ef: null })
+  s.tick()
+  assert.equal(s.pending(), 0)
+  const after = s.settle()
+  assert.deepEqual(
+    after.b.filter(([name, data]) => name === 'onEntityModified' && data.id === 'a').map(([, data]) => data),
+    [{ id: 'a', ef: { snare: 0.5 } }]
+  )
+  assert.deepEqual(s.a.player.data.effect, { snare: 0.5 })
   s.assertInStep()
 })
 
@@ -545,9 +567,10 @@ test('visitors and a script changing players for 300 ticks: after every tick eac
     const effects = [null, { freeze: true }, { snare: 0.5, duration: 3 }, { turn: true, cancellable: true }]
     const avatars = ['asset://one.vrm', 'asset://two.vrm', EXTERNAL_VRM, null]
     const emotes = [null, 'asset://emote-float.glb', EXTERNAL_GLB]
-    // what the script does when asked, to the player named. (Not cancelEffect: on the server it ends the effect
-    // without telling anyone, which leaves the clients on the effect whether changes are merged or not)
+    // what the script does when asked, to the player named
     s.actions.effect = id => s.handle(s[id]).applyEffect({ ...pick(effects.slice(1)) })
+    // (the script ends the effect it gave: everyone is told)
+    s.actions.cancel = id => s.handle(s[id]).cancelEffect()
     s.actions.chain = id =>
       s.handle(s[id]).applyEffect({ freeze: true, onEnd: () => s.handle(s[id]).applyEffect({ snare: 0.25 }) })
     s.actions.avatar = id => s.handle(s[id]).setSessionAvatar(pick(avatars))
@@ -575,7 +598,7 @@ test('visitors and a script changing players for 300 ticks: after every tick eac
       () => ownChange(pick(players)),
       () => ownChange(pick(players)),
       () => ownChange(pick(players)),
-      () => s.ask(pick(players), pick(['effect', 'chain', 'avatar', 'damage', 'heal']), pick(players).id),
+      () => s.ask(pick(players), pick(['effect', 'chain', 'cancel', 'avatar', 'damage', 'heal']), pick(players).id),
       () => s.ask(pick(players), 'boom'),
       () => s.packet(pick(players), 'command', { args: ['name', `named-${rand(0, 99)}`] }),
       () => s.packet(s.admin, 'modifyRank', { playerId: pick(players).id, rank: pick([Ranks.VISITOR, Ranks.BUILDER]) }),

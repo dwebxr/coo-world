@@ -110,13 +110,18 @@ export function createPlayerProxy(entity, player) {
   // room for script writes like the one that gave the effect, so that giving and ending in a loop is no way round
   // it). When there is no room it is refused, nobody was told, and the effect is left as it is, here as on the
   // clients: the call answers false and can be made again. The clean-up's is the engine's own and is not refused.
+  // And only for an effect the player still has from this handle (the callback the player holds is this one's): a
+  // handle whose effect was taken off without it hearing must not end what the player has now, which is someone
+  // else's. It is told instead that its own is over.
   const endByScript = config => {
-    if (activeEffectConfig !== config) return
+    // (config.onEnd does nothing for a handle that is already done)
+    if (player.onEffectEnd !== config.onEnd) return config.onEnd()
     if (world.network.isServer && !player.destroyed) {
       const outcome = world.network.broadcast('entityModified', { id: player.data.id, ef: null })
       if (outcome === 'refused') return false
     }
-    config.onEnd()
+    // the player lets go of the effect and calls config.onEnd
+    player.setEffect(null)
   }
   const proxy = {
     get networkId() {
@@ -368,14 +373,15 @@ export function createPlayerProxy(entity, player) {
         safe.ef = { ...safe.ef }
         delete safe.ef.emote
       }
-      // called by the host when the effect ends, which may be during teardown
+      // called by the player when the effect is over, for whatever reason (its time ran out, the player moved,
+      // another effect took its place, this script ended it), which may be during teardown: the handle is done and
+      // the script is told. The player has let go of the effect by then; nothing is done to it here
       const onEnd = read.onEnd
       const config = {
         effect: safe.ef,
         onEnd: () => {
           if (activeEffectConfig !== config) return
           activeEffectConfig = null
-          player.setEffect(null)
           if (!entity.crashed && !world.fatalError && run === entity.deadHook && !run?.dead) callBack(onEnd)
         },
       }

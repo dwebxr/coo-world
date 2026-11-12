@@ -873,7 +873,7 @@ test('ServerNetwork.onAi: counted against the user, or the wallet of a builder b
       id,
       sent,
       send: (name, data) => sent.push([name, data]),
-      player: { data: { id, userId: id, tokenGrantedRank }, isBuilder: () => builder },
+      player: { data: { id, userId: id }, tokenGrantedRank, isBuilder: () => builder },
     }
   }
   const action = { name: 'create', blueprintId: 'bp', prompt: 'x' }

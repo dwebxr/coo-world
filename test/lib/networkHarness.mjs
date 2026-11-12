@@ -48,7 +48,7 @@ import { adminMode, adminWaitScale, createAdminGate } from '../../src/server/adm
 import { createKickList, readKickEnv } from '../../src/server/kickList.js'
 import { createActionBudgets } from '../../src/core/extras/actionBudget.js'
 import { createPendingChanges } from '../../src/core/extras/pendingChanges.js'
-import { isAdminCommand } from '../../src/core/extras/chatCommand.js'
+import { isAdminCommand, readCommandPacket } from '../../src/core/extras/chatCommand.js'
 import { createSolanaRpc } from '../../src/server/solanaRpc.js'
 import { createTokenBalanceService } from '../../src/server/tokenBalance.js'
 import { hasRank, Ranks } from '../../src/core/extras/ranks.js'
@@ -184,6 +184,7 @@ function networkClass(context) {
     createActionBudgets,
     createPendingChanges,
     isAdminCommand,
+    readCommandPacket,
     Uint8Array,
     Date,
     JSON,

@@ -81,7 +81,14 @@ export function createTokenBalanceService({
       if (raw?.exists === false) {
         balance = 0
       } else if (raw?.exists === true && typeof raw.amount === 'bigint') {
-        balance = Number(raw.amount) / 10 ** decimals
+        // The balance as the number nearest to it: the raw amount written out as a decimal and read once. Turning
+        // the raw amount into a Number first and dividing rounds twice past 2^53 raw units (with 18 decimals that
+        // is any balance above a hundredth of a token); below that it gave the same number as this does. A balance
+        // is still a double: amounts closer together than a double can tell apart read as the same number, so a
+        // comparison with a required amount is exact only as far as that goes.
+        // (a negative amount gives a negative number or none at all, and is refused below)
+        const digits = raw.amount.toString().padStart(decimals + 1, '0')
+        balance = Number(`${digits.slice(0, digits.length - decimals)}.${digits.slice(digits.length - decimals)}`)
       }
       if (!Number.isFinite(balance) || balance < 0) throw new Error('invalid token balance')
       result = { known: true, balance }

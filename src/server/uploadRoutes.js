@@ -167,12 +167,12 @@ export async function uploadRoutes(
   // from the world setting, stays in the shared controls
   const identity = socket => {
     const { player } = socket
-    const wallet = player.data.tokenGrantedRank ? getWallet(socket.id) : null
+    const wallet = player.tokenGrantedRank ? getWallet(socket.id) : null
     return {
       userId: socket.id,
       wallet,
       tier: player.isBuilder() ? 'builder' : 'visitor',
-      trusted: player.data.rank >= Ranks.BUILDER && (!player.data.tokenGrantedRank || !!wallet),
+      trusted: player.data.rank >= Ranks.BUILDER && (!player.tokenGrantedRank || !!wallet),
     }
   }
   // the client is told when to come back. a refusal that leaves a body unread also ends the connection

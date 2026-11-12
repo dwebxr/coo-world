@@ -28,7 +28,16 @@ import {
 import { waitForMemoryToSettle } from './lib/memory.mjs'
 import { installAsset, startServer } from './lib/server.mjs'
 import { WireClient, snapshot } from './lib/ws.mjs'
-import { appState, becomeAdmin, installApp, launchBrowser, saveArtifacts } from './lib/browser.mjs'
+import {
+  REPORTED_INLINE,
+  appState,
+  becomeAdmin,
+  installApp,
+  launchBrowser,
+  runInlineScript,
+  saveArtifacts,
+  watchPolicy,
+} from './lib/browser.mjs'
 
 // the client's payload check, applied here to what the server really put on the wire
 const { sanitizeTeleport } = await import(pathToFileURL(path.join(REPO_ROOT, 'src/core/extras/playerRelayPolicy.js')))
@@ -65,6 +74,7 @@ let probeProps
 let bystander
 const consoleLines = []
 const pageErrors = []
+let violations = []
 try {
   server = await startServer({
     port: PORT,
@@ -124,6 +134,7 @@ try {
 async function openBrowser() {
   browser = await launchBrowser(ENGINE)
   context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+  violations = await watchPolicy(context)
   page = await context.newPage()
   page.on('console', m => consoleLines.push(`[${m.type()}] ${m.text()}`))
   page.on('pageerror', e => pageErrors.push(String(e)))
@@ -2114,5 +2125,39 @@ async function probes(admin, watcher) {
   record(
     server.lines(/SES_UNCAUGHT|SES_UNHANDLED|UnhandledPromiseRejection/).length === 0,
     'B27 server log: no unhandled rejections or SES errors'
+  )
+
+  // ---------- the report-only policy ----------
+  // Everything this run did in the browser (the world, uploads, the script editor from cdnjs with its workers, the
+  // apps above) is inside the policy the page is tried against: no document saw a violation, and no browser posted
+  // one (a worker's would only show there). Reports are posted a moment after the event.
+  await sleep(3000)
+  const posted = server.lines(/\[csp\]/)
+  record(
+    violations.length === 0 && posted.length === 0,
+    'B28 the report-only policy: nothing this run did is outside it',
+    JSON.stringify({ violations: violations.slice(0, 5), posted: posted.slice(0, 5) })
+  )
+  // And what it is: a report. An inline script without the nonce is outside the policy; it RUNS all the same (the
+  // policy is not enforced), the document is told, and the server writes what was posted to it.
+  const before = violations.length
+  const ran = await runInlineScript(page)
+  // the report reaches the server and the event reaches this process each in its own time: wait for both
+  const wrote = await waitUntil(() => server.lines(REPORTED_INLINE).length === 1 && violations.length > before, {
+    timeout: 15000,
+    message: 'the report and the event',
+  })
+    .then(() => true)
+    .catch(() => false)
+  const seen = violations.slice(before)
+  record(
+    ran === 1 &&
+      wrote &&
+      seen.length === 1 &&
+      seen[0].directive === 'script-src-elem' &&
+      seen[0].blocked === 'inline' &&
+      seen[0].disposition === 'report',
+    'B29 an inline script without the nonce runs, and is reported (the policy is report-only)',
+    JSON.stringify({ ran, seen, posted: server.lines(/\[csp\]/).slice(0, 5) })
   )
 }

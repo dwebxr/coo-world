@@ -9,13 +9,16 @@ import compress from '@fastify/compress'
 import statics from '@fastify/static'
 import { compressOptions } from '../src/server/compressOptions.js'
 import {
+  MONACO_SOURCE,
   PAGE_CSP,
   PAGE_PERMISSIONS,
   pageRoutes,
   readHstsEnv,
+  reportOnlyPolicy,
   responseHeaders,
   securityHeaders,
 } from '../src/server/pageRoutes.js'
+import { MONACO_VS } from '../src/client/components/monacoLoader.js'
 
 const TEMPLATE = `<!doctype html><html><head><title>{title}</title>
 <meta property="og:description" content="{desc}" /><meta property="og:image" content="{image}" />
@@ -34,13 +37,13 @@ before(async () => {
 })
 after(() => fs.rm(dir, { recursive: true, force: true }))
 
-async function server({ hstsMaxAge = null, page, envsCode = 'globalThis.env = {}' } = {}) {
+async function server({ hstsMaxAge = null, page, envsCode = 'globalThis.env = {}', publicDir = dir } = {}) {
   const app = Fastify()
   // as the server registers them: compression first, then the headers, then the pages
   app.register(compress, compressOptions())
   securityHeaders(app, { hstsMaxAge })
   app.register(pageRoutes, {
-    publicDir: dir,
+    publicDir,
     page:
       page ??
       (() => ({ title: 'World', desc: 'A world', image: 'https://cdn.example/i.png', url: 'https://w.example' })),
@@ -250,4 +253,109 @@ test('HSTS: on every response when HSTS_MAX_AGE is set', async () => {
   } finally {
     await app.close()
   }
+})
+
+const REPORT_ONLY = 'content-security-policy-report-only'
+const policyFor = nonce =>
+  "default-src 'self'; " +
+  `script-src 'self' 'nonce-${nonce}' 'unsafe-eval' 'wasm-unsafe-eval' https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.49.0/; ` +
+  "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.49.0/; " +
+  "font-src 'self' data: https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.49.0/; " +
+  'img-src * data: blob:; media-src * data: blob:; ' +
+  "connect-src 'self' * ws: wss: data: blob:; worker-src 'self' blob:; child-src 'self' blob:; " +
+  'frame-src https://verify.walletconnect.org https://verify.walletconnect.com; ' +
+  "object-src 'none'; base-uri 'none'; form-action 'self'; " +
+  'report-uri /csp-report'
+
+test('reportOnlyPolicy: the policy, word for word, around the nonce it is given', () => {
+  assert.equal(reportOnlyPolicy('abc'), policyFor('abc'))
+  // the script editor is loaded from inside the one folder the policy names
+  assert.ok(MONACO_VS.startsWith(MONACO_SOURCE), MONACO_VS)
+  assert.match(MONACO_SOURCE, /^https:\/\/cdnjs\.cloudflare\.com\/ajax\/libs\/monaco-editor\/[\d.]+\/$/)
+  const directives = Object.fromEntries(
+    reportOnlyPolicy('abc')
+      .split('; ')
+      .map(d => [d.split(' ')[0], d.split(' ').slice(1)])
+  )
+  // WebKit writes a console error on every load for a frame-ancestors in a report-only policy (it is enforced, in
+  // the other header)
+  assert.equal('frame-ancestors' in directives, false)
+  // what must never be in it: inline scripts without the nonce, a nonce for styles, any host for scripts or frames
+  assert.equal(directives['script-src'].includes("'unsafe-inline'"), false)
+  assert.equal(directives['script-src'].includes('*'), false)
+  assert.equal(directives['script-src'].includes('https:'), false)
+  assert.equal(directives['script-src'].includes('data:'), false)
+  assert.equal(directives['script-src'].includes('blob:'), false)
+  assert.equal(
+    directives['style-src'].some(s => s.startsWith("'nonce-")),
+    false
+  )
+  assert.equal(directives['frame-src'].includes('*'), false)
+  assert.equal(directives['worker-src'].includes('*'), false)
+  assert.equal(directives['worker-src'].includes('data:'), false)
+})
+
+test('the world page: a report-only policy with a nonce of its own on each response, never reused from a cache unasked', async () => {
+  const withScripts = await fs.mkdtemp(path.join(os.tmpdir(), 'page-routes-nonce-'))
+  await fs.writeFile(
+    path.join(withScripts, 'index.html'),
+    '<!doctype html><title>{title}</title><meta name="description" content="{desc}" />' +
+      '<script nonce="{nonce}">window.a = 1</script><script nonce="{nonce}">window.b = 2</script>' +
+      '<script src="/env.js"></script>' +
+      // longer than the size compression starts at (1024 bytes)
+      `<!-- ${'padding '.repeat(200)} -->`
+  )
+  await fs.writeFile(path.join(withScripts, 'terms.html'), '<!doctype html><title>Terms</title>')
+  // a world whose own texts spell the placeholder do not get the nonce
+  const app = await server({
+    publicDir: withScripts,
+    page: () => ({ title: '{nonce}', desc: 'nonce-{nonce}', image: '', url: '' }),
+  })
+  try {
+    const nonces = new Set()
+    for (const url of ['/', '/index.html', '/', '/']) {
+      const res = await app.inject({ method: 'GET', url })
+      assert.equal(res.statusCode, 200, url)
+      const inPage = [...res.body.matchAll(/<script nonce="([^"]*)">/g)].map(m => m[1])
+      assert.equal(inPage.length, 2, url)
+      assert.equal(inPage[0], inPage[1], url)
+      const nonce = inPage[0]
+      assert.match(nonce, /^[A-Za-z0-9+/]{24}$/, url)
+      assert.equal(res.headers[REPORT_ONLY], policyFor(nonce), url)
+      // the enforced policy is the same four directives as before: nothing new is enforced
+      assert.equal(res.headers['content-security-policy'], PAGE_CSP, url)
+      assert.equal(res.headers['cache-control'], 'no-cache', url)
+      assert.match(res.body, /<title>\{nonce\}<\/title>/, url)
+      assert.match(res.body, /content="nonce-\{nonce\}"/, url)
+      assert.equal(res.body.split(nonce).length - 1, 2, 'the nonce is in the two script tags and nowhere else')
+      nonces.add(nonce)
+    }
+    assert.equal(nonces.size, 4, 'each response has its own nonce')
+    // a HEAD answers with the same headers
+    const head = await app.inject({ method: 'HEAD', url: '/' })
+    assert.match(head.headers[REPORT_ONLY], /^default-src 'self'; script-src 'self' 'nonce-[A-Za-z0-9+/]{24}' /)
+    // compressed, the header and the page still carry the same nonce
+    const zipped = await app.inject({ method: 'GET', url: '/', headers: { 'accept-encoding': 'gzip' } })
+    const nonce = /'nonce-([^']+)'/.exec(zipped.headers[REPORT_ONLY])[1]
+    assert.equal(zipped.headers['content-encoding'], 'gzip')
+    assert.equal(zlib.gunzipSync(zipped.rawPayload).toString().split(`nonce="${nonce}"`).length - 1, 2)
+    // the other pages and everything else: no report-only policy
+    for (const url of ['/terms.html', '/env.js', '/status', '/missing', '/boom']) {
+      const res = await app.inject({ method: 'GET', url })
+      assert.equal(res.headers[REPORT_ONLY], undefined, url)
+    }
+  } finally {
+    await app.close()
+    await fs.rm(withScripts, { recursive: true, force: true })
+  }
+})
+
+test('the page that is shipped: every inline script carries the nonce placeholder', async () => {
+  const html = await fs.readFile(new URL('../src/client/public/index.html', import.meta.url), 'utf-8')
+  const tags = [...html.matchAll(/<script\b([^>]*)>/g)].map(m => m[1])
+  const inline = tags.filter(attrs => !/\bsrc=/.test(attrs))
+  assert.equal(inline.length, 2)
+  for (const attrs of inline) assert.match(attrs, /^ nonce="\{nonce\}"$/)
+  // and nothing in it is an inline handler, which no nonce covers
+  assert.doesNotMatch(html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, ''), /\son[a-z]+\s*=/i)
 })

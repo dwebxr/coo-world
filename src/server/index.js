@@ -25,6 +25,7 @@ import { errorHandler } from './errorHandler'
 import { checkJwtSecret, checkPreviousJwtSecret } from './jwtSecret'
 import { adminMode, adminStartupNotes } from './adminCode'
 import { pageRoutes, readHstsEnv, securityHeaders } from './pageRoutes'
+import { cspReportRoute } from './cspReports'
 import { walletOf } from './solana-gating'
 import { clientIpKeys, createUploadLimits, readUploadLimitsEnv } from './uploadLimits'
 import { createConnectionLimits, readConnectionLimitsEnv } from './connectionLimits'
@@ -196,6 +197,8 @@ fastify.register(pageRoutes, {
   }),
   envsCode,
 })
+// where browsers post what the world page's report-only policy would have refused (cspReports.js)
+fastify.register(cspReportRoute, { clientIpHeader: uploadLimitsConfig.clientIpHeader })
 if (world.assetsDir) {
   fastify.register(assetRoutes, { root: world.assetsDir })
 }

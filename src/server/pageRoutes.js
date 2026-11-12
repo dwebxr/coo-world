@@ -1,7 +1,9 @@
+import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import statics from '@fastify/static'
 
+import { REPORT_PATH } from './cspReports.js'
 import { escapeHtml } from './escapeHtml.js'
 
 // The pages this server serves and the headers that go with them.
@@ -24,12 +26,55 @@ import { escapeHtml } from './escapeHtml.js'
 //   cannot decode, a 408, a 431: none of them a page), and HTML typed after the hook runs or sent as a native
 //   `Response` (no route here does either).
 // - it is NOT a policy on scripts, styles or connections: markup that got into the page could still run a script.
-//   (A full policy needs the script host's `eval` for app scripts, and has to be tried against real wallets first.)
+// - on the world page only, a second policy as `Content-Security-Policy-Report-Only` (reportOnlyPolicy below): the
+//   policy on scripts, styles, frames and workers that is meant to be enforced one day. REPORT-ONLY PROTECTS
+//   NOTHING: the browser loads and runs everything as before, and posts what the policy would have refused to
+//   /csp-report (cspReports.js), which is how to learn what enforcing it would break for real visitors (a wallet
+//   extension that puts a script in the page, a wallet's in-app browser, a frame a wallet library opens) before
+//   it breaks. The nonce on the page's two inline scripts is there so that they are not reported; it guards
+//   nothing until the policy is enforced. The other static pages (terms.html) do not get this policy.
 // - `Strict-Transport-Security` only when HSTS_MAX_AGE is set: whether every host of the domain is served over
 //   https for that long is the operator's to know.
 
 export const PAGE_CSP = "frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'"
 export const PAGE_PERMISSIONS = 'camera=(), geolocation=(), payment=(), usb=()'
+
+// The script editor's files (src/client/components/monacoLoader.js): the loader, the editor, its stylesheet, its icon
+// font, and what its workers import.
+export const MONACO_SOURCE = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.49.0/'
+
+// The policy the world page is tried against. What each part would do if it were enforced:
+// - script-src: a script runs when the page's own origin serves it as a script (a store upload is text/plain, so it
+//   is not one), when it carries this response's nonce, or when it comes from the script editor's folder on cdnjs.
+//   An inline script without the nonce, an inline handler (`onerror=`) and a script of any other host would not run.
+//   `'unsafe-eval'` has to stay: app scripts are evaluated (SES), so text that reaches an `eval` of the page's own
+//   code still runs; and whoever controls that cdnjs folder still runs code in a builder's page.
+// - style-src keeps `'unsafe-inline'` (the interface writes style elements and attributes): injected CSS is not
+//   stopped. img-src, media-src and connect-src allow every host (a world shows images and video from anywhere, and
+//   app scripts fetch from anywhere): nothing here stops a page that was got into from sending data out.
+// - frame-src: only the two hosts WalletConnect's Verify frame is loaded from. worker-src: the page's own files and
+//   blob: (the physics and particle workers, and the script editor's).
+// - object-src, base-uri and form-action are as in the enforced policy (PAGE_CSP). `frame-ancestors` is not
+//   repeated: it is enforced already, and WebKit writes an error to every visitor's console for one in a report-only
+//   policy (it ignores it there).
+export function reportOnlyPolicy(nonce) {
+  return [
+    "default-src 'self'",
+    `script-src 'self' 'nonce-${nonce}' 'unsafe-eval' 'wasm-unsafe-eval' ${MONACO_SOURCE}`,
+    `style-src 'self' 'unsafe-inline' ${MONACO_SOURCE}`,
+    `font-src 'self' data: ${MONACO_SOURCE}`,
+    'img-src * data: blob:',
+    'media-src * data: blob:',
+    "connect-src 'self' * ws: wss: data: blob:",
+    "worker-src 'self' blob:",
+    "child-src 'self' blob:",
+    'frame-src https://verify.walletconnect.org https://verify.walletconnect.com',
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    `report-uri ${REPORT_PATH}`,
+  ].join('; ')
+}
 
 const HSTS_MAX_SECONDS = 2 * 365 * 24 * 60 * 60
 
@@ -76,6 +121,9 @@ export async function pageRoutes(fastify, { publicDir, page, envsCode }) {
   const world = async (req, reply) => {
     const { title, desc, image, url } = page()
     let html = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf-8')
+    // a new nonce for each response, put in before the world's own texts so that none of them can receive it
+    const nonce = randomBytes(18).toString('base64')
+    html = html.replaceAll('{nonce}', nonce)
     // function replacers insert the escaped text literally (no `$` pattern expansion)
     html = html.replaceAll('{url}', () => escapeHtml(url))
     html = html.replaceAll('{title}', () => escapeHtml(title))
@@ -85,6 +133,10 @@ export async function pageRoutes(fastify, { publicDir, page, envsCode }) {
     // compression plugin had loaded, and so was not), and an async handler that sends and then returns nothing
     // leaves a compressed response empty
     reply.type('text/html')
+    reply.header('Content-Security-Policy-Report-Only', reportOnlyPolicy(nonce))
+    // a cache has to ask the server again before it uses a copy (and the page has nothing to revalidate with, so it
+    // gets a new one): a cache that keeps to that does not hand one response, and one nonce, to two visitors
+    reply.header('Cache-Control', 'no-cache')
     return html
   }
   fastify.get('/', world)

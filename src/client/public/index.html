@@ -27,10 +27,10 @@
     <!-- <link rel='icon' href='/favicon.ico' /> -->
     <link rel="preload" href="/rubik.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="stylesheet" type="text/css" href="/index.css?v={buildId}" />
-    <script>
+    <script nonce="{nonce}">
       window.PARTICLES_PATH = '{particlesPath}'
     </script>
-    <script>
+    <script nonce="{nonce}">
       // Boot watchdog: if the world does not start, say why instead of leaving a black screen. It runs before
       // the app (and before SES lockdown); the app calls window.__worldBoot.ready() once the local player is
       // in, which stops it and removes any message.

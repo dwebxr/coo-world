@@ -528,22 +528,26 @@ try {
       await new Promise(r => setTimeout(r, 300))
       const placed = !!w.entities.get('ai-ph-app')
       w.network.send('ai', { name: 'create', blueprintId: 'ai-ph', appId: 'ai-ph-app', prompt: 'a refused cube' })
+      // busy while the first create's naming request may still run, then over the hour's limit
+      const said = () =>
+        w.chat.msgs.some(m =>
+          [
+            'Your previous AI request is still running.',
+            'You have reached the hourly limit for AI requests. Try again later.',
+          ].includes(m.body)
+        )
+      // the removal and the line of chat are two packets: wait for both (the chat was read as soon as the
+      // placeholder was gone, and in CI it had not always arrived)
       const t0 = Date.now()
       while (Date.now() - t0 < 15000) {
-        if (!w.entities.get('ai-ph-app')) break
+        if (!w.entities.get('ai-ph-app') && said()) break
         await new Promise(r => setTimeout(r, 200))
       }
       return {
         placed,
         removed: !w.entities.get('ai-ph-app'),
         blueprint: !!w.blueprints.get('ai-ph'),
-        // busy while the first create's naming request may still run, then over the hour's limit
-        said: w.chat.msgs.some(m =>
-          [
-            'Your previous AI request is still running.',
-            'You have reached the hourly limit for AI requests. Try again later.',
-          ].includes(m.body)
-        ),
+        said: said(),
       }
     })
     ok(refused.placed && refused.removed, `placeholder removed: ${JSON.stringify(refused)}`)

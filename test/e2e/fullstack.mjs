@@ -1957,13 +1957,25 @@ async function probes(admin, watcher) {
     context.off('page', countPopup)
     const popupPromise = context.waitForEvent('page', { timeout: 20000 })
     await openButton.click()
+    // The question closes with the press. Asked of the page directly: with the new tab in front, this page may
+    // draw no frames, and a wait that polls on frames (locator.waitFor) then never sees the dialog go
+    const questionState = () =>
+      page.evaluate(() => ({
+        shown: !!document.querySelector('.link-confirm-dialog'),
+        waiting: !!window.world.ui.latest.link,
+      }))
+    await waitUntil(async () => !(await questionState()).shown, {
+      timeout: 5000,
+      message: `the question to close after Open (${JSON.stringify(await questionState())})`,
+    })
+    eq((await questionState()).waiting, false, 'no question is left waiting')
     const popup = await popupPromise
     await popup.waitForLoadState('domcontentloaded')
     const info = await popup.evaluate(() => ({ opener: window.opener, url: location.href }))
     eq(info.opener, null, 'opener')
     eq(info.url, `http://${external}/status`, 'the address that was shown is the one that opened')
     await popup.close()
-    await dialog.waitFor({ state: 'detached', timeout: 5000 })
+    await page.bringToFront()
     eq(page.url(), urlBefore, 'page url')
   })
   await step('B10 world.open (d): a slice that asked for text/html is served as octet-stream', async () => {

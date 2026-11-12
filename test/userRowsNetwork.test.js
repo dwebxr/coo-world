@@ -1,7 +1,7 @@
 // A user's row and the server's memory of it (src/server/userRows.js), through the real ServerNetwork handlers and
 // the real join (test/lib/networkHarness.mjs): what a join gets when the row it read is older than a change, in
 // which order a user's writes reach the database, and what a write that fails leaves. The rules on their own are
-// in test/userRows.test.js; the token grant and the wallet table are in test/serverWallet.test.js.
+// in test/userRows.test.js; what a decided rank does to a token grant is in test/serverWallet.test.js.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import moment from 'moment'
@@ -10,7 +10,6 @@ import { connectionMethod, fakeWs, makeNetwork } from './lib/networkHarness.mjs'
 import { readPacket } from '../src/core/packets.js'
 import { Ranks } from '../src/core/extras/ranks.js'
 import { isAvatarUrl, sanitizeName } from '../src/core/extras/entityModifyPolicy.js'
-import * as gating from '../src/server/solana-gating.js'
 
 const deferred = () => {
   let resolve, reject
@@ -25,10 +24,11 @@ const turn = () => new Promise(resolve => setImmediate(resolve))
 // `users` is the table. A read returns a copy of the row as it is when the read is issued and may be held
 // (`f.read`); an update is recorded when it starts (`statements`), may be held or fail (`f.write`), and changes the
 // row when it lands. The voice token (the join's last wait) may be held too (`f.voice`).
-function fixture(context = {}) {
+function fixture() {
   const f = { logs: [], users: new Map(), entities: new Map(), statements: [], read: null, write: null, voice: null }
+  // (a write that fails is a plain line of the server's log: console.error)
   const network = makeNetwork(line => f.logs.push(line), {
-    context: { process: { env: { ADMIN_CODE: 'code' } }, ...context },
+    context: { process: { env: { ADMIN_CODE: 'code' } }, console: { ...console, error: line => f.logs.push(line) } },
   })
   f.network = network
   network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
@@ -414,28 +414,4 @@ test('a column the database refuses does not keep a rank from being stored', asy
   const again = await f.connect('u')
   assert.equal(again.player.data.avatar, avatar)
   assert.equal(again.player.data.rank, Ranks.BUILDER)
-})
-
-test('what follows the storing of a rank throws: said, the rank is stored and the writer goes on', async () => {
-  const f = fixture({
-    solanaGating: {
-      ...gating,
-      clearWallet() {
-        throw new Error('wallet table')
-      },
-    },
-  })
-  await f.connect('u')
-  const admin = await f.connect('admin', Ranks.ADMIN)
-  await f.rank(admin, 'u', Ranks.BUILDER)
-  await f.rows().idle()
-  assert.equal(f.users.get('u').rank, Ranks.BUILDER)
-  assert.deepEqual(
-    f.logs.filter(line => line.includes('user "u"')),
-    ['[network] after storing rank of user "u": wallet table']
-  )
-  assert.equal(f.rows().size, 0)
-  await f.rank(admin, 'u', Ranks.VISITOR)
-  await f.rows().idle()
-  assert.equal(f.users.get('u').rank, Ranks.VISITOR)
 })

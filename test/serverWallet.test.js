@@ -42,6 +42,17 @@ const clear = socket => {
 }
 // a turn of the event loop: what a statement that landed sets off (the next statement of that user) has started
 const turn = () => new Promise(resolve => setImmediate(resolve))
+// The statements of a user's row, each held until the test says how it ends (the fixture's f.write)
+const holdWrites = f => {
+  const held = []
+  f.write = patch => {
+    const statement = { patch, ...deferred() }
+    held.push(statement)
+    return statement.promise
+  }
+  return held
+}
+const busy = () => Error('SQLITE_BUSY')
 
 function fixture(t, options = {}) {
   const { result = { known: true, balance: 0 } } = options
@@ -52,7 +63,7 @@ function fixture(t, options = {}) {
   const users = new Map()
   const entities = new Map()
   const writes = []
-  const f = { calls, users, entities, writes, result, write: async () => {} }
+  const f = { calls, users, entities, writes, result, write: async () => {}, logs: [] }
   const service = {
     get: (wallet, options) => {
       calls.push({ wallet, options })
@@ -64,12 +75,13 @@ function fixture(t, options = {}) {
     context: {
       solanaGating: { ...enabled, REQUIRED_TOKEN_AMOUNT: required },
       process: { env: { ADMIN_CODE: 'code' } },
+      // (a write of a user's row that fails is a plain line of the server's log)
+      console: { ...console, error: line => f.logs.push(line) },
     },
   })
   f.network = network
-  // the users' rows as the server means them to be (userRows.js), and whether a rank of that user is being written
+  // the users' rows as the server means them to be (userRows.js)
   f.rows = () => network.userRows()
-  f.unsettled = socket => network.userRows().unsettled(socket.id, 'rank')
   f.rank = (admin, socket, rank) => network.onModifyRank(admin, { playerId: socket.id, rank })
   network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
   network.db = table => ({
@@ -365,132 +377,148 @@ test('wallet invalidation: failure after success, consumed failure, and revoke d
   assert.deepEqual(packets(socket), [['onWalletStatus', { verified: false }]])
 })
 
+// A rank an admin or the admin code decides is the user's rank for this server from that moment, written or not
+// (userRows.js): the token gate then decides on the balance alone, as for any visitor, whatever the write is doing
 for (const via of ['modifyRank', 'admin']) {
-  test(`wallet persist race: ${via} pending demotion refuses verify and recheck; completion allows grant`, async t => {
+  test(`decided rank: a demotion by ${via} whose write is under way does not keep a token from granting`, async t => {
     const f = fixture(t)
     const socket = await f.connect('subject', via === 'admin' ? Ranks.ADMIN : Ranks.BUILDER)
     const admin = await f.connect('moderator', Ranks.ADMIN)
     await f.verify(socket)
-    const write = deferred()
-    f.write = () => write.promise
+    assert.equal(f.calls.length, 0, 'a stored rank: the chain was not asked')
+    const held = holdWrites(f)
     // the handler does not wait for the write
     await (via === 'admin'
       ? f.network.onCommand(socket, { args: ['admin', 'code'] })
-      : f.network.onModifyRank(admin, { playerId: socket.id, rank: Ranks.VISITOR }))
-    assert.equal(f.unsettled(socket), 1)
+      : f.rank(admin, socket, Ranks.VISITOR))
+    assert.equal(held.length, 1)
+    assert.equal(socket.player.data.rank, Ranks.VISITOR)
     assert.equal(socket.player.rankRevision, 1)
     assert.equal(socket.wallet.verified, address)
     clear(socket)
     f.result = { known: true, balance: 10000 }
     await f.network.onRequestBuilderRecheck(socket, {})
-    f.advance(5000)
-    await f.verify(socket, 2)
-    assert.equal(f.calls.length, 0)
-    assert.equal(socket.player.data.rank, Ranks.VISITOR)
-    assert.equal(replies(socket, 'onChatAdded').length, 2)
-    write.resolve()
-    await f.rows().idle()
-    assert.equal(f.unsettled(socket), 0)
-    assert.equal(f.users.get('subject').rank, Ranks.VISITOR)
-    f.advance(5000)
-    await f.network.onRequestBuilderRecheck(socket, {})
+    assert.equal(f.calls.length, 1, 'the chain is asked')
     assert.equal(socket.player.data.rank, Ranks.BUILDER)
     assert.equal(socket.player.rankRevision, 2)
     assert.equal(socket.player.data.tokenGrantedRank, true)
     assert.equal(gating.walletOf(socket.id), address)
+    assert.match(replies(socket, 'onChatAdded')[0].body, /Token verified/)
+    // the write lands: nothing in the session changes
+    held[0].resolve()
+    await f.rows().idle()
+    assert.equal(f.users.get('subject').rank, Ranks.VISITOR)
+    assert.equal(socket.player.data.rank, Ranks.BUILDER)
+    assert.equal(socket.player.data.tokenGrantedRank, true)
+    assert.equal(gating.walletOf(socket.id), address)
+    // and the wallet's disconnect takes the grant
+    f.network.onRevokeBuilderByToken(socket, {})
+    assert.equal(socket.player.data.rank, Ranks.VISITOR)
+    assert.equal(gating.walletOf(socket.id), null)
   })
 }
 
-test('wallet persist race: a write that fails is no longer under way, and leaves the grant as it was', async t => {
+test('decided rank: the admin code ends a token grant at once, and taking admin away leaves a visitor the token can grant', async t => {
   const f = fixture(t, { result: { known: true, balance: 10000 } })
-  const socket = await f.connect()
+  const socket = await f.connect('subject')
   await f.verify(socket)
-  const admin = await f.connect('admin', Ranks.ADMIN)
-  f.write = async () => {
-    throw Error('SQLITE_BUSY')
-  }
-  f.rank(admin, socket, Ranks.VISITOR)
-  assert.equal(f.unsettled(socket), 1, 'under way until it fails')
-  await f.rows().idle()
-  assert.equal(f.unsettled(socket), 0)
   assert.equal(socket.player.data.tokenGrantedRank, true)
-  assert.equal(gating.walletOf(socket.id), address)
-  assert.equal(f.rows().unstored(), 1, 'what the admin decided is kept')
-  await f.network.onCommand(admin, { args: ['admin', 'code'] })
+  const held = holdWrites(f)
+  await f.network.onCommand(socket, { args: ['admin', 'code'] })
+  assert.equal(socket.player.data.rank, Ranks.ADMIN)
+  assert.equal(socket.player.data.tokenGrantedRank, false, 'before any write has landed')
+  assert.equal(gating.walletOf(socket.id), null)
+  assert.equal(f.users.get('subject').rank, Ranks.VISITOR)
+  f.network.onRevokeBuilderByToken(socket, {})
+  assert.equal(socket.player.data.rank, Ranks.ADMIN, 'a wallet disconnect takes nothing')
+  await f.network.onCommand(socket, { args: ['admin', 'code'] })
+  assert.equal(socket.player.data.rank, Ranks.VISITOR)
+  // (the first decision's statement, then the one that carries the second)
+  held[0].resolve()
+  await turn()
+  held[1].resolve()
   await f.rows().idle()
-  assert.equal(f.unsettled(admin), 0)
-  // with nothing under way, the token gate grants again (the demotion of a token holder never held longer)
+  assert.equal(f.users.get('subject').rank, Ranks.VISITOR)
   f.advance(5000)
-  await f.network.onRequestBuilderRecheck(socket, {})
+  await f.verify(socket, 2)
   assert.equal(socket.player.data.rank, Ranks.BUILDER)
   assert.equal(socket.player.data.tokenGrantedRank, true)
-  assert.equal(f.calls.length, 2)
 })
 
-test('wallet persist race: a reconnect while the old demotion is written waits for it like the session before', async t => {
+test('decided rank: a reconnect while the old demotion is written is a visitor from memory, and its token grants at once', async t => {
   const f = fixture(t, { result: { known: true, balance: 10000 } })
   const old = await f.connect()
   const admin = await f.connect('admin', Ranks.ADMIN)
   await f.verify(old)
-  const write = deferred()
-  f.write = () => write.promise
+  const held = holdWrites(f)
   await f.rank(admin, old, Ranks.VISITOR)
+  assert.equal(old.player.data.tokenGrantedRank, false)
+  assert.equal(gating.walletOf(old.id), null)
   old.disconnect()
   assert.equal(old.closed, true)
   assert.equal(old.disconnected, true)
-  assert.equal(gating.walletOf(old.id), null)
   const next = await f.connect(old.id)
   assert.equal(next.wallet.verified, null)
   assert.equal(next.wallet.challenge, null)
   assert.equal(next.wallet.generation, 0)
   assert.equal(next.player.data.rank, Ranks.VISITOR)
-  // the write is the user's, not the old session's: the new session is not granted while it is under way
-  assert.equal(f.unsettled(next), 1)
+  // the old session's write is still under way: the new session is granted on its balance all the same
   const calls = f.calls.length
   await f.verify(next, 1, keyB)
-  assert.equal(next.wallet.verified, addressOf(keyB))
-  assert.equal(f.calls.length, calls, 'the chain is not asked')
-  assert.equal(next.player.data.rank, Ranks.VISITOR)
-  assert.equal(gating.walletOf(next.id), null)
-  // it lands: the old session's completion is not this session's (nothing of the new one is touched), and the
-  // refresh grants
-  write.resolve()
+  assert.equal(f.calls.length, calls + 1)
+  assert.equal(next.player.data.rank, Ranks.BUILDER)
+  assert.equal(next.player.data.tokenGrantedRank, true)
+  assert.equal(gating.walletOf(next.id), addressOf(keyB))
+  // it lands: nothing of the new session is touched
+  held[0].resolve()
   await f.rows().idle()
-  assert.equal(f.unsettled(next), 0)
-  f.advance(5000)
-  await f.network.onRequestBuilderRecheck(next, {})
+  assert.equal(f.users.get(next.id).rank, Ranks.VISITOR)
   assert.equal(next.player.data.rank, Ranks.BUILDER)
   assert.equal(next.player.data.tokenGrantedRank, true)
   assert.equal(gating.walletOf(next.id), addressOf(keyB))
 })
 
-test("wallet persist race: a write of the old session that lands after a reconnect leaves the new session's grant", async t => {
+test('decided rank: a promotion of a token-granted builder whose write fails is a builder without a grant, from memory', async t => {
   const f = fixture(t, { result: { known: true, balance: 10000 } })
-  const old = await f.connect()
+  const socket = await f.connect('subject')
   const admin = await f.connect('admin', Ranks.ADMIN)
-  await f.verify(old)
-  // the demotion fails: nothing under way, the decision kept
+  await f.verify(socket)
+  assert.equal(gating.walletOf(socket.id), address)
   f.write = async () => {
-    throw Error('SQLITE_BUSY')
+    throw busy()
   }
-  await f.rank(admin, old, Ranks.VISITOR)
+  await f.rank(admin, socket, Ranks.BUILDER)
   await f.rows().idle()
-  old.disconnect()
-  const next = await f.connect(old.id)
-  assert.equal(next.player.data.rank, Ranks.VISITOR)
-  await f.verify(next, 1, keyB)
+  assert.equal(socket.player.data.rank, Ranks.BUILDER)
+  assert.equal(socket.player.data.tokenGrantedRank, false)
+  assert.equal(gating.walletOf(socket.id), null)
+  assert.equal(f.users.get('subject').rank, Ranks.VISITOR, 'the database did not take it')
+  assert.equal(f.rows().unstored(), 1)
+  assert.equal(f.logs.filter(line => line.includes('rank of user "subject" not stored')).length, 1)
+  // not a grant: neither a wallet disconnect nor a new sign-in takes it
+  f.network.onRevokeBuilderByToken(socket, {})
+  f.advance(5000)
+  f.challenge(socket, 2)
+  assert.equal(socket.player.data.rank, Ranks.BUILDER)
+  // a reload is a builder too, from memory, for as long as this server runs
+  socket.disconnect()
+  const next = await f.connect('subject')
   assert.equal(next.player.data.rank, Ranks.BUILDER)
-  assert.equal(gating.walletOf(next.id), addressOf(keyB))
-  // the database is back, and the user's next change carries the rank that failed: visitor lands, for a player
-  // that is gone. The new session is a builder by its token and stays marked so, with its wallet
-  f.write = async () => {}
-  await f.network.onCommand(next, { args: ['name', 'Ada'] })
-  await f.rows().idle()
-  assert.deepEqual(f.writes.at(-1).patch, { rank: Ranks.VISITOR, name: 'Ada' })
-  assert.equal(f.users.get(next.id).rank, Ranks.VISITOR)
-  assert.equal(next.player.data.rank, Ranks.BUILDER)
-  assert.equal(next.player.data.tokenGrantedRank, true)
-  assert.equal(gating.walletOf(next.id), addressOf(keyB))
+  assert.ok(!next.player.data.tokenGrantedRank)
+  next.disconnect()
+  // another process (a restart without a final save that landed) has what the database holds
+  const restarted = makeNetwork(() => {}, {
+    tokenBalanceService: f.network.tokenBalanceService,
+    context: { solanaGating: enabled },
+  })
+  restarted.db = f.network.db
+  restarted.spawn = f.network.spawn
+  restarted.world = f.network.world
+  restarted.onConnection = f.network.onConnection
+  const ws = fakeWs()
+  await restarted.onConnection(ws, { authToken: 'subject' })
+  assert.equal(restarted.sockets.get('subject').player.data.rank, Ranks.VISITOR)
+  restarted.sockets.get('subject').disconnect()
 })
 
 test('wallet liveness: duplicate_user refuses a second live connection without clearing the first', async t => {
@@ -852,34 +880,6 @@ test('wallet balances: immediately resolved verified reads still obey the admiss
   )
 })
 
-test('wallet persist race: overlapping administrative writes keep grants blocked until both settle', async t => {
-  const f = fixture(t, { result: { known: true, balance: 10000 } })
-  const socket = await f.connect('subject', Ranks.BUILDER)
-  const admin = await f.connect('admin', Ranks.ADMIN)
-  await f.verify(socket)
-  const first = deferred(),
-    second = deferred()
-  f.write = () => first.promise
-  await f.rank(admin, socket, Ranks.VISITOR)
-  f.write = () => second.promise
-  await f.rank(admin, socket, Ranks.VISITOR)
-  // one statement of a user at a time: the second decision goes out when the first has landed
-  assert.equal(f.writes.length, 1)
-  assert.equal(f.unsettled(socket), 1)
-  first.resolve()
-  await turn()
-  assert.equal(f.writes.length, 2)
-  assert.equal(f.unsettled(socket), 1)
-  await f.network.onRequestBuilderRecheck(socket, {})
-  assert.equal(f.calls.length, 0)
-  second.resolve()
-  await f.rows().idle()
-  assert.equal(f.unsettled(socket), 0)
-  f.advance(10000)
-  await f.network.onRequestBuilderRecheck(socket, {})
-  assert.equal(socket.player.data.rank, Ranks.BUILDER)
-})
-
 test('wallet compatibility: a pre-attempt client (protocol v2, release A) is ignored without replies', async t => {
   const f = fixture(t)
   const socket = await f.connect('visitor', Ranks.VISITOR)
@@ -1022,326 +1022,135 @@ test('wallet grant: a new sign-in leaves a stored rank alone', async t => {
   assert.deepEqual(replies(socket, 'onChatAdded'), [])
 })
 
-test('wallet grant: a rank an admin stored is not taken by a new sign-in, also when two such writes overlap', async t => {
+test('wallet grant: a rank an admin gave is not taken by a new sign-in, from the moment it is given', async t => {
   const f = fixture(t, { result: { known: true, balance: 10000 } })
   const socket = await f.connect('subject')
   const admin = await f.connect('admin', Ranks.ADMIN)
   await f.verify(socket)
   assert.equal(socket.player.data.tokenGrantedRank, true)
-  const first = deferred(),
-    second = deferred()
-  f.write = () => first.promise
+  const held = holdWrites(f)
   await f.rank(admin, socket, Ranks.BUILDER)
-  f.write = () => second.promise
-  await f.rank(admin, socket, Ranks.BUILDER)
-  first.resolve()
-  await turn()
-  // the database holds builder now; the second write is under way
-  assert.equal(f.users.get('subject').rank, Ranks.BUILDER)
-  assert.equal(f.writes.length, 2)
-  assert.equal(f.unsettled(socket), 1)
+  // decided; the database has taken nothing yet
+  assert.equal(f.users.get('subject').rank, Ranks.VISITOR)
   assert.equal(socket.player.data.tokenGrantedRank, false)
   assert.equal(gating.walletOf(socket.id), null)
   f.advance(5000)
   clear(socket)
   f.challenge(socket, 2)
   assert.equal(socket.wallet.verified, null)
-  assert.equal(socket.player.data.rank, Ranks.BUILDER, 'the stored rank stays')
+  assert.equal(socket.player.data.rank, Ranks.BUILDER, 'the rank stays')
   assert.deepEqual(replies(socket, 'onEntityModified'), [])
-  second.resolve()
+  // a second write of the same rank, overlapping the first
+  await f.rank(admin, socket, Ranks.BUILDER)
+  held[0].resolve()
+  await turn()
+  held[1].resolve()
   await f.rows().idle()
   assert.equal(socket.player.data.rank, Ranks.BUILDER)
   assert.equal(f.users.get('subject').rank, Ranks.BUILDER)
-  assert.equal(f.unsettled(socket), 0)
 })
 
-// The statements of a user's row, each held until the test says how it ends (the fixture's f.write)
-const holdWrites = f => {
-  const held = []
-  f.write = patch => {
-    const statement = { patch, ...deferred() }
-    held.push(statement)
-    return statement.promise
-  }
-  return held
-}
-const busy = () => Error('SQLITE_BUSY')
-
-// C9-R1: a token-granted builder, and an admin's changes of its rank that overlap: A, then B (the other rank), then
-// C (A's rank again), and the last write fails. Separate writes used to let A land while the session had C's rank
-// (the grant mark and the wallet entry were cleared), B store the other rank and C fail: a session rank the database
-// did not hold and that was no longer treated as a grant. Now one statement of a user is under way at a time
+// C9-R1 (the ledger): a token-granted builder and an admin's changes of its rank that overlap: A, then B (the other
+// rank), then A again, and the last write fails. The grant used to end when a write landed while the session had
+// the rank it wrote: A's landing cleared the mark under the third decision's rank, B stored the other rank, and
+// the third write failed. Now each decision ends the grant when it is made, and the writes change nothing in the
+// session
 for (const [label, A, B] of [
   ['builder, visitor, builder', Ranks.BUILDER, Ranks.VISITOR],
   ['visitor, builder, visitor', Ranks.VISITOR, Ranks.BUILDER],
 ]) {
-  test(`rank writes that overlap (${label}), the last one failing: the mark is cleared only for the rank the database holds`, async t => {
+  test(`decided ranks that overlap (${label}), the last write failing: no grant from the first decision on`, async t => {
     const f = fixture(t, { result: { known: true, balance: 10000 } })
     const socket = await f.connect('subject')
     const admin = await f.connect('admin', Ranks.ADMIN)
     await f.verify(socket)
     assert.equal(socket.player.data.tokenGrantedRank, true)
-    const held = holdWrites(f)
-    await f.rank(admin, socket, A)
-    await f.rank(admin, socket, B)
-    await f.rank(admin, socket, A)
-    assert.equal(held.length, 1, 'one statement under way: A')
-    assert.equal(socket.player.data.rank, A)
-    assert.equal(socket.player.data.tokenGrantedRank, true)
     assert.equal(gating.walletOf(socket.id), address)
-    // A lands while the session has that rank again (C's): the database holds it, the grant is over
+    const held = holdWrites(f)
+    for (const rank of [A, B, A]) {
+      await f.rank(admin, socket, rank)
+      assert.equal(socket.player.data.rank, rank)
+      assert.equal(socket.player.data.tokenGrantedRank, false)
+      assert.equal(gating.walletOf(socket.id), null)
+      // a wallet disconnect takes nothing
+      f.network.onRevokeBuilderByToken(socket, {})
+      assert.equal(socket.player.data.rank, rank)
+    }
+    assert.equal(held.length, 1, 'one statement under way: the first decision')
     held[0].resolve()
     await turn()
     assert.equal(f.users.get('subject').rank, A)
-    assert.equal(socket.player.data.tokenGrantedRank, false)
-    assert.equal(gating.walletOf(socket.id), null)
-    // the next statement carries the last decision; B was never written, so the database never held the other rank
+    // the next statement carries the last decision; the one in between is never written
     assert.deepEqual(
       held.map(statement => statement.patch),
       [{ rank: A }, { rank: A }]
     )
     held[1].reject(busy())
     await f.rows().idle()
-    assert.equal(held.length, 2)
     assert.equal(socket.player.data.rank, A)
-    assert.equal(f.users.get('subject').rank, A, 'the session has the rank the database holds')
     assert.equal(socket.player.data.tokenGrantedRank, false)
-    // a wallet disconnect and a new sign-in take nothing: it is a stored rank
+    // neither a wallet disconnect nor a new sign-in takes anything
     f.network.onRevokeBuilderByToken(socket, {})
     f.advance(5000)
     f.challenge(socket, 2)
     assert.equal(socket.player.data.rank, A)
-    // and a reload gets it
+    // and a reload gets the decided rank
     socket.disconnect()
     const next = await f.connect('subject')
     assert.equal(next.player.data.rank, A)
+    assert.ok(!next.player.data.tokenGrantedRank)
   })
 }
 
-test('rank writes that overlap, each with a statement of its own, the last one failing: a rank that is not stored stays marked', async t => {
-  // The same three decisions, timed so that B is written by itself: A lands while the session has B's rank, B lands
-  // while it has C's, C fails. No statement landed while the session had the rank it carried
-  const f = fixture(t, { result: { known: true, balance: 10000 } })
-  const socket = await f.connect('subject')
-  const admin = await f.connect('admin', Ranks.ADMIN)
-  await f.verify(socket)
-  const held = holdWrites(f)
-  await f.rank(admin, socket, Ranks.BUILDER)
-  await f.rank(admin, socket, Ranks.VISITOR)
-  held[0].resolve()
-  await turn()
-  assert.equal(f.users.get('subject').rank, Ranks.BUILDER)
-  assert.equal(socket.player.data.rank, Ranks.VISITOR)
-  assert.equal(socket.player.data.tokenGrantedRank, true, 'builder landed for a session that is a visitor: untouched')
-  await f.rank(admin, socket, Ranks.BUILDER)
-  held[1].resolve()
-  await turn()
-  assert.equal(f.users.get('subject').rank, Ranks.VISITOR)
-  assert.equal(socket.player.data.tokenGrantedRank, true, 'visitor landed for a session that is a builder: untouched')
-  held[2].reject(busy())
-  await f.rows().idle()
-  assert.deepEqual(
-    held.map(statement => statement.patch),
-    [{ rank: Ranks.BUILDER }, { rank: Ranks.VISITOR }, { rank: Ranks.BUILDER }]
-  )
-  // the session is a builder (what the admin decided last), the database says visitor: not a stored rank, and still
-  // marked and keyed to the wallet
-  assert.equal(socket.player.data.rank, Ranks.BUILDER)
-  assert.equal(f.users.get('subject').rank, Ranks.VISITOR)
-  assert.equal(socket.player.data.tokenGrantedRank, true)
-  assert.equal(gating.walletOf(socket.id), address)
-  assert.equal(f.rows().unstored(), 1)
-  // so a wallet disconnect takes it from the session
-  f.network.onRevokeBuilderByToken(socket, {})
-  assert.equal(socket.player.data.rank, Ranks.VISITOR)
-  assert.equal(gating.walletOf(socket.id), null)
-  // What the admin decided is kept for as long as the server runs: a reload gets builder, and the user's next
-  // change writes it
-  socket.disconnect()
-  const next = await f.connect('subject')
-  assert.equal(next.player.data.rank, Ranks.BUILDER)
-  assert.ok(!next.player.data.tokenGrantedRank)
-  f.write = async () => {}
-  await f.network.onCommand(next, { args: ['name', 'Ada'] })
-  await f.rows().idle()
-  assert.equal(f.users.get('subject').rank, Ranks.BUILDER)
-  assert.equal(f.rows().unstored(), 0)
-})
-
-// C9-R2: a token-granted builder, A = builder and B = visitor overlap; A lands while the session is a visitor (the
-// mark stays), B fails. The token gate then grants again, and the database holds builder: ending that grant used
-// to take, until the next reload, a rank that a reload gave back
-test('a promotion that lands and a demotion that fails: the session, a reload and the next write follow the demotion', async t => {
-  const f = fixture(t, { result: { known: true, balance: 10000 } })
-  const socket = await f.connect('subject')
-  const admin = await f.connect('admin', Ranks.ADMIN)
-  await f.verify(socket)
-  const held = holdWrites(f)
-  await f.rank(admin, socket, Ranks.BUILDER)
-  await f.rank(admin, socket, Ranks.VISITOR)
-  held[0].resolve()
-  await turn()
-  assert.equal(f.users.get('subject').rank, Ranks.BUILDER)
-  assert.equal(socket.player.data.rank, Ranks.VISITOR)
-  assert.equal(socket.player.data.tokenGrantedRank, true)
-  // not granted while the demotion is being written
-  f.advance(5000)
-  await f.network.onRequestBuilderRecheck(socket, {})
-  assert.equal(socket.player.data.rank, Ranks.VISITOR)
-  held[1].reject(busy())
-  await f.rows().idle()
-  assert.equal(f.unsettled(socket), 0)
-  assert.deepEqual(f.rows().intended('subject'), { rank: Ranks.VISITOR }, 'the demotion is kept')
-  // the token gate grants again: a builder by token, marked so
-  f.advance(10000)
-  await f.network.onRequestBuilderRecheck(socket, {})
-  assert.equal(socket.player.data.rank, Ranks.BUILDER)
-  assert.equal(socket.player.data.tokenGrantedRank, true)
-  assert.equal(gating.walletOf(socket.id), address)
-  // the wallet disconnects: a visitor, as the admin decided
-  f.network.onRevokeBuilderByToken(socket, {})
-  assert.equal(socket.player.data.rank, Ranks.VISITOR)
-  assert.equal(gating.walletOf(socket.id), null)
-  // and a reload does not bring the builder rank back, though the database still holds it
-  socket.disconnect()
-  const next = await f.connect('subject')
-  assert.equal(f.users.get('subject').rank, Ranks.BUILDER)
-  assert.equal(next.player.data.rank, Ranks.VISITOR)
-  // the user's next change writes the demotion
-  f.write = async () => {}
-  await f.network.onCommand(next, { args: ['name', 'Ada'] })
-  await f.rows().idle()
-  assert.equal(f.users.get('subject').rank, Ranks.VISITOR)
-  assert.equal(next.player.data.rank, Ranks.VISITOR)
-})
-
-test('a write that started before a rank was decided does not end the grant; the one that carries the rank does', async t => {
-  const f = fixture(t, { result: { known: true, balance: 10000 } })
-  const socket = await f.connect('subject')
-  const admin = await f.connect('admin', Ranks.ADMIN)
-  await f.verify(socket)
-  const held = holdWrites(f)
-  await f.network.onCommand(socket, { args: ['name', 'Ada'] })
-  await f.rank(admin, socket, Ranks.BUILDER)
-  assert.deepEqual(
-    held.map(statement => statement.patch),
-    [{ name: 'Ada' }]
-  )
-  held[0].resolve()
-  await turn()
-  assert.equal(f.users.get('subject').name, 'Ada')
-  assert.equal(socket.player.data.tokenGrantedRank, true, 'the name landed; the rank is not stored yet')
-  assert.equal(gating.walletOf(socket.id), address)
-  assert.deepEqual(held[1].patch, { rank: Ranks.BUILDER })
-  held[1].resolve()
-  await f.rows().idle()
-  assert.equal(socket.player.data.tokenGrantedRank, false)
-  assert.equal(gating.walletOf(socket.id), null)
-})
-
-test('a column the database refuses does not keep a stored rank from ending the grant', async t => {
-  const f = fixture(t, { result: { known: true, balance: 10000 } })
-  f.network.world.settings.customAvatars = true
-  const socket = await f.connect('subject')
-  const admin = await f.connect('admin', Ranks.ADMIN)
-  await f.verify(socket)
-  // a column narrower than the avatar the server takes (as PostgreSQL's varchar(255) was for a 512-character url)
-  f.write = async patch => {
-    if (patch.avatar?.length > 16) throw Error('value too long for type character varying(16)')
-  }
-  await f.network.onEntityModified(socket, { id: socket.id, avatar: 'asset://' + 'a'.repeat(60) + '.vrm' })
-  await f.rank(admin, socket, Ranks.BUILDER)
-  await f.rows().idle()
-  assert.equal(f.users.get('subject').rank, Ranks.BUILDER)
-  assert.equal(f.users.get('subject').avatar, undefined)
-  assert.equal(socket.player.data.tokenGrantedRank, false)
-  assert.equal(gating.walletOf(socket.id), null)
-  assert.equal(f.rows().unstored(), 1)
-})
-
-test('a decision that hears of a later statement is told the rank that statement stored, not its own', async t => {
-  // builder and then visitor are decided while a name is being written; the next statement carries visitor, and
-  // builder is decided again while it is under way. When it lands, the first decision (builder) hears of it: the
-  // session has builder, and the database has just taken visitor
-  const f = fixture(t, { result: { known: true, balance: 10000 } })
-  const socket = await f.connect('subject')
-  const admin = await f.connect('admin', Ranks.ADMIN)
-  await f.verify(socket)
-  const held = holdWrites(f)
-  await f.network.onCommand(socket, { args: ['name', 'Ada'] })
-  await f.rank(admin, socket, Ranks.BUILDER)
-  await f.rank(admin, socket, Ranks.VISITOR)
-  held[0].resolve()
-  await turn()
-  assert.deepEqual(held[1].patch, { rank: Ranks.VISITOR })
-  await f.rank(admin, socket, Ranks.BUILDER)
-  held[1].resolve()
-  await turn()
-  assert.equal(f.users.get('subject').rank, Ranks.VISITOR)
-  assert.equal(socket.player.data.rank, Ranks.BUILDER)
-  assert.equal(socket.player.data.tokenGrantedRank, true, 'the database does not hold builder: still a grant')
-  assert.equal(gating.walletOf(socket.id), address)
-  held[2].reject(busy())
-  await f.rows().idle()
-  f.network.onRevokeBuilderByToken(socket, {})
-  assert.equal(socket.player.data.rank, Ranks.VISITOR, 'and a wallet disconnect takes it')
-})
-
-test('a rank write that starts while the chain is asked: no grant until it has ended', async t => {
-  const f = fixture(t, { result: { known: true, balance: 10000 } })
-  const socket = await f.connect('subject')
-  const admin = await f.connect('admin', Ranks.ADMIN)
-  await f.verify(socket)
-  // a demotion that fails: nothing under way, the decision kept
-  f.write = async () => {
-    throw busy()
-  }
-  await f.rank(admin, socket, Ranks.VISITOR)
-  await f.rows().idle()
-  assert.equal(f.unsettled(socket), 0)
-  // the refresh asks the chain; while it does, the player's change of name starts a statement that carries the rank
-  const balance = deferred()
-  f.result = balance.promise
-  f.advance(10000)
-  clear(socket)
-  const refresh = f.network.onRequestBuilderRecheck(socket, {})
-  const held = holdWrites(f)
-  await f.network.onCommand(socket, { args: ['name', 'Ada'] })
-  assert.deepEqual(held[0].patch, { rank: Ranks.VISITOR, name: 'Ada' })
-  assert.equal(f.unsettled(socket), 1)
-  balance.resolve({ known: true, balance: 10000 })
-  await refresh
-  assert.equal(socket.player.data.rank, Ranks.VISITOR, 'not granted while the rank is being written')
-  assert.ok(replies(socket, 'onChatAdded').some(chat => /Could not check your balance/.test(chat.body)))
-  held[0].resolve()
-  await f.rows().idle()
-  assert.equal(f.users.get('subject').rank, Ranks.VISITOR)
-  assert.equal(socket.player.data.tokenGrantedRank, false, 'visitor is stored: the old grant is over')
-  f.result = { known: true, balance: 10000 }
-  f.advance(10000)
-  await f.network.onRequestBuilderRecheck(socket, {})
-  assert.equal(socket.player.data.rank, Ranks.BUILDER)
-  assert.equal(socket.player.data.tokenGrantedRank, true)
-})
-
-test('a rank decided while another rank is written ends the grant when its own statement lands, not before', async t => {
-  const f = fixture(t, { result: { known: true, balance: 10000 } })
-  const socket = await f.connect('subject')
-  const admin = await f.connect('admin', Ranks.ADMIN)
-  await f.verify(socket)
-  const held = holdWrites(f)
-  await f.rank(admin, socket, Ranks.VISITOR)
-  await f.rank(admin, socket, Ranks.BUILDER)
-  held[0].resolve()
-  await turn()
-  // visitor landed, for a session that is a builder by the second decision: its statement has only started
-  assert.equal(f.users.get('subject').rank, Ranks.VISITOR)
-  assert.deepEqual(held[1].patch, { rank: Ranks.BUILDER })
-  assert.equal(socket.player.data.tokenGrantedRank, true)
-  assert.equal(gating.walletOf(socket.id), address)
-  held[1].resolve()
-  await f.rows().idle()
-  assert.equal(f.users.get('subject').rank, Ranks.BUILDER)
-  assert.equal(socket.player.data.tokenGrantedRank, false)
-  assert.equal(gating.walletOf(socket.id), null)
-})
+// C9-R2 (the ledger): a token-granted builder, builder and then visitor decided; builder lands, and the visitor's
+// write is still under way or fails. The session is a visitor without a grant from the second decision on; a token
+// then grants builder again, marked, and a wallet disconnect takes that grant and nothing else
+for (const fate of ['under way', 'failed']) {
+  test(`a promotion that lands and a demotion whose write is ${fate}: a visitor, whom a token grants and a disconnect ungrants`, async t => {
+    const f = fixture(t, { result: { known: true, balance: 10000 } })
+    const socket = await f.connect('subject')
+    const admin = await f.connect('admin', Ranks.ADMIN)
+    await f.verify(socket)
+    const held = holdWrites(f)
+    await f.rank(admin, socket, Ranks.BUILDER)
+    await f.rank(admin, socket, Ranks.VISITOR)
+    assert.equal(socket.player.data.rank, Ranks.VISITOR)
+    assert.equal(socket.player.data.tokenGrantedRank, false)
+    assert.equal(gating.walletOf(socket.id), null)
+    held[0].resolve()
+    await turn()
+    assert.equal(f.users.get('subject').rank, Ranks.BUILDER, 'the promotion landed')
+    assert.deepEqual(held[1].patch, { rank: Ranks.VISITOR })
+    if (fate === 'failed') {
+      held[1].reject(busy())
+      await f.rows().idle()
+    }
+    assert.equal(socket.player.data.rank, Ranks.VISITOR)
+    assert.equal(socket.player.data.tokenGrantedRank, false)
+    // a new verification with enough balance: a builder by token, marked so
+    f.advance(5000)
+    const calls = f.calls.length
+    await f.verify(socket, 2)
+    assert.equal(f.calls.length, calls + 1)
+    assert.equal(socket.player.data.rank, Ranks.BUILDER)
+    assert.equal(socket.player.data.tokenGrantedRank, true)
+    assert.equal(gating.walletOf(socket.id), address)
+    // the wallet disconnects: the grant goes, and the session is the visitor the admin decided
+    f.network.onRevokeBuilderByToken(socket, {})
+    assert.equal(socket.player.data.rank, Ranks.VISITOR)
+    assert.equal(socket.player.data.tokenGrantedRank, false)
+    assert.equal(gating.walletOf(socket.id), null)
+    // a reload is a visitor too, though the database still holds builder
+    assert.equal(f.users.get('subject').rank, Ranks.BUILDER)
+    socket.disconnect()
+    const next = await f.connect('subject')
+    assert.equal(next.player.data.rank, Ranks.VISITOR)
+    // and the demotion reaches the database: when its statement lands, or with the user's next change
+    if (fate === 'under way') held[1].resolve()
+    f.write = async () => {}
+    await f.network.onCommand(next, { args: ['name', 'Ada'] })
+    await f.rows().idle()
+    assert.equal(f.users.get('subject').rank, Ranks.VISITOR)
+    assert.equal(next.player.data.rank, Ranks.VISITOR)
+  })
+}

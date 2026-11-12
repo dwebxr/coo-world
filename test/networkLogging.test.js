@@ -25,6 +25,7 @@ import { createPendingChanges } from '../src/core/extras/pendingChanges.js'
 import { adminMode, adminWaitScale, createAdminGate } from '../src/server/adminCode.js'
 import { isAdminCommand } from '../src/core/extras/chatCommand.js'
 import { createUserRows } from '../src/server/userRows.js'
+import { endGrantByDecision } from '../src/server/rankGrants.js'
 
 const source = fs.readFileSync(new URL('../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
 const methods = [
@@ -66,6 +67,8 @@ const methods = [
 function fixture() {
   const lines = []
   const calls = []
+  // plain lines of the server's log (console.error): none, unless the test says it expects some
+  const server = { lines: null }
   const entities = new Map()
   const failure = {
     get message() {
@@ -110,13 +113,14 @@ function fixture() {
     uuid: () => 'message',
     setImmediate,
     process: { env: { ADMIN_CODE: 'code' } },
-    solanaGating: { TOKEN_GATING_ENABLED: true },
+    solanaGating: { TOKEN_GATING_ENABLED: true, clearWallet() {} },
     createUserRows,
-    // (no write of a rank lands in these tests)
-    rankStored: () => assert.fail('nothing was stored'),
+    endGrantByDecision,
     console: {
-      error() {
-        assert.fail('refusals must go through logOnce')
+      error(line) {
+        if (!server.lines) assert.fail('refusals must go through logOnce')
+        assert.equal(typeof line, 'string')
+        server.lines.push(line)
       },
     },
   })
@@ -164,7 +168,7 @@ function fixture() {
     },
     send() {},
   })
-  return { network, lines, calls, entities, socket }
+  return { network, lines, calls, entities, socket, serverLines: () => (server.lines = []) }
 }
 
 // Packet payloads must never be coerced, serialized, inspected or enumerated for a refusal log.
@@ -328,8 +332,9 @@ test('handler logging: all refusal reasons are independently logged once per soc
   assert.equal(f.lines.length, 8)
 })
 
-test('handler logging: caught handler failures use briefError and logOnce', async () => {
+test('handler logging: caught handler failures use briefError, and logOnce or the once-per-run rule of the user rows', async () => {
   const f = fixture()
+  const serverLines = f.serverLines()
   const s = f.socket()
   f.entities.set(s.id, s.player)
   const fail = async () => {
@@ -340,20 +345,21 @@ test('handler logging: caught handler failures use briefError and logOnce', asyn
     await f.network.onSpawnModified(s, 'set')
   }
   // the user's row: a name from the player's own change, a name from the command, a rank from the admin code and a
-  // rank from an admin, each a write that fails. Said once for the run of failures of that user (userRows.js); the
-  // spawn is the other line
+  // rank from an admin, each a write that fails. A plain line of the server's log, said once for the run of failures
+  // of that user (userRows.js limits it, nothing else does); the spawn goes through logOnce
   await fail()
   await f.network.userRows().idle()
-  assert.deepEqual(f.lines, [
+  assert.deepEqual(serverLines, [
     '[network] name of user "socket" not stored (kept in memory; written again with that user\'s next change or at the final save): error',
-    '[network] error saving spawn: error',
   ])
+  assert.deepEqual(f.lines, ['[network] error saving spawn: error'])
   assert.deepEqual(
     f.calls.map(call => call.key),
-    ['user-row', 'config:spawn']
+    ['config:spawn']
   )
   await fail()
   await f.network.userRows().idle()
-  assert.equal(f.lines.length, 2)
+  assert.equal(serverLines.length, 1)
+  assert.equal(f.lines.length, 1)
   assert.deepEqual(f.network.userRows().intended('socket'), { name: 'new-name', rank: Ranks.BUILDER })
 })

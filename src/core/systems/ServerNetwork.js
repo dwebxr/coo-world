@@ -57,7 +57,7 @@ import { parseTipAmount, tipAmountReason } from '../extras/evmTokens'
 import { formatUnits, isTxHash } from '../extras/evmAbi'
 import { createSolanaRpc } from '../../server/solanaRpc'
 import { createTokenBalanceService } from '../../server/tokenBalance'
-import { grantTokenRank, rankStored, revokeTokenRank } from '../../server/rankGrants'
+import { endGrantByDecision, grantTokenRank, revokeTokenRank } from '../../server/rankGrants'
 import { createUserRows } from '../../server/userRows'
 import { adminMode, adminWaitScale, createAdminGate } from '../../server/adminCode'
 import { createKickList, readKickEnv } from '../../server/kickList'
@@ -910,33 +910,21 @@ export class ServerNetwork extends System {
       update: (userId, values) => this.db('users').where('id', userId).update(values),
       expired: () => this.saveExpired(),
       held: userId => !!this.joining?.has(userId),
-      onFailure: ({ userId, columns, error, completion }) => {
-        const user = previewValue(userId, 64)
-        // (a line of its own each time userRows.js says one: logOnce is only where the handlers' failures go)
-        this.logOnce(
-          {},
-          'user-row',
-          completion
-            ? `[network] after storing ${columns.join(', ')} of user ${user}: ${briefError(error)}`
-            : `[network] ${columns.join(', ')} of user ${user} not stored (kept in memory; written again with that user's next change or at the final save): ${briefError(error)}`
+      // (userRows.js says it once per run of failures of a user: nothing else limits this line)
+      onFailure: ({ userId, columns, error }) => {
+        console.error(
+          `[network] ${columns.join(', ')} of user ${previewValue(userId, 64)} not stored (kept in memory; written again with that user's next change or at the final save): ${briefError(error)}`
         )
       },
     }))
   }
 
-  // A rank an admin (or the admin code) decided for a player: the user's row is to hold it. Once the database has it
-  // and the session still has that rank, a token grant of the session is over (rankGrants.js rankStored). Until
-  // then, and after a write that failed, the session keeps its grant state. (The callback keeps the player object
-  // alive until a write that carries this rank lands: for a rank the database keeps refusing, until the process ends.)
+  // A rank an admin (or the admin code) decided for a player, in the turn in which the player was given it. It is
+  // the user's rank for this server from here on, so a token grant of the session is over now (rankGrants.js), and
+  // the user's row is to hold it (userRows.js). Whether and when the write lands changes nothing in the session.
   storeRank(player, rank) {
-    this.userRows().intend(player.data.id, { rank }, written =>
-      rankStored({
-        player,
-        rank: written.rank,
-        wallets: solanaGating,
-        isCurrent: () => this.sockets.get(player.data.id)?.player === player,
-      })
-    )
+    endGrantByDecision({ player, wallets: solanaGating })
+    this.userRows().intend(player.data.id, { rank })
   }
 
   // The world's admin mode and the brake on `/admin` codes (adminCode.js), made from the environment on first use:
@@ -1619,18 +1607,13 @@ export class ServerNetwork extends System {
     }
     const revision = player.rankRevision
     let result = { known: false }
-    // not while a rank an admin decided for this user is being written: the grant waits for what the database takes
-    const rankUnsettled = () => this.userRows().unsettled(player.data.id, 'rank')
-    if (!rankUnsettled()) {
-      try {
-        result = await this.tokenBalanceService.get(walletAddress, { fresh: true })
-      } catch {
-        // The production service resolves unknown; an injected service may reject.
-      }
+    try {
+      result = await this.tokenBalanceService.get(walletAddress, { fresh: true })
+    } catch {
+      // The production service resolves unknown; an injected service may reject.
     }
     if (!this.current(socket, generation, player) || player.rankRevision !== revision) return
     if (!(player.data.rank < Ranks.BUILDER)) return
-    if (rankUnsettled()) result = { known: false }
     let body
     if (result.known && result.balance >= required) {
       if (!grantTokenRank({ socket, player, walletAddress, wallets: solanaGating })) return

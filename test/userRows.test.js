@@ -128,67 +128,14 @@ test('a column that is stored is not written again with a later change of anothe
   assert.deepEqual(f.rows_.intended('u'), { rank: 1, name: 'Ada' })
 })
 
-test('a completion runs once, for a statement that carries its change, with what the database then holds', async () => {
-  const f = fixture({ hold: true })
-  const calls = []
-  f.rows_.intend('u', { name: 'first' })
-  // decided while the statement for the name is under way: that statement does not carry the rank
-  f.rows_.intend('u', { rank: 1 }, written => calls.push(['a', written]))
-  f.statements[0].resolve()
-  await turn()
-  assert.deepEqual(calls, [], 'not for a statement that started before the change')
-  assert.deepEqual(f.written(), [{ name: 'first' }, { rank: 1 }])
-  // two more decisions while the rank is being written
-  f.rows_.intend('u', { rank: 0 }, written => calls.push(['b', written]))
-  f.rows_.intend('u', { rank: 2 }, written => calls.push(['c', written]))
-  f.statements[1].resolve()
-  await turn()
-  assert.deepEqual(calls, [['a', { rank: 1 }]], 'the later decisions wait for a statement that carries them')
-  assert.deepEqual(f.written().at(-1), { rank: 2 })
-  f.statements[2].resolve()
-  await f.rows_.idle()
-  // the decision of rank 0 was never written by itself: it is told what the database holds, the later rank
-  assert.deepEqual(calls, [
-    ['a', { rank: 1 }],
-    ['b', { rank: 2 }],
-    ['c', { rank: 2 }],
-  ])
-  assert.equal(f.rows_.size, 0)
-})
-
-test('a completion of a change of two columns waits for both, and one that throws stops nothing', async () => {
-  const error = new Error('completion bug')
-  const calls = []
-  const f = fixture({ decide: (_userId, values) => ('avatar' in values ? new Error('refused') : null) })
-  f.rows_.intend('u', { name: 'Ada', avatar: 'x' }, written => calls.push(written))
-  await f.rows_.idle()
-  assert.deepEqual(calls, [], 'the avatar is not stored')
-  f.decide = () => null
-  f.rows_.intend('u', { rank: 1 }, () => {
-    throw error
-  })
-  await f.rows_.idle()
-  assert.deepEqual(calls, [{ name: 'Ada', avatar: 'x' }])
-  assert.deepEqual(f.failures.at(-1), { userId: 'u', columns: ['rank'], error, completion: true })
-  assert.equal(f.rows_.unstored(), 0, 'the values are stored all the same')
-  assert.equal(f.rows_.size, 0)
-  // and the writer is not stuck
-  f.rows_.intend('u', { rank: 2 })
-  await f.rows_.idle()
-  assert.deepEqual(f.rows.get('u'), { name: 'Ada', avatar: 'x', rank: 2 })
-})
-
 test('a failed statement: said once, kept, not tried again by itself, written with the next change', async () => {
   const busy = new Error('SQLITE_BUSY')
   const f = fixture({ decide: () => busy })
-  let stored = 0
-  f.rows_.intend('u', { rank: 1 }, () => stored++)
+  f.rows_.intend('u', { rank: 1 })
   await f.rows_.idle()
   assert.deepEqual(f.failures, [{ userId: 'u', columns: ['rank'], error: busy }])
-  assert.equal(stored, 0)
   assert.deepEqual(f.rows_.intended('u'), { rank: 1 }, 'a join still gets it')
   assert.equal(f.rows_.unstored(), 1)
-  assert.equal(f.rows_.unsettled('u', 'rank'), 0, 'nothing is under way')
   for (let i = 0; i < 5; i++) await turn()
   assert.equal(f.statements.length, 1, 'no retry by itself')
   // the next change of that user carries what failed; it fails too and is not said again
@@ -196,13 +143,13 @@ test('a failed statement: said once, kept, not tried again by itself, written wi
   await f.rows_.idle()
   assert.deepEqual(f.written().slice(1), [{ rank: 1, name: 'Ada' }, { rank: 1 }, { name: 'Ada' }])
   assert.equal(f.failures.length, 1, 'one line for the run of failures')
-  // the database is back: the next change stores everything, and the completion hears of it
+  // the database is back: the next change stores everything
   f.decide = () => null
   f.rows_.intend('u', { name: 'Bea' })
   await f.rows_.idle()
   assert.deepEqual(f.written().at(-1), { rank: 1, name: 'Bea' })
   assert.deepEqual(f.rows.get('u'), { rank: 1, name: 'Bea' })
-  assert.equal(stored, 1)
+  assert.equal(f.rows_.unstored(), 0)
   assert.equal(f.rows_.size, 0)
   // a new run of failures is said again
   f.decide = () => busy
@@ -239,15 +186,11 @@ test('a value the database refuses (too long for its column) does not hold back 
   f.rows_.intend('u', { avatar })
   await f.rows_.idle()
   assert.equal(f.failures.length, 1)
-  let stored = null
-  f.rows_.intend('u', { rank: 2 }, written => (stored = written))
-  assert.equal(f.rows_.unsettled('u', 'rank'), 1)
+  f.rows_.intend('u', { rank: 2 })
   await f.rows_.idle()
   // together (refused), then each on its own
   assert.deepEqual(f.written().slice(1), [{ avatar, rank: 2 }, { avatar }, { rank: 2 }])
   assert.deepEqual(f.rows.get('u'), { rank: 2 }, 'the rank is stored')
-  assert.deepEqual(stored, { rank: 2 }, 'and its completion ran')
-  assert.equal(f.rows_.unsettled('u', 'rank'), 0)
   assert.deepEqual(f.rows_.intended('u'), { avatar, rank: 2 }, 'the avatar stays decided, for joins')
   assert.equal(f.rows_.unstored(), 1)
   assert.equal(f.failures.length, 1, 'still the same run of failures')
@@ -279,25 +222,6 @@ test('a failure of several columns names the ones that failed on their own, with
   await g.rows_.idle()
   assert.deepEqual(g.failures, [])
   assert.equal(g.rows_.size, 0)
-})
-
-test('unsettled: 1 while a statement carrying the column is under way or about to start, 0 otherwise', async () => {
-  const f = fixture({ hold: true })
-  assert.equal(f.rows_.unsettled('u', 'rank'), 0)
-  f.rows_.intend('u', { name: 'Ada' })
-  assert.equal(f.rows_.unsettled('u', 'rank'), 0, 'a statement for another column')
-  assert.equal(f.rows_.unsettled('u', 'name'), 1)
-  f.rows_.intend('u', { rank: 1 })
-  assert.equal(f.rows_.unsettled('u', 'rank'), 1, 'about to start, behind the name')
-  assert.equal(f.rows_.unsettled('v', 'rank'), 0, 'another user')
-  f.statements[0].resolve()
-  await turn()
-  assert.equal(f.rows_.unsettled('u', 'name'), 0)
-  assert.equal(f.rows_.unsettled('u', 'rank'), 1, 'under way')
-  f.statements[1].reject(new Error('SQLITE_BUSY'))
-  await f.rows_.idle()
-  assert.equal(f.rows_.unsettled('u', 'rank'), 0, 'failed: nothing under way')
-  assert.equal(f.rows_.unstored(), 1)
 })
 
 test('an entry stays while its user is joining, stored or not, and goes when the join ends', async () => {

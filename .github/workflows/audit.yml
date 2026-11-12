@@ -3,7 +3,7 @@ name: Audit
 # The advisories npm reports for the packages of a production install (scripts/audit.mjs): a high or critical one
 # fails unless audit-allowlist.json names it with a date that has not passed; lower severities are listed. Weekly,
 # because an advisory is published without anything changing here, and on a pull request that changes what is
-# installed, the allowlist or the script. It does not look at dev dependencies.
+# installed, the allowlist, the script or this workflow. It does not look at dev dependencies.
 on:
   pull_request:
     paths:
@@ -11,6 +11,7 @@ on:
       - 'package-lock.json'
       - 'audit-allowlist.json'
       - 'scripts/audit.mjs'
+      - '.github/workflows/audit.yml'
   schedule:
     - cron: '41 5 * * 1'
   workflow_dispatch:

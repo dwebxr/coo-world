@@ -17,18 +17,27 @@
 //   "What remains"). What the server does with it is printed in a GAP line, which passes or fails nothing; what is a
 //   guarantee about app lines today is asserted in [app-chat].
 // - Secrets: the server runs with a distinct sentinel value in every variable test/lib/envTable.mjs classes as a
-//   secret (but DB_URI, which has to stay `local`). No sentinel is in what a visitor can get: the page, /env.js,
-//   /status, /health, a visitor's and an admin's join snapshot, any packet any connection of the run received, and
-//   the server's log; also not inside the tokens found there, which are decoded (JWT segments, base64, percent
-//   escapes) and searched too. A second server with the wallet features on is searched the same way.
+//   secret (but DB_URI, which has to stay `local`). No sentinel is in what the run gets from it: the page, /env.js,
+//   /status, /health; the error answers of a page that does not exist, an asset that does not exist, /api/upload
+//   and /api/upload-check (no token, a forged one, a malformed request) and /csp-report (a report, and three it
+//   refuses), and a plain GET of /ws; a visitor's and an admin's join snapshot, any packet any connection of the
+//   run received, the close frame (code and reason) of every connection the run made, a refused one included; and
+//   the server's log. Bodies and headers alike, and also what the tokens found there decode to, two levels deep
+//   (JWT segments, base64 and base64url, percent escapes, JSON escapes, JSON parsed and its strings read). The
+//   search is tried on itself first: a planted sentinel in each of those encodings is found. A second server with
+//   the wallet features on is searched the same way.
 //
 // What it does not ask (the tables name the tests that do): uploads and response headers (gate-extras.mjs,
 // test/uploadRoutes.test.js), the relay packets (fullstack.mjs A8), /status (A8b), the wait after wrong admin codes
 // and the right code afterwards (A14b), who a kick keeps out (A14c), an outdated client (A15), the rules of session
 // tokens (test/sessionTokens.test.js), and the wallet flows themselves (token-gate.mjs, evm-wallet.mjs,
 // evm-tips-gate.mjs). And what it cannot: it sends the payloads written here. A payload nobody thought of is not
-// tried, and a secret that leaves the server some other way (an error page of a route not fetched here, a value
-// encoded in a way the decoder does not undo) is not seen.
+// tried, and a secret that leaves the server some other way (a route or an answer not fetched here, an encoding
+// the search does not undo) is not seen. The page's built scripts (`/index-*.js`, the source maps) are not
+// searched: they are built before this suite sets its sentinels, so they cannot hold them, and fetching them would
+// show nothing. What a build writes into them is tested by test/buildDefines.test.js. Four sentinels are in
+// settings the run never uses (SECRETS below, `live: null`): for them the search shows only that an unused setting
+// is not dumped anywhere it looks, and nothing about the code paths that use them.
 import crypto from 'node:crypto'
 import http from 'node:http'
 import path from 'node:path'
@@ -114,25 +123,28 @@ const SECRETS = {
     value: 'p14-sentinel-livekit-secret-58e0b3d1a94c7f26',
     live: 'the voice token of a join verifies under it',
   },
+  // The four with `live: null` are settings this run never uses: no request reaches the mock RPC (the result line
+  // says how many did), and the store is a folder. For them the search shows only that an unused setting is not
+  // dumped anywhere it looks, and nothing about the code paths that use them (no mock service stands in for them).
   SOLANA_RPC_URL: {
     value: `${MOCK}/solana/p14-sentinel-solana-rpc-2d9f`,
     needles: ['p14-sentinel-solana-rpc-2d9f'],
-    live: null, // read when a verified wallet's balance is asked for (token-gate.mjs); not in this run
+    live: null, // read when a verified wallet's balance is asked for (token-gate.mjs); nothing here asks
   },
   PUBLIC_RPC_URL: {
     value: `${MOCK}/solana/p14-sentinel-public-rpc-7e31`,
     needles: ['p14-sentinel-public-rpc-7e31'],
-    live: null, // the fallback of SOLANA_RPC_URL, which is set
+    live: null, // the fallback of SOLANA_RPC_URL, which is set, so never read
   },
   EVM_RPC_URL_137: {
     value: `${MOCK}/evm/p14-sentinel-evm-rpc-a04b`,
     needles: ['p14-sentinel-evm-rpc-a04b'],
-    live: null, // read for contract wallets, holdings and tips (evm-tips-gate.mjs); not in this run
+    live: null, // asked for contract wallets, holdings and tips (evm-tips-gate.mjs); nothing here asks
   },
   ASSETS_S3_URI: {
     value: 's3://p14-sentinel-s3-key-55c2:p14-sentinel-s3-secret-9e7a@bucket.invalid/world',
     needles: ['p14-sentinel-s3-key-55c2', 'p14-sentinel-s3-secret-9e7a'],
-    live: null, // ASSETS=local: the store is a folder, and this variable is not used
+    live: null, // ASSETS=local: the store is a folder, and this variable is not read
   },
 }
 // secrets of the table that get no sentinel, and why
@@ -199,9 +211,33 @@ const printable = text => {
   }
   return good / text.length > 0.9
 }
+// JSON's escapes undone wherever they are (a JSON body, a JSON string inside a packet's string, a log line)
+const JSON_ESCAPES = { b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' }
+const unescapeJson = text =>
+  text.replace(/\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))/g, (_, hex, char) =>
+    hex ? String.fromCharCode(parseInt(hex, 16)) : (JSON_ESCAPES[char] ?? char)
+  )
+// What of a text parses as JSON: the text itself, and on each line what follows its first { or [ (a body, a chat
+// line or a log line with words before its object) -> every string in it, keys included
+function jsonStrings(text) {
+  const out = []
+  const parse = candidate => {
+    try {
+      strings(JSON.parse(candidate), out)
+    } catch {
+      // not JSON
+    }
+  }
+  if (/^\s*[[{"]/.test(text)) parse(text)
+  for (const line of text.split('\n')) {
+    const at = line.search(/[[{]/)
+    if (at >= 0 && line.slice(at) !== text) parse(line.slice(at))
+  }
+  return out
+}
 // What a text says once its tokens are read: the first two segments of anything shaped like a JWT, every run of
-// base64 or base64url characters (at each of the four alignments, since a run can begin inside a longer word), and
-// percent escapes. Only decodings that are text are kept.
+// base64 or base64url characters (at each of the four alignments, since a run can begin inside a longer word),
+// percent escapes, JSON escapes, and the strings of what parses as JSON. Only decodings that are text are kept.
 function decodings(text) {
   const out = []
   for (const match of text.matchAll(/[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g)) {
@@ -219,6 +255,12 @@ function decodings(text) {
   if (/%[0-9A-Fa-f]{2}/.test(text)) {
     out.push(text.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16))))
   }
+  if (/\\[u"\\/bfnrt]/.test(text)) {
+    const unescaped = unescapeJson(text)
+    if (unescaped !== text) out.push(unescaped)
+  }
+  const parsed = jsonStrings(text)
+  if (parsed.length) out.push(parsed.join('\n'))
   return out
 }
 // a text and what its tokens decode to, two levels deep (a token inside a token)
@@ -304,15 +346,55 @@ const appEntity = (id, blueprintId, extra = {}) => ({
 })
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 
-// A wire client that also keeps the bytes of every packet it receives. The listener is put on the socket in the
-// turn the socket is made (WireClient.open has assigned it by its first wait), so the first packet cannot come
-// before it.
+// `promise`, or a rejection naming `what` once `ms` have passed
+const within = (promise, ms, what) =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${what}: not within ${ms} ms`)), ms)
+    promise.then(
+      value => (clearTimeout(timer), resolve(value)),
+      err => (clearTimeout(timer), reject(err))
+    )
+  })
+
+// A wire client that also keeps the bytes of every packet it receives and the close frame it got (code and
+// reason). The listeners are put on the socket in the turn the socket is made (WireClient.open has assigned it by
+// its first wait), so the first packet cannot come before them.
+// Opening is bounded here: WireClient.open waits for `open` alone, which never comes when the socket errors or is
+// closed first. Here an error or a close before `open` rejects, and so does a socket still not open after the
+// wait, which is then closed. (lib/ws.mjs is left as it is: the other suites use it.)
 class RawClient extends WireClient {
   open(name, options) {
     this.raw = []
+    this.closeFrame = null
     const opening = super.open(name, options)
-    this.ws.addEventListener('message', event => this.raw.push(Buffer.from(event.data)))
-    return opening
+    const ws = this.ws
+    ws.addEventListener('message', event => this.raw.push(Buffer.from(event.data)))
+    ws.addEventListener('close', event => (this.closeFrame = { code: event.code, reason: event.reason }))
+    const ms = wait(10000)
+    return new Promise((resolve, reject) => {
+      let settled = false
+      const fail = why => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        reject(new Error(`[${this.label}] ${why} before the socket was open`))
+      }
+      const timer = setTimeout(() => {
+        fail(`${ms} ms passed`)
+        ws.close()
+      }, ms)
+      ws.addEventListener('error', () => fail('an error'))
+      ws.addEventListener('close', event => fail(`a close (${event.code})`))
+      opening.then(
+        value => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          resolve(value)
+        },
+        err => fail(`an error (${err?.message})`)
+      )
+    })
   }
 }
 
@@ -359,11 +441,20 @@ function world(server) {
       interval: 50,
       message: `the log line "${text}"`,
     })
+  // closed, within a wait
   const close = async client => {
     client.close()
-    await client.closed
+    await within(client.closed, wait(10000), `[${client.label}] the close`)
   }
-  return { port, clients, connect, barrier, send, fresh, logFrom, logged, close }
+  // a connection the server refuses after the upgrade (an outdated protocol version): open, told why, closed
+  const refused = async (label, options) => {
+    const client = new RawClient(port, label, options)
+    clients.push(client)
+    await client.open(label)
+    await within(client.closed, wait(10000), `[${label}] the server's close`)
+    return client
+  }
+  return { port, clients, connect, barrier, send, fresh, logFrom, logged, close, refused }
 }
 
 const entityOf = (snapshot, id) => snapshot.entities.find(entity => entity.id === id)
@@ -385,6 +476,38 @@ const NONE = 'no positive control'
 let main
 let second
 try {
+  // ---------- the search, tried on itself ----------
+
+  await step(
+    'the search finds a planted sentinel in each encoding it reads, and nothing where there is none',
+    async () => {
+      const needle = SECRETS.ADMIN_CODE.value
+      const hexOf = (c, width) => c.charCodeAt(0).toString(16).padStart(width, '0')
+      const percent = value => [...value].map(c => `%${hexOf(c, 2)}`).join('')
+      const jsonEscaped = value => [...value].map(c => `\\u${hexOf(c, 4)}`).join('')
+      const planted = {
+        'as it is': `before ${needle} after`,
+        'percent escapes': `/path?k=${percent(needle)}&x=1`,
+        base64: `x ${Buffer.from(`{"k":"${needle}"}`).toString('base64')} y`,
+        base64url: `x ${b64u(`{"k":"${needle}"}`)} y`,
+        'base64 run on from a word': `abc${b64u(`{"k":"${needle}"}`)}`,
+        'a JWT segment': signToken({ code: needle, iat: 1 }, 'p14-self-test-key'),
+        'a JSON escape': `{"k":"${jsonEscaped(needle)}"}`,
+        'a JSON escape in a line of a log': `[network] said {"k":"${jsonEscaped(needle)}"} to nobody (further ones…)`,
+        'JSON in a string of JSON': JSON.stringify({ outer: `{"k":"${jsonEscaped(needle)}"}` }),
+        'base64 in JSON': JSON.stringify({ blob: Buffer.from(needle).toString('base64') }),
+        'base64 of base64': `x.${b64u(b64u(needle))}`,
+      }
+      for (const [label, text] of Object.entries(planted)) {
+        if (label !== 'as it is') ok(!text.includes(SENTINEL), `${label}: the sentinel is there as it is`)
+        ok(search('self-test', text).length > 0, `${label}: not found`)
+      }
+      const nothing = `nothing here ${b64u('nor here')} %41%42 {"k":"\\u0041"} ${signToken({ k: 'x' }, 'key')}`
+      eq(search('self-test', nothing).length, 0, 'found where there is nothing')
+      return `found in: ${Object.keys(planted).join('; ')}`
+    }
+  )
+
   // ====================================================================================================
   // the first server: the harness's world (no wallet features), every secret set
   // ====================================================================================================
@@ -1293,23 +1416,80 @@ try {
 
   // ---------- secrets ----------
 
-  const fetchText = async url => {
-    const response = await fetch(url, { signal: AbortSignal.timeout(wait(10000)) })
+  const fetchText = async (url, init = {}) => {
+    const response = await fetch(url, { ...init, signal: AbortSignal.timeout(wait(10000)) })
     const headers = [...response.headers].map(([key, value]) => `${key}: ${value}`).join('\n')
     return { status: response.status, body: await response.text(), headers }
   }
   // what /env.js sets `globalThis.env` to (its last assignment; the one before it is the empty default)
   const servedEnv = text => JSON.parse([...text.matchAll(/globalThis\.env = (\{.*\})\s*$/gm)].at(-1)[1])
-  // the surfaces of one server -> { findings, texts }
-  const surfaces = async (origin, server, connections, joins) => {
+  // The answers anyone can get from a route that refuses: [label, path, request, the status it gives]. `session`
+  // is a connection of the run with a builder's rank or above, whose token makes a request that is malformed in
+  // what it sends, not in who sends it.
+  const refusals = (origin, session) => {
+    const forged = signToken(sessionPayload(session.id), 'not-the-secret-of-this-server')
+    const bearer = token => ({ authorization: `Bearer ${token}` })
+    const multipart = { 'content-type': 'multipart/form-data; boundary=p14' }
+    const csp = { 'content-type': 'application/csp-report' }
+    const post = (headers, body) => ({ method: 'POST', headers, body })
+    const report = JSON.stringify({
+      'csp-report': { 'document-uri': `${origin}/`, 'violated-directive': 'script-src', 'blocked-uri': 'inline' },
+    })
+    return [
+      ['a page that does not exist', '/p14-no-such-page', {}, 404],
+      ['an asset that does not exist', '/assets/p14-no-such-file.glb', {}, 404],
+      ['/ws without an upgrade', '/ws?v=2', {}, 404],
+      ['/api/upload with no token', '/api/upload', post(multipart, 'x'), 401],
+      ['/api/upload with a forged token', '/api/upload', post({ ...multipart, ...bearer(forged) }, 'x'), 401],
+      [
+        '/api/upload with a body that is not multipart',
+        '/api/upload',
+        post({ ...multipart, ...bearer(session.authToken) }, 'not multipart'),
+        400,
+      ],
+      [
+        '/api/upload of another type',
+        '/api/upload',
+        post({ 'content-type': 'application/json', ...bearer(session.authToken) }, '{}'),
+        415,
+      ],
+      ['/api/upload-check with no token', '/api/upload-check?filename=p14.glb', {}, 401],
+      ['/api/upload-check with a forged token', '/api/upload-check?filename=p14.glb', { headers: bearer(forged) }, 401],
+      [
+        '/api/upload-check of a malformed name',
+        '/api/upload-check?filename=..%2F..%2Fp14',
+        { headers: bearer(session.authToken) },
+        400,
+      ],
+      ['/csp-report with a report', '/csp-report', post(csp, report), 204],
+      ['/csp-report with a body that is not JSON', '/csp-report', post(csp, 'not json'), 400],
+      ['/csp-report of another type', '/csp-report', post({ 'content-type': 'text/html' }, '<p>p14</p>'), 415],
+      ['/csp-report too long', '/csp-report', post(csp, 'x'.repeat(9000)), 413],
+    ]
+  }
+  // the surfaces of one server -> { findings, texts, counts }
+  const surfaces = async (origin, server, w, joins, session) => {
     const findings = []
     const texts = {}
+    const statuses = []
     for (const route of ['/', '/env.js', '/status', '/health']) {
       const { status, body, headers } = await fetchText(`${origin}${route}`)
       eq(status, 200, route)
       texts[route] = body
       findings.push(...search(route, `${headers}\n${body}`))
     }
+    for (const [label, route, init, expected] of refusals(origin, session)) {
+      const { status, body, headers } = await fetchText(`${origin}${route}`, init)
+      eq(status, expected, label)
+      texts[label] = body
+      statuses.push(`${route.split('?')[0]} ${status}`)
+      findings.push(...search(`the answer of ${label}`, `${headers}\n${body}`))
+    }
+    // a connection the server refuses after the upgrade: its kick packet is searched with the others below, and
+    // its close frame (code and reason) with every other close frame of the run
+    const outdated = await w.refused('outdated', { version: 1 })
+    eq(outdated.closeFrame?.code, 1008, 'an outdated client: the close code')
+    eq(outdated.closeFrame?.reason, 'outdated', 'and the reason (the control that a reason is read)')
     for (const [label, client] of Object.entries(joins)) {
       // the join snapshot: its bytes as they came, and every string of what they decode to
       eq(client.raw.length > 0 && client.inbox[0]?.method, 'onSnapshot', `${label}: the first packet is the snapshot`)
@@ -1318,20 +1498,35 @@ try {
       findings.push(...search(label, texts[label]))
     }
     let packets = 0
-    for (const client of connections) {
+    let closes = 0
+    for (const client of w.clients) {
       for (const raw of client.raw)
         findings.push(...search(`a packet ${client.label} received`, raw.toString('latin1')))
       for (const message of client.inbox)
         findings.push(...search(`a packet ${client.label} received`, strings(message.data).join('\n')))
       packets += client.raw.length
+      if (!client.closeFrame) continue
+      findings.push(
+        ...search(`the close frame of ${client.label}`, `${client.closeFrame.code} ${client.closeFrame.reason}`)
+      )
+      closes++
     }
     findings.push(...search('the server log', server.out))
-    return { findings: [...new Set(findings)], texts, packets }
+    const counts = `${packets} packets, ${closes} close frames, ${statuses.length} refusals of routes (${statuses.join(', ')}) and ${server.out.length} bytes of log searched`
+    return { findings: [...new Set(findings)], texts, counts }
   }
+  // the settings of SECRETS the run never uses, as the result lines say it
+  const unused = () =>
+    `${Object.entries(SECRETS)
+      .filter(([, secret]) => !secret.live)
+      .map(([name]) => name)
+      .join(
+        ', '
+      )} are settings this run never uses (${mock.rpc.length} requests reached the mock RPC; ASSETS=local): for them the search shows only that they are not dumped anywhere it looks, and nothing about the code paths that use them`
 
   await run(
     'secrets',
-    'no secret of the server is in the page, /env.js, /status, /health, a join snapshot, a packet or the log',
+    'no secret of the server is in a page, a refusal of a route, a join snapshot, a packet, a close frame or the log',
     async () => {
       // every name the table calls a secret is set to a sentinel here, or said not to be
       const secrets = envNamesOf('secret').map(name => (name.endsWith('*') ? name.replace('*', '137') : name))
@@ -1343,10 +1538,16 @@ try {
 
       const visitorJoin = await connect('visitor-join')
       await close(visitorJoin)
-      const { findings, texts, packets } = await surfaces(base, main, w.clients, {
-        "a visitor's join snapshot": visitorJoin,
-        "an admin's join snapshot": adminJoin,
-      })
+      const { findings, texts, counts } = await surfaces(
+        base,
+        main,
+        w,
+        {
+          "a visitor's join snapshot": visitorJoin,
+          "an admin's join snapshot": adminJoin,
+        },
+        builder
+      )
       eq(findings.length, 0, findings.join('; '))
 
       // the controls of the search: it finds what is there
@@ -1360,13 +1561,7 @@ try {
           `${label}: and is found by decoding the voice token`
         )
       }
-      eq(search('control', `x ${b64u(`{"k":"${SECRETS.ADMIN_CODE.value}"}`)} y`).length > 0, true, 'base64 is decoded')
-      eq(search('control', `x.${b64u(b64u(SECRETS.AI_API_KEY.value))}`).length > 0, true, 'two levels deep')
-      eq(
-        search('control', encodeURIComponent(SECRETS.ASSETS_S3_URI.value)).length > 0,
-        true,
-        'percent escapes are decoded'
-      )
+      // (the decodings themselves are tried on planted sentinels before the servers start)
 
       // /env.js is the served names that are set, and nothing else
       const served = servedEnv(texts['/env.js'])
@@ -1400,10 +1595,7 @@ try {
         `AI_API_KEY: ${SECRETS.AI_API_KEY.live}`
       )
       // (ADMIN_CODE made the admin, and JWT_SECRET_PREVIOUS was accepted in [identity])
-      const unshown = Object.entries(SECRETS)
-        .filter(([, secret]) => !secret.live)
-        .map(([name]) => name)
-      return `${packets} packets and ${main.out.length} bytes of log searched; set but not used in this run, so only shown absent: ${unshown.join(', ')}; not set: ${Object.keys(NOT_PLANTED).join(', ')}`
+      return `${counts}. ${unused()}. Not set: ${Object.keys(NOT_PLANTED).join(', ')}. The page's built scripts are not searched (built before the sentinels were set: test/buildDefines.test.js)`
     }
   )
 
@@ -1459,10 +1651,16 @@ try {
         return again
       })()
       const visitorJoin = await w2.connect('visitor-join')
-      const { findings, texts, packets } = await surfaces(origin, second, w2.clients, {
-        "a visitor's join snapshot": visitorJoin,
-        "an admin's join snapshot": adminJoin2,
-      })
+      const { findings, texts, counts } = await surfaces(
+        origin,
+        second,
+        w2,
+        {
+          "a visitor's join snapshot": visitorJoin,
+          "an admin's join snapshot": adminJoin2,
+        },
+        adminJoin2
+      )
       eq(findings.length, 0, findings.join('; '))
       const served = servedEnv(texts['/env.js'])
       eq(served.PUBLIC_TOKEN_MINT, SOL_MINT, 'the mint is public')
@@ -1473,7 +1671,7 @@ try {
         'only served names'
       )
       ok(second.out.includes('[envs] player.getEvmHolding() asks only about'), 'EVM is on in this world')
-      return `${packets} packets and ${second.out.length} bytes of log searched (${mock.rpc.length} requests reached the mock RPC)`
+      return `${counts}. ${unused()}`
     }
   )
 

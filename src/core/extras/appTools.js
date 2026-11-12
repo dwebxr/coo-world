@@ -82,10 +82,13 @@ export async function exportApp(blueprint, resolveFile) {
 // was taken as it came: a `size` that was negative, not a number or longer than the file gave assets cut from the
 // wrong bytes, each one possibly a copy of the whole file, and a header without a blueprint or with assets that are
 // not a list failed later, somewhere else. Now a file whose header is not of that shape, or whose assets do not lie
-// one after another within the file, is refused with a reason. What the blueprint says is not looked at here: it
-// goes through the blueprint policy where it is used (ClientBuilder.addApp, the server's collections).
+// one after another within the file, is refused with a reason (an error with the code INVALID_HYP; the server leaves
+// such a file out of its collection, see collections.js). What the blueprint says is not looked at here: it goes
+// through the blueprint policy where it is used (ClientBuilder.addApp, the server's collections).
+export const INVALID_HYP = 'INVALID_HYP'
+
 export async function importApp(file) {
-  const invalid = why => new Error(`not a valid .hyp file: ${why}`)
+  const invalid = why => Object.assign(new Error(`not a valid .hyp file: ${why}`), { code: INVALID_HYP })
   const isRecord = value => typeof value === 'object' && value !== null && !Array.isArray(value)
 
   // read as ArrayBuffer

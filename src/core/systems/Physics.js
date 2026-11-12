@@ -50,6 +50,8 @@ export class Physics extends System {
 
   async init() {
     const info = await loadPhysX()
+    // destroyed while PhysX was loading (nothing is allocated before this point): nothing is made for it
+    if (this.destroyed) return
     this.version = info.version
     this.allocator = info.allocator
     this.errorCb = info.errorCb
@@ -300,7 +302,8 @@ export class Physics extends System {
     this.handles.set(actor.ptr, handle)
     return {
       move: matrix => {
-        if (this.ignoreSetGlobalPose) {
+        // (after destroy the scratch transform is freed: a body kept in the scene is not moved any more)
+        if (this.ignoreSetGlobalPose || this.destroyed) {
           return
         }
         if (!matrixToPxTransform(matrix, this.transform)) return
@@ -318,6 +321,7 @@ export class Physics extends System {
         actor.setGlobalPose(this.transform)
       },
       snap: pose => {
+        if (this.destroyed) return
         actor.setGlobalPose(pose)
         pxToVec3(handle.interpolation.prev.position, pose.p)
         pxToQuat(handle.interpolation.prev.quaternion, pose.q)
@@ -425,7 +429,8 @@ export class Physics extends System {
   dispatchCallbacks(callbacks) {
     for (const { recipients, contacts } of callbacks) {
       for (const recipient of recipients) {
-        if (this.world.fatalError) return
+        // (a callback can destroy the world: what was queued after it is not dispatched)
+        if (this.world.fatalError || this.destroyed) return
         if (!recipient) continue
         const { registration, entity, run, fn, method, tag, playerId, isLocalPlayer } = recipient
         const { handle, ptr, destroyed } = registration
@@ -477,6 +482,7 @@ export class Physics extends System {
   }
 
   preFixedUpdate(willFixedUpdate) {
+    if (this.destroyed) return
     if (willFixedUpdate) {
       // if physics will step, clear active actors so we can repopulate.
       this.active.clear()
@@ -488,6 +494,9 @@ export class Physics extends System {
     const pending = this.pendingCallbacks
     this.pendingCallbacks = []
     this.dispatchCallbacks(pending)
+    // a callback can destroy the world (World.destroy releases this system, and the scene with it when nothing is
+    // left in it): after each dispatch the step ends there, before the next native call
+    if (this.destroyed) return
     this.checkHealth()
     if (this.world.fatalError) return
     let phase = 'simulate'
@@ -509,6 +518,7 @@ export class Physics extends System {
     if (this.world.fatalError) return
     this.processContactCallbacks()
     this.processTriggerCallbacks()
+    if (this.destroyed) return
     this.checkHealth()
     if (this.world.fatalError) return
     const activeActors = PHYSX.SupportFunctions.prototype.PxScene_getActiveActors(this.scene)
@@ -533,7 +543,7 @@ export class Physics extends System {
   }
 
   preUpdate(alpha) {
-    if (this.world.fatalError) return
+    if (this.world.fatalError || this.destroyed) return
     this.world.stage.clean()
     let failed
     for (const handle of this.active) {
@@ -711,10 +721,16 @@ export class Physics extends System {
   // Not released: the PxPhysics object. CreatePhysics hands every world of the process the same one (the foundation
   // in loadPhysX is made once), and the cooked meshes cached for the process (geometryToPxMesh) belong to it.
   //
-  // Afterwards the system answers without touching the heap: a step or a health check does nothing (callbacks that
-  // were queued are not dispatched), a query finds nothing, and addActor and getMaterial throw (a node that mounts
-  // in a destroyed world fails there, in JavaScript). A second call does nothing, and a system whose init() never
-  // ran, or stopped half way, releases what it has.
+  // Afterwards the system answers without touching the heap: a step, an interpolation (preUpdate) or a health check
+  // does nothing (callbacks that were queued are not dispatched), a query finds nothing, and addActor and
+  // getMaterial throw (a node that mounts in a destroyed world fails there, in JavaScript). When a contact or
+  // trigger callback destroys the world, the step under way ends after that callback, before its next native call.
+  // A second call does nothing, a system whose init() never ran, or stopped half way, releases what it has, and an
+  // init() that still waits for PhysX to load when this is called makes nothing.
+  //
+  // A handle that is still registered (the kept scene above) can do one thing afterwards: be destroyed, which takes
+  // its actor out of the kept scene (whoever holds the actor then releases it). Its move() and snap() do nothing:
+  // move() used the scratch transform freed here, and the body is no longer placed by its node.
   destroy() {
     if (this.destroyed) return
     this.destroyed = true

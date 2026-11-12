@@ -9,7 +9,7 @@ import * as THREE from 'three'
 import { transformSync } from 'esbuild'
 import { loadClient } from './lib/clientHarness.mjs'
 import { bundleRealPhysx, runRealPhysx } from './lib/realPhysx.mjs'
-import { importApp, exportApp } from '../src/core/extras/appTools.js'
+import { importApp, exportApp, INVALID_HYP } from '../src/core/extras/appTools.js'
 import { fetchDroppedLink, LINK_TOO_LARGE } from '../src/core/extras/droppedLink.js'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
@@ -693,6 +693,182 @@ probe(
   }
 )
 
+probe(
+  'physics: a body kept past destroy is not moved or snapped through its handle, and is still let go of',
+  async ({ B, PHYSX, world, root }) => {
+    const physics = new B.Physics(world)
+    await physics.init()
+    const real = { physics: world.physics, clean: world.stage.clean }
+    world.physics = physics
+    let cleans = 0
+    world.stage.clean = () => cleans++
+    const warn = console.warn
+    console.warn = () => {}
+    try {
+      const rb = new B.RigidBody({ type: 'dynamic' })
+      rb.add(new B.Collider({ type: 'box', width: 1, height: 1, depth: 1 }))
+      root.add(rb)
+      const handle = rb.actorHandle
+      const at = () => {
+        const p = rb.actor.getGlobalPose().p
+        return [p.x, p.y, p.z]
+      }
+      physics.destroy()
+      assert.ok(physics.scene, 'the scene is kept')
+      assert.equal(physics.transform, null, 'the scratch transform move() used is freed')
+      const traps = B.getPhysicsTrapCount()
+      // the node moves: its commit hands the move to the handle (this threw on the freed transform)
+      rb.position.x = 3
+      rb.clean()
+      handle.move(rb.matrixWorld)
+      assert.deepEqual(at(), [0, 0, 0], 'the body is not moved')
+      // (the local player snaps its capsule through the handle)
+      const pose = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
+      pose.p.y = 5
+      handle.snap(pose)
+      PHYSX.destroy(pose)
+      assert.deepEqual(at(), [0, 0, 0], 'nor snapped')
+      // a frame that still runs does not clean the stage, which commits moved nodes to their handles
+      physics.preUpdate(0.5)
+      assert.equal(cleans, 0)
+      // the handle's own teardown still works: the actor leaves the kept scene and is released by its node
+      root.remove(rb)
+      assert.equal(physics.handles.size, 0)
+      assert.equal(physics.scene.getNbActors(PHYSX.PxActorTypeFlagEnum.eRIGID_DYNAMIC), 0)
+      assert.equal(rb.actor, null)
+      assert.equal(B.getPhysicsTrapCount(), traps)
+    } finally {
+      console.warn = warn
+      world.physics = real.physics
+      world.stage.clean = real.clean
+    }
+  }
+)
+
+probe(
+  'physics: a world destroyed from a contact or trigger callback ends the step there, without a trap or a fatal error',
+  async ({ B, world, root, body }) => {
+    const traps = B.getPhysicsTrapCount()
+    const real = world.physics
+    world.fatalError = null
+    world.fatal = reason => (world.fatalError = reason)
+    const warn = console.warn
+    console.warn = () => {}
+    const fresh = async () => {
+      const physics = new B.Physics(world)
+      await physics.init()
+      world.physics = physics
+      return physics
+    }
+    try {
+      // a contact callback unmounts its bodies and destroys the world: the scene is released under the step, which
+      // went on to read the scene's active actors (a trap: memory access out of bounds)
+      let physics = await fresh()
+      let calls = 0
+      const unmountAndDestroy = () => {
+        calls++
+        root.remove(a)
+        root.remove(b)
+        physics.destroy()
+      }
+      const a = body('RigidBody', { type: 'static', onContactStart: unmountAndDestroy })
+      const b = body('RigidBody', { position: [1.5, 0, 0], onContactStart: unmountAndDestroy })
+      physics.postFixedUpdate(1 / 50)
+      physics.preUpdate(0.5)
+      physics.postTick()
+      assert.equal(calls, 1)
+      assert.equal(physics.scene, null, 'the scene was released')
+      assert.equal(world.fatalError, null)
+      // destroyed from a callback queued before the step (the end of a contact whose other body was let go of): the
+      // step went on to simulate the released scene, and that was reported as a fatal physics failure
+      physics = await fresh()
+      let ends = 0
+      const c = body('RigidBody', {
+        type: 'static',
+        onContactEnd: () => {
+          ends++
+          root.remove(c)
+          physics.destroy()
+        },
+      })
+      const d = body('RigidBody', { position: [1.5, 0, 0] })
+      physics.postFixedUpdate(1 / 50)
+      root.remove(d)
+      physics.postFixedUpdate(1 / 50)
+      assert.equal(ends, 1)
+      assert.equal(physics.scene, null)
+      assert.equal(physics.steps, 1, 'no step after the destroy')
+      assert.equal(world.fatalError, null, 'no fatal error')
+      // destroyed with its bodies still in it (the scene is kept): the other recipients of the step, here the other
+      // body of the contact and a trigger, are not called
+      physics = await fresh()
+      const seen = []
+      const destroyOnce = name => () => {
+        seen.push(name)
+        if (!physics.destroyed) physics.destroy()
+      }
+      const e = body('RigidBody', { type: 'static', onContactStart: destroyOnce('e') })
+      const f = body('RigidBody', { position: [1.5, 0, 0], onContactStart: destroyOnce('f') })
+      const g = body('RigidBody', {
+        type: 'static',
+        position: [1.5, 1.5, 0],
+        trigger: true,
+        onTriggerEnter: destroyOnce('trigger'),
+      })
+      physics.postFixedUpdate(1 / 50)
+      assert.equal(seen.length, 1, `one callback, then none (${seen})`)
+      assert.ok(physics.scene, 'the scene is kept')
+      for (const node of [e, f, g]) root.remove(node)
+      assert.equal(physics.handles.size, 0)
+      assert.equal(B.getPhysicsTrapCount(), traps, 'no native trap')
+      assert.equal(world.fatalError, null)
+    } finally {
+      console.warn = warn
+      world.physics = real
+    }
+  }
+)
+
+probe(
+  'physics: destroyed while its init waits for PhysX, it makes nothing, and a frame or a query on it is harmless',
+  async ({ B, world, liveChunks }) => {
+    const round = async () => {
+      const physics = new B.Physics(world)
+      const pending = physics.init()
+      physics.destroy()
+      await pending
+      physics.destroy()
+      return physics
+    }
+    await round()
+    const start = liveChunks()
+    let last
+    for (let i = 0; i < 5; i++) last = await round()
+    assert.equal(liveChunks() - start, 0, 'no scene was made for a destroyed system')
+    assert.equal(last.scene, null)
+    assert.equal(last.version, undefined, 'init stopped once PhysX had loaded')
+    const V = (x, y, z) => new B.THREE.Vector3(x, y, z)
+    last.needsProbe = true
+    last.preTick()
+    last.preFixedUpdate(true)
+    last.postFixedUpdate(1 / 50)
+    last.preUpdate(0.5)
+    last.postTick()
+    assert.equal(last.raycast(V(0, 5, 0), V(0, -1, 0), 10, 0xffffffff), null)
+    assert.equal(last.sweep(null, V(0, 5, 0), V(0, -1, 0), 10, 0xffffffff), null)
+    assert.deepEqual(last.overlapSphere(1, V(0, 0, 0), 0xffffffff), [])
+    assert.throws(() => last.getMaterial(0.1, 0.2, 0.3), /the world was destroyed/)
+    assert.throws(() => last.addActor({ ptr: 1 }, {}), /the world was destroyed/)
+    assert.equal(liveChunks() - start, 0)
+    // (control: an init that is not interrupted makes its scene)
+    const made = new B.Physics(world)
+    await made.init()
+    assert.ok(made.scene)
+    made.destroy()
+    assert.equal(liveChunks() - start, 0)
+  }
+)
+
 // a world as the node client makes one (createNodeClientWorld), with what a local player reads of it
 const nodeWorld = `
   const makeNodeWorld = async ({ preloader } = {}) => {
@@ -851,6 +1027,51 @@ probe(
     assert.equal(liveChunks() - start, 0)
   })
 )
+
+test('world: destroy goes on to every system after one throws, and throws the first failure at the end', () => {
+  const World = loadClient('core/World.js', 'World', { EventEmitter })
+  const world = Object.create(World.prototype)
+  const order = []
+  const first = new Error('settings broke')
+  class Settings {
+    destroy() {
+      order.push('settings')
+      throw first
+    }
+  }
+  const second = new Error('chat broke')
+  class Chat {
+    destroy() {
+      order.push('chat')
+      throw second
+    }
+  }
+  class Physics {
+    destroy() {
+      order.push('physics')
+    }
+  }
+  world.systems = [new Settings(), new Chat(), new Physics()]
+  const errors = []
+  const error = console.error
+  console.error = (...args) => errors.push(args)
+  let thrown
+  try {
+    world.destroy()
+  } catch (err) {
+    thrown = err
+  } finally {
+    console.error = error
+  }
+  assert.equal(thrown, first, 'the first failure is thrown')
+  // (it stopped at the first: chat and physics were never destroyed)
+  assert.deepEqual(order, ['settings', 'chat', 'physics'])
+  assert.deepEqual(errors, [['[world] Chat.destroy() failed:', second]], 'the later failures are logged')
+  // systems that all let go: nothing is thrown or logged
+  world.systems = [new Physics()]
+  world.destroy()
+  assert.equal(errors.length, 1)
+})
 
 probe(
   'stage: an instanced model is found through the octree; its mesh carries no entity lookup of its own',
@@ -1118,11 +1339,13 @@ test('importApp: a header that is not what exportApp writes is refused with a re
   const payload = new Uint8Array(1000).fill(7)
   const blueprint = { name: 'x' }
   const asset = fields => ({ type: 'model', url: 'asset://a.glb', size: 10, mime: 'model/gltf-binary', ...fields })
+  // (with a code: the server leaves such a file out of its collection)
   const refused = async (header, reason, options) =>
-    assert.rejects(
-      importApp(hypFile(header, payload, options)),
-      new RegExp(`^Error: not a valid \\.hyp file: ${reason}$`)
-    )
+    assert.rejects(importApp(hypFile(header, payload, options)), {
+      name: 'Error',
+      code: INVALID_HYP,
+      message: `not a valid .hyp file: ${reason}`,
+    })
   // sizes: each used to be taken as it came. Alternating +n and -n gave every asset the same bytes again, each a
   // copy of the whole payload
   await refused(
@@ -1147,7 +1370,10 @@ test('importApp: a header that is not what exportApp writes is refused with a re
   await refused('null', 'it has no blueprint')
   await refused('{ not json', 'its header cannot be read')
   await refused({ blueprint, assets: [] }, 'its header is longer than the file', { headerSize: 5000 })
-  await assert.rejects(importApp(new File([new Uint8Array(3)], 'short.hyp')), /not a valid \.hyp file: it is too short/)
+  await assert.rejects(importApp(new File([new Uint8Array(3)], 'short.hyp')), {
+    code: INVALID_HYP,
+    message: 'not a valid .hyp file: it is too short',
+  })
   // what is accepted: assets one after another, to the end of the file at most; a mime that is not text is dropped
   const fine = await importApp(
     hypFile(

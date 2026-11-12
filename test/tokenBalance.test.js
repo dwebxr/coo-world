@@ -461,3 +461,24 @@ test('eviction: all pinned gives unknown, including zombies', async t => {
   await f.finish(1)
   assert.deepEqual(await replacement, known(1))
 })
+
+test('data: a balance past 2^53 raw units keeps its whole tokens exact', async () => {
+  // 18 decimals: 2^53 raw units is about 0.009 of a token, so every real balance is past it
+  const read = async (amount, decimals) => {
+    const service = createTokenBalanceService({ decimals, readRaw: async () => ({ exists: true, amount }) })
+    return (await service.get('wallet')).balance
+  }
+  const one = 10n ** 18n
+  // one unit under 10,000 tokens used to read as 10,000 exactly (and pass a gate of 10,000 it does not reach by
+  // the chain's count only because the difference is below what a double can say; the whole tokens are right now)
+  assert.equal(await read(9_007_199_254_740_993n * one, 18), 9_007_199_254_740_992)
+  assert.equal(await read(123_456_789n * one + one / 2n, 18), 123_456_789.5)
+  assert.equal(await read(100_000n * 10n ** 6n, 6), 100_000)
+  assert.equal(await read(99_999_999_999n, 6), 99_999.999999)
+  assert.equal(await read(1n, 6), 0.000001)
+  assert.equal(await read(0n, 9), 0)
+  // the whole part comes from the integer division: 2^53 + 1 tokens of 6 decimals as one Number would be 2^53
+  const big = (2n ** 53n + 2n) * 10n ** 6n
+  assert.equal(await read(big, 6), Number(2n ** 53n + 2n))
+  assert.equal(await read(10n ** 30n, 0), 1e30)
+})

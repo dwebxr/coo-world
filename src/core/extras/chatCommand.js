@@ -18,6 +18,24 @@ export function parseCommand(text) {
   return { cmd, value: line.slice(cmd.length + 1), args: commandWords(line) }
 }
 
+// A command packet as the server takes it from a client -> { cmd, value, args }, the shape Chat.command gives a
+// client script's `command` event, or null when the packet is not a command line: `args` must be a list of strings
+// that a chat line can hold (their words and the spaces between them within a chat message's length). A client is
+// free to send anything else in that list (numbers, objects), and server scripts used to be handed it.
+// `cmd` and `value` are the client's when they are the text those words came from, and are made from the words
+// otherwise, so a script never gets a command whose parts disagree.
+export function readCommandPacket(data) {
+  const args = data?.args
+  if (!Array.isArray(args) || !args.every(word => typeof word === 'string')) return null
+  if (args.reduce((length, word) => length + word.length + 1, 0) > CHAT_BODY_MAX_LENGTH) return null
+  const { cmd, value } = data
+  if (typeof cmd === 'string' && typeof value === 'string' && cmd.length + value.length < CHAT_BODY_MAX_LENGTH) {
+    const words = commandWords(`${cmd} ${value}`)
+    if (words.length === args.length && words.every((word, i) => word === args[i])) return { cmd, value, args }
+  }
+  return { cmd: args[0] ?? '', value: args.slice(1).join(' '), args }
+}
+
 const ADMIN_COMMAND = 'admin'
 
 // the longest code `/admin <code>` can carry in one chat line

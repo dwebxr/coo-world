@@ -81,7 +81,10 @@ export function createTokenBalanceService({
       if (raw?.exists === false) {
         balance = 0
       } else if (raw?.exists === true && typeof raw.amount === 'bigint') {
-        balance = Number(raw.amount) / 10 ** decimals
+        // whole tokens and the rest apart: the raw amount as one Number is exact only up to 2^53 units, which a
+        // token with many decimals passes at a balance of a few thousand
+        const unit = 10n ** BigInt(decimals)
+        balance = Number(raw.amount / unit) + Number(raw.amount % unit) / 10 ** decimals
       }
       if (!Number.isFinite(balance) || balance < 0) throw new Error('invalid token balance')
       result = { known: true, balance }

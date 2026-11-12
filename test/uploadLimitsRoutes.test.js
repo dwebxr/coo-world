@@ -73,7 +73,7 @@ for (const [id, rank] of [
 // builder ranks granted for the session by a wallet token (ServerNetwork.onRequestBuilderByToken), not stored.
 // `token` and `tok3` have the flag but no wallet on record (a grant the server lost track of); tok1 and tok2 share one
 for (const id of ['token', 'tok1', 'tok2', 'tok3', 'wa', 'wb', 'wc', 'wd'])
-  sockets.get(id).player.data.tokenGrantedRank = true
+  sockets.get(id).player.tokenGrantedRank = true
 const wallets = new Map([
   ['tok1', 'WALLET_A'],
   ['tok2', 'WALLET_A'],

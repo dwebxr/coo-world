@@ -23,7 +23,7 @@ import { previewValue } from '../src/core/extras/assetURL.js'
 import { createActionBudgets } from '../src/core/extras/actionBudget.js'
 import { createPendingChanges } from '../src/core/extras/pendingChanges.js'
 import { adminMode, adminWaitScale, createAdminGate } from '../src/server/adminCode.js'
-import { isAdminCommand } from '../src/core/extras/chatCommand.js'
+import { isAdminCommand, readCommandPacket } from '../src/core/extras/chatCommand.js'
 import { createUserRows } from '../src/server/userRows.js'
 import { endGrantByDecision } from '../src/server/rankGrants.js'
 
@@ -107,6 +107,7 @@ function fixture() {
     adminWaitScale,
     createAdminGate,
     isAdminCommand,
+    readCommandPacket,
     eventPayload,
     moment,
     Ranks,

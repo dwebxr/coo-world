@@ -714,7 +714,7 @@ const demotions = {
   'the token grant ends': {
     make: who => {
       who.player.data.rank = Ranks.BUILDER
-      who.player.data.tokenGrantedRank = true
+      who.player.tokenGrantedRank = true
     },
     lower: (w, who) => w.f.network.onRevokeBuilderByToken(who.socket, {}),
   },

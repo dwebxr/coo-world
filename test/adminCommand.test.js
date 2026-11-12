@@ -9,6 +9,8 @@ import { fixture as joinFixture, sentTo } from './lib/joinFixture.mjs'
 import { Ranks } from '../src/core/extras/ranks.js'
 import { packetNodeLimit } from '../src/core/extras/inboundPolicy.js'
 import { readInboundPacket } from '../src/server/inboundDecode.js'
+import { parseCommand, readCommandPacket } from '../src/core/extras/chatCommand.js'
+import { CHAT_BODY_MAX_LENGTH } from '../src/core/extras/chatPolicy.js'
 
 const CODE = 'a-long-random-admin-code'
 
@@ -98,6 +100,95 @@ test('the admin command is never handed on as a command event, in any letter cas
   assert.equal(f.commands.length, 1)
   assert.equal(f.commands[0][0], 'command')
   assert.deepEqual([...f.commands[0][1].args], ['dance', 'now'])
+  // the shape a client script gets from Chat.command: the server's event used to carry `args` alone
+  assert.deepEqual(JSON.parse(JSON.stringify(f.commands[0][1])), {
+    playerId: socket.player.data.id,
+    cmd: 'dance',
+    value: 'now',
+    args: ['dance', 'now'],
+  })
+})
+
+test('a command packet is a list of words: anything else is not handed to scripts', async () => {
+  const f = fixture()
+  const socket = f.connect()
+  // a client is free to put anything in the list; scripts were handed it
+  for (const args of [
+    ['dance', 7],
+    ['dance', { toString: 'x' }],
+    ['dance', ['nested']],
+    [null],
+    ['dance', undefined],
+    // more than a chat line can hold
+    ['say', 'x'.repeat(CHAT_BODY_MAX_LENGTH)],
+    Array.from({ length: CHAT_BODY_MAX_LENGTH }, () => 'a'),
+  ]) {
+    await f.network.onCommand(socket, { args })
+  }
+  assert.deepEqual(f.commands, [])
+  // the longest line a client can type is still one
+  const longest = ['say', 'x'.repeat(CHAT_BODY_MAX_LENGTH - 5)]
+  await f.network.onCommand(socket, { args: longest })
+  assert.equal(f.commands.length, 1)
+  // a non-string code is not an attempt at the admin code either
+  const before = f.writes.length
+  await f.network.onCommand(socket, { args: ['admin', { code: CODE }] })
+  assert.equal(f.writes.length, before)
+  assert.equal(f.commands.length, 1)
+})
+
+test('command packets: cmd and value are the client’s when they are the text of the words, and made from them otherwise', () => {
+  const read = data => readCommandPacket(data)
+  // what Chat.command sends for "/dance  now  please": untrimmed text, trimmed words
+  assert.deepEqual(read({ cmd: 'dance', value: ' now  please', args: ['dance', 'now', 'please'] }), {
+    cmd: 'dance',
+    value: ' now  please',
+    args: ['dance', 'now', 'please'],
+  })
+  for (const { cmd, value, args } of [
+    parseCommand('/dance now'),
+    parseCommand('/x'),
+    parseCommand('/'),
+    parseCommand('/a  b '),
+  ]) {
+    assert.deepEqual(read({ cmd, value, args }), { cmd, value, args }, JSON.stringify(args))
+  }
+  // parts that disagree with the words, or are missing, are made from the words
+  assert.deepEqual(read({ cmd: 'kick', value: 'everyone', args: ['dance', 'now'] }), {
+    cmd: 'dance',
+    value: 'now',
+    args: ['dance', 'now'],
+  })
+  assert.deepEqual(read({ args: ['dance', 'now', 'please'] }), {
+    cmd: 'dance',
+    value: 'now please',
+    args: ['dance', 'now', 'please'],
+  })
+  assert.deepEqual(read({ cmd: 7, value: {}, args: ['dance'] }), { cmd: 'dance', value: '', args: ['dance'] })
+  assert.deepEqual(read({ args: [] }), { cmd: '', value: '', args: [] })
+  assert.deepEqual(read({ cmd: 'x'.repeat(CHAT_BODY_MAX_LENGTH), value: '', args: ['dance'] }), {
+    cmd: 'dance',
+    value: '',
+    args: ['dance'],
+  })
+  // text that pads the same words out past a chat line's length is not taken either
+  assert.deepEqual(read({ cmd: 'dance', value: `now${' '.repeat(CHAT_BODY_MAX_LENGTH)}`, args: ['dance', 'now'] }), {
+    cmd: 'dance',
+    value: 'now',
+    args: ['dance', 'now'],
+  })
+  // not a command
+  for (const data of [
+    null,
+    undefined,
+    {},
+    { args: 'dance' },
+    { args: [1] },
+    { args: ['a', null] },
+    { args: { 0: 'a', length: 1 } },
+  ]) {
+    assert.equal(read(data), null, JSON.stringify(data))
+  }
 })
 
 test('the third wrong code starts a wait: the right code is refused during it, unread, and said once', async () => {
@@ -180,14 +271,15 @@ test('a line is the admin command on the client exactly when it is on the server
     assert.equal(socket.player.data.rank, Ranks.ADMIN, JSON.stringify(first))
     assert.deepEqual(f.commands, [])
   }
-  // a first word that is not text, or no words at all: not the admin command, on the server either
+  // a first word that is not text: not the admin command on the server either, and not a command at all (a list
+  // with something in it that is not a word is handed to no script). No words at all is a command with none.
   for (const args of [[7, CODE], [['admin'], CODE], [{ toString: () => 'admin' }, CODE], [null, CODE], []]) {
     const f = fixture()
     const socket = f.connect()
     await f.network.onCommand(socket, { args })
     assert.equal(socket.player.data.rank, Ranks.VISITOR)
     assert.deepEqual(socket.sent, [])
-    assert.equal(f.commands.length, 1)
+    assert.equal(f.commands.length, args.length ? 0 : 1, JSON.stringify(args))
   }
 })
 

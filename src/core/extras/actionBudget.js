@@ -50,8 +50,10 @@ export function createActionBudgets(budgets = ACTION_BUDGETS) {
     // One action of `socket` at time `at` (milliseconds on a clock that does not go back: when the packet arrived,
     // not when its turn came, so packets that waited in the inbox are not taken for a burst).
     // -> { ok: true } | { ok: false, tell }: `tell` is true for the first refusal since the last action that was
-    // let through, so a sender is told once per wait and not once per packet.
-    spend(socket, action, at) {
+    // let through, so a sender is told once per wait and not once per packet. `notify`: whether the caller has
+    // something to tell for this refusal. One it says nothing about (a setting that is held, a mute) leaves the
+    // telling to the next refusal of this kind that has (a spawn, a change of rank).
+    spend(socket, action, at, notify = true) {
       const budget = budgets[action]
       if (!budget) throw new Error(`no budget for ${action}`)
       const state = stateOf(socket, action)
@@ -65,6 +67,7 @@ export function createActionBudgets(budgets = ACTION_BUDGETS) {
         return { ok: true }
       }
       state.refused++
+      if (!notify) return { ok: false, tell: false }
       const tell = state.telling
       state.telling = false
       return { ok: false, tell }

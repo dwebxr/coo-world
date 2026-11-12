@@ -401,7 +401,7 @@ export class ServerNetwork extends System {
   // -> whether the action is within the budget
   spend(socket, action, meta, told) {
     const budgets = (this.actionBudgets ??= createActionBudgets())
-    const result = budgets.spend(socket, action, meta?.at ?? performance.now())
+    const result = budgets.spend(socket, action, meta?.at ?? performance.now(), !!told)
     if (result.ok) return true
     this.logOnce(
       socket,
@@ -2420,9 +2420,11 @@ export class ServerNetwork extends System {
   // connection is held and applied when the budget allows (releaseSettings, here and from the tick). The value a
   // builder ends on is the one the world keeps, and a flood of them reaches everyone at most five times a second
   // after the first thirty. The sender applied its value before sending and is not answered while it is held (its
-  // field would jump back under the key). A value is checked when it arrives, so that a refused one never takes the
-  // place of one held, and again when it is applied. One still held when the server stops is not kept, as one that
-  // arrives then is not.
+  // field would jump back under the key). A value is checked against the sender's rank and the settings rules when it
+  // arrives, so that one refused by those never takes the place of one held, and again when it is applied. Whether
+  // the world has room for it (the join-state budget) is asked only when it is applied: a value refused for that is
+  // let go, the earlier value of the same connection it had replaced is gone with it, and the sender is told the
+  // value the world keeps. One still held when the server stops is not kept, as one that arrives then is not.
   // Several builders: of the values of one setting held for different connections, only the one that came last can
   // be applied. One that came earlier waits (releaseSettings) and is let go once the later one is applied; if the
   // later one goes first (its connection closes, its builder loses the rank, it is refused when checked again), the
@@ -2503,7 +2505,7 @@ export class ServerNetwork extends System {
         socket.send('settingsModified', { key, value: this.world.settings.serialize()[key] })
         continue
       }
-      if (!budgets.spend(socket, 'settings', at).ok) {
+      if (!budgets.spend(socket, 'settings', at, false).ok) {
         this.logOnce(
           socket,
           'budget:settings',

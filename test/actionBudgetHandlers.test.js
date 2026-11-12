@@ -633,3 +633,28 @@ test('spawn: set through the command, counted with the settings; an unknown oper
   assert.equal(saved.length, 30)
   assert.equal(s.chats(s.got(s.admin)).filter(m => m.body === 'You are changing the spawn too fast.').length, 1)
 })
+
+test('a refusal that says nothing leaves the telling to the next one that does', async () => {
+  // a setting held over the budget is not answered; the spawn refused after it is
+  const s = await stage()
+  const saved = []
+  s.f.network.saveConfig = async (key, value) => saved.push([key, value])
+  for (let i = 1; i <= 31; i++) {
+    s.f.network.onSettingsModified(s.admin.socket, { key: 'playerLimit', value: i }, { at: 1000 })
+  }
+  assert.equal(s.f.world.settings.playerLimit, 30, 'the thirty-first is held')
+  await s.f.network.onSpawnModified(s.admin.socket, 'clear', { at: 1000 })
+  await s.f.network.onSpawnModified(s.admin.socket, 'clear', { at: 1000 })
+  assert.deepEqual(saved, [])
+  assert.equal(s.chats(s.got(s.admin)).filter(m => m.body === 'You are changing the spawn too fast.').length, 1)
+
+  // a mute refused over the budget is not answered; the change of rank refused after it is
+  const m = await stage()
+  m.f.world.livekit.muted = new Set()
+  m.f.world.livekit.setMuted = () => {}
+  for (let i = 0; i < 11; i++) m.f.network.onMute(m.admin.socket, { playerId: 'b', muted: i % 2 === 0 }, { at: 1000 })
+  await m.f.network.onModifyRank(m.admin.socket, { playerId: 'b', rank: Ranks.BUILDER }, { at: 1000 })
+  await m.f.network.onModifyRank(m.admin.socket, { playerId: 'b', rank: Ranks.BUILDER }, { at: 1000 })
+  assert.equal(m.b.socket.player.data.rank, Ranks.VISITOR)
+  assert.equal(m.chats(m.got(m.admin)).filter(x => x.body === 'You are changing ranks too fast.').length, 1)
+})

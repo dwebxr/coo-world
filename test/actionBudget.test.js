@@ -123,3 +123,14 @@ test('the state goes with the connection object', () => {
   socket = {}
   assert.equal(budgets.spend(socket, 'chat', 0).ok, true)
 })
+
+test('a refusal the caller says nothing about does not use up the telling', () => {
+  const budgets = createActionBudgets({ settings: { rate: 1, burst: 1 } })
+  const socket = {}
+  assert.deepEqual(budgets.spend(socket, 'settings', 1000), { ok: true })
+  assert.deepEqual(budgets.spend(socket, 'settings', 1000, false), { ok: false, tell: false })
+  assert.deepEqual(budgets.spend(socket, 'settings', 1000, false), { ok: false, tell: false })
+  assert.deepEqual(budgets.spend(socket, 'settings', 1000), { ok: false, tell: true })
+  assert.deepEqual(budgets.spend(socket, 'settings', 1000), { ok: false, tell: false })
+  assert.equal(budgets.refused(socket, 'settings'), 4)
+})

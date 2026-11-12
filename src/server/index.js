@@ -1,3 +1,6 @@
+// first of the server's own modules, so before lockdown runs: from here until the server listens, a start-up that
+// fails ends the process with code 1 (startupExit.js)
+import { startup } from './startupExitInstall'
 import 'ses'
 import '../core/lockdown'
 import './fetchGuardInstall'
@@ -33,14 +36,14 @@ import { assetRoutes, uploadRoutes } from './uploadRoutes'
 import { readKickEnv } from './kickList'
 import { describeHoldingContracts, readHoldingContractsEnv } from './evmHoldings'
 
-const rootDir = path.join(__dirname, '../')
-const worldDir = path.join(rootDir, process.env.WORLD)
-const port = process.env.PORT
-
 // check envs
 if (!process.env.WORLD) {
   throw new Error('[envs] WORLD not set')
 }
+const rootDir = path.join(__dirname, '../')
+// (after the check: path.join throws its own error for a missing name, which said nothing about WORLD)
+const worldDir = path.join(rootDir, process.env.WORLD)
+const port = process.env.PORT
 if (!process.env.PORT) {
   throw new Error('[envs] PORT not set')
 }
@@ -133,36 +136,39 @@ const shutdown = installShutdown()
 const fastify = Fastify({ logger: { level: 'error' } })
 
 // create world folder if needed
-await fs.ensureDir(worldDir)
+await startup.step(() => fs.ensureDir(worldDir))
 
 // init assets
-await assets.init({ rootDir, worldDir })
+await startup.step(() => assets.init({ rootDir, worldDir }))
 
 // init collections
-await collections.init({ rootDir, worldDir })
+await startup.step(() => collections.init({ rootDir, worldDir }))
 
 // init db
-const db = await getDB({ worldDir })
+const db = await startup.step(() => getDB({ worldDir }))
 
 // init cleaner (before storage is opened: it reads storage.json itself, read-only)
 const storageFile = path.join(worldDir, '/storage.json')
 // the assets URL tells it which scripts are store files for certain; with ASSETS=local (an assets directory) what
 // it removes goes to the trash for CLEAN_TRASH_DAYS
-await cleaner.init({
-  db,
-  storageFile,
-  assetsUrl: assets.url,
-  localStore: Boolean(assets.dir),
-  trashDays: cleanTrashDays,
-  // the largest file it reads: a script came through an upload (PUBLIC_MAX_UPLOAD_SIZE), storage.json is held to
-  // STORAGE_MAX_BYTES; a larger one (an older limit, a hand-made file) stops the clean-up
-  readLimit: Math.max(maxUploadSize * 1024 * 1024, storageLimits.maxBytes || 0),
-})
+await startup.step(() =>
+  cleaner.init({
+    db,
+    storageFile,
+    assetsUrl: assets.url,
+    localStore: Boolean(assets.dir),
+    trashDays: cleanTrashDays,
+    // the largest file it reads: a script came through an upload (PUBLIC_MAX_UPLOAD_SIZE), storage.json is held to
+    // STORAGE_MAX_BYTES; a larger one (an older limit, a hand-made file) stops the clean-up
+    readLimit: Math.max(maxUploadSize * 1024 * 1024, storageLimits.maxBytes || 0),
+  })
+)
 
 // init storage
 const storage = new Storage(storageFile, { limits: storageLimits })
 
-// create world
+// create world (its systems read their settings as they are made: one that refuses a value throws here, which
+// still ends the start-up)
 const world = createServerWorld()
 // from now on a stop saves: world.init hydrates the apps and starts their scripts before the server listens
 shutdown.attach({
@@ -173,21 +179,27 @@ shutdown.attach({
   },
   closeServer: () => fastify.close(),
 })
-await world.init({
-  assetsDir: assets.dir,
-  assetsUrl: assets.url,
-  db,
-  assets,
-  storage,
-  collections: collections.list,
-  maxUploadSize,
-})
+// The world's app scripts start in world.init: from here an uncaught exception no longer ends the start-up (content
+// in a world must not be able to keep its server from starting), and the steps that can fail are awaited through
+// startup.step
+startup.scriptsStart()
+await startup.step(() =>
+  world.init({
+    assetsDir: assets.dir,
+    assetsUrl: assets.url,
+    db,
+    assets,
+    storage,
+    collections: collections.list,
+    maxUploadSize,
+  })
+)
 // World.start() does not wait for the systems: no connection is taken before the network has loaded the world, the
 // user ids and the join-state accounting (it refuses any that arrives earlier, too)
-await world.network.ready
+await startup.step(() => world.network.ready)
 // the join snapshot's fixed part for this configuration (its tokens, URLs and largest joiner), measured before
 // anyone can join: world growth and visitors' joins count it (joinBudget.js)
-await world.network.measureFixedBytes()
+await startup.step(() => world.network.measureFixedBytes())
 
 const publicEnvs = buildPublicEnv(process.env)
 const envsCode = `
@@ -287,13 +299,16 @@ fastify.get('/status', async (request, reply) => {
 
 fastify.setErrorHandler(errorHandler)
 
-try {
-  await fastify.listen({ port, host: '0.0.0.0' })
-} catch (err) {
-  console.error(err)
-  console.error(`failed to launch on port ${port}`)
-  process.exit(1)
-}
+await startup.step(async () => {
+  try {
+    await fastify.listen({ port, host: '0.0.0.0' })
+  } catch (err) {
+    console.error(`failed to launch on port ${port}`)
+    throw err
+  }
+})
+// start-up is over: from here the exit code is the shutdown's (shutdown.js)
+startup.listening()
 
 function admitConnection(request, reply, done) {
   if (request.ws !== true) return done()

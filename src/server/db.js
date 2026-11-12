@@ -39,7 +39,7 @@ export async function getDB({ worldDir }) {
   return db
 }
 
-async function migrate(db) {
+export async function migrate(db, list = migrations) {
   // ensure we have our config table
   const exists = await db.schema.hasTable('config')
   if (!exists) {
@@ -52,13 +52,18 @@ async function migrate(db) {
   // get current version
   const versionRow = await db('config').where('key', 'version').first()
   let version = parseInt(versionRow.value)
-  // run missing migrations
-  for (let i = version; i < migrations.length; i++) {
+  // Run the missing migrations, each in a transaction of its own together with the version it brings the database
+  // to. A step that failed halfway used to leave its first half in place with the old version: the next start ran
+  // the step again, on tables it had already changed. Now a failed step leaves the database as it was before it.
+  // (SQLite and PostgreSQL both roll back schema changes. Nothing here undoes what a step did outside the database.)
+  for (let i = version; i < list.length; i++) {
     console.log(`[db] migration #${i + 1}`)
-    await migrations[i](db)
-    await db('config')
-      .where('key', 'version')
-      .update('value', (i + 1).toString())
+    await db.transaction(async trx => {
+      await list[i](trx)
+      await trx('config')
+        .where('key', 'version')
+        .update('value', (i + 1).toString())
+    })
     version = i + 1
   }
 }

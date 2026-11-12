@@ -7,6 +7,7 @@
 //            bootstraps the default world from src/world
 // Requires the four builds (see .github/workflows/e2e.yml). Logs and screenshots go to test/e2e/out/.
 import http from 'node:http'
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import Database from 'better-sqlite3'
@@ -26,7 +27,7 @@ import {
   waitUntil,
 } from './lib/common.mjs'
 import { waitForMemoryToSettle } from './lib/memory.mjs'
-import { installAsset, startServer } from './lib/server.mjs'
+import { failedStart, installAsset, startServer } from './lib/server.mjs'
 import { WireClient, snapshot } from './lib/ws.mjs'
 import {
   REPORTED_INLINE,
@@ -209,6 +210,26 @@ async function loadOnly() {
 async function probes(admin, watcher) {
   await step('A0 server-side fetch Brotli guard installed at boot', async () => {
     ok(server.out.includes('[fetch] brotli guard installed'), 'boot line present')
+  })
+
+  await step('A0b a server that cannot start ends with exit code 1, and does not stay up', async () => {
+    // a setting it refuses: thrown at the top of the entry module. This used to end with code 0
+    const setting = await failedStart({ port: PORT + 7, env: { PUBLIC_MAX_UPLOAD_SIZE: 'lots' } })
+    ok(setting.out.includes('[envs] PUBLIC_MAX_UPLOAD_SIZE must be a positive number'), setting.out.slice(-400))
+    ok(setting.out.includes('[server] start-up failed; exiting with code 1'), 'the exit is said')
+    eq(setting.code, 1, 'exit code for a refused setting')
+    // a setting one of the world's systems refuses as it is made, after a timer of another was started: this is
+    // the kind of failure that stayed up without listening
+    const system = await failedStart({ port: PORT + 7, env: { AI_MAX_CONCURRENT: '0' } })
+    ok(system.out.includes('AI_MAX_CONCURRENT'), system.out.slice(-400))
+    eq(system.code, 1, 'exit code for a setting a system refuses')
+    // a database it cannot read: a step of the start-up rejects after other things were set up
+    const database = await failedStart({
+      port: PORT + 7,
+      prepare: worldDir => fs.writeFileSync(path.join(worldDir, 'db.sqlite'), 'this is not a database'),
+    })
+    eq(database.code, 1, `exit code for an unreadable database: ${database.out.slice(-400)}`)
+    ok(!database.out.includes('server listening on port'), 'it never listened')
   })
 
   await step('A1 observer app starts clean', async () => {

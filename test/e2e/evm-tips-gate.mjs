@@ -958,22 +958,39 @@ try {
       'the non-holder answer'
     )
     eq(none.hint, `Get the pass: 127.0.0.1:${RPC_PORT}/store`)
-    // window.open is replaced for the click so that no real tab opens; world.open calls it after a 0 ms timeout
-    const opened = await sender.page.evaluate(async () => {
-      const calls = []
-      const original = window.open
+    // The store is another origin, so the visitor is asked first (ClientUI.askOpen). window.open is replaced so
+    // that no real tab opens: nothing may call it before Open is pressed, and Open works after a second on screen
+    await sender.page.evaluate(() => {
+      window.__opened = []
+      window.__open = window.open
       window.open = (...args) => {
-        calls.push(args)
+        window.__opened.push(args)
         return null
       }
-      try {
-        window.world.entities.get('nft-door-none').root.get('nft-door-pass-panel').onPointerDown()
-        await new Promise(resolve => setTimeout(resolve, 200))
-      } finally {
-        window.open = original
-      }
-      return calls
+      window.world.entities.get('nft-door-none').root.get('nft-door-pass-panel').onPointerDown()
     })
+    const dialog = sender.page.locator('.link-confirm-dialog')
+    let opened
+    try {
+      await dialog.waitFor({ timeout: 15000 })
+      eq(
+        await dialog.locator('.link-confirm-host').innerText(),
+        `127.0.0.1:${RPC_PORT}`,
+        'the host that is asked about'
+      )
+      eq(await dialog.locator('.link-confirm-address').innerText(), STORE, 'the address that is asked about')
+      eq(JSON.stringify(await sender.page.evaluate(() => window.__opened)), '[]', 'nothing opened before the answer')
+      await sender.page.waitForSelector('.link-confirm-action.open:not(.waiting)', { timeout: 10000 })
+      await dialog.getByRole('button', { name: 'Open' }).click()
+      await dialog.waitFor({ state: 'detached', timeout: 5000 })
+      opened = await sender.page.evaluate(() => window.__opened)
+    } finally {
+      await sender.page.evaluate(() => {
+        window.open = window.__open
+        delete window.__open
+        delete window.__opened
+      })
+    }
     eq(JSON.stringify(opened), JSON.stringify([[STORE, '_blank', 'noopener,noreferrer']]), 'store page in a new tab')
   })
 

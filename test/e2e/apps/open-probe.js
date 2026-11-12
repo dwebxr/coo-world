@@ -31,6 +31,17 @@ const commands = {
     world.open(base + '/status', true)
     return {}
   },
+  // another origin: the same server under its other name. The visitor is asked first
+  openExternal() {
+    world.open(base.replace('localhost', '127.0.0.1') + '/status', true)
+    return {}
+  },
+  // two requests in a row: the first is asked about, the second is dropped
+  openExternalTwice() {
+    world.open(base.replace('localhost', '127.0.0.1') + '/status', true)
+    world.open(base.replace('localhost', '127.0.0.1') + '/health', true)
+    return {}
+  },
   async blobType() {
     const blob = await (await fetch(base + '/')).blob()
     const url = URL.createObjectURL(blob.slice(0, 5, 'text/html'))

@@ -1890,6 +1890,94 @@ async function probes(admin, watcher) {
     await popup.close()
     eq(page.url(), urlBefore, 'page url')
   })
+  await step('B9b world.open: another origin is asked about first; Cancel opens nothing, Open opens it', async () => {
+    const pages = () => context.pages().length
+    const before = pages()
+    const external = `127.0.0.1:${server.port}`
+    ok((await probeCommand('openExternal')).ok)
+    const dialog = page.locator('.link-confirm-dialog')
+    await dialog.waitFor({ timeout: 15000 })
+    eq(await dialog.locator('.link-confirm-host').innerText(), external, 'the host the visitor is shown')
+    eq(await dialog.locator('.link-confirm-address').innerText(), `http://${external}/status`, 'the address')
+    await sleep(800)
+    eq(pages(), before, 'nothing opened while the question waits')
+    await dialog.getByRole('button', { name: 'Cancel' }).click()
+    await dialog.waitFor({ state: 'detached', timeout: 5000 })
+    await sleep(800)
+    eq(pages(), before, 'nothing opened after Cancel')
+    eq(page.url(), urlBefore, 'page url')
+
+    const dropped = () =>
+      consoleLines.filter(l => l.includes('[world.open] not opened: another link is waiting')).length
+    const droppedBefore = dropped()
+    // Presses that come before the question has been up for a second: four of them, in one go, as the button
+    // appears (made in the page, in the turn that sees the button, so a slow machine cannot make them late)
+    await page.evaluate(() => {
+      window.__earlyOpen = 0
+      const observer = new MutationObserver(() => {
+        if (!document.querySelector('.link-confirm-action.open')) return
+        observer.disconnect()
+        for (let i = 0; i < 4; i++) {
+          document.querySelector('.link-confirm-action.open')?.click()
+          window.__earlyOpen++
+        }
+      })
+      observer.observe(document.body, { childList: true, subtree: true })
+    })
+    let popups = 0
+    const countPopup = () => popups++
+    context.on('page', countPopup)
+    ok((await probeCommand('openExternalTwice')).ok)
+    await dialog.waitFor({ timeout: 15000 })
+    eq(await dialog.locator('.link-confirm-address').innerText(), `http://${external}/status`, 'the first request')
+    eq(dropped(), droppedBefore + 1, 'the second request was dropped and said so in the console')
+    await waitUntil(() => page.evaluate(() => window.__earlyOpen === 4), { timeout: 10000, message: 'early presses' })
+    eq(await dialog.count(), 1, 'the question is still there after four early presses on Open')
+    eq(popups, 0, 'and none of them opened anything')
+    // Open works once the question has been on screen for a second without a press
+    const openButton = dialog.getByRole('button', { name: 'Open' })
+    await page.waitForSelector('.link-confirm-action.open:not(.waiting)', { timeout: 10000 })
+    // A pointer press does not leave the button focused, so the jump key answers nothing: the pointer goes down
+    // on Open and comes up elsewhere (no click), then Space is pressed
+    const box = await openButton.boundingBox()
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.mouse.down()
+    eq(
+      await page.evaluate(() => !!document.activeElement?.closest?.('.link-confirm')),
+      false,
+      'no button of the question took the focus'
+    )
+    await page.mouse.move(5, 5)
+    await page.mouse.up()
+    await page.keyboard.press('Space')
+    await sleep(500)
+    eq(await dialog.count(), 1, 'Space did not answer')
+    eq(popups, 0, 'still nothing opened')
+    eq(pages(), before, 'no new page')
+    context.off('page', countPopup)
+    const popupPromise = context.waitForEvent('page', { timeout: 20000 })
+    await openButton.click()
+    // The question closes with the press. Asked of the page directly: with the new tab in front, this page may
+    // draw no frames, and a wait that polls on frames (locator.waitFor) then never sees the dialog go
+    const questionState = () =>
+      page.evaluate(() => ({
+        shown: !!document.querySelector('.link-confirm-dialog'),
+        waiting: !!window.world.ui.latest.link,
+      }))
+    await waitUntil(async () => !(await questionState()).shown, {
+      timeout: 5000,
+      message: `the question to close after Open (${JSON.stringify(await questionState())})`,
+    })
+    eq((await questionState()).waiting, false, 'no question is left waiting')
+    const popup = await popupPromise
+    await popup.waitForLoadState('domcontentloaded')
+    const info = await popup.evaluate(() => ({ opener: window.opener, url: location.href }))
+    eq(info.opener, null, 'opener')
+    eq(info.url, `http://${external}/status`, 'the address that was shown is the one that opened')
+    await popup.close()
+    await page.bringToFront()
+    eq(page.url(), urlBefore, 'page url')
+  })
   await step('B10 world.open (d): a slice that asked for text/html is served as octet-stream', async () => {
     const r = await probeCommand('blobType')
     ok(r.ok, r.error)

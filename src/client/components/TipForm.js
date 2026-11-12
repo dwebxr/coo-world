@@ -1,10 +1,29 @@
 import { css } from '@firebolt-dev/css'
 import { useEffect, useRef, useState } from 'react'
 import { parseTipAmount, tipAmountReason } from '../../core/extras/evmTokens'
+import {
+  TIP_NAME_TWIN_TEXT,
+  TIP_MARKERS_SHOWN,
+  TIP_UNCONFIRMED_TEXT,
+  TIP_WALLET_VIEW_TEXT,
+  hasNameTwin,
+  tipMarkerMoreText,
+  tipMarkerParts,
+  tipMarkerRemainingMs,
+  tipRecipientParts,
+  tipSentParts,
+  tipUnknownParts,
+} from '../../core/extras/tipOutcome'
 import { evmChainName } from './walletPanelText'
 import { WalletConnectRequestNotice } from './WalletConnectSheet'
 
 // 投げ銭のフォーム (Players 一覧の行の下に開く)。送金はウォレットから相手へ直接で、この世界は資金を預からない
+//
+// What the form says about a send is information for the payer, not a control: the texts, the note of a request
+// and the name check are in src/core/extras/tipOutcome.js, with what they do not cover.
+// Reasons that end here were all decided before the wallet was asked to send, except `rejected` (the wallet's
+// explicit rejection, whenever it came). A send whose result is not known is its own step (`unknown`), not one
+// of these.
 const REASONS = {
   not_verified: 'Verify your EVM wallet first.',
   busy: 'Another tip is in progress.',
@@ -16,6 +35,28 @@ const REASONS = {
   wrong_account: 'Switch your wallet back to the verified account.',
   rejected: 'Request rejected in the wallet.',
   chain_changed: 'The wallet changed network. Try again.',
+  // "Send anyway" came too long after the intent (evm-integration.js, UNCONFIRMED_ANSWER_MS): the wallet was not
+  // asked. Back at the amount: Next opens the confirmation, and Send tip there asks the server for a new intent
+  intent_expired: 'This request expired before you answered. Nothing was sent. Start again.',
+}
+
+// A tip text in parts (tipOutcome.js): the recipient's name isolated in a <bdi>, the short address in an element
+// of its own that runs left to right, so that neither can reorder the other or the words around them. The name
+// in the form's title and confirmation sentence is not built this way (nor anywhere else in the interface).
+function TipText({ parts }) {
+  return parts.map((part, index) =>
+    typeof part === 'string' ? (
+      part
+    ) : 'name' in part ? (
+      <bdi key={index} className='tip-name'>
+        {part.name}
+      </bdi>
+    ) : (
+      <span key={index} className='tip-address' dir='ltr'>
+        {part.address}
+      </span>
+    )
+  )
 }
 
 // 1000 → 1,000 (整数部だけ区切る。小数部はそのまま)
@@ -29,7 +70,7 @@ export const tipReasonText = (reason, token) => {
       ? `The maximum tip is ${groupedAmount(token.max)} ${token.symbol} during the beta.`
       : 'This amount is above the maximum tip.'
   }
-  return REASONS[reason] ?? 'Could not send the tip. Try again.'
+  return REASONS[reason] ?? 'The tip was not sent. Try again.'
 }
 
 // 送金後の確定確認 (P2b)。サーバーがチェーンで確かめ、チケットごとに evmTipStatus を返す
@@ -70,18 +111,40 @@ export function TipForm({ world, player, onClose }) {
   const tokens = world.evm?.getTipTokens() ?? []
   const [symbol, setSymbol] = useState(tokens[0]?.symbol ?? '')
   const [amount, setAmount] = useState('')
-  // idle → confirm → sending → sent / error
+  // idle → confirm → (unconfirmed →) sending → sent / error / unknown
   const [step, setStep] = useState('idle')
   const [result, setResult] = useState(null)
+  // the send under way, once the server's intent has arrived: { request: { name, address, amount, token, at } }
+  const [intent, setIntent] = useState(null)
   // 送金後の確定確認: { state: watching | confirmed | failed | unverified, reason? }
   const [confirmation, setConfirmation] = useState(null)
   const [rechecked, setRechecked] = useState(false)
   const mounted = useRef(true)
-  useEffect(() => () => (mounted.current = false), [])
+  // the payer's choice on the "not confirming" step, which world.evm.tip() waits for: resolve(true) sends
+  const decision = useRef(null)
+  const decide = go => {
+    const resolve = decision.current
+    decision.current = null
+    resolve?.(go)
+  }
+  useEffect(
+    () => () => {
+      mounted.current = false
+      // a form that goes away while the send waits for the payer's choice: nothing is asked of the wallet
+      decision.current?.(false)
+      decision.current = null
+    },
+    []
+  )
   const token = tokens.find(entry => entry.symbol === symbol)
   const name = player.data.name
   const chainName = evmChainName(world.evm?.getConfig().chainIds[0])
   const ticket = result?.ticket ?? null
+  // read on each render (the Players list renders again when a player comes, goes or is renamed)
+  const twin = hasNameTwin(world.entities.players.values(), player.data.id, world.entities.player?.data.id)
+  // whether the world confirms tips, as it last said: at sign-in, with the intent of the send under way (which
+  // sets `intent`, so this is read again), or with the result of an earlier tip. null: it has not said
+  const confirms = world.evm?.getTipsConfirmed() ?? null
 
   // この送金のチケットの状態だけを受ける
   useEffect(() => {
@@ -132,16 +195,41 @@ export function TipForm({ world, player, onClose }) {
   }
 
   const send = async () => {
+    // whether this step said, before Send was pressed, that the world is not confirming tips
+    const unconfirmedShown = confirms === false
+    setIntent(null)
     setStep('sending')
     let outcome
     try {
-      outcome = await world.evm.tip({ playerId: player.data.id, token: symbol, amount })
+      outcome = await world.evm.tip({
+        playerId: player.data.id,
+        token: symbol,
+        amount,
+        unconfirmedShown,
+        onIntent: info => mounted.current && setIntent(info),
+        // the intent is the first to say that the world is not confirming tips: the send waits, with nothing asked
+        // of the wallet, on a step that says so, until the payer presses Send anyway or Cancel
+        onUnconfirmed: () =>
+          new Promise(resolve => {
+            if (!mounted.current) return resolve(false)
+            decision.current = resolve
+            setStep('unconfirmed')
+          }),
+      })
     } catch {
       outcome = { ok: false, reason: 'failed' }
     }
     if (!mounted.current) return
+    // Cancel on the "not confirming" step: back to the amount, nothing was asked of the wallet
+    if (outcome?.reason === 'declined') {
+      setResult(null)
+      setStep('idle')
+      return
+    }
     setResult(outcome)
-    setStep(outcome?.ok ? 'sent' : 'error')
+    // a send whose result is not known is not an error to try again from: the form does not keep the same send
+    // one press away. The payer closes it and, after looking at the wallet, starts again from the Players list
+    setStep(outcome?.ok ? 'sent' : outcome?.reason === 'outcome_unknown' ? 'unknown' : 'error')
     if (outcome?.ok) {
       // チケットが無いのは確認しない (古い) サーバー。報告できなければ未確認
       if (!outcome.ticket) setConfirmation({ state: 'unverified', reason: 'no_rpc' })
@@ -205,6 +293,10 @@ export function TipForm({ world, player, onClose }) {
           color: rgba(255, 255, 255, 0.6);
           font-size: 0.75rem;
         }
+        .tip-warning,
+        .tip-unknown {
+          color: #fcd34d;
+        }
         .tip-confirmation {
           color: rgba(255, 255, 255, 0.85);
           &.confirmed {
@@ -221,6 +313,11 @@ export function TipForm({ world, player, onClose }) {
       `}
     >
       <div className='tip-title'>Tip {name}</div>
+      {twin && step !== 'sent' && step !== 'unknown' && (
+        <div className='tip-warning tip-twin' role='alert'>
+          {TIP_NAME_TWIN_TEXT}
+        </div>
+      )}
       {(step === 'idle' || step === 'error') && (
         <>
           <div className='tip-row'>
@@ -275,6 +372,7 @@ export function TipForm({ world, player, onClose }) {
               Terms
             </a>
           </div>
+          {confirms === false && <div className='tip-warning tip-unconfirmed'>{TIP_UNCONFIRMED_TEXT}</div>}
           <div className='tip-row'>
             <button type='button' className='primary' onClick={send}>
               Send tip
@@ -285,16 +383,52 @@ export function TipForm({ world, player, onClose }) {
           </div>
         </>
       )}
+      {step === 'unconfirmed' && (
+        <>
+          {intent?.request && (
+            <div className='tip-recipient'>
+              <TipText parts={tipRecipientParts(intent.request)} />
+            </div>
+          )}
+          <div className='tip-warning tip-unconfirmed' role='alert'>
+            {TIP_UNCONFIRMED_TEXT}
+          </div>
+          <div className='tip-row'>
+            <button
+              type='button'
+              className='primary'
+              onClick={() => {
+                setStep('sending')
+                decide(true)
+              }}
+            >
+              Send anyway
+            </button>
+            <button type='button' onClick={() => decide(false)}>
+              Cancel
+            </button>
+          </div>
+        </>
+      )}
       {step === 'sending' && (
         <>
           <div className='tip-status'>Confirm the transfer in your wallet…</div>
+          {intent?.request && (
+            <>
+              <div className='tip-recipient'>
+                <TipText parts={tipRecipientParts(intent.request)} />
+              </div>
+              <div className='tip-note tip-wallet-view'>{TIP_WALLET_VIEW_TEXT}</div>
+            </>
+          )}
+          {confirms === false && <div className='tip-warning tip-unconfirmed'>{TIP_UNCONFIRMED_TEXT}</div>}
           <WalletConnectRequestNotice world={world} />
         </>
       )}
       {step === 'sent' && (
         <>
           <div className='tip-status' role='status'>
-            Sent {amount} {symbol} to {name}.{' '}
+            <TipText parts={tipSentParts(result?.request ?? { name, amount, token: symbol })} />{' '}
             {result?.explorerUrl && (
               <a href={result.explorerUrl} target='_blank' rel='noopener noreferrer'>
                 View transaction
@@ -324,10 +458,105 @@ export function TipForm({ world, player, onClose }) {
           </div>
         </>
       )}
+      {step === 'unknown' && (
+        <>
+          <div className='tip-unknown' role='alert'>
+            <TipText parts={tipUnknownParts(result?.request ?? { name, amount, token: symbol })} />
+          </div>
+          <div className='tip-row'>
+            <button type='button' onClick={onClose}>
+              Close
+            </button>
+          </div>
+        </>
+      )}
       <div className='tip-note'>Tips go directly between wallets. This world never holds funds or takes a fee.</div>
       <div className='tip-note tip-beta'>
         Beta: tips may still have bugs. Connect a wallet holding only a small amount and start with small tips.
       </div>
+    </div>
+  )
+}
+
+// "A tip may have been sent": the notes of requests to the wallet whose result this world did not get
+// (tipOutcome.js), newest first, shown under the wallet button after a reload, after a send that ended without a
+// clear answer, and each until it is dismissed or ten minutes old. The first TIP_MARKERS_SHOWN are shown, and a
+// line says how many more there are; dismissing one brings the next into view. Each Dismiss removes the key of
+// the note it is shown beside (by its id); the read that follows removes only notes that are expired or are not
+// notes (tipOutcome.js), never another live one. A note is this browser's memory of a request, not a record of a
+// payment. What another tab writes is shown when this page next reads the storage (its load, the end of a send of
+// its own, a Dismiss, a note's ten minutes).
+export function TipMarkerNotice({ world }) {
+  const [markers, setMarkers] = useState(() => world.evm?.getTipMarkers() ?? [])
+  useEffect(() => {
+    const onMarkers = value => setMarkers(Array.isArray(value) ? value : [])
+    world.on('evm:tipMarkers', onMarkers)
+    return () => world.off('evm:tipMarkers', onMarkers)
+  }, [world])
+  // the first note to be ten minutes old: then the storage is read again (which removes it)
+  useEffect(() => {
+    if (!markers.length) return
+    const now = Date.now()
+    const timer = setTimeout(
+      () => setMarkers(world.evm?.getTipMarkers() ?? []),
+      Math.min(...markers.map(marker => tipMarkerRemainingMs(marker, now))) + 1
+    )
+    return () => clearTimeout(timer)
+  }, [world, markers])
+  if (!markers.length) return null
+  return (
+    <div
+      className='tip-marker'
+      role='status'
+      onKeyDown={e => e.stopPropagation()}
+      onKeyUp={e => e.stopPropagation()}
+      css={css`
+        max-width: min(24rem, calc(100vw - 2rem));
+        padding: 0.6rem 0.8rem;
+        background: rgba(11, 10, 21, 0.85);
+        border: 1px solid #fcd34d;
+        border-radius: 1rem;
+        color: white;
+        font-size: 0.75rem;
+        pointer-events: auto;
+        backdrop-filter: blur(5px);
+        display: flex;
+        flex-direction: column;
+        gap: 0.6rem;
+        .tip-marker-note {
+          display: flex;
+          flex-direction: column;
+          gap: 0.4rem;
+        }
+        .tip-marker-note + .tip-marker-note {
+          padding-top: 0.6rem;
+          border-top: 1px solid rgba(255, 255, 255, 0.15);
+        }
+        button {
+          align-self: flex-end;
+          background: rgba(255, 255, 255, 0.08);
+          color: white;
+          border: 1px solid rgba(255, 255, 255, 0.15);
+          border-radius: 0.5rem;
+          padding: 0.2rem 0.6rem;
+          font-size: 0.75rem;
+          cursor: pointer;
+        }
+      `}
+    >
+      {markers.slice(0, TIP_MARKERS_SHOWN).map(marker => (
+        <div key={marker.id} className='tip-marker-note'>
+          <div className='tip-marker-text'>
+            <TipText parts={tipMarkerParts(marker)} />
+          </div>
+          <button type='button' onClick={() => world.evm?.dismissTipMarker(marker.id)}>
+            Dismiss
+          </button>
+        </div>
+      ))}
+      {markers.length > TIP_MARKERS_SHOWN && (
+        <div className='tip-marker-more'>{tipMarkerMoreText(markers.length - TIP_MARKERS_SHOWN)}</div>
+      )}
     </div>
   )
 }

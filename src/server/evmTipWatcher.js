@@ -264,6 +264,9 @@ export function createTipWatcher({
       }
     },
     size: () => entries.size,
+    // false from the moment the RPC left the `finalized` tag unanswered (tips end `no_finality`) until a later
+    // read of it works: a job that reaches its last step asks again once finalityRecheckMs has passed
+    canConfirm: () => !stopped && unsupportedAt === null,
     stop() {
       stopped = true
       if (timer) clearTimeout(timer)

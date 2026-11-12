@@ -15,6 +15,7 @@ function shell(world, stored = null) {
   const writes = []
   const SolanaWalletPanel = () => null
   const EvmWalletPanel = () => null
+  const TipMarkerNotice = () => null
   const context = {
     useState(initial) {
       const index = cursor++
@@ -42,6 +43,7 @@ function shell(world, stored = null) {
     blurIfPointer() {},
     SolanaWalletPanel,
     EvmWalletPanel,
+    TipMarkerNotice,
     element: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat() }),
     console,
     ...Object.fromEntries(['WalletIcon', 'XIcon', 'LoaderIcon'].map(name => [name, name])),
@@ -74,6 +76,8 @@ function shell(world, stored = null) {
       tabs: all(tree, n => n.props?.role === 'tab'),
       solana: wrapperOf(SolanaWalletPanel),
       evm: wrapperOf(EvmWalletPanel),
+      notice: all(tree, n => n.type === TipMarkerNotice)[0],
+      noticeInPanel: all(panel, n => n.type === TipMarkerNotice).length > 0,
       dot: all(tree, n => typeof n.props?.className === 'string' && n.props.className.includes('solana-wallet-dot'))[0],
     }
   }
@@ -146,4 +150,13 @@ test('wallet shell: toggle status aggregates both chains; the green/orange dot s
     assert.ok(v.toggle.props.className.split(' ').includes(status), `${status}: ${v.toggle.props.className}`)
     assert.equal(!!v.dot, dot, status)
   }
+})
+
+test('wallet shell: the tip notice sits outside the panel, so a folded panel does not hide it; EVM worlds only', () => {
+  for (const collapsed of [true, false]) {
+    const v = shell(makeWorld(), { collapsed }).view()
+    assert.ok(v.notice, `mounted (collapsed: ${collapsed})`)
+    assert.equal(v.noticeInPanel, false)
+  }
+  assert.equal(shell(makeWorld({ evm: false }), { collapsed: false }).view().notice, undefined)
 })

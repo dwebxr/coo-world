@@ -70,7 +70,8 @@ try {
       const status = await wire.waitFor(m => m.method === 'onEvmWalletStatus', { from })
       eq(
         JSON.stringify(status.data),
-        JSON.stringify({ verified: true, wallet: account.address, attempt: 1, reason: 'ok' })
+        // tips are on and this world has no chain RPC: it says at sign-in that it does not confirm them
+        JSON.stringify({ verified: true, wallet: account.address, attempt: 1, reason: 'ok', confirmsTips: false })
       )
       await sleep(300)
       ok(

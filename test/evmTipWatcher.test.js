@@ -188,9 +188,11 @@ test('tip watcher: only a JSON-RPC error makes finality unavailable; transport f
   assert.deepEqual(flaky.results, [{ state: 'confirmed' }])
 
   const unsupported = setup({ answers: { receipt: receiptFor(), finalized: new RpcError(-32602) } })
+  assert.equal(unsupported.watcher.canConfirm(), true, 'nothing known against the RPC yet')
   unsupported.watcher.watch(unsupported.job())
   unsupported.watcher.watch(unsupported.job())
   await unsupported.advance(2000)
+  assert.equal(unsupported.watcher.canConfirm(), false, 'the world stops saying that it confirms tips')
   assert.deepEqual(unsupported.results, [
     { state: 'unverified', reason: 'no_finality' },
     { state: 'unverified', reason: 'no_finality' },
@@ -210,9 +212,13 @@ test('tip watcher: only a JSON-RPC error makes finality unavailable; transport f
   assert.equal(malformed.results.at(-1).reason, 'no_finality')
   // after a minute the tag is tried again
   await malformed.advance(60_000)
+  assert.equal(malformed.watcher.canConfirm(), false, 'time alone does not change the answer')
   malformed.watcher.watch(malformed.job())
   await malformed.advance(4000)
   assert.deepEqual(malformed.results.at(-1), { state: 'confirmed' })
+  assert.equal(malformed.watcher.canConfirm(), true, 'a read of the tag that worked does')
+  malformed.watcher.stop()
+  assert.equal(malformed.watcher.canConfirm(), false, 'a stopped watcher confirms nothing')
 })
 
 test('tip watcher: an unknown transaction stops early; a known pending one times out', async () => {
@@ -330,6 +336,7 @@ test('tip watcher: a null finalized block is retried, not taken as an unsupporte
   await t.advance(6000)
   assert.equal(t.results.length, 0, 'still waiting')
   assert.equal(t.lines.length, 0, 'nothing logged')
+  assert.equal(t.watcher.canConfirm(), true, 'a chain with no finalized block yet is not an RPC without the tag')
   t.state.finalized = { number: '0x10' }
   await t.advance(4000)
   assert.deepEqual(t.results, [{ state: 'confirmed' }])

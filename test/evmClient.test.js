@@ -15,6 +15,7 @@ import {
   tipAmountReason,
 } from '../src/core/extras/evmTokens.js'
 import { WALLET_LINKS, isAppScheme, sameHost } from '../src/core/extras/walletLinks.js'
+import * as tipOutcome from '../src/core/extras/tipOutcome.js'
 
 const deps = {
   isEvmAddress,
@@ -31,6 +32,7 @@ const deps = {
   WALLET_LINKS,
   isAppScheme,
   sameHost,
+  ...tipOutcome,
 }
 
 const checksummed = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
@@ -451,8 +453,74 @@ const txHash = `0x${'cd'.repeat(32)}`
 const ticket = 'a1'.repeat(16)
 const tipEnv = { PUBLIC_EVM_CHAIN_IDS: '137', PUBLIC_EVM_TIP_TOKENS: 'JPYC,USDC' }
 
-function tipSetup(t, { chain = '0x89' } = {}) {
-  const h = setup(t, { env: tipEnv })
+// a Storage that keeps what was written and in which order it was used; `broken` makes every access throw,
+// `unreadable` only reading, `unremovable` only removing
+function fakeStorage({ broken = false, unreadable = false, unremovable = false } = {}) {
+  const items = new Map()
+  const log = []
+  const use = (name, fn) => {
+    log.push(name)
+    if (broken || (unreadable && name === 'getItem') || (unremovable && name === 'removeItem')) {
+      throw new DOMException('The operation is insecure.', 'SecurityError')
+    }
+    return fn()
+  }
+  return {
+    items,
+    log,
+    get length() {
+      return items.size
+    },
+    key: index => use('key', () => [...items.keys()][index] ?? null),
+    getItem: key => use('getItem', () => (items.has(key) ? items.get(key) : null)),
+    setItem: (key, value) => use('setItem', () => void items.set(key, String(value))),
+    removeItem: key => use('removeItem', () => void items.delete(key)),
+  }
+}
+// what tip() says it asked the wallet for (the time aside)
+const asked = (amount, patch = {}) => ({ name: 'Bob', address: '0x1563…5508', amount, token: 'JPYC', ...patch })
+const withoutTime = request => {
+  assert.equal(typeof request.at, 'number')
+  const copy = { ...request }
+  delete copy.at
+  return copy
+}
+const timeless = outcome => (outcome.request ? { ...outcome, request: withoutTime(outcome.request) } : outcome)
+// a note as the storage keeps it, its id aside (16 hex digits, a new one for each request)
+const withoutId = marker => {
+  assert.match(marker.id, /^[0-9a-f]{16}$/)
+  const copy = { ...marker }
+  delete copy.id
+  return copy
+}
+
+// `windowStorage`: no storage is passed to the integration, which then uses its window's localStorage: the
+// given `storage`, or none at all for 'missing'
+// `pageClock`: the integration's clock of this page's time (performance.now when none is given)
+function tipSetup(
+  t,
+  { chain = '0x89', storage = fakeStorage(), tipStorage = () => storage, windowStorage = false, pageClock } = {}
+) {
+  const provider = makeProvider()
+  const win = makeWindow({ ethereum: provider })
+  if (windowStorage === true) win.localStorage = storage
+  const options = { ...(windowStorage ? {} : { tipStorage }), ...(pageClock ? { pageClock } : {}) }
+  const h = setup(t, { env: tipEnv, provider, win, options })
+  h.storage = storage
+  // the notes in the storage, each under its own key, in the order they were written
+  h.notes = () =>
+    [...storage.items].filter(([key]) => key.startsWith('evmTipRequest:')).map(([, text]) => JSON.parse(text))
+  // the one note, where at most one is expected
+  h.marker = () => {
+    const notes = h.notes()
+    assert.ok(notes.length <= 1, `one note at most: ${notes.length}`)
+    return notes[0] ?? null
+  }
+  // what the notice was told, each time: the notes, newest first
+  h.markers = []
+  h.world.on('evm:tipMarkers', value => h.markers.push(value))
+  // the recipient as the Players list has it
+  h.world.entities.players = new Map([['p2', { data: { id: 'p2', name: 'Bob' } }]])
   h.chain = chain
   h.provider.handlers = {
     eth_accounts: () => [lower],
@@ -490,12 +558,13 @@ test('evm tips: the transfer goes from the verified wallet to the intent recipie
   await flush()
   assert.deepEqual(requests(h.world, 'RequestEvmTipIntent')[0][1], { id: 1, to: 'p2', token: 'JPYC', amount: '100' })
   h.intent()
-  assert.deepEqual(await pending, {
+  assert.deepEqual(timeless(await pending), {
     ok: true,
     txHash,
     explorerUrl: `https://polygonscan.com/tx/${txHash}`,
     ticket,
     reported: true,
+    request: asked('100'),
   })
   // the hash is reported against the server's ticket, after the wallet returned it
   assert.deepEqual(requests(h.world, 'EvmTip'), [['onEvmTip', { ticket, txHash }]])
@@ -587,12 +656,6 @@ test('evm tips: a different wallet account or a rejection in the wallet stops th
   await flush()
   h.intent()
   assert.deepEqual(await rejected, { ok: false, reason: 'rejected' })
-  h.provider.reject = null
-  h.provider.handlers.eth_sendTransaction = () => 'not-a-hash'
-  const bad = h.evm.tip({ playerId: 'p2', token: 'JPYC', amount: '1' })
-  await flush()
-  h.intent()
-  assert.deepEqual(await bad, { ok: false, reason: 'bad_tx' })
 })
 
 test('evm tips: switches to the tip chain, adding Polygon when the wallet does not know it', async t => {
@@ -672,12 +735,13 @@ test('evm tips: a network change in the wallet while sending is reported, not li
   const same = h.evm.tip({ playerId: 'p2', token: 'JPYC', amount: '1' })
   await flush()
   h.intent()
-  assert.deepEqual(await same, {
+  assert.deepEqual(timeless(await same), {
     ok: true,
     txHash,
     explorerUrl: `https://polygonscan.com/tx/${txHash}`,
     ticket,
     reported: true,
+    request: asked('1'),
   })
   h.provider.handlers.eth_sendTransaction = () => {
     h.provider.emit('chainChanged', '0x1')
@@ -686,13 +750,14 @@ test('evm tips: a network change in the wallet while sending is reported, not li
   const moved = h.evm.tip({ playerId: 'p2', token: 'JPYC', amount: '1' })
   await flush()
   h.intent()
-  assert.deepEqual(await moved, {
+  assert.deepEqual(timeless(await moved), {
     ok: true,
     txHash,
     explorerUrl: null,
     warning: 'chain_changed',
     ticket,
     reported: true,
+    request: asked('1'),
   })
   assert.equal(h.provider.listenerCount('chainChanged'), 0, 'listener removed after each tip')
 })
@@ -757,6 +822,675 @@ test('evm tips: an account switch during the send still reports the transaction 
     .map(([method]) => method)
     .filter(method => method === 'onRevokeEvmWallet' || method === 'onEvmTip')
   assert.deepEqual(order, ['onRevokeEvmWallet', 'onEvmTip'])
+})
+
+// --- what the payer is told: how a send ended, and the note of a request (src/core/extras/tipOutcome.js) ---
+
+// one tip of 1 JPYC to p2 through the wallet's eth_sendTransaction handler
+async function sendTip(h, options = {}) {
+  const pending = h.evm.tip({ playerId: 'p2', token: 'JPYC', amount: '1', ...options })
+  await flush()
+  h.intent(options.intent)
+  return timeless(await pending)
+}
+
+test('evm tips: after the wallet was asked to send, anything but a hash or a rejection is an unknown outcome', async t => {
+  const h = tipSetup(t)
+  await h.verify()
+  const unknown = { ok: false, reason: 'outcome_unknown', request: asked('1') }
+  // the wallet took the request and then failed without saying no: a session that dropped, a relay timeout,
+  // an internal error. The transfer may have been sent
+  for (const error of [
+    new Error('WalletConnect request failed'),
+    Object.assign(new Error('The WalletConnect session ended.'), { code: 4100 }),
+    Object.assign(new Error('Internal JSON-RPC error.'), { code: -32603 }),
+    'a thrown string',
+    null,
+  ]) {
+    h.provider.handlers.eth_sendTransaction = () => {
+      throw error
+    }
+    assert.deepEqual(await sendTip(h), unknown, String(error?.message ?? error))
+  }
+  // an answer that is not a transaction hash (it had no text of its own before, and read as "try again")
+  for (const answer of ['not-a-hash', `0x${'cd'.repeat(31)}`, null, undefined, { hash: txHash }]) {
+    h.provider.handlers.eth_sendTransaction = () => answer
+    assert.deepEqual(await sendTip(h), unknown, String(answer))
+  }
+  assert.equal(requests(h.world, 'EvmTip').length, 0, 'nothing to report to the server')
+  // an explicit rejection is still "rejected", and the next tip is an ordinary one
+  h.provider.reject = 'eth_sendTransaction'
+  assert.deepEqual(await sendTip(h), { ok: false, reason: 'rejected' })
+  h.provider.reject = null
+  h.provider.handlers.eth_sendTransaction = () => txHash
+  assert.equal((await sendTip(h)).ok, true)
+})
+
+test('evm tips: an error before the wallet was asked to send is "not sent", whatever it is', async t => {
+  const h = tipSetup(t)
+  await h.verify()
+  // the same errors that mean "unknown" after the request mean "nothing was sent" before it
+  for (const method of ['eth_accounts', 'eth_chainId']) {
+    const original = h.provider.handlers[method]
+    h.provider.handlers[method] = () => {
+      throw Object.assign(new Error('The WalletConnect session ended.'), { code: 4100 })
+    }
+    assert.deepEqual(await sendTip(h), { ok: false, reason: 'failed' }, method)
+    h.provider.handlers[method] = original
+  }
+  // a refused network switch is a rejection
+  h.chain = '0x1'
+  h.provider.handlers.wallet_switchEthereumChain = () => {
+    throw Object.assign(new Error('User rejected the request.'), { code: 4001 })
+  }
+  assert.deepEqual(await sendTip(h), { ok: false, reason: 'rejected' })
+  assert.equal(h.sent().length, 0)
+  assert.equal(h.marker(), null, 'no note of a request that was never made')
+  assert.deepEqual(h.storage.log, [], 'the storage was not touched')
+  assert.deepEqual(h.markers, [], 'and the notice was told nothing')
+})
+
+test('evm tips: the note of a request is written before the wallet is asked and removed on a known result', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1_700_000_000_000 })
+  const h = tipSetup(t)
+  await h.verify()
+  // written before eth_sendTransaction: a page that is gone when the wallet answers has left it behind
+  let during
+  h.provider.handlers.eth_sendTransaction = () => {
+    during = { marker: h.marker(), log: [...h.storage.log], reported: requests(h.world, 'EvmTip').length }
+    return txHash
+  }
+  assert.equal((await sendTip(h)).ok, true)
+  const note = { name: 'Bob', address: '0x1563…5508', amount: '1', token: 'JPYC', at: 1_700_000_000_000 }
+  assert.deepEqual({ ...during, marker: withoutId(during.marker) }, { marker: note, log: ['setItem'], reported: 0 })
+  assert.ok(!JSON.stringify(during.marker).toLowerCase().includes(recipient.slice(6, -4).toLowerCase()), 'short form')
+  // the hash was handed to the server: nothing is left, and the notice is told so
+  assert.equal(h.marker(), null)
+  assert.deepEqual(h.markers, [[]])
+  assert.deepEqual(h.evm.getTipMarkers(), [])
+
+  // an explicit rejection: removed
+  h.provider.reject = 'eth_sendTransaction'
+  assert.equal((await sendTip(h)).reason, 'rejected')
+  assert.equal(h.marker(), null)
+  assert.deepEqual(h.markers, [[], []])
+  h.provider.reject = null
+
+  // an unknown outcome: it stays, the notice gets it, and a reload (a new page on the same storage) reads it
+  h.provider.handlers.eth_sendTransaction = () => {
+    throw new Error('relay timeout')
+  }
+  assert.equal((await sendTip(h)).reason, 'outcome_unknown')
+  const left = h.marker()
+  assert.deepEqual(withoutId(left), note)
+  assert.deepEqual(h.markers.at(-1), [left])
+  const reloaded = tipSetup(t, { storage: h.storage })
+  assert.deepEqual(reloaded.evm.getTipMarkers(), [left], 'before any sign-in')
+  // for ten minutes
+  t.mock.timers.tick(599_999)
+  assert.deepEqual(reloaded.evm.getTipMarkers(), [left])
+  t.mock.timers.tick(1)
+  assert.deepEqual(reloaded.evm.getTipMarkers(), [])
+  assert.equal(h.marker(), null, 'and it is removed from the storage')
+
+  // dismissed by the player
+  assert.equal((await sendTip(h)).reason, 'outcome_unknown')
+  assert.notEqual(h.marker(), null)
+  h.evm.dismissTipMarker(h.marker().id)
+  assert.equal(h.marker(), null)
+  assert.deepEqual(h.markers.at(-1), [])
+
+  // a hash that could not be handed to the server (no ticket to report it against): the note stays for the
+  // page that comes after this one
+  h.provider.handlers.eth_sendTransaction = () => txHash
+  const unreported = await sendTip(h, { intent: { ticket: undefined } })
+  assert.equal(unreported.ok, true)
+  assert.equal(unreported.reported, false)
+  assert.notEqual(h.marker(), null)
+  assert.deepEqual(h.markers.at(-1), [h.marker()])
+})
+
+test('evm tips: a reload while the wallet holds the request leaves the note for the next page', async t => {
+  const h = tipSetup(t)
+  await h.verify()
+  // the wallet never answers this page
+  h.provider.handlers.eth_sendTransaction = () => new Promise(() => {})
+  h.evm.tip({ playerId: 'p2', token: 'JPYC', amount: '5' })
+  await flush()
+  h.intent()
+  await flush()
+  assert.equal(h.sent().length, 1)
+  assert.deepEqual(h.markers, [], 'this page says nothing while the request is open')
+  h.evm.dispose('test')
+  const next = tipSetup(t, { storage: h.storage })
+  const [only, ...more] = next.evm.getTipMarkers()
+  assert.deepEqual(more, [])
+  const { at, ...note } = withoutId(only)
+  assert.deepEqual(note, asked('5'))
+  assert.equal(typeof at, 'number')
+})
+
+test('evm tips: storage that throws or is missing changes nothing about the send', async t => {
+  const broken = fakeStorage({ broken: true })
+  const cases = [
+    ['every access throws', { storage: broken }],
+    [
+      'reading the storage itself throws',
+      {
+        tipStorage: () => {
+          throw new DOMException('The operation is insecure.', 'SecurityError')
+        },
+      },
+    ],
+    ['no storage', { tipStorage: () => undefined }],
+    // the note is written, but reading it back (to remove it, or to show it) throws
+    ['reading throws', { storage: fakeStorage({ unreadable: true }) }],
+    // the default: the window's localStorage, which this test window does not have
+    ['the window has none', { windowStorage: 'missing' }],
+  ]
+  for (const [name, options] of cases) {
+    const h = tipSetup(t, options)
+    await h.verify()
+    assert.deepEqual(h.evm.getTipMarkers(), [], name)
+    assert.equal((await sendTip(h)).ok, true, name)
+    assert.equal(h.sent().length, 1, name)
+    assert.deepEqual(requests(h.world, 'EvmTip'), [['onEvmTip', { ticket, txHash }]], name)
+    h.provider.handlers.eth_sendTransaction = () => {
+      throw new Error('relay timeout')
+    }
+    assert.deepEqual(await sendTip(h), { ok: false, reason: 'outcome_unknown', request: asked('1') }, name)
+    assert.deepEqual(h.markers, [[], []], `${name}: nothing could be kept`)
+    // a Dismiss (of a note an earlier read showed) does not throw either
+    h.evm.dismissTipMarker('0123456789abcdef')
+  }
+  assert.ok(broken.log.includes('setItem') && broken.log.includes('removeItem'), 'the storage was tried')
+  // a value under the prefix that is not a note, in a storage that refuses to remove it: not shown, and the
+  // read does not throw
+  const stuck = fakeStorage({ unremovable: true })
+  stuck.items.set('evmTipRequest:0123456789abcdef', 'junk')
+  const kept = tipSetup(t, { storage: stuck })
+  assert.deepEqual(kept.evm.getTipMarkers(), [])
+  assert.ok(stuck.log.includes('removeItem'))
+  await kept.verify()
+  assert.equal((await sendTip(kept)).ok, true)
+  // and where the window has one, that is the storage used when none is passed
+  const h = tipSetup(t, { windowStorage: true })
+  await h.verify()
+  h.provider.handlers.eth_sendTransaction = () => {
+    throw new Error('relay timeout')
+  }
+  assert.equal((await sendTip(h)).reason, 'outcome_unknown')
+  assert.deepEqual({ ...withoutId(h.marker()), at: 0 }, { ...asked('1'), at: 0 })
+})
+
+test('evm tips: the note counts its ten minutes from the request to the wallet, not from the intent', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1_700_000_000_000 })
+  const h = tipSetup(t, { chain: '0x1' })
+  await h.verify()
+  // the wallet's network prompt is answered eight minutes after the intent came, and the request then fails
+  // without an answer
+  h.provider.handlers.wallet_switchEthereumChain = ([{ chainId }]) => {
+    t.mock.timers.tick(480_000)
+    h.chain = chainId
+    return null
+  }
+  h.provider.handlers.eth_sendTransaction = () => {
+    throw new Error('relay timeout')
+  }
+  const pending = h.evm.tip({ playerId: 'p2', token: 'JPYC', amount: '1' })
+  await flush()
+  h.intent()
+  const outcome = await pending
+  assert.equal(outcome.reason, 'outcome_unknown')
+  assert.equal(outcome.request.at, 1_700_000_000_000, 'the request: when the intent came')
+  assert.equal(h.marker().at, 1_700_000_480_000, 'the note: when the wallet was asked to send')
+  // the page comes back two minutes after the request: the note is shown for the eight minutes left
+  t.mock.timers.tick(120_000)
+  const reloaded = tipSetup(t, { storage: h.storage })
+  assert.deepEqual(reloaded.evm.getTipMarkers(), [h.marker()])
+  t.mock.timers.tick(479_999)
+  assert.equal(reloaded.evm.getTipMarkers().length, 1)
+  t.mock.timers.tick(1)
+  assert.deepEqual(reloaded.evm.getTipMarkers(), [])
+})
+
+test('evm tips: with five notes kept, a completion or a Dismiss removes exactly one key', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1_700_000_000_000 })
+  const h = tipSetup(t)
+  await h.verify()
+  h.provider.handlers.eth_sendTransaction = () => {
+    throw new Error('relay timeout')
+  }
+  for (const amount of ['1', '2', '3', '4', '5']) {
+    t.mock.timers.tick(1_000)
+    assert.equal((await sendTip(h, { amount })).reason, 'outcome_unknown')
+  }
+  // all five are kept and given to the notice, newest first
+  assert.deepEqual(
+    h.markers.at(-1).map(note => note.amount),
+    ['5', '4', '3', '2', '1']
+  )
+  assert.deepEqual(
+    h.notes().map(note => note.amount),
+    ['1', '2', '3', '4', '5']
+  )
+  assert.deepEqual(h.evm.getTipMarkers(), h.markers.at(-1))
+  const removals = () => h.storage.log.filter(name => name === 'removeItem').length
+  // a sixth send whose hash reaches the world: its own key is written and removed, and no other
+  h.provider.handlers.eth_sendTransaction = () => txHash
+  let before = removals()
+  assert.equal((await sendTip(h, { amount: '6' })).reported, true)
+  assert.equal(removals() - before, 1)
+  assert.deepEqual(
+    h.notes().map(note => note.amount),
+    ['1', '2', '3', '4', '5']
+  )
+  // a Dismiss of the oldest: that key, and no other
+  before = removals()
+  h.evm.dismissTipMarker(h.notes()[0].id)
+  assert.equal(removals() - before, 1)
+  assert.deepEqual(
+    h.markers.at(-1).map(note => note.amount),
+    ['5', '4', '3', '2']
+  )
+})
+
+test('evm tips: a request that ends removes its own note, not the note of a request another tab made since', async t => {
+  // two tabs of the site: two pages, one storage
+  const storage = fakeStorage()
+  const a = tipSetup(t, { storage })
+  const b = tipSetup(t, { storage })
+  await a.verify()
+  await b.verify()
+  const hold = h => {
+    const wallet = {}
+    h.provider.handlers.eth_sendTransaction = () =>
+      new Promise((resolve, reject) => Object.assign(wallet, { resolve, reject }))
+    return wallet
+  }
+  const start = async (h, amount) => {
+    const wallet = hold(h)
+    const pending = h.evm.tip({ playerId: 'p2', token: 'JPYC', amount })
+    await flush()
+    h.intent()
+    await flush()
+    return { wallet, pending }
+  }
+  const rejection = () => Object.assign(new Error('User rejected the request.'), { code: 4001 })
+  const amounts = () => a.notes().map(note => note.amount)
+  // A asks its wallet, then B asks its own: a note each
+  const tipA = await start(a, '1')
+  const tipB = await start(b, '2')
+  const [noteA, noteB] = a.notes()
+  assert.deepEqual(amounts(), ['1', '2'])
+  assert.notEqual(noteA.id, noteB.id)
+  // A's hash reaches the world: A's note goes, B's stays (and A's page is told the notes that are kept)
+  tipA.wallet.resolve(txHash)
+  assert.equal((await tipA.pending).reported, true)
+  assert.deepEqual(a.notes(), [noteB])
+  assert.deepEqual(a.markers.at(-1), [noteB])
+  // B's wallet rejects: its own note goes
+  tipB.wallet.reject(rejection())
+  assert.equal((await tipB.pending).reason, 'rejected')
+  assert.deepEqual(a.notes(), [])
+  assert.deepEqual(b.markers.at(-1), [])
+  // the other way round: A's rejection leaves B's note, B's hash removes it
+  const again = await start(a, '3')
+  const later = await start(b, '4')
+  again.wallet.reject(rejection())
+  assert.equal((await again.pending).reason, 'rejected')
+  assert.deepEqual(amounts(), ['4'])
+  later.wallet.resolve(txHash)
+  assert.equal((await later.pending).reported, true)
+  assert.deepEqual(a.notes(), [])
+
+  // A's send ends without a clear answer, and its notice shows that note; B then asks its wallet. Dismissing
+  // the note A shows removes that note only, and A's notice now shows B's
+  a.provider.handlers.eth_sendTransaction = () => {
+    throw new Error('relay timeout')
+  }
+  assert.equal((await sendTip(a)).reason, 'outcome_unknown')
+  const [shown] = a.markers.at(-1)
+  assert.equal(a.markers.at(-1).length, 1)
+  const held = await start(b, '5')
+  assert.equal(a.notes().length, 2)
+  a.evm.dismissTipMarker(shown.id)
+  assert.deepEqual(amounts(), ['5'])
+  assert.deepEqual(
+    a.markers.at(-1).map(note => note.amount),
+    ['5']
+  )
+  // and both pages read every note that is kept, newest first
+  a.provider.handlers.eth_sendTransaction = () => {
+    throw new Error('relay timeout')
+  }
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() + 1_000 })
+  assert.equal((await sendTip(a)).reason, 'outcome_unknown')
+  assert.deepEqual(
+    b.evm.getTipMarkers().map(note => note.amount),
+    ['1', '5']
+  )
+  held.wallet.resolve(txHash)
+  assert.equal((await held.pending).reported, true)
+  assert.deepEqual(
+    b.evm.getTipMarkers().map(note => note.amount),
+    ['1']
+  )
+})
+
+test('evm tips: a listener of the notice that throws does not turn a sent tip into a failure', async t => {
+  const h = tipSetup(t)
+  await h.verify()
+  h.world.on('evm:tipMarkers', () => {
+    throw new Error('a broken panel')
+  })
+  assert.equal((await sendTip(h)).ok, true)
+})
+
+test('evm tips: the form is told whom the transfer will name before the wallet is asked anything', async t => {
+  const h = tipSetup(t)
+  await h.verify()
+  const seen = []
+  const outcome = await sendTip(h, {
+    onIntent: info => seen.push({ ...info, calls: h.provider.calls.map(([method]) => method).slice(2) }),
+  })
+  assert.equal(seen.length, 1)
+  const request = withoutTime(seen[0].request)
+  assert.deepEqual(request, asked('1'))
+  assert.deepEqual(seen[0].calls, [], 'no wallet request yet')
+  assert.equal(seen[0].confirms, null, 'this intent did not say')
+  assert.deepEqual(outcome.request, request, 'the same in the result')
+  // the address shown is the one inside the transfer the wallet is asked for
+  const [, [tx]] = h.sent()[0]
+  assert.equal(tx.data, encodeTransfer(recipient, 10n ** 18n))
+  assert.ok(tx.data.includes(request.address.slice(2, 6).toLowerCase()))
+  assert.ok(
+    tx.data.endsWith(`${request.address.slice(-4).toLowerCase()}${(10n ** 18n).toString(16).padStart(64, '0')}`)
+  )
+  // a name that is not text, or a player the list does not have, is shown as no name
+  h.world.entities.players.get('p2').data.name = { toString: () => 'Mallory' }
+  assert.equal((await sendTip(h)).request.name, '')
+  h.world.entities.players.clear()
+  assert.equal((await sendTip(h)).request.name, '')
+  // a form that throws does not stop the send; a refused intent calls nobody
+  assert.equal(
+    (
+      await sendTip(h, {
+        onIntent: () => {
+          throw new Error('unmounted')
+        },
+      })
+    ).ok,
+    true
+  )
+  let called = 0
+  const refused = h.evm.tip({ playerId: 'p2', token: 'JPYC', amount: '1', onIntent: () => called++ })
+  await flush()
+  h.world.network.onEvmTipIntent({ id: requests(h.world, 'RequestEvmTipIntent').at(-1)[1].id, ok: false, reason: 'x' })
+  assert.deepEqual(await refused, { ok: false, reason: 'x' })
+  assert.equal(called, 0)
+})
+
+test('evm tips: when the intent is the first to say the world is not confirming, the wallet is asked nothing until the payer chose', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1_700_000_000_000 })
+  const h = tipSetup(t)
+  // signed in where the world said that it confirms tips
+  const run = await h.start()
+  h.challenge(run.attempt)
+  await flush()
+  h.status(run.attempt, { confirmsTips: true })
+  await run.promise
+  assert.equal(h.evm.getTipsConfirmed(), true)
+  const signIn = h.provider.calls.length
+  const walletCalls = () => h.provider.calls.slice(signIn).map(([method]) => method)
+  // what happened, in order: the form told, the form asked to choose, each wallet request (every one answered
+  // at once, as WalletConnect's account and chain queries can be)
+  const order = []
+  h.provider.handlers.eth_accounts = () => (order.push('eth_accounts'), [lower])
+  h.provider.handlers.eth_chainId = () => (order.push('eth_chainId'), h.chain)
+  let during
+  h.provider.handlers.eth_sendTransaction = () => {
+    order.push('eth_sendTransaction')
+    during = h.marker()
+    return txHash
+  }
+  let choose
+  const options = {
+    playerId: 'p2',
+    token: 'JPYC',
+    amount: '1',
+    onIntent: info => order.push(`intent:${info.confirms}`),
+    onUnconfirmed: ({ request }) => {
+      order.push('choose')
+      assert.deepEqual(withoutTime(request), asked('1'))
+      return new Promise(resolve => (choose = resolve))
+    },
+  }
+  const pending = h.evm.tip(options)
+  await flush()
+  h.intent({ confirms: false })
+  await flush()
+  await flush()
+  assert.deepEqual(order, ['intent:false', 'choose'])
+  assert.deepEqual(walletCalls(), [], 'nothing asked of the wallet while the payer reads')
+  assert.deepEqual(h.storage.log, [], 'no note of a request that was not made')
+  assert.deepEqual(await h.evm.tip(options), { ok: false, reason: 'busy' }, 'one send at a time')
+  // four minutes later the payer presses Send anyway
+  t.mock.timers.tick(240_000)
+  choose(true)
+  assert.equal((await pending).ok, true)
+  assert.deepEqual(order, ['intent:false', 'choose', 'eth_accounts', 'eth_chainId', 'eth_sendTransaction'])
+  assert.equal(during.at, 1_700_000_240_000, 'the note is timed when the wallet is asked')
+  assert.equal(h.sent().length, 1)
+
+  // Cancel: nothing was asked of the wallet, nothing was noted, nothing is told
+  const send = async (patch = {}, intent = { confirms: false }) => {
+    order.length = 0
+    const result = h.evm.tip({ ...options, ...patch })
+    await flush()
+    h.intent(intent)
+    await flush()
+    await flush()
+    // in an object: an async function would wait for the send itself
+    return { result }
+  }
+  const callsBefore = h.provider.calls.length
+  const markersBefore = h.markers.length
+  const storageBefore = h.storage.log.length
+  for (const [name, answer] of [
+    ['Cancel', () => false],
+    ['an answer that is not true', () => 'yes'],
+    ['a choice that fails', () => Promise.reject(new Error('unmounted'))],
+  ]) {
+    const { result } = await send()
+    assert.deepEqual(order, ['intent:false', 'choose'], name)
+    choose(answer())
+    assert.deepEqual(await result, { ok: false, reason: 'declined' }, name)
+  }
+  for (const [name, patch] of [
+    ['no callback', { onUnconfirmed: undefined }],
+    [
+      'a callback that throws',
+      {
+        onUnconfirmed: () => {
+          throw new Error('broken')
+        },
+      },
+    ],
+    ['"shown" that is not true', { unconfirmedShown: 'yes', onUnconfirmed: () => false }],
+  ]) {
+    assert.deepEqual(await (await send(patch)).result, { ok: false, reason: 'declined' }, name)
+  }
+  assert.equal(h.provider.calls.length, callsBefore, 'the wallet was asked nothing')
+  assert.equal(h.markers.length, markersBefore, 'the notice was told nothing')
+  assert.equal(h.storage.log.length, storageBefore, 'the storage was not touched')
+  assert.equal(requests(h.world, 'EvmTip').length, 1, 'nothing reported')
+
+  // a wallet change while the payer reads: Send anyway sends nothing
+  const switched = await send()
+  h.provider.emit('accountsChanged', [otherAddress])
+  choose(true)
+  assert.deepEqual(await switched.result, { ok: false, reason: 'cancelled' })
+  assert.equal(h.provider.calls.length, callsBefore, 'the wallet was asked nothing')
+  assert.equal(h.sent().length, 1)
+})
+
+// one send that stops on the "not confirming" step; `wait` is what the clocks do before Send anyway
+async function answerLate(h, wait) {
+  const calls = h.provider.calls.length
+  let choose
+  const pending = h.evm.tip({
+    playerId: 'p2',
+    token: 'JPYC',
+    amount: '1',
+    onUnconfirmed: () => new Promise(resolve => (choose = resolve)),
+  })
+  await flush()
+  h.intent({ confirms: false })
+  await flush()
+  await flush()
+  assert.equal(h.provider.calls.length, calls, 'nothing asked while the payer reads')
+  wait()
+  choose(true)
+  return { outcome: timeless(await pending), asked: h.provider.calls.slice(calls).map(([method]) => method) }
+}
+
+test('evm tips: "Send anyway" acts on the intent for five minutes of this page\'s time, whatever the wall clock does', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1_700_000_000_000 })
+  const page = { now: 5_000 }
+  const h = tipSetup(t, { pageClock: () => page.now })
+  const run = await h.start()
+  h.challenge(run.attempt)
+  await flush()
+  h.status(run.attempt, { confirmsTips: true })
+  await run.promise
+  const sent = ['eth_accounts', 'eth_chainId', 'eth_sendTransaction']
+  // a millisecond before the five minutes: sent
+  const inTime = await answerLate(h, () => (page.now += 299_999))
+  assert.equal(inTime.outcome.ok, true)
+  assert.deepEqual(inTime.asked, sent)
+  // the wall clock jumps an hour either way while the payer reads for a second: sent
+  for (const [name, jump] of [
+    ['forward', 3_600_000],
+    ['back', -3_600_000],
+  ]) {
+    const jumped = await answerLate(h, () => {
+      page.now += 1_000
+      t.mock.timers.setTime(Date.now() + jump)
+    })
+    assert.equal(jumped.outcome.ok, true, name)
+    assert.deepEqual(jumped.asked, sent, name)
+  }
+  const storageBefore = h.storage.log.length
+  const markersBefore = h.markers.length
+  // five minutes of this page's time, or more: not sent, and the wallet is asked nothing
+  for (const [name, wait] of [
+    ['five minutes', () => (page.now += 300_000)],
+    ['an hour', () => (page.now += 3_600_000)],
+    // eleven minutes, then the wall clock set back nine: two minutes by the wall clock
+    [
+      'a wall clock set back after the wait',
+      () => {
+        page.now += 660_000
+        t.mock.timers.setTime(Date.now() + 660_000 - 540_000)
+      },
+    ],
+  ]) {
+    const late = await answerLate(h, wait)
+    assert.deepEqual(late.outcome, { ok: false, reason: 'intent_expired' }, name)
+    assert.deepEqual(late.asked, [], name)
+  }
+  assert.equal(h.storage.log.length, storageBefore, 'no note of a request that was not made')
+  assert.equal(h.markers.length, markersBefore, 'the notice was told nothing')
+  assert.equal(h.sent().length, 3)
+  assert.equal(requests(h.world, 'EvmTip').length, 3)
+  // a send without the step is not timed: the wallet's own prompts take as long as they take
+  h.provider.handlers.eth_accounts = () => {
+    page.now += 3_600_000
+    return [lower]
+  }
+  assert.equal((await sendTip(h, { intent: { confirms: true } })).ok, true)
+  assert.equal(h.sent().length, 4)
+})
+
+test('evm tips: the time of the "not confirming" step is the page\'s own clock (performance.now)', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1_700_000_000_000 })
+  const page = { now: 5_000 }
+  t.mock.method(performance, 'now', () => page.now)
+  const h = tipSetup(t)
+  const run = await h.start()
+  h.challenge(run.attempt)
+  await flush()
+  h.status(run.attempt, { confirmsTips: true })
+  await run.promise
+  // the wall clock alone moves on by an hour: sent
+  assert.equal((await answerLate(h, () => t.mock.timers.tick(3_600_000))).outcome.ok, true)
+  // the page's clock moves on by five minutes: not sent
+  const late = await answerLate(h, () => (page.now += 300_000))
+  assert.deepEqual(late, { outcome: { ok: false, reason: 'intent_expired' }, asked: [] })
+})
+
+test('evm tips: no stop when the form had said it already, or when the intent does not say "not confirming"', async t => {
+  const h = tipSetup(t)
+  await h.verify()
+  let stops = 0
+  const onUnconfirmed = () => (stops++, true)
+  for (const [name, patch, intent] of [
+    ['the form said it before Send', { unconfirmedShown: true }, { confirms: false }],
+    ['the world confirms', {}, { confirms: true }],
+    ['an older server that does not say', {}, {}],
+  ]) {
+    const before = h.sent().length
+    assert.equal((await sendTip(h, { ...patch, onUnconfirmed, intent })).ok, true, name)
+    assert.equal(h.sent().length, before + 1, name)
+  }
+  assert.equal(stops, 0)
+  // and where the intent says it, the payer is asked once per send
+  assert.equal((await sendTip(h, { onUnconfirmed, intent: { confirms: false } })).ok, true)
+  assert.equal(stops, 1)
+})
+
+test('evm tips: whether the world confirms tips is what it last said (sign-in, an intent, a tip status)', async t => {
+  const h = tipSetup(t)
+  assert.equal(h.evm.getTipsConfirmed(), null, 'not said')
+  await h.verify()
+  assert.equal(h.evm.getTipsConfirmed(), null, 'a server that does not say')
+  // the sign-in result says it
+  const run = await h.start()
+  h.challenge(run.attempt)
+  await flush()
+  h.status(run.attempt, { confirmsTips: false })
+  await run.promise
+  assert.equal(h.evm.getTipsConfirmed(), false)
+  // each intent says it afresh, and the form gets it before the wallet is asked
+  const seen = []
+  await sendTip(h, { intent: { confirms: true }, onIntent: info => seen.push(info.confirms) })
+  assert.deepEqual(seen, [true])
+  assert.equal(h.evm.getTipsConfirmed(), true)
+  await sendTip(h, { intent: { confirms: false }, onIntent: info => seen.push(info.confirms) })
+  assert.deepEqual(seen, [true, false])
+  await sendTip(h, { intent: { confirms: 'yes' }, onIntent: info => seen.push(info.confirms) })
+  assert.deepEqual(seen, [true, false, false], 'only a boolean changes it')
+  await sendTip(h, { intent: { confirms: true } })
+  // a tip of this player's that came back unconfirmed for want of an RPC or of finality
+  for (const reason of ['no_rpc', 'no_finality']) {
+    h.world.network.onEvmTipStatus({ ticket, txHash, state: 'unverified', reason })
+    assert.equal(h.evm.getTipsConfirmed(), false, reason)
+    await sendTip(h, { intent: { confirms: true } })
+    assert.equal(h.evm.getTipsConfirmed(), true)
+  }
+  // other reasons say nothing about the world
+  for (const data of [
+    { state: 'unverified', reason: 'timeout' },
+    { state: 'failed', reason: 'no_rpc' },
+    { state: 'watching' },
+  ]) {
+    h.world.network.onEvmTipStatus({ ticket, txHash, ...data })
+    assert.equal(h.evm.getTipsConfirmed(), true, JSON.stringify(data))
+  }
+  // a sign-in result that is not accepted (another attempt) changes nothing
+  h.status(999, { confirmsTips: false })
+  assert.equal(h.evm.getTipsConfirmed(), true)
 })
 
 // --- WalletConnect (loaded on demand; a fake adapter stands in for src/client/walletconnect.js) ---

@@ -7,6 +7,7 @@ import { cls } from '../utils'
 import { useRank } from './useRank'
 import { blurIfPointer, SolanaWalletPanel } from './SolanaWalletPanel'
 import { EvmWalletPanel } from './EvmWalletPanel'
+import { TipMarkerNotice } from './TipForm'
 
 // 開閉状態と選択タブの記憶 (ブラウザごと)。world.prefs は使わない。
 // キー名とパネル id は従来の Solana 専用ボタンと同じ (保存済みの開閉状態と e2e のセレクタを保つ)
@@ -257,6 +258,9 @@ export function WalletButton({ world }) {
         )}
         {showDot && <span className={cls('solana-wallet-dot', status)} aria-hidden='true' />}
       </button>
+
+      {/* a tip request whose result this world did not get (shown whether the panel is open or folded) */}
+      {world.evm && <TipMarkerNotice world={world} />}
 
       {/* 展開パネル (トグルの真下)。畳んでもタブを切り替えても中身はマウントしたまま hidden で隠す:
           更新ボタンのロックや選択中のウォレットなど、パネル側の状態を作り直しで失わないため */}

@@ -10,6 +10,9 @@
 // - NFT door: the OpenPay door example (docs/scripting/examples/nft-door.js) on the token-door fixture's frame
 //   and panels, read from the sender's page: the status on load, Open, the store link for a token id she does
 //   not hold, and the update after her wallet disconnects.
+// - EVM_HOLDING_CONTRACTS: the server is started with the test's NFT contract listed (in another case than the
+//   apps write it). A door for a contract that is not listed stays shut for a holder, and the mock RPC is never
+//   asked about that contract.
 // usage: node test/e2e/evm-tips-gate.mjs [--engine=chromium] [--port=3133]
 import fs from 'node:fs'
 import http from 'node:http'
@@ -47,6 +50,9 @@ const RPC_PORT = PORT + 1
 const PREFIX = path.join(ensureOut(), `evm-tips-gate-${ENGINE}`)
 const JPYC = '0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29'
 const NFT = '0x00000000000000000000000000000000000c0ffe'
+// a contract the operator did not list. The mock chain answers for it exactly as for NFT (Alice holds the token),
+// so a server that asked would open the door
+const UNLISTED_NFT = '0x0000000000000000000000000000000000decaf0'
 const TOKEN_ID = keccak256(toHex('openpay:license:h_e2e'))
 const alice = privateKeyToAccount(`0x${'11'.repeat(32)}`)
 const bob = privateKeyToAccount(`0x${'22'.repeat(32)}`)
@@ -125,7 +131,7 @@ function startRpc() {
           if (data.includes(SMART_SIGNATURES.limited)) return error(-32005, 'rate limited')
           return error(-32000, 'execution reverted')
         }
-        if (to === NFT.toLowerCase() && data.startsWith(SELECTORS.balanceOf1155)) {
+        if ((to === NFT || to === UNLISTED_NFT) && data.startsWith(SELECTORS.balanceOf1155)) {
           const owner = `0x${data.slice(34, 74)}`
           const id = BigInt(`0x${data.slice(74)}`)
           const balance = id === BigInt(TOKEN_ID) ? (holders.get(owner) ?? 0n) : 0n
@@ -252,6 +258,8 @@ try {
       PUBLIC_EVM_CHAIN_IDS: '137',
       PUBLIC_EVM_TIP_TOKENS: 'JPYC,USDC',
       EVM_RPC_URL_137: `http://127.0.0.1:${RPC_PORT}/`,
+      // the contracts player.getEvmHolding may ask about: the test's NFT, written in upper case
+      EVM_HOLDING_CONTRACTS: `137:0x${NFT.slice(2).toUpperCase()}`,
     },
   })
   const script = installAsset(server, path.join(REPO_ROOT, 'docs/scripting/examples/nft-gate.js'))
@@ -538,9 +546,9 @@ try {
   )
   const doorScript = 'asset://nft-door-e2e.js'
   const STORE = `http://127.0.0.1:${RPC_PORT}/store?product=h_e2e`
-  const doorProps = tokenId => ({
+  const doorProps = (tokenId, contract = NFT) => ({
     chainId: 137,
-    contract: NFT,
+    contract,
     tokenId,
     minBalance: 1,
     passName: 'E2E Pass',
@@ -627,6 +635,66 @@ try {
       return calls
     })
     eq(JSON.stringify(opened), JSON.stringify([[STORE, '_blank', 'noopener,noreferrer']]), 'store page in a new tab')
+  })
+
+  await step('door: an unlisted contract stays shut for a holder, and the chain is not asked', async () => {
+    // the start-up line says what is listed
+    eq(
+      server.lines(/^\[envs\] player\.getEvmHolding\(\) asks only about /).join('\n'),
+      `[envs] player.getEvmHolding() asks only about 137:${NFT} (EVM_HOLDING_CONTRACTS)`,
+      'the start-up line'
+    )
+    const toUnlisted = () => rpcCalls.filter(r => r.method === 'eth_call' && r.params[0].to === UNLISTED_NFT)
+    // the same door and the same token id Alice holds, on the unlisted contract
+    observer.installApp({
+      id: 'nft-door-unlisted',
+      script: doorScript,
+      model: 'asset://ai.glb',
+      props: doorProps(TOKEN_ID, UNLISTED_NFT),
+      position: [-40, 0, -40],
+    })
+    const loaded = await waitDoor(
+      'nft-door-unlisted',
+      d => d.sign === 'TRY AGAIN' && d.pass === 'Pass: unknown',
+      'the "unknown" answer on load'
+    )
+    // the press shows CHECKING… at once (read in the same turn: the answer needs no chain and comes fast); the
+    // sign after it is the answer to the press
+    const pressed = await sender.page.evaluate(() => {
+      const root = window.world.entities.get('nft-door-unlisted').root
+      root.get('nft-door-open').onTrigger()
+      return root.get('nft-door-status').value
+    })
+    eq(pressed, 'CHECKING…', 'the press was taken')
+    await waitDoor('nft-door-unlisted', d => d.sign === 'TRY AGAIN', 'the answer to Open')
+    // an opening door starts to move with its answer (the holder's door above): this one does not
+    await sleep(1000)
+    const after = await doorState('nft-door-unlisted')
+    eq(after.left, loaded.left, 'the door did not move')
+    eq(after.sign, 'TRY AGAIN', 'the sign')
+    eq(toUnlisted().length, 0, 'the mock RPC was never asked about the unlisted contract')
+    // the operator is told once which contract, and not whose wallet
+    const lines = server.lines(/getEvmHolding: a script asked about /)
+    eq(lines.length, 1, `one log line (${lines.join(' | ')})`)
+    ok(lines[0].includes(`137:${UNLISTED_NFT}, which is not in EVM_HOLDING_CONTRACTS`), 'it names the contract')
+    ok(!server.out.toLowerCase().includes(alice.address.slice(2).toLowerCase()), "Alice's address is not in the log")
+    // and the mock chain would have said "holds": asked directly, it answers 2 for Alice on that contract
+    const answer = await fetch(`http://127.0.0.1:${RPC_PORT}/`, {
+      method: 'POST',
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'eth_call',
+        params: [
+          {
+            to: UNLISTED_NFT,
+            data: `${SELECTORS.balanceOf1155}${encodeAddressWord(alice.address)}${encodeUintWord(BigInt(TOKEN_ID))}`,
+          },
+          'latest',
+        ],
+      }),
+    }).then(response => response.json())
+    eq(BigInt(answer.result), 2n, 'the mock chain answers "holds" for the unlisted contract')
   })
 
   await step('door: disconnecting while the door is open updates both doors, and closing keeps it', async () => {

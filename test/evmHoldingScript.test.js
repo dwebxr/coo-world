@@ -4,6 +4,8 @@ import 'ses'
 await import('../src/core/lockdown.js')
 import { callForScript } from '../src/core/extras/scriptValues.js'
 import { loadClient } from './lib/clientHarness.mjs'
+import { createEvmHoldingService, readHoldingContractsEnv } from '../src/server/evmHoldings.js'
+import { SELECTORS, encodeUintWord } from '../src/core/extras/evmAbi.js'
 
 const warnings = []
 const createProxy = loadClient('core/extras/createPlayerProxy.js', 'createPlayerProxy', {
@@ -148,4 +150,63 @@ test('getEvmHolding: crash, rebuild, destroy and fatal suppress settlement', asy
     for (let i = 0; i < 8; i++) await Promise.resolve()
     assert.equal(settled, false, mode)
   }
+})
+
+// N1. The script below is the whole attack: a contract of the author's own whose balanceOf(owner, id) answers 40
+// bits of the owner's address, asked for ids 0..3. The network's evmHolding here does what the server's does with
+// the answer of the real holdings service (test/serverEvmWallet.test.js runs the server's own).
+test('getEvmHolding (N1): a script reads no address bits through a contract the operator did not list', async () => {
+  const owner = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
+  const hostile = '0xbad0000000000000000000000000000000000bad'
+  const extract = `(async () => {
+    let address = 0n
+    const answers = []
+    for (let id = 0; id < 4; id++) {
+      const result = await player.getEvmHolding({ chainId: 137, contract: '${hostile}', standard: 'erc1155', tokenId: id })
+      answers.push({ ...result })
+      address += BigInt(result.balance) << (40n * BigInt(id))
+    }
+    return { answers, address: '0x' + address.toString(16).padStart(40, '0') }
+  })()`
+  const run = async env => {
+    const calls = []
+    const lines = []
+    const rpc = {
+      chainId: 137,
+      async call(method, [{ to, data }]) {
+        calls.push(to)
+        assert.equal(data.slice(0, 10), SELECTORS.balanceOf1155)
+        const bits = (BigInt(`0x${data.slice(34, 74)}`) >> (40n * BigInt(`0x${data.slice(74)}`))) & ((1n << 40n) - 1n)
+        return `0x${encodeUintWord(bits)}`
+      },
+    }
+    const holdings = createEvmHoldingService({
+      rpcs: new Map([[137, rpc]]),
+      contracts: readHoldingContractsEnv(env),
+      log: { warn: line => lines.push(line) },
+    })
+    const { compartment, world } = setup()
+    world.network.evmHolding = async (playerId, spec) => {
+      const result = await holdings.get(owner, spec)
+      return { verified: true, known: result.known === true, balance: result.known === true ? result.balance : 0 }
+    }
+    return { ...(await compartment.evaluate(extract)), calls, lines }
+  }
+  // the default list (the variable is not set) and a list of other contracts: nothing, and the node is not asked
+  for (const env of [{}, { EVM_HOLDING_CONTRACTS: `137:0x${'ab'.repeat(20)}` }, { EVM_HOLDING_CONTRACTS: '' }]) {
+    const closed = await run(env)
+    assert.deepEqual(
+      closed.answers,
+      Array.from({ length: 4 }, () => ({ verified: true, known: false, balance: 0, holds: false })),
+      JSON.stringify(env)
+    )
+    assert.equal(closed.address, `0x${'0'.repeat(40)}`)
+    assert.equal(closed.calls.length, 0, 'no RPC call')
+    assert.equal(closed.lines.length, 1, 'one log line for the four questions')
+    assert.ok(!closed.lines[0].toLowerCase().includes(owner.slice(2).toLowerCase()))
+  }
+  // not bounded by the list: an operator who lists that contract gives every script the address
+  const open = await run({ EVM_HOLDING_CONTRACTS: `137:${hostile}` })
+  assert.equal(open.address, owner.toLowerCase())
+  assert.equal(open.calls.length, 4)
 })

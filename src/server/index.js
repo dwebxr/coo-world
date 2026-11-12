@@ -31,6 +31,7 @@ import { clientIpKeys, createUploadLimits, readUploadLimitsEnv } from './uploadL
 import { createConnectionLimits, readConnectionLimitsEnv } from './connectionLimits'
 import { assetRoutes, uploadRoutes } from './uploadRoutes'
 import { readKickEnv } from './kickList'
+import { describeHoldingContracts, readHoldingContractsEnv } from './evmHoldings'
 
 const rootDir = path.join(__dirname, '../')
 const worldDir = path.join(rootDir, process.env.WORLD)
@@ -53,6 +54,16 @@ for (const note of adminStartupNotes(process.env)) console[note.level](note.mess
 if (readKickEnv(process.env).byAddress) {
   console.log(
     '[kick] KICK_BY_ADDRESS is on: after an admin kicks a player, new users from that address wait too. Behind a proxy that does not pass client addresses, that is every new user.'
+  )
+}
+// the contracts player.getEvmHolding() may ask about (evmHoldings.js): a bad value stops here, before the world
+// loads. Said only where EVM wallets are configured
+const holdingContracts = readHoldingContractsEnv(process.env)
+if (process.env.PUBLIC_EVM_CHAIN_IDS?.trim()) {
+  console.log(
+    `[envs] player.getEvmHolding() asks only about ${
+      holdingContracts.length ? describeHoldingContracts(holdingContracts) : 'no contract'
+    } (${process.env.EVM_HOLDING_CONTRACTS === undefined ? 'the default: EVM_HOLDING_CONTRACTS is not set' : 'EVM_HOLDING_CONTRACTS'})`
   )
 }
 if (!process.env.SAVE_INTERVAL) {

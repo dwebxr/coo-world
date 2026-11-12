@@ -31,7 +31,7 @@ const clear = socket => {
   socket.ws.packets.length = 0
 }
 
-function fixture(t, { evmGating = evmEnabled, balance = 0, evmHoldings, tipWatcher, timers } = {}) {
+function fixture(t, { evmGating = evmEnabled, balance = 0, evmHoldings, tipWatcher, timers, context } = {}) {
   t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 })
   const users = new Map()
   const entities = new Map()
@@ -48,7 +48,7 @@ function fixture(t, { evmGating = evmEnabled, balance = 0, evmHoldings, tipWatch
     tokenBalanceService: service,
     evmHoldings,
     tipWatcher,
-    context: { solanaGating: solanaEnabled, evmGating, process: { env: {} }, ...timers },
+    context: { solanaGating: solanaEnabled, evmGating, process: { env: {} }, ...timers, ...context },
   })
   network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
   network.db = () => ({
@@ -654,6 +654,95 @@ test('evm holdings: without an RPC the answer is verified but unknown', async t 
   const a = await f.connect('a')
   await f.verify(a)
   assert.deepEqual(plain(await f.network.evmHolding('a', {})), { verified: true, known: false, balance: 0 })
+})
+
+// The holdings service the server builds itself at init(), from EVM_HOLDING_CONTRACTS, over a mock RPC whose
+// contracts all answer like the N1 contract: balanceOf(owner, id) is 40 bits of the owner's address.
+const OPENPAY = '0x1c652241Cc820Ce897F0d8D9351Df9AD8a0916cc'
+const HOSTILE = '0xBAD0000000000000000000000000000000000bad'
+function holdingsFromEnv(t, env) {
+  const calls = []
+  const rpc = {
+    chainId: 137,
+    async call(method, [{ to, data }]) {
+      calls.push({ method, to })
+      const id = data.length > 74 ? BigInt(`0x${data.slice(74)}`) : 0n
+      const bits = (BigInt(`0x${data.slice(34, 74)}`) >> (40n * id)) & ((1n << 40n) - 1n)
+      return `0x${bits.toString(16).padStart(64, '0')}`
+    },
+  }
+  const lines = []
+  t.mock.method(console, 'warn', line => lines.push(line))
+  const f = fixture(t, { context: { process: { env }, createEvmRpcs: () => new Map([[137, rpc]]) } })
+  const spec = (contract, tokenId) => ({ chainId: 137, contract, standard: 'erc1155', tokenId })
+  return { f, calls, lines, spec }
+}
+const UNKNOWN_HOLDING = { verified: true, known: false, balance: 0 }
+
+test('evm holdings: EVM_HOLDING_CONTRACTS not set, the server asks about the OpenPay contract and no other', async t => {
+  const { f, calls, lines, spec } = holdingsFromEnv(t, {})
+  const a = await f.connect('a')
+  await f.verify(a)
+  // N1: four questions to a contract of the script author's own
+  for (const id of [0, 1, 2, 3]) {
+    assert.deepEqual(plain(await f.network.evmHolding('a', spec(HOSTILE, id))), UNKNOWN_HOLDING)
+  }
+  assert.equal(calls.length, 0, 'no RPC call')
+  // the answer is the one a chain without an RPC gets, and an unverified player still reads as unverified
+  assert.deepEqual(plain(await f.network.evmHolding('a', { ...spec(HOSTILE, 0), chainId: 1 })), UNKNOWN_HOLDING)
+  await f.connect('b')
+  assert.deepEqual(plain(await f.network.evmHolding('b', spec(HOSTILE, 0))), {
+    verified: false,
+    known: false,
+    balance: 0,
+  })
+  assert.equal(lines.length, 1, 'one line for the contract')
+  assert.ok(
+    lines[0].startsWith(
+      `[evm] getEvmHolding: a script asked about 137:${HOSTILE.toLowerCase()}, which is not in EVM_HOLDING_CONTRACTS`
+    ),
+    lines[0]
+  )
+  assert.ok(!lines[0].toLowerCase().includes(account.address.slice(2).toLowerCase()), 'no player address logged')
+  // the default: the door's contract, in any case
+  const held = plain(await f.network.evmHolding('a', spec(OPENPAY.toLowerCase(), 0)))
+  assert.equal(held.verified && held.known, true)
+  assert.equal(held.balance, Number(BigInt(account.address) & ((1n << 40n) - 1n)))
+  assert.deepEqual(calls, [{ method: 'eth_call', to: OPENPAY.toLowerCase() }])
+})
+
+test('evm holdings: EVM_HOLDING_CONTRACTS set, its contracts replace the default', async t => {
+  const { f, calls, spec } = holdingsFromEnv(t, { EVM_HOLDING_CONTRACTS: ` 137:${HOSTILE.toLowerCase()} ` })
+  const a = await f.connect('a')
+  await f.verify(a)
+  assert.deepEqual(plain(await f.network.evmHolding('a', spec(OPENPAY, 0))), UNKNOWN_HOLDING)
+  assert.equal(calls.length, 0, 'the default contract is not asked once the variable is set')
+  // what the list does not bound: the operator listed the N1 contract, and four balances are the address
+  let address = 0n
+  for (const id of [0, 1, 2, 3]) {
+    const result = plain(await f.network.evmHolding('a', spec(HOSTILE, id)))
+    assert.equal(result.known, true)
+    address += BigInt(result.balance) << (40n * BigInt(id))
+  }
+  assert.equal(address, BigInt(account.address))
+  assert.equal(calls.length, 4)
+})
+
+test('evm holdings: EVM_HOLDING_CONTRACTS set to nothing allows no contract', async t => {
+  const { f, calls, spec } = holdingsFromEnv(t, { EVM_HOLDING_CONTRACTS: '' })
+  const a = await f.connect('a')
+  await f.verify(a)
+  for (const contract of [OPENPAY, HOSTILE]) {
+    assert.deepEqual(plain(await f.network.evmHolding('a', spec(contract, 0))), UNKNOWN_HOLDING)
+  }
+  assert.equal(calls.length, 0)
+})
+
+test('evm holdings: a malformed EVM_HOLDING_CONTRACTS stops init, it does not run with another list', t => {
+  assert.throws(
+    () => holdingsFromEnv(t, { EVM_HOLDING_CONTRACTS: `137:${OPENPAY},137:0x1234` }),
+    /\[envs\] EVM_HOLDING_CONTRACTS: entry 2 is not chainId:0xaddress/
+  )
 })
 
 // P2b: tx reports, the watcher's results, announcements and the script `tip` event.

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { css } from '@firebolt-dev/css'
 import { hashFile } from '../../core/utils-client'
+import { createMonacoLoader, monacoFor } from './monacoLoader'
 
 // editor will remember a single script so you can flip between tabs without hitting save (eg viewing docs)
 const cached = {
@@ -87,8 +88,7 @@ export function ScriptEditor({ app, onHandle }) {
   }, [editor])
   useEffect(() => {
     let dead
-    load().then(monaco => {
-      if (dead) return
+    const use = monaco => {
       // only use cached if it matches this key
       const state = cached.key === key ? cached : null
       const initialCode = state?.value ?? app.script?.code ?? '// …'
@@ -134,7 +134,8 @@ export function ScriptEditor({ app, onHandle }) {
           codeRef.current = newCode
         }
       }
-    })
+    }
+    monacoFor(load, { closed: () => dead, toast: text => app.world.emit('toast', text), use })
     return () => {
       dead = true
     }
@@ -165,40 +166,20 @@ export function ScriptEditor({ app, onHandle }) {
   )
 }
 
-let promise
+// one loader for the page: Monaco is loaded once, and tried again after a failure (monacoLoader.js)
+let loadMonaco = null
 const load = () => {
-  if (promise) return promise
-  promise = new Promise((resolve, reject) => {
-    ;(async () => {
-      try {
-        // init require
-        window.require = {
-          paths: {
-            vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.49.0/min/vs',
-          },
-        }
-        // load loader
-        await new Promise(resolve => {
-          const script = document.createElement('script')
-          script.src = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.49.0/min/vs/loader.js' // prettier-ignore
-          script.onload = () => resolve()
-          document.head.appendChild(script)
-        })
-        // load editor
-        await new Promise(resolve => {
-          window.require(['vs/editor/editor.main'], () => {
-            resolve()
-          })
-        })
+  if (!loadMonaco) {
+    loadMonaco = createMonacoLoader({
+      win: window,
+      doc: document,
+      prepare: monaco => {
         monaco.editor.defineTheme('default', darkPlusTheme)
         monaco.editor.setTheme('default')
-        resolve(window.monaco)
-      } catch (e) {
-        reject(e)
-      }
-    })()
-  })
-  return promise
+      },
+    })
+  }
+  return loadMonaco()
 }
 
 // see https://stackoverflow.com/questions/65921179/vs-code-theme-dark-plus-css-for-monaco-editor

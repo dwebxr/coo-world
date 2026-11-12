@@ -189,7 +189,11 @@ test('assetHeaders: nosniff + explicit type everywhere; sandbox + attachment out
   }
   assert.equal(assetHeaders('glb')['Content-Type'], 'model/gltf-binary')
   assert.equal(assetHeaders('vrm')['Content-Type'], 'model/gltf-binary')
-  assert.equal(assetHeaders('js')['Content-Type'], 'text/javascript')
+  assert.equal(assetHeaders('js')['Content-Type'], 'text/plain; charset=utf-8')
+  // no type a browser runs as a script from the page's origin, for any extension
+  for (const ext of [...ALLOWED_EXTENSIONS, 'html', 'svg', 'mjs', 'json', '']) {
+    assert.doesNotMatch(assetHeaders(ext)['Content-Type'], /javascript|ecmascript|html|xml|svg/i, ext)
+  }
   assert.equal(assetHeaders('hdr')['Content-Type'], 'image/vnd.radiance')
   assert.equal(assetHeaders('png')['Content-Type'], 'image/png')
   assert.equal(assetHeaders('html')['Content-Type'], 'application/octet-stream')

@@ -378,7 +378,7 @@ test('s3 assets: every extension uploads accept is stored with the type the loca
   }
   const types = Object.fromEntries(commands.map(c => [c.input.Key.split('.').pop(), c.input.ContentType]))
   for (const ext of ALLOWED_EXTENSIONS) assert.equal(types[ext], assetHeaders(ext)['Content-Type'], ext)
-  assert.equal(types.js, 'text/javascript')
+  assert.equal(types.js, 'text/plain; charset=utf-8')
   assert.equal(types.vrm, 'model/gltf-binary')
   assert.equal(types.hdr, 'image/vnd.radiance')
   for (const ext of ['svg', 'html', 'bin']) assert.equal(types[ext], 'application/octet-stream', ext)

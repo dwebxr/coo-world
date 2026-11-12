@@ -211,6 +211,11 @@ PUBLIC_EVM_TIP_TOKENS=JPYC,USDC   # Polygon (137) built-ins; or SYMBOL:0xaddress
   - It waits for the `finalized` block and checks that the transaction is not older than the tip request.
   - It then announces "Alice tipped Bob 100 JPYC" in chat and fires the `tip` event for server scripts.
   - Announcements are paced: at most 3 at once then one every 3 s, one per sender every 30 s. Otherwise only the recipient is told.
+- How many reports the server watches, and in what order:
+  - A connection has 2 transactions watched at a time; a third report is answered "busy" and can be made again. The table for the whole world holds 2 for every connection the server admits (`WS_MAX_SOCKETS`, 64 by default: 128 jobs, about 1.1 KB of memory each), so the connections of one address (8 by default) do not fill it. With `WS_MAX_SOCKETS=0` it holds 128 and can be full.
+  - The chain calls are one budget for all reports of all senders: 4 calls started each second, with a second call for some, about 4 to 5 a second in the tests. A report waits its turn behind the ones that have waited longer, and a new report no longer goes ahead of them.
+  - That is a larger table and an order, not a share for each sender. A junk hash takes calls from the same budget as a real one, so connections that report junk delay every confirmation: in a simulation with 63 of them an honest tip was confirmed after about a minute instead of 5 s (it used to end unconfirmed). More of them, a slow RPC or a late `finalized` block can still take a tip past the 180 s after which the server stops watching it; the sender's page can then report it once more.
+  - A tip that is not confirmed is still a transfer that reached the recipient. It is not announced and scripts do not hear of it.
 - Without that RPC, tips are still sent but never confirmed or announced
 - Not confirmed:
   - an RPC that does not answer the `finalized` tag

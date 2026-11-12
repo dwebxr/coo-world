@@ -5,6 +5,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { parseSiweMessage } from 'viem/siwe'
 import { encodeAbiParameters, hashMessage } from 'viem/utils'
 import * as evm from '../src/server/evm-gating.js'
+import { readConnectionLimitsEnv } from '../src/server/connectionLimits.js'
 import { erc6492CallData } from '../src/server/erc6492.js'
 import { RpcError } from '../src/server/evmRpc.js'
 import {
@@ -183,6 +184,22 @@ test('evm session: independent of the Solana wallet session shape', () => {
     intentBucket: { tokens: evm.TIP_INTENT_BURST, at: 5 },
     tickets: new Map(),
   })
+})
+
+test('evm tip watch table: two jobs for every connection WS_MAX_SOCKETS admits', () => {
+  const sockets = env => readConnectionLimitsEnv(env).maxSockets
+  assert.equal(evm.TIP_WATCH_PER_SOCKET, 2)
+  assert.equal(evm.resolveTipWatchMax({}), 2 * sockets({}))
+  assert.equal(evm.resolveTipWatchMax({}), 128)
+  assert.equal(evm.TIP_WATCH_MAX, 128, 'the test process sets no WS_MAX_SOCKETS')
+  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '200' }), 400)
+  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '1' }), 2)
+  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '2.5' }), 5)
+  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '0.2' }), 1, 'a whole number of jobs')
+  // no limit on connections: nothing to derive the table from, so it is the default's
+  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '0' }), 128)
+  // a value the server refuses at start-up is refused here too, not replaced by a default
+  assert.throws(() => evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '-1' }), /\[envs\] WS_MAX_SOCKETS/)
 })
 
 test('evm tip tokens: resolved for the sign-in chain only, invalid lists disable tips with a log', () => {

@@ -1988,7 +1988,9 @@ export class ServerNetwork extends System {
     // 上限に当たってもチケットはそのまま (再提出の回数は減らさない)
     let watchingHere = 0
     for (const other of state.tickets.values()) if (other.state === 'watching') watchingHere++
-    // 同じ txHash ごとの上限は設けない (他人の報告で枠を埋められないように)。他人の見張りは from が違うので確定しない
+    // 同じ txHash ごとの上限は設けない (他人の報告で枠を埋められないように)。他人の見張りは from が違うので確定しない。
+    // TIP_WATCH_MAX is 2 x WS_MAX_SOCKETS (evm-gating.js), so with a connection limit the per-socket 2 is the limit
+    // a sender meets. Being watched is a place in the table, not a share of the chain calls
     if (watchingHere >= evmGating.TIP_WATCH_PER_SOCKET || this.tipWatcher.size() >= evmGating.TIP_WATCH_MAX) {
       return reply('unverified', 'busy')
     }

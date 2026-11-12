@@ -1137,7 +1137,7 @@ test('evm tip result: unconfirmed tips can be reported again once with the same 
   assert.equal(f.chat.length, 0)
 })
 
-test('evm tip report: two watched tips per socket and sixteen in the world', async t => {
+test('evm tip report: two watched tips per socket, and a table of two for every connection the server admits', async t => {
   const f = await tipFixture(t)
   f.report(f.a, { ticket: f.ticket(), txHash: hashOf(10) })
   f.report(f.a, { ticket: f.ticket(), txHash: hashOf(11) })
@@ -1145,11 +1145,34 @@ test('evm tip report: two watched tips per socket and sixteen in the world', asy
   assert.equal(f.report(f.a, { ticket: third, txHash: hashOf(12) })[0].reason, 'busy')
   f.watcher.jobs.pop().onDone({ state: 'failed', reason: 'no_transfer' })
   assert.equal(f.report(f.a, { ticket: third, txHash: hashOf(12) })[0].state, 'watching', 'a slot came back')
+  // the table is full at TIP_WATCH_MAX, whoever filled it, and has room again one below it
   f.watcher.jobs.length = 0
-  for (let i = 0; i < 16; i++) f.watcher.jobs.push({ socket: null })
+  for (let i = 0; i < evm.TIP_WATCH_MAX; i++) f.watcher.jobs.push({ socket: null })
   f.network.onSetEvmTipReceive(f.a, { enabled: true })
   const fourth = f.ticket(f.b, { to: 'a' })
   assert.equal(f.report(f.b, { ticket: fourth, txHash: hashOf(13) })[0].reason, 'busy')
+  f.watcher.jobs.pop()
+  assert.equal(f.report(f.b, { ticket: fourth, txHash: hashOf(13) })[0].state, 'watching', 'busy leaves the ticket')
+})
+
+test('evm tip report: eight connections with two junk reports each leave a ninth its two slots', async t => {
+  // eight is what one address may have open (WS_CONNECT_CONCURRENT_PER_IP); the table used to hold 16 jobs
+  const f = await tipFixture(t)
+  const junk = privateKeyToAccount(`0x${'44'.repeat(32)}`)
+  let hash = 100
+  for (let i = 0; i < 8; i++) {
+    const socket = await f.connect(`junk${i}`)
+    await f.verify(socket, { signer: junk })
+    for (let slot = 0; slot < 2; slot++) {
+      assert.equal(f.report(socket, { ticket: f.ticket(socket), txHash: hashOf(hash++) })[0].state, 'watching')
+    }
+    assert.equal(f.report(socket, { ticket: f.ticket(socket), txHash: hashOf(hash++) })[0].reason, 'busy')
+  }
+  assert.equal(f.watcher.jobs.length, 16)
+  for (let slot = 0; slot < 2; slot++) {
+    assert.equal(f.report(f.a, { ticket: f.ticket(), txHash: hashOf(hash++) })[0].state, 'watching')
+  }
+  assert.equal(f.watcher.jobs.length, 18)
 })
 
 test('evm tip announcements: three at once then one every three seconds; a sender is announced once per 30 s', async t => {

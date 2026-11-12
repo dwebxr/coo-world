@@ -11,6 +11,7 @@ import {
   sameEvmAddress,
 } from '../core/extras/evmChains.js'
 import { createLogOnce } from '../core/extras/logOnce.js'
+import { readConnectionLimitsEnv } from './connectionLimits.js'
 import { erc6492CallData } from './erc6492.js'
 import { RpcError } from './evmRpc.js'
 import { parseTipTokens } from '../core/extras/evmTokens.js'
@@ -252,13 +253,25 @@ export const EVM_TIP_TOKENS = Object.freeze(resolveTipTokens(process.env, config
 export const TIP_INTENT_BURST = 3
 export const TIP_INTENT_REFILL_MS = 10_000
 export const TIP_RECEIVE_COOLDOWN_MS = 1_000
-// 確定確認 (P2b): チケットは 10 分、ソケットあたり 3 件。監視はソケットあたり 2 件・全体で 16 件。
+// 確定確認 (P2b): チケットは 10 分、ソケットあたり 3 件。監視はソケットあたり 2 件。
 // 確定した txHash は 30 分 (上限 4096 件) 覚える。
 // 確定したブロックの時刻はチケット発行の 30 秒前まで認める (時計のずれ)
 export const TIP_TICKET_TTL_MS = 600_000
 export const TIP_TICKETS_PER_SOCKET = 3
 export const TIP_WATCH_PER_SOCKET = 2
-export const TIP_WATCH_MAX = 16
+// The watch table of the whole world: 2 jobs for each connection the server admits (WS_MAX_SOCKETS, 64 unless set:
+// 128 jobs). It was 16, which 8 connections filled, and one address may hold 8. With WS_MAX_SOCKETS=0 (no limit on
+// connections) there is no number to derive it from: the table is then 2 x the default, and can be full while a
+// connection has reported nothing. A job is about 1.1 KB of heap with its hash and ticket (measured), so 128 jobs are
+// about 0.14 MB and the table grows by about 2.2 KB per admitted connection.
+// What this is: room in the table. It is not a share of the chain calls: those stay one budget for all jobs
+// (evmTipWatcher.js), so reports from many connections still delay every confirmation.
+// A bad WS_* value throws here as it does in index.js, which reads the same variables at start-up.
+export function resolveTipWatchMax(env = process.env) {
+  const { maxSockets } = readConnectionLimitsEnv(env)
+  return Math.ceil(TIP_WATCH_PER_SOCKET * (maxSockets > 0 ? maxSockets : readConnectionLimitsEnv({}).maxSockets))
+}
+export const TIP_WATCH_MAX = resolveTipWatchMax()
 export const TIP_SEEN_TTL_MS = 1_800_000
 export const TIP_SEEN_MAX = 4096
 export const TIP_TIME_SKEW_SEC = 30

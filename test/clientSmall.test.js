@@ -273,6 +273,16 @@ test('agent: the token is never in a file others can read, also when the token f
   assert.equal(fs.readFileSync(elsewhere, 'utf8'), 'untouched')
   assert.equal(fs.lstatSync(file).isSymbolicLink(), false)
   assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { authToken: 'third' })
+  // on Windows there are no such modes and a new file takes its directory's access list: the token goes into the
+  // file that is there, as it always did, and no other file is made
+  const calls = []
+  const windows = {
+    writeFileSync: (...args) => calls.push(['write', path.basename(args[0]), args[2]]),
+    renameSync: () => calls.push(['rename']),
+    rmSync: () => calls.push(['rm']),
+  }
+  saveTokenFile(file, 'on windows', { fs: windows, platform: 'win32' })
+  assert.deepEqual(calls, [['write', '.agent-token-bot.json', undefined]])
   // a rename that fails leaves no half-written file, and says so
   const failing = { ...watched, renameSync: () => { throw new Error('rename refused') } } // prettier-ignore
   assert.throws(() => saveTokenFile(file, 'fourth', { fs: failing, suffix: 'y' }), /rename refused/)

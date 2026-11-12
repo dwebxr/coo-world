@@ -18,8 +18,17 @@ export const tokenFileOf = (dir, id) => path.join(dir, `.agent-token-${id}.json`
 // It is written to a new file of its own, made with that mode and only if no such file exists, and then renamed
 // over the token file: the token is never in a file others can read, also when the token file was there before
 // with another mode (one written before this was 0644) or is a link to somewhere else (the rename replaces the
-// link, it does not follow it). On a system without such modes (Windows) the mode is ignored.
-export function saveTokenFile(file, token, { fs: io = fs, suffix = `${process.pid}-${Date.now()}` } = {}) {
+// link, it does not follow it).
+// Windows has no such modes: who reads a file there is its access list, which a new file takes from its directory.
+// A new file would lose whatever its owner had set on the old one, so there the token is written into the file that
+// is there, as before. (Elsewhere too, a directory that hands an access list to new files has its say beside the
+// mode: the mode is what this sets, not everything that decides who reads the file.)
+export function saveTokenFile(
+  file,
+  token,
+  { fs: io = fs, suffix = `${process.pid}-${Date.now()}`, platform = process.platform } = {}
+) {
+  if (platform === 'win32') return io.writeFileSync(file, JSON.stringify({ authToken: token }))
   const fresh = `${file}.${suffix}.tmp`
   io.writeFileSync(fresh, JSON.stringify({ authToken: token }), { mode: 0o600, flag: 'wx' })
   try {

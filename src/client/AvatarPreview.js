@@ -74,12 +74,8 @@ export class AvatarPreview {
   async load(file, url) {
     this.file = file
     this.url = url
-    // the size the server takes (megabytes, told at join): a larger file is said so here, before it is loaded
-    // for the preview. (The limit here was a placeholder of a terabyte, with the label "1LOLS".)
-    const maxUploadSize = this.world.network?.maxUploadSize
-    if (maxUploadSize > 0 && this.file.size > maxUploadSize * 1024 * 1024) {
-      return { error: `Max file size ${maxUploadSize} MB` }
-    }
+    // (a size check stood here with a placeholder limit of a terabyte and the label "1LOLS"; nothing showed its
+    // answer. The server's limit is applied when the file is uploaded, and said then: ClientNetwork.upload)
     // load hdri
     const texture = await this.world.loader.load('hdr', HDR_URL)
     texture.mapping = THREE.EquirectangularReflectionMapping

@@ -488,13 +488,10 @@ export class ClientControls extends System {
       const actions = control.actions
       if (actions) {
         for (const action of actions) {
-          // One action for a key: the first control to name it, which is the one of the highest priority and so
-          // the one the key goes to. (`!action.type === 'custom'` was never true, so every control's action for
-          // the same key was listed.) Custom actions have no key and are all listed.
-          if (action.type !== 'custom') {
-            const idx = this.actions.findIndex(a => a.type === action.type)
-            if (idx !== -1) continue
-          }
+          // Every action of every active control is listed, also two for the same key. (A check that was to list
+          // one per key stood here, `if (!action.type === 'custom')`, which is never true: it never ran. It is not
+          // turned on now: which control a key goes to is decided by what each one captures, not by its place in
+          // this list, so "the first one named" can be the hint of an action the key does not do.)
           this.actions.push(action)
         }
       }

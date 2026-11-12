@@ -12,6 +12,7 @@ import { CurvePane } from './CurvePane'
 import { isArray } from 'lodash-es'
 import { downloadFile } from '../../core/extras/downloadFile'
 import { HexColorPicker } from 'react-colorful'
+import { readNumberField } from '../../core/extras/arithmetic'
 import { toNumber, toText } from '../../core/extras/scriptText'
 
 // Field values come from blueprint props (any JSON a builder stored, or a field's initial value) and labels from
@@ -636,21 +637,9 @@ export function FieldNumber({
   useEffect(() => {
     if (!focused && local !== value.toFixed(dp)) setLocal(value.toFixed(dp))
   }, [focused, value])
-  const setTo = str => {
-    // try parse math
-    let num
-    try {
-      num = (0, eval)(str)
-      if (typeof num !== 'number') {
-        throw new Error('input number parse fail')
-      }
-    } catch (err) {
-      console.error(err)
-      num = value // revert back to original
-    }
-    if (num < min || num > max) {
-      num = value
-    }
+  const setTo = input => {
+    // a number (the arrow keys) or what was typed, read as arithmetic; anything else keeps the value there was
+    const num = readNumberField(input, { fallback: value, min, max })
     setLocal(num.toFixed(dp))
     onChange(+num.toFixed(dp))
   }
@@ -762,23 +751,9 @@ export function FieldVec3({
       if (localZ !== valueZ.toFixed(dp)) setLocalZ(valueZ.toFixed(dp))
     }
   }, [focused, valueX, valueY, valueZ])
-  const parseStr = str => {
-    // try parse math
-    let num
-    try {
-      num = (0, eval)(str)
-      if (typeof num !== 'number') {
-        throw new Error('input number parse fail')
-      }
-    } catch (err) {
-      console.error(err)
-      num = value // revert back to original
-    }
-    if (num < min || num > max) {
-      num = value
-    }
-    return num
-  }
+  // a number (the arrow keys) or what was typed, read as arithmetic; anything else keeps the value that axis had
+  // (it used to fall back to the whole vector, and the `toFixed` that follows threw)
+  const parseStr = (input, fallback) => readNumberField(input, { fallback, min, max })
   return (
     <label
       className='fieldvec3'
@@ -841,13 +816,13 @@ export function FieldVec3({
               }
               if (e.code === 'ArrowUp') {
                 const amount = e.shiftKey ? bigStep : e.altKey ? smallStep : step
-                const num = parseStr(axis.value + amount)
+                const num = parseStr(axis.value + amount, axis.value)
                 axis.setLocal(num.toFixed(dp))
                 onChange(axis.build(+num.toFixed(dp)))
               }
               if (e.code === 'ArrowDown') {
                 const amount = e.shiftKey ? bigStep : e.altKey ? smallStep : step
-                const num = parseStr(axis.value - amount)
+                const num = parseStr(axis.value - amount, axis.value)
                 axis.setLocal(num.toFixed(dp))
                 onChange(axis.build(+num.toFixed(dp)))
               }
@@ -864,7 +839,7 @@ export function FieldVec3({
                 return
               }
               // otherwise run through pipeline
-              const num = parseStr(axis.local)
+              const num = parseStr(axis.local, axis.value)
               axis.setLocal(num.toFixed(dp))
               onChange(axis.build(+num.toFixed(dp)))
             }}

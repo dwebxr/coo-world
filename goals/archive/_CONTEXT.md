@@ -1,3 +1,5 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # 共通コンテキスト (全ゴールファイル共通・必読)
 
 このリポジトリ `coo-world` は `hyperfy-xyz/hyperfy` (3D web world エンジン, 純 JS ES modules, TypeScript 不使用, esbuild, React系 client UI) のフォークです。あなたは1つのゴールファイルを割り当てられた実装エージェントです。以下の制約を**厳守**してください。

@@ -1,7 +1,9 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # Goal 3A — UI デッドコード除去 (client UI 単独所有)
 
 **Phase 3 (デッドコード) | 実装: Sonnet | Risk: 低 | Effort: S | upstream_divergence: low**
-まず `goals/_CONTEXT.md` を読むこと。
+まず `goals/archive/_CONTEXT.md` を読むこと。
 
 ## 目的
 未使用の UI コード群 (~2800行) を削除。CoreUI.js/Sidebar.js のデッド参照・コメント・inert state も含め、UI 系デッドコードをこの1タスクに集約してファイル競合を防ぐ ([I2])。

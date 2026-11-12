@@ -1,3 +1,5 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # coo-world リファクタリング計画 (フェーズ分け)
 
 > 方針: **ハイブリッド**。fork独自コード (`upstream_divergence=none`) は積極的にリファクタ。upstream由来コードは「低〜中リスクかつ価値が明確」なもののみ。`upstream_divergence=high` の大規模改変 (将来の hyperfy マージを壊す) は**スコープ外**として明示的に見送る。

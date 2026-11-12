@@ -1,3 +1,5 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # Goal 1A — Solana セキュリティ & 堅牢化 (全 Solana ソース単独所有)
 
 **Phase 1 (セキュリティ) | 実装: Fable 5 (直接) | Risk: 中 | Effort: M〜L | upstream_divergence: none**

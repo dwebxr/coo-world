@@ -1,7 +1,9 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # Goal 3C — 残存 lint error をゼロに (CI 必須ゲート化の前提)
 
 **Phase 3 (デッドコード/整理) | 実装: Sonnet | Risk: 低〜中 | Effort: M | upstream_divergence: low**
-まず `goals/_CONTEXT.md` を読むこと。
+まず `goals/archive/_CONTEXT.md` を読むこと。
 
 ## 背景
 Phase 0 で eslint の偽陽性を除去した結果、実 error のベースラインが 79 前後に。うち Phase 2 が no-undef 系バグ (9) と no-prototype-builtins (29) と jsx-no-undef (1) を解消済み。**残るのは本タスクが担当する ~41 件**。これらをゼロにして、0C が設定した「Phase 3 完了後に lint を CI 必須ゲート化」を可能にする。

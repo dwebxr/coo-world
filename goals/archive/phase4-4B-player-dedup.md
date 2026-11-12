@@ -1,7 +1,9 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # Goal 4B — Player / App 重複統合 (entities 単独所有)
 
 **Phase 4 (重複整理) | 実装: Sonnet | Risk: 低〜中 | Effort: S〜M | upstream_divergence: low**
-まず `goals/_CONTEXT.md` を読むこと。
+まず `goals/archive/_CONTEXT.md` を読むこと。
 
 ## 目的
 PlayerLocal/PlayerRemote 間の重複 (認可・チャットバブル・enum) と App の Proxy factory 重複を単一ソース化。特に認可ロジックはセキュリティ関連なので single source of truth にする価値が高い。

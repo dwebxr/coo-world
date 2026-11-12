@@ -926,7 +926,8 @@ export class ServerNetwork extends System {
 
   // A rank an admin (or the admin code) decided for a player: the user's row is to hold it. Once the database has it
   // and the session still has that rank, a token grant of the session is over (rankGrants.js rankStored). Until
-  // then, and after a write that failed, the session keeps its grant state.
+  // then, and after a write that failed, the session keeps its grant state. (The callback keeps the player object
+  // alive until a write that carries this rank lands: for a rank the database keeps refusing, until the process ends.)
   storeRank(player, rank) {
     this.userRows().intend(player.data.id, { rank }, written =>
       rankStored({

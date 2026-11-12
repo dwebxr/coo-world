@@ -30,9 +30,9 @@
 // Memory: one entry per user who has a change that is not stored, a write under way or a join under way. Measured
 // (Node 24, 50,000 entries): about 400 bytes for an entry with one small value, about 1 KiB with the longest name,
 // an avatar url of 255 characters and a rank (in one-byte characters; the two strings take twice their length in
-// other scripts). On top of that, one callback for each change that asked to be told and is not stored yet. There
-// is no cap: there can be no more entries than the table has rows, and an entry outlasts its user's write and join
-// only while the database has not taken something in it.
+// other scripts). On top of that, one callback for each change that asked to be told and is not stored yet, with
+// whatever the callback holds. There is no cap: there can be no more entries than the table has rows, and an
+// entry outlasts its user's write and join only while the database has not taken something in it.
 
 // update(userId, values) -> a promise: the statement that writes those columns of that user's row
 // onFailure({ userId, columns, error, completion }): a statement failed, said once per run of failures of a user

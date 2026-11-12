@@ -901,9 +901,10 @@ export class ServerNetwork extends System {
 
   // The users' rows as this server means them to be (userRows.js), made on first use. Every change this server
   // makes to a user's row (a name, an avatar, a rank) goes through its `intend`; a new user's row is inserted by the
-  // join itself. No handler waits for the write. A write that fails is said once per user until one of that user's
-  // lands again; what was decided stays in memory, is what a join of that user gets, and goes out again with the
-  // user's next change or at the final save (flushBeforeExit), which counts what is still unstored. A crash loses it.
+  // join itself. No handler waits for the write. A write that fails is said once per user, and again only after that
+  // user's writes have gone through without a failure in between; what was decided stays in memory, is what a join
+  // of that user gets, and goes out again with the user's next change or at the final save (flushBeforeExit), which
+  // counts what is still unstored. A crash loses it.
   userRows() {
     return (this.userRowState ??= createUserRows({
       update: (userId, values) => this.db('users').where('id', userId).update(values),

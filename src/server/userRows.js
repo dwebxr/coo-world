@@ -7,9 +7,9 @@
 // - `intend` records a change at the moment it is decided (in the same turn in which the player in the world is
 //   changed) and starts that user's writer when it is not running. It does not wait.
 // - One writer per user, one statement at a time: it writes the columns whose decided value is not stored yet, as
-//   they are when the statement starts, until none is left. Two changes of one user therefore reach the database in
-//   the order they were decided, on a pool of any size, and a change decided while a statement is under way goes out
-//   with the next one.
+//   they are when the statement starts, until none is left. So the database never takes an older decision of a
+//   user after a newer one, on a pool of any size; a change decided while a statement is under way goes out with
+//   the next one, and a value replaced before its turn came is never written.
 // - A join puts `intended` over the row it read (ServerNetwork.onConnection): a row read before a write landed, or
 //   before one that failed, does not bring the old value back.
 // - A statement that fails: the writer stops. Nothing tries again by itself; the columns stay decided and unstored,
@@ -36,8 +36,8 @@
 
 // update(userId, values) -> a promise: the statement that writes those columns of that user's row
 // onFailure({ userId, columns, error, completion }): a statement failed, said once per run of failures of a user
-//   (the next is said after a statement of that user has landed); with `completion`, a completion threw (the
-//   database has the values; the writer goes on)
+//   (not again until that user's writer has got through its columns without a failure); with `completion`, a
+//   completion threw (the database has the values; the writer goes on)
 // expired(): past the final save's deadline; no statement is started any more
 // held(userId): the user has a join under way
 export function createUserRows({ update, onFailure = () => {}, expired = () => false, held = () => false }) {

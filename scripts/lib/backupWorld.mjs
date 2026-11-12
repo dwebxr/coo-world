@@ -16,19 +16,20 @@ const stamp = date => {
   return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())}_${two(date.getHours())}-${two(date.getMinutes())}-${two(date.getSeconds())}`
 }
 
-// The world's folder, which must be a folder inside `rootDir` that exists: WORLD is joined to the root as the
-// server joins it, and a value that leads out of it (`..`, an absolute path) is refused, as is one that names no
-// folder. (The backups folder used to be made first, which made the world folder of a mistyped WORLD.)
+// The world's folder: WORLD joined to the project's folder exactly as the server joins it (src/server/index.js), so
+// what is backed up is what the server runs, also for a WORLD beside the project (`../worlds/a`) and for one written
+// with a leading slash (which the join keeps inside the project). It must be a folder that exists: the backups
+// folder used to be made first, which made the world folder of a mistyped WORLD, and its parents with it.
+// `name` is what the folder is called in the archive: its path from the project, or its own name when it is not
+// inside the project (the path would start with `..`, which tar does not unpack as written).
 export function worldFolder(rootDir, world) {
   if (typeof world !== 'string' || !world) throw new Error('WORLD is not set')
   const root = path.resolve(rootDir)
-  const dir = path.resolve(root, world)
-  const inside = path.relative(root, dir)
-  if (!inside || inside.startsWith('..') || path.isAbsolute(inside)) {
-    throw new Error(`WORLD must name a folder inside ${root}`)
-  }
+  const dir = path.join(root, world)
   if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new Error(`World directory not found: ${dir}`)
-  return { root, dir, name: inside }
+  const inside = path.relative(root, dir)
+  const name = !inside || inside.startsWith('..') || path.isAbsolute(inside) ? path.basename(dir) : inside
+  return { root, dir, name }
 }
 
 // Makes the archive and returns its path.

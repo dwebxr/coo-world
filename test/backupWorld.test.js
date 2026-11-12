@@ -1,6 +1,6 @@
 // `npm run world:backup` (scripts/lib/backupWorld.mjs): the archive holds one consistent state of the database also
-// while it is being written, nothing of the world's name is read by a shell, and a WORLD that is not a folder of
-// the project makes nothing.
+// while it is being written, nothing of the world's name is read by a shell, and a WORLD that names no folder
+// makes nothing.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -94,27 +94,32 @@ test('backup: nothing of the world’s name is read by a shell', async t => {
   assert.ok(tree(unpack(t, file)).includes(`${world}/storage.json`))
 })
 
-test('backup: a WORLD that is not a folder of the project makes nothing', async t => {
-  const { rootDir } = project(t)
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'backup-outside-'))
-  t.after(() => fs.rmSync(outside, { recursive: true, force: true }))
-  for (const world of [
-    '../' + path.basename(outside),
-    outside,
-    '..',
-    '.',
-    '',
-    undefined,
-    'missing',
-    'world/storage.json',
-  ]) {
+test('backup: WORLD is read as the server reads it, and one that names no folder makes nothing', async t => {
+  const { rootDir, dir } = project(t)
+  for (const world of ['', undefined, 'missing', 'missing/deeper', 'world/storage.json']) {
     await assert.rejects(backupWorld({ rootDir, world, log: quiet }), /WORLD|not found/, JSON.stringify(world))
   }
   // the folder of a mistyped name is not made (the backups folder used to be made first, and its parents with it)
   assert.deepEqual(fs.readdirSync(rootDir), ['world'])
-  assert.deepEqual(fs.readdirSync(outside), [])
-  assert.deepEqual(worldFolder(rootDir, 'world').name, 'world')
-  assert.deepEqual(worldFolder(rootDir, './world/').name, 'world')
+  // joined, not resolved: a leading slash stays inside the project, as it does for the server
+  assert.equal(worldFolder(rootDir, '/world').dir, dir)
+  assert.equal(worldFolder(rootDir, 'world').name, 'world')
+  assert.equal(worldFolder(rootDir, './world/').name, 'world')
+  // a world in a folder of the project keeps its path in the archive
+  fs.mkdirSync(path.join(rootDir, 'worlds', 'a'), { recursive: true })
+  fs.writeFileSync(path.join(rootDir, 'worlds', 'a', 'storage.json'), '{}')
+  const nested = await backupWorld({ rootDir, world: 'worlds/a', log: quiet })
+  assert.deepEqual(tree(unpack(t, nested)), ['worlds', 'worlds/a', 'worlds/a/storage.json'])
+  // a world beside the project, which the server runs too, is archived under its own name
+  const beside = fs.mkdtempSync(path.join(os.tmpdir(), 'backup-beside-'))
+  t.after(() => fs.rmSync(beside, { recursive: true, force: true }))
+  fs.writeFileSync(path.join(beside, 'storage.json'), '{}')
+  const world = path.relative(rootDir, beside)
+  assert.ok(world.startsWith('..'))
+  const file = await backupWorld({ rootDir, world, log: quiet })
+  assert.equal(path.dirname(file), path.join(beside, 'backups'))
+  const name = path.basename(beside)
+  assert.deepEqual(tree(unpack(t, file)), [name, `${name}/storage.json`])
 })
 
 test('backup: a tar that fails leaves no archive behind; the newest seven are kept', async t => {

@@ -9,8 +9,9 @@ import { fork } from 'child_process'
  * A build that failed has nothing to finish:
  * - a production build exits 1. It used to exit 0 here, before esbuild could report the failure to the script, so
  *   `npm run build` succeeded with a syntax error in the server (and left no, or an old, build/index.js);
- * - in dev the fork that is running is left as it is until a build succeeds. It used to be stopped and started
- *   again on the output of the failed build, which esbuild 0.25 deletes: the new fork died at once.
+ * - in dev the fork that is running is left as it is until a build succeeds (when the first build fails there is
+ *   none yet, and none is started). It used to be stopped and started again on the output of the failed build, which
+ *   esbuild 0.25 deletes: the new fork died at once.
  */
 export function makePhysxFinalizePlugin({
   rootDir,
@@ -27,7 +28,10 @@ export function makePhysxFinalizePlugin({
       build.onEnd(async result => {
         if (result.errors.length) {
           if (!dev) return exit(1)
-          log.error(`[build] failed (${result.errors.length} errors): ${forkEntry} is left running as it was`)
+          log.error(
+            `[build] failed (${result.errors.length} errors): ` +
+              (spawn ? `${forkEntry} is left running as it was` : `${forkEntry} is not started`)
+          )
           return
         }
         // copy over physx js

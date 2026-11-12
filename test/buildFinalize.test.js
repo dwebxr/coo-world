@@ -25,6 +25,7 @@ async function build(t, source, { dev = false } = {}) {
   const exits = []
   const said = []
   const started = []
+  const stopped = []
   const ctx = await context({
     entryPoints: [path.join(rootDir, 'entry.js')],
     outfile: path.join(rootDir, 'build/index.js'),
@@ -38,19 +39,29 @@ async function build(t, source, { dev = false } = {}) {
         dev,
         forkEntry: 'build/index.js',
         // (what dev starts is recorded, not run)
-        start: entry => (started.push(path.relative(rootDir, entry)), { kill() {} }),
+        start: entry => {
+          const fork = started.push(path.relative(rootDir, entry))
+          return { kill: signal => stopped.push(`fork ${fork}: ${signal}`) }
+        },
         exit: code => exits.push(code),
         log: { error: line => said.push(line) },
       }),
     ],
   })
   t.after(() => ctx.dispose())
-  const failed = await ctx.rebuild().then(
-    () => false,
-    () => true
-  )
+  const rebuild = () =>
+    ctx.rebuild().then(
+      () => false,
+      () => true
+    )
+  const failed = await rebuild()
   const built = fs.existsSync(path.join(rootDir, 'build')) ? fs.readdirSync(path.join(rootDir, 'build')).sort() : []
-  return { exits, said, started, built, failed }
+  // the entry is saved with another text and built again, as a watch does
+  const again = async next => {
+    fs.writeFileSync(path.join(rootDir, 'entry.js'), next)
+    return rebuild()
+  }
+  return { exits, said, started, stopped, built, failed, again }
 }
 
 test('build: a production build that fails exits 1, and one that succeeds copies PhysX and exits 0', async t => {
@@ -69,17 +80,28 @@ test('build: a production build that fails exits 1, and one that succeeds copies
   }
 })
 
-test('build: in dev a failed build leaves the running fork alone and says so', async t => {
+test('build: in dev a failed build starts nothing, leaves a running fork alone, and says which', async t => {
+  // the first build fails: there is no fork yet, and none is started
   const bad = await build(t, 'export const a = ;', { dev: true })
   assert.deepEqual(bad.exits, [], 'the dev process goes on')
   assert.deepEqual(bad.started, [], 'and nothing is started on the output of a failed build')
-  assert.equal(bad.said.length, 1)
-  assert.match(bad.said[0], /^\[build\] failed \(1 errors\): build\/index\.js is left running as it was$/)
+  assert.deepEqual(bad.said, ['[build] failed (1 errors): build/index.js is not started'])
   assert.ok(!bad.built.includes('physx-js-webidl.js'))
-  // (a dev build that succeeds starts its output and does not exit)
-  const good = await build(t, 'export const a = 1', { dev: true })
-  assert.deepEqual(good.exits, [])
-  assert.deepEqual(good.started, [path.join('build', 'index.js')])
-  assert.deepEqual(good.said, [])
-  assert.deepEqual(good.built, ['index.js', 'physx-js-webidl.js', 'physx-js-webidl.wasm'])
+  // a dev build that succeeds starts its output and does not exit
+  const dev = await build(t, 'export const a = 1', { dev: true })
+  assert.deepEqual(dev.exits, [])
+  assert.deepEqual(dev.started, [path.join('build', 'index.js')])
+  assert.deepEqual(dev.said, [])
+  assert.deepEqual(dev.built, ['index.js', 'physx-js-webidl.js', 'physx-js-webidl.wasm'])
+  // then a save that does not build: the fork that runs is neither stopped nor replaced
+  assert.equal(await dev.again('export const a = ;'), true)
+  assert.deepEqual(dev.started.length, 1)
+  assert.deepEqual(dev.stopped, [])
+  assert.deepEqual(dev.said, ['[build] failed (1 errors): build/index.js is left running as it was'])
+  // and one that builds again: the old fork is stopped once and one new fork started
+  assert.equal(await dev.again('export const a = 2'), false)
+  assert.deepEqual(dev.stopped, ['fork 1: SIGTERM'])
+  assert.deepEqual(dev.started.length, 2)
+  assert.deepEqual(dev.exits, [])
+  assert.equal(dev.said.length, 1)
 })

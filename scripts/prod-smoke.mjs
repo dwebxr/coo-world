@@ -29,6 +29,8 @@ const INSTALL_TIMEOUT_MS = 5 * 60 * 1000
 const HEALTH_TIMEOUT_MS = 60 * 1000
 const REQUEST_TIMEOUT_MS = 5 * 1000
 const STOP_TIMEOUT_MS = 20 * 1000
+// how long what npm started may outlive npm before it is stopped
+const LINGER_MS = 5_000
 // what the image's production stage copies besides node_modules; scripts/ is not needed to start
 const REQUIRED = ['build/index.js', 'build/public/index.html', 'src', 'package.json', 'package-lock.json']
 const COPIED = ['build', 'src', 'scripts', 'package.json', 'package-lock.json']
@@ -94,23 +96,28 @@ function groupAlive(proc) {
 
 // SIGTERM to the process group; SIGKILL to the group when the leader is not gone after STOP_TIMEOUT_MS or when
 // processes of the group outlive it. Resolves with whether SIGKILL was needed for the leader.
+// `gone` says whether the leader has exited. The group is stopped also when the leader is gone and something it
+// started is not (npm exiting with a child that still holds its pipes: the leader's end was seen, the group lives).
 async function stopGroup(proc, gone) {
+  const over = () => gone() && !groupAlive(proc)
   signalGroup(proc, 'SIGTERM')
   const deadline = Date.now() + STOP_TIMEOUT_MS
-  while (!gone() && Date.now() < deadline) await sleep(100)
+  while (!over() && Date.now() < deadline) await sleep(100)
   const killed = !gone()
-  if (killed || groupAlive(proc)) signalGroup(proc, 'SIGKILL')
-  while (!gone()) await sleep(100)
+  if (!over()) signalGroup(proc, 'SIGKILL')
+  // (SIGKILL cannot be refused; the wait is for the system to take the processes away)
+  const last = Date.now() + STOP_TIMEOUT_MS
+  while (!over() && Date.now() < last) await sleep(100)
   return killed
 }
 
 async function stopInstall() {
-  if (!install || install.exited) return
+  if (!install || (install.exited && !groupAlive(install.proc))) return
   await stopGroup(install.proc, () => install.exited)
 }
 
 async function stopServer() {
-  if (!child || exited) return exited
+  if (!child || (exited && !groupAlive(child))) return exited
   const killed = await stopGroup(child, () => exited)
   return killed ? { ...exited, killed: true } : exited
 }
@@ -140,10 +147,17 @@ function runInstall() {
       error = err
       state.exited = true
     })
-    proc.once('exit', () => (state.exited = true))
+    // npm is gone, but its output is read to the end only when everything that holds its pipes is gone too. Something
+    // npm started and left behind would keep this waiting until the install's time is up: after a moment it is stopped
+    let lingering = null
+    proc.once('exit', () => {
+      state.exited = true
+      lingering = setTimeout(() => stopGroup(proc, () => true), LINGER_MS)
+    })
     // (after the exit, once the output is read to its end)
     proc.once('close', (code, signal) => {
       clearTimeout(timer)
+      clearTimeout(lingering)
       state.exited = true
       resolve({ code, signal, error, timedOut, log })
     })

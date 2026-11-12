@@ -293,8 +293,13 @@ async function runSuite() {
   }
   // a software-rendered page can hold its main thread for seconds while the world loads
   const evaluate = (client, fn, data) => bounded(client.page.evaluate(fn, data), `${client.label}: evaluate`, 15000)
+  // (an evaluate that never comes back is reported under the wait's own name)
   const wait = (client, fn, message, data, timeout = 20000) =>
-    waitUntil(() => evaluate(client, fn, data), { message: `${client.label}: ${message}`, timeout, interval: 100 })
+    waitUntil(() => bounded(client.page.evaluate(fn, data), `${client.label}: ${message}: evaluate`, 15000), {
+      message: `${client.label}: ${message}`,
+      timeout,
+      interval: 100,
+    })
   const key = (client, action, name) =>
     bounded(client.page.keyboard[action](name), `${client.label}: ${action} ${name}`)
   const button = (client, name) =>
@@ -527,13 +532,14 @@ async function runSuite() {
       },
       DOOR
     )
-    // The world is up by now (the sidebar, "world ready" and the door were waited for above), so what is left is that
-    // the page goes on drawing and that the panel is laid out. Two steps, each saying what it found missing:
-    // - frames: a page whose renderer has stalled fails here, as "no frames", and not as a missing panel.
-    // - the panel: polled like every other wait of this suite (an evaluate every 100 ms). It was the one wait left
-    //   to Playwright's own visibility check, which polls on animation frames, under the 5 s default of `bounded`
-    //   (15 s on CI): on a loaded runner with a software renderer and a second page loading, that ran out with the
-    //   panel mounted. The other suites give the same wait their page default (90 s on CI).
+    // The sidebar, "world ready" and the door were waited for above. This last wait was the suite's shortest, the 5 s
+    // default of `bounded` (15 s on CI) around Playwright's visibility wait, and on CI it ran out now and then. Why
+    // is not known (it was not reproduced, and nothing was recorded of the page at that moment). The other suites
+    // give the same panel their page default, 90 s on CI; so does this one now, in two steps that say what was
+    // missing:
+    // - the world goes on ticking (`world.frame`: counted where a tick begins, so it says that the loop runs, not
+    //   that anything was drawn);
+    // - the panel is there, with a box of some size, and not hidden by style.
     await wait(
       client,
       () => {
@@ -541,7 +547,7 @@ async function runSuite() {
         window.__tokenFrame ??= frame
         return frame - window.__tokenFrame >= 3
       },
-      'the page draws frames',
+      'the world ticks',
       null,
       30000
     )
@@ -549,8 +555,9 @@ async function runSuite() {
       client,
       () => {
         const panel = document.getElementById('solana-wallet-panel')
-        // (what "visible" means to Playwright: it has a box, and is not hidden by style)
-        return !!panel && panel.getClientRects().length > 0 && getComputedStyle(panel).visibility === 'visible'
+        if (!panel) return false
+        const box = panel.getBoundingClientRect()
+        return box.width > 0 && box.height > 0 && getComputedStyle(panel).visibility === 'visible'
       },
       'wallet panel visible',
       null,

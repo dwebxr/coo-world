@@ -630,6 +630,19 @@ async function probes(admin, watcher) {
     }
     admin.send('entityModified', { id: admin.id, sessionAvatar: null })
     watcher.send('entityModified', { id: watcher.id, sessionAvatar: null, e: null })
+    // The script's effect on the visitor has 30 s to run and the visitor's client has not ended it. The app is
+    // removed: the server gives the effect back, and everyone is told, the visitor's own connection included
+    // (nothing else would end it there before its time; an effect without one would have stayed for good)
+    const fromAdminEnd = admin.mark()
+    const fromWatcherEnd = watcher.mark()
+    admin.send('entityRemoved', 's-outside')
+    for (const [client, from] of [
+      [admin, fromAdminEnd],
+      [watcher, fromWatcherEnd],
+    ]) {
+      await waitUntil(() => seen(client, from, 'ef').length >= 1, { message: "the end of the script's effect" })
+      eq(JSON.stringify(seen(client, from, 'ef')), '[null]', 'the effect is ended for everyone, once')
+    }
   })
 
   await step('A10 a malformed chat message is refused; a valid one is rebuilt by the server', async () => {

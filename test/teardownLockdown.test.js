@@ -39,7 +39,14 @@ const STOPPED = '[app] this app has stopped'
 function makeWorld({ isServer = false } = {}) {
   const compiled = new Map()
   const world = Object.assign(new EventEmitter(), {
-    network: { isServer, isClient: !isServer, id: 'me', send: () => true, asScript: fn => fn() },
+    network: {
+      isServer,
+      isClient: !isServer,
+      id: 'me',
+      send: () => true,
+      broadcast: () => 'delivered',
+      asScript: fn => fn(),
+    },
     entities: { items: new Map(), remove: id => world.entities.items.delete(id) },
     events: new EventEmitter(),
     hot: new Set(),

@@ -97,6 +97,27 @@ export function createPlayerProxy(entity, player) {
     warned.add(method)
     console.error(`[player] ${method} on a remote player must be called on the server`)
   }
+  // This script ends its effect (cancel, cancelEffect, or the cleanup of its handle when the run ends): the same as
+  // the host ending it (config.onEnd), and on the server the clients are told as well. Nothing else tells them: the
+  // player's client ends an effect by itself only when its duration is over or, for a cancellable one, when the
+  // player moves, so an effect a server script took back stayed on that client, for good when it had neither.
+  // Told before the script's onEnd runs: an effect that callback applies goes out after this, not under it.
+  // Not told when the end comes from the player (their client said so; ServerNetwork passes that on) or from another
+  // effect taking this one's place (that one goes out instead): config.onEnd is all that runs then.
+  // What it cannot tell apart: a client script that gives its own player another effect at the moment a server
+  // script ends this one may see the new one ended instead, since the message names no effect.
+  // The message is a script's write when a script asked for the end (cancel, cancelEffect: counted in this tick's
+  // room for script writes like the one that gave the effect, so that giving and ending in a loop is no way round
+  // it). When there is no room it is refused, nobody was told, and the effect is left as it is, here as on the
+  // clients: the call answers false and can be made again. The clean-up's is the engine's own and is not refused.
+  const endByScript = config => {
+    if (activeEffectConfig !== config) return
+    if (world.network.isServer && !player.destroyed) {
+      const outcome = world.network.broadcast('entityModified', { id: player.data.id, ef: null })
+      if (outcome === 'refused') return false
+    }
+    config.onEnd()
+  }
   const proxy = {
     get networkId() {
       return player.data.owner
@@ -381,12 +402,15 @@ export function createPlayerProxy(entity, player) {
         },
         cancel: () => {
           if (run !== entity.deadHook) throw stoppedError(entity)
-          config.onEnd()
+          // (attributed to the script like the proxy's own methods, below)
+          return world.network.isServer
+            ? world.network.asScript(() => endByScript(config), entity, 'cancelEffect')
+            : endByScript(config)
         },
       }
     },
     cancelEffect() {
-      activeEffectConfig?.onEnd()
+      if (activeEffectConfig) return endByScript(activeEffectConfig)
     },
     push(force) {
       if (player.data.owner !== world.network.id && world.network.isClient) {
@@ -447,7 +471,7 @@ export function createPlayerProxy(entity, player) {
   handles.set(proxy, { player, run, entity, retire: () => (retired = true) })
   cleanups.set(proxy, () => {
     try {
-      activeEffectConfig?.onEnd()
+      if (activeEffectConfig) endByScript(activeEffectConfig)
     } finally {
       if (voiceMod) {
         voiceMod = world.livekit.removeModifier(voiceMod)

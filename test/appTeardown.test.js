@@ -55,7 +55,14 @@ function quietly() {
 // a world with one app running `script`, remote players 'p1' and 'p2' and a client control system
 function makeWorld(script, { isServer = false, livekit = false } = {}) {
   const world = Object.assign(new EventEmitter(), {
-    network: { isServer, isClient: !isServer, id: 'me', send: () => true, asScript: fn => fn() },
+    network: {
+      isServer,
+      isClient: !isServer,
+      id: 'me',
+      send: () => true,
+      broadcast: () => 'delivered',
+      asScript: fn => fn(),
+    },
     entities: {
       items: new Map(),
       remove: id => world.entities.items.delete(id),
@@ -653,4 +660,200 @@ test('node budget: a model over the budget mounts nothing more and shows the cra
     assert.equal(app.building, false, label)
     if (!alreadyCrashed) assert.match(app.scriptError.message, /more than 256 levels of nodes/)
   }
+})
+
+// A server script that ends an effect it gave a player: the clients are told (createPlayerProxy endByScript). The
+// player here behaves as PlayerRemote does: an effect that ends, or is replaced, calls the callback it was set with.
+function effectWorld(script, { isServer = true, localId } = {}) {
+  // the script under test is a second app, added once the world's stand-ins below are in place
+  const made = makeWorld(() => {}, { isServer })
+  const sent = []
+  const network = made.world.network
+  // 'refused': this tick's room for script writes is used up (ServerNetwork.broadcast)
+  network.outcome = 'delivered'
+  network.broadcast = (name, data) => {
+    if (network.outcome !== 'refused') sent.push([name, data])
+    return network.outcome
+  }
+  network.send = (name, data) => network.broadcast(name, data) === 'delivered'
+  for (const player of Object.values(made.players)) {
+    player.setEffect = function (effect, onEnd) {
+      if (this.data.effect) {
+        this.data.effect = null
+        const ended = this.onEffectEnd
+        this.onEffectEnd = null
+        ended?.()
+      }
+      this.data.effect = effect ?? null
+      this.onEffectEnd = onEnd
+    }
+    // the player's client said its effect ended (ServerNetwork onEntityModified -> PlayerRemote.modify)
+    player.endsByItself = function () {
+      this.setEffect(null)
+    }
+  }
+  const efs = () => sent.filter(([name, data]) => name === 'entityModified' && 'ef' in data).map(([, data]) => data)
+  // on a client: which player is this client's own
+  if (localId) made.world.network.id = localId
+  const app = addApp(made.world, 'fx', script)
+  const rebuild = () => made.world.blueprints.modify({ id: 'bp-fx', version: 1 })
+  return { ...made, app, rebuild, sent, efs }
+}
+const FREEZE = { freeze: true }
+
+test('effects: a server script that cancels an effect tells the clients, once, before its callback runs', async () => {
+  const seen = []
+  let handle
+  const { players, efs } = effectWorld(world => {
+    const p = world.getPlayer('p1')
+    handle = p.applyEffect({
+      freeze: true,
+      onEnd: () => {
+        seen.push('ended')
+        // the next effect, given from the callback, goes out after the end of the first, not under it
+        p.applyEffect({ snare: 0.5 })
+      },
+    })
+  })
+  await tick()
+  assert.deepEqual(efs(), [{ id: 'p1', ef: FREEZE }])
+  assert.equal(handle.active, true)
+  handle.cancel()
+  assert.deepEqual(seen, ['ended'])
+  assert.deepEqual(efs(), [
+    { id: 'p1', ef: FREEZE },
+    { id: 'p1', ef: null },
+    { id: 'p1', ef: { snare: 0.5 } },
+  ])
+  assert.deepEqual(players.p1.data.effect, { snare: 0.5 })
+  assert.equal(handle.active, false)
+  // an effect that is over is not ended again
+  handle.cancel()
+  assert.equal(efs().length, 3)
+})
+
+test('effects: cancelEffect tells the clients for the effect this script gave, and says nothing when there is none', async () => {
+  let p
+  const { players, efs } = effectWorld(world => {
+    p = world.getPlayer('p1')
+  })
+  await tick()
+  p.cancelEffect()
+  assert.deepEqual(efs(), [], 'nothing of this script to end')
+  p.applyEffect({ freeze: true })
+  p.cancelEffect()
+  p.cancelEffect()
+  assert.deepEqual(efs(), [
+    { id: 'p1', ef: FREEZE },
+    { id: 'p1', ef: null },
+  ])
+  assert.equal(players.p1.data.effect, null)
+})
+
+test('effects: an end that comes from the player, or from the next effect, is not told a second time', async () => {
+  const seen = []
+  let p
+  const { players, efs } = effectWorld(world => {
+    p = world.getPlayer('p1')
+  })
+  await tick()
+  // the player's client said the effect ended (its duration, or the player moved): ServerNetwork passes that
+  // packet on, and an echo from here could end an effect the client has started since
+  p.applyEffect({ freeze: true, onEnd: () => seen.push('first') })
+  players.p1.endsByItself()
+  assert.deepEqual(seen, ['first'])
+  assert.deepEqual(efs(), [{ id: 'p1', ef: FREEZE }])
+  // nothing left to cancel
+  p.cancelEffect()
+  assert.equal(efs().length, 1)
+  // another effect takes the place of the current one: the new one goes out, with no end in between
+  p.applyEffect({ freeze: true, onEnd: () => seen.push('second') })
+  p.applyEffect({ snare: 0.5 })
+  assert.deepEqual(seen, ['first', 'second'])
+  assert.deepEqual(efs().slice(1), [
+    { id: 'p1', ef: FREEZE },
+    { id: 'p1', ef: { snare: 0.5 } },
+  ])
+})
+
+test('effects: an app that is rebuilt or removed gives back the effects it holds, and the clients are told', async () => {
+  for (const how of ['rebuilt', 'removed']) {
+    const seen = []
+    const { app, rebuild, players, efs } = effectWorld(world => {
+      // no duration and not cancellable: the player's client would never end this by itself
+      world.getPlayer('p1').applyEffect({ freeze: true, onEnd: () => seen.push('ended') })
+      world.getPlayer('p2').applyEffect({ snare: 0.5 })
+    })
+    await tick()
+    assert.equal(efs().length, 2)
+    if (how === 'rebuilt') {
+      // the new run of the script gives the effects again, after the old run's were ended
+      rebuild()
+      await tick()
+      assert.deepEqual(efs().slice(2), [
+        { id: 'p1', ef: null },
+        { id: 'p2', ef: null },
+        { id: 'p1', ef: FREEZE },
+        { id: 'p2', ef: { snare: 0.5 } },
+      ])
+    } else {
+      app.destroy()
+      assert.deepEqual(efs().slice(2), [
+        { id: 'p1', ef: null },
+        { id: 'p2', ef: null },
+      ])
+      assert.equal(players.p1.data.effect, null)
+      assert.equal(players.p2.data.effect, null)
+    }
+    assert.deepEqual(seen.slice(0, 1), ['ended'], how)
+  }
+})
+
+test('effects: nothing is sent for a player who has left, and nothing extra from a client', async () => {
+  const gone = effectWorld(world => {
+    world.getPlayer('p1').applyEffect({ freeze: true })
+  })
+  await tick()
+  gone.players.p1.destroyed = true
+  gone.app.destroy()
+  assert.deepEqual(gone.efs(), [{ id: 'p1', ef: FREEZE }], 'no change for an entity the clients no longer have')
+  // on a client the local player says so itself (PlayerLocal.setEffect): the handle adds no message of its own
+  const seen = []
+  const client = effectWorld(
+    world => {
+      world.getPlayer('p1').applyEffect({ freeze: true, onEnd: () => seen.push('ended') })
+    },
+    { isServer: false, localId: 'p1' }
+  )
+  await tick()
+  assert.deepEqual(client.players.p1.data.effect, FREEZE, 'the effect was given')
+  client.app.destroy()
+  assert.deepEqual(seen, ['ended'])
+  assert.equal(client.players.p1.data.effect, null)
+  assert.deepEqual(client.efs(), [])
+})
+
+test('effects: an end the clients could not be told of does not happen: the effect stays, and can be ended later', async () => {
+  const seen = []
+  let p, handle
+  const { world, players, efs } = effectWorld(world => {
+    p = world.getPlayer('p1')
+    handle = p.applyEffect({ freeze: true, onEnd: () => seen.push('ended') })
+  })
+  await tick()
+  // no room left for script writes in this tick
+  world.network.outcome = 'refused'
+  assert.equal(handle.cancel(), false)
+  assert.equal(p.cancelEffect(), false)
+  assert.equal(handle.active, true)
+  assert.deepEqual(players.p1.data.effect, FREEZE, 'the server has what the clients have')
+  assert.deepEqual(seen, [])
+  assert.deepEqual(efs(), [{ id: 'p1', ef: FREEZE }])
+  // a message that reached some connections and not others was sent: the effect ends
+  world.network.outcome = 'partial'
+  assert.notEqual(handle.cancel(), false)
+  assert.equal(handle.active, false)
+  assert.equal(players.p1.data.effect, null)
+  assert.deepEqual(seen, ['ended'])
+  assert.deepEqual(efs().slice(1), [{ id: 'p1', ef: null }])
 })

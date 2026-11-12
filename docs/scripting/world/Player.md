@@ -256,6 +256,10 @@ Adds health to the player. Health cannot go above 100.
 
 Applies an effect to the player. If the player already has an effect, it is replaced. The returned
 handle has a `cancel()` method; `player.cancelEffect()` also ends the effect applied by this app.
+An effect a server script ends this way, or that ends because its app is rebuilt, removed or crashes, ends on the
+player's client too. On the server `cancel()` and `cancelEffect()` answer `false`, and the effect stays, when the
+script has sent too much in that tick to tell the clients: call again in a later one. (A client script that gives its own player another effect at that very moment can see the
+new one ended instead: the message names no effect.)
 
 All options are optional, and each is read once, when `applyEffect` is called. Apart from `anchor` (a node) and
 `onEnd` (a function), an option's value is a primitive (a string, a number, a boolean, `null`): an object or a

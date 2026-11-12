@@ -167,7 +167,15 @@ export function createSweep({ m, scripts, requests }) {
     const lock = { request: 0 }
     const model = models || defaultModel
     const world = Object.assign(new EventEmitter(), {
-      network: { isServer, isClient: !isServer, id: 'me', send: () => true, sendTo: () => true, asScript: fn => fn() },
+      network: {
+        isServer,
+        isClient: !isServer,
+        id: 'me',
+        send: () => true,
+        sendTo: () => true,
+        broadcast: () => 'delivered',
+        asScript: fn => fn(),
+      },
       // (the server's world store; a client world has none)
       storage: isServer ? { get() {}, set() {} } : undefined,
       entities: {

@@ -320,8 +320,19 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
     }
   )
   const proxy = createProxy(entity, player)
+  // an effect given while there is room, to be ended when there is none
+  const effect = proxy.applyEffect({ snare: 0.5 })
+  assert.equal(effect.active, true)
+  assert.equal(socket.ws.packets.length, 1)
+  socket.ws.packets.length = 0
+  // (a new tick: the write above took some of the last one's room)
+  network.writer.resetTick()
   // Exhaust only the unique script bytes; every accidental system write would still go through.
   network.writer.prepare(bytes(SCRIPT_TICK_CAP), { script: true })
+  // ending an effect is a script's write too: refused, nobody is told, and the effect stays as it is
+  assert.equal(effect.cancel(), false)
+  assert.equal(proxy.cancelEffect(), false)
+  assert.equal(effect.active, true)
   for (const call of [
     () => apps.appMethods.send(entity, 'event', 1),
     () => apps.appMethods.sendTo(entity, socket.id, 'event', 1),
@@ -331,20 +342,25 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
     () => proxy.setSessionAvatar('asset://avatar.vrm'),
     () => proxy.damage(1),
     () => proxy.heal(1),
-    () => proxy.applyEffect({ freeze: true }),
     () => proxy.setVoiceLevel('global'),
     () => proxy.setVoiceLevel('spatial'),
     () => proxy.setVoiceLevel(null),
   ])
     assert.equal(call(), false)
   assert.equal(socket.ws.packets.length, 0)
-  // Engine teardown must undo voice overrides even when scripts exhausted their tick budget.
+  // Engine teardown must undo voice overrides and give back the effect even when scripts exhausted their tick
+  // budget: those two writes are the engine's own.
   proxy.setVoiceLevel('global')
   cleanupPlayerProxy(proxy)
-  assert.equal(socket.ws.packets.length, 1)
+  assert.equal(effect.active, false)
+  assert.equal(socket.ws.packets.length, 2)
+  assert.deepEqual(
+    socket.ws.packets.map(packet => readPacket(packet)).find(([name]) => name === 'onEntityModified'),
+    ['onEntityModified', { id: socket.id, ef: null }]
+  )
   assert.equal(network.writer.state(socket.ws).queued > 0, true)
   assert.equal(network.send('chatAdded', { body: 'system' }), true)
-  assert.equal(socket.ws.packets.length, 2)
+  assert.equal(socket.ws.packets.length, 3)
   assert.equal(socket.ws.terminations, 0)
 })
 

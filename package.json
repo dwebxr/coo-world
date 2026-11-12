@@ -28,7 +28,7 @@
     "client:build": "node scripts/build-client.mjs",
     "node-client:dev": "node scripts/build-node-client.mjs --dev",
     "node-client:build": "node scripts/build-node-client.mjs",
-    "lint": "eslint . --ext .js,.jsx,.mjs",
+    "lint": "eslint . --ext .js,.jsx,.mjs --max-warnings 51",
     "lint:fix": "eslint . --ext .js,.jsx,.mjs --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

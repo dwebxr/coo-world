@@ -29,6 +29,8 @@ jobs:
         run: npm ci
 
       # Required gate: eslint (0 errors) and prettier --check. Neither rewrites a file; `npm run format` is the writer.
+      # The lint script also caps warnings (--max-warnings in package.json): that number is what is left of
+      # react-hooks/exhaustive-deps and of no-console in client code, and it may only go down.
       - name: Lint and format check
         run: npm run check
 

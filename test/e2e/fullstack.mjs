@@ -1229,16 +1229,14 @@ async function probes(admin, watcher) {
         eq(report.from, sender.id, "the count is this connection's")
         ok(report.count >= 1280 && report.count <= most, `${report.count} of ${EVENTS} events reached the script`)
         const escaped = sender.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-        eq(
+        const logged = [
           server.lines(new RegExp(`\\[network\\] "${escaped}" is over its event budget: dropped`)).length,
-          1,
-          'logged once for the connection'
-        )
-        eq(
           server.lines(/\[app\] s-event: event dropped \(sender over its event budget\)/).length,
-          1,
-          'and once for the app'
-        )
+        ]
+        // once for the connection and once for the app, when events were dropped; on a machine so slow that the
+        // budget had room for all of them, none need have been
+        if (most < EVENTS) eq(logged.join(), '1,1', 'logged once for the connection and once for the app')
+        else ok(logged[0] <= 1 && logged[1] <= 1, 'logged at most once each')
         eq(senderClosed, false, 'the sender is not closed: its events are dropped')
         return `${report.count} of ${EVENTS} events reached the script (at most ${most})`
       } finally {

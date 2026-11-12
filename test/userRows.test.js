@@ -59,10 +59,10 @@ function fixture({ decide = () => null, hold = false, ...options } = {}) {
   return f
 }
 
-test('intend: the statement starts before intend returns, and nothing is kept once it has landed', async () => {
+test('intend: update() is called before intend returns, and nothing is kept once it has landed', async () => {
   const f = fixture()
   f.rows_.intend('u', { name: 'Ada' })
-  assert.deepEqual(f.written(), [{ name: 'Ada' }], 'started in the same turn')
+  assert.deepEqual(f.written(), [{ name: 'Ada' }], 'called in the same turn')
   assert.deepEqual(f.rows_.intended('u'), { name: 'Ada' })
   // (a copy: what a join does with it changes nothing here)
   f.rows_.intended('u').name = 'changed by the caller'
@@ -342,4 +342,52 @@ test('past the deadline no statement is started: not by a change, not by the wri
   h.expired = true
   await flushing
   assert.equal(h.statements.length, 1)
+})
+
+test('the deadline stopping the columns written on their own: what failed is said, once, and the run is marked', async () => {
+  const busy = new Error('SQLITE_BUSY')
+  // during the first column on its own, which fails too
+  const f = fixture()
+  f.decide = (_userId, values) => {
+    if (Object.keys(values).length === 1) f.expired = true
+    return busy
+  }
+  f.rows_.intend('u', { name: 'Ada', avatar: 'x' })
+  await f.rows_.idle()
+  assert.deepEqual(f.written(), [{ name: 'Ada', avatar: 'x' }, { name: 'Ada' }])
+  assert.deepEqual(
+    f.failures,
+    [{ userId: 'u', columns: ['name', 'avatar'], error: busy }],
+    'the column that failed on its own, and the one not tried, which failed with the statement before'
+  )
+  assert.equal(f.rows_.unstored(), 1)
+  // the same run of failures: the next change of that user fails as well and is not said again
+  f.expired = false
+  f.decide = () => busy
+  f.rows_.intend('u', { rank: 1 })
+  await f.rows_.idle()
+  assert.equal(f.failures.length, 1)
+  // during the statement of several columns: no column is tried on its own
+  const g = fixture()
+  g.decide = () => {
+    g.expired = true
+    return busy
+  }
+  g.rows_.intend('u', { name: 'Ada', avatar: 'x' })
+  await g.rows_.idle()
+  assert.deepEqual(g.written(), [{ name: 'Ada', avatar: 'x' }])
+  assert.deepEqual(g.failures, [{ userId: 'u', columns: ['name', 'avatar'], error: busy }])
+  // during a column that lands on its own: the one not tried is said, with the error of the statement before
+  const h = fixture()
+  h.decide = (_userId, values) => {
+    if (Object.keys(values).length > 1) return busy
+    h.expired = true
+    return null
+  }
+  h.rows_.intend('u', { name: 'Ada', avatar: 'x' })
+  await h.rows_.idle()
+  assert.deepEqual(h.rows.get('u'), { name: 'Ada' })
+  assert.deepEqual(h.failures, [{ userId: 'u', columns: ['avatar'], error: busy }])
+  assert.deepEqual(h.rows_.intended('u'), { name: 'Ada', avatar: 'x' })
+  assert.equal(h.rows_.unstored(), 1)
 })

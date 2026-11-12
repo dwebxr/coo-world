@@ -1124,8 +1124,10 @@ export class ServerNetwork extends System {
       // The row read above can be older than what this server has decided for it since: a rank an admin gave or took
       // on the user's earlier connection, a name or an avatar that connection set, with the write still on its way,
       // landed after the read began, or failed. What was decided goes over the row (userRows.js keeps it for as long
-      // as the user is joining, stored or not). Nothing awaits between here and the player's add: a change decided
-      // before this line is in the player's record, and one decided after it finds the player in the world.
+      // as the user is joining, stored or not) and is taken as what the row holds: a name the connection brings
+      // itself (`name`, read above) is still preferred to it in the record below, as before. Nothing awaits between
+      // here and the player's add: a change decided before this line is in the player's record, and one decided
+      // after it finds the player in the world.
       // (A rank changed between the old player's leaving and this line finds no player and is not made:
       // onModifyRank.)
       const intended = this.userRows().intended(user.id)

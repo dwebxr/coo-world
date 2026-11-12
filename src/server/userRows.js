@@ -15,7 +15,8 @@
 // - A statement that fails: the writer stops. Nothing tries again by itself; the columns stay decided and unstored,
 //   joins keep getting them from here, and they go out again with that user's next change or at the final save.
 //   When the failed statement carried several columns, each is written once on its own first, so that one column
-//   the database refuses (a value too long for it) does not hold back the others.
+//   the database refuses (a value too long for it) does not hold back the others. The deadline of the final save
+//   can stop that: the columns not tried yet are then said with those that failed on their own.
 // - An entry is dropped once everything in it is stored and the user is not joining (`held`): a join that read the
 //   row before a change may still be waiting, and takes the change from here.
 // Nothing here tells anyone that a value has landed: what was decided holds for this process from the decision on.
@@ -83,10 +84,16 @@ export function createUserRows({ update, onFailure = () => {}, expired = () => f
         let refused = columns
         if (failure && columns.length > 1) {
           // one of them may be what the database refuses: each on its own, so the others are not held back
+          const together = failure
           refused = []
           failure = null
-          for (const column of columns) {
-            if (expired()) return
+          for (const [index, column] of columns.entries()) {
+            if (expired()) {
+              // no statement past the deadline: the columns not tried alone count as refused, as they were together
+              refused.push(...columns.slice(index))
+              failure ??= together
+              break
+            }
             const result = await write(userId, entry, [column])
             if (result) {
               refused.push(column)
@@ -113,8 +120,10 @@ export function createUserRows({ update, onFailure = () => {}, expired = () => f
   }
 
   return {
-    // Records a change of a user's row and starts its writer. Synchronous: the statement is started before this
-    // returns when no other of that user is under way.
+    // Records a change of a user's row and starts its writer, without waiting. Before this returns the decision is
+    // recorded and, when no statement of that user is under way, `update` has been called. When the SQL is sent is
+    // the database layer's business: the server's `update` is a knex builder, which runs its query once it is
+    // awaited, a microtask later at the earliest.
     intend(userId, changes) {
       let entry = entries.get(userId)
       if (!entry) {

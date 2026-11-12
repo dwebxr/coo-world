@@ -3,8 +3,10 @@ import { test } from 'node:test'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { EventEmitter } from 'node:events'
 import { database, fixture, load, Network, Settings, deferred } from './lib/persistenceHarness.mjs'
 import { Storage } from '../src/server/Storage.js'
+import { installShutdown } from '../src/server/shutdown.js'
 
 const ServerAI = load('core/systems/ServerAI.js', 'ServerAI', {
   fs: { readFileSync: () => '' },
@@ -478,16 +480,30 @@ const visitor = id => {
   const data = { id, userId: id, name: id, rank: 0 }
   return { id, send() {}, player: { data, isPlayer: true, modify: change => Object.assign(data, change) } }
 }
+// A stop signal for that network (shutdown.js), with a stand-in for the process: the path that ends the process
+// with 0 when flushBeforeExit resolves and with 1 when it rejects. Its lines go to `lines` (errors) and `said`.
+function stopSignal(network, lines, said) {
+  const proc = Object.assign(new EventEmitter(), { exits: [] })
+  proc.exit = code => proc.exits.push(code)
+  const { onSignal } = installShutdown({
+    proc,
+    network,
+    log: { log: line => said.push(line), error: line => lines.push(line) },
+  })
+  return { exits: proc.exits, stop: () => onSignal('SIGTERM') }
+}
 
 test(
-  'final save: a user change the database refuses is tried once more, counted, reported, and ends the process with 1',
+  'final save: a user change the database refuses is tried once more, counted, reported, and a stop exits with 1',
   { timeout: 5000 },
   async t => {
     const lines = []
+    const said = []
     t.mock.method(console, 'error', line => lines.push(line))
     t.mock.method(console, 'warn', line => lines.push(line))
+    t.mock.method(console, 'log', line => said.push(line))
     const { db } = database()
-    const { network, world, exits } = fixture(t, db)
+    const { network, world } = fixture(t, db)
     world.events = { emit() {} }
     const statements = userTable(network, db, async () => {
       throw new Error('SQLITE_BUSY')
@@ -497,9 +513,12 @@ test(
     await network.userRows().idle()
     assert.equal(statements.length, 2)
     assert.equal(lines.filter(line => line.includes('not stored')).length, 2, 'said once for each user')
-    world.fatal('test')
-    await world.fatalPromise
+    const { exits, stop } = stopSignal(network, lines, said)
+    await stop()
+    // flushBeforeExit rejected (final save incomplete): the stop exits with 1, not with the 0 of a complete save
     assert.deepEqual(exits, [1])
+    assert.ok(lines.includes('[server] final save failed: final save incomplete'))
+    assert.equal(said.includes('[network] final save complete'), false)
     assert.deepEqual(
       statements.map(statement => statement.id),
       ['u', 'v', 'u', 'v'],
@@ -538,7 +557,10 @@ test(
     await network.userRows().idle()
     assert.equal(network.userRows().unstored(), 1)
     down = false
-    await network.flushBeforeExit(5000)
+    const { exits, stop } = stopSignal(network, lines, said)
+    await stop()
+    // flushBeforeExit resolved: the process ends with 0
+    assert.deepEqual(exits, [0])
     assert.deepEqual(stored.get('u'), { name: 'Ada' })
     assert.equal(statements.length, 2)
     assert.equal(network.userRows().unstored(), 0)

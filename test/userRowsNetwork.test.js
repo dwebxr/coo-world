@@ -92,10 +92,10 @@ function fixture() {
     process: { env: {} },
     performance,
   })
-  // a join of user `id`, not waited for: -> { ws, done }
-  f.join = id => {
+  // a join of user `id`, not waited for, with the query parameters of its WebSocket URL: -> { ws, done }
+  f.join = (id, params = {}) => {
     const ws = fakeWs()
-    return { ws, done: network.onConnection(ws, { authToken: id }) }
+    return { ws, done: network.onConnection(ws, { authToken: id, ...params }) }
   }
   f.connect = async (id, rank = Ranks.VISITOR) => {
     if (!f.users.has(id)) f.users.set(id, { id, name: id, avatar: null, rank })
@@ -112,14 +112,14 @@ function fixture() {
 
 // The plain reload: the old connection is still here when the new one reads the row, and is gone before the read
 // answers. The row the join gets is the one from before the change.
-async function reloadDuring(f, change) {
+async function reloadDuring(f, change, params) {
   const read = deferred()
   const reading = deferred()
   f.read = () => {
     reading.resolve()
     return read.promise
   }
-  const { ws, done } = f.join('u')
+  const { ws, done } = f.join('u', params)
   await reading.promise
   f.read = null
   const old = f.network.sockets.get('u')
@@ -200,6 +200,40 @@ test('join: a name and an avatar set while the row was being read are those of t
     await f.rows().idle()
     if (fate === 'failed') assert.deepEqual(f.users.get('u'), { id: 'u', name: 'u', avatar: null, rank: 0 })
     else assert.deepEqual(f.users.get('u'), { id: 'u', name: 'Ada', avatar: 'asset://ada.vrm', rank: 0 })
+  }
+})
+
+// The `name` query parameter of the WebSocket URL (ClientNetwork.init adds it when it is given a name; the browser
+// client of this repository gives none). sanitizeName keeps a string with at least one visible character, cut to
+// 64 characters, and the join prefers it to the name of the row, which the decided values go over first. It is
+// not written to the row.
+test('join: a name the connection brings is the name of the new session, over a name decided while the row was read', async () => {
+  for (const brought of ['Old', ' ​ ', undefined]) {
+    const f = fixture()
+    await f.connect('u')
+    const { next, ws } = await reloadDuring(
+      f,
+      async old => {
+        await f.network.onCommand(old, { args: ['name', 'New'] })
+        await turn()
+        assert.equal(f.users.get('u').name, 'New', 'the write has landed')
+        assert.deepEqual(f.rows().intended('u'), { name: 'New' }, 'kept while the user is joining')
+      },
+      brought === undefined ? {} : { name: brought }
+    )
+    // a name of visible characters is the session's; one of white space and invisible characters is no name
+    const expected = brought === 'Old' ? 'Old' : 'New'
+    assert.equal(next.player.data.name, expected, JSON.stringify(brought))
+    const [, snapshot] = readPacket(ws.packets[0])
+    assert.equal(snapshot.entities.find(entity => entity.id === 'u').name, expected, JSON.stringify(brought))
+    // the row keeps the decided name: the join writes nothing
+    assert.deepEqual(f.patches(), [{ name: 'New' }])
+    assert.equal(f.users.get('u').name, 'New')
+    assert.equal(f.rows().size, 0)
+    // a later join that brings no name gets it from the row
+    next.ws.terminate()
+    const again = await f.connect('u')
+    assert.equal(again.player.data.name, 'New')
   }
 })
 

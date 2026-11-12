@@ -427,6 +427,11 @@ test('POST /csp-report: a post refused before its body ends the connection; the 
   assert.equal(res.status, 415)
   assert.match(res.answer, /\r\nconnection: close\r\n/i)
   assert.doesNotMatch(res.all, /the next request was answered/)
+  // a type the route does not read: refused by the parser, before any of the body
+  res = await rawPost(port, ['Content-Type: text/plain'])
+  assert.equal(res.status, 415)
+  assert.match(res.answer, /\r\nconnection: close\r\n/i)
+  assert.doesNotMatch(res.all, /the next request was answered/)
   // over the rate
   for (let i = 0; i < PER_ADDRESS; i++) made.admit('127.0.0.1')
   res = await rawPost(port, ['Content-Type: application/csp-report'])
@@ -437,6 +442,7 @@ test('POST /csp-report: a post refused before its body ends the connection; the 
   made.clock.at += 60_000
   res = await rawPost(port, ['Content-Type: application/csp-report'], { first: REPORT_MAX_BYTES + 1 })
   assert.equal(res.status, 413)
+  assert.match(res.answer, /\r\nconnection: close\r\n/i)
   assert.doesNotMatch(res.all, /the next request was answered/)
 })
 

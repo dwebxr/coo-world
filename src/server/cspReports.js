@@ -17,10 +17,11 @@ import { clientIpKey } from './uploadLimits.js'
 //   the request's headers have come and before any of its body is read, whatever becomes of the post; the rest are
 //   answered 429 and counted (so the addresses remembered in a minute are PER_MINUTE at most). A body of
 //   REPORT_MAX_BYTES at most, as sent: a compressed body is refused (415) before it is read (a browser does not
-//   compress a report, and a decompressor reads input that the byte count never sees). A post over the rate, a
-//   compressed one and one that is too long each end their connection, so the rest of the body is not read. KINDS_MAX different lines an
-//   hour, each written when first seen and again at 10, 100, 1000 … of the same; one line of totals when an hour
-//   with posts has passed (written when the next post comes: there is no timer).
+//   compress a report, and a decompressor reads input that the byte count never sees). A post refused for the rate,
+//   its encoding, its type or its length ends its connection with the answer: the body is not read to its end
+//   (what had already arrived when the answer went out, tens of kilobytes at most in a test, may have been).
+//   KINDS_MAX different lines an hour, each written when first seen and again at 10, 100, 1000 … of the same; one
+//   line of totals when an hour with posts has passed (written when the next post comes: there is no timer).
 
 export const REPORT_PATH = '/csp-report'
 export const REPORT_MAX_BYTES = 8 * 1024
@@ -155,16 +156,19 @@ export async function cspReportRoute(fastify, { reports = createCspReports(), cl
   fastify.addContentTypeParser('application/csp-report', { parseAs: 'string' }, text)
   fastify.addContentTypeParser('application/json', { parseAs: 'string' }, text)
   // what the body parser refuses (too long: 413, another type: 415) is answered without the line the root handler
-  // writes for a 4xx: nothing a post to this route does writes a line but the reports counted above
+  // writes for a 4xx: nothing a post to this route does writes a line but the reports counted above. And with
+  // `Connection: close` (see the hook below): a type is refused before any of the body is read.
   fastify.setErrorHandler((err, req, reply) => {
     const code = err?.statusCode
-    if (Number.isInteger(code) && code >= 400 && code < 500) return reply.code(code).send()
+    if (Number.isInteger(code) && code >= 400 && code < 500) {
+      return reply.code(code).header('Connection', 'close').send()
+    }
     throw err
   })
   // before the body: the rate (a post counts whatever it turns out to be), and no encoding to undo (the
   // compression plugin would decompress the body before the byte count sees it)
-  // A post refused here is answered with `Connection: close`: the connection ends with the answer. Left open, the
-  // HTTP layer would read the refused body to its end, whatever its length, to get to the next request.
+  // A post refused here is answered with `Connection: close`: the connection ends once the answer is out. Left
+  // open, the HTTP layer would read the refused body to its end, whatever its length, to get to the next request.
   fastify.addHook('onRequest', async (req, reply) => {
     const address = clientIpKey(clientIpHeader ? req.headers[clientIpHeader] : undefined, req.ip)
     const refuse = code => reply.code(code).header('Connection', 'close').send()

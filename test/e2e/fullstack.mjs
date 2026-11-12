@@ -1910,15 +1910,55 @@ async function probes(admin, watcher) {
     const dropped = () =>
       consoleLines.filter(l => l.includes('[world.open] not opened: another link is waiting')).length
     const droppedBefore = dropped()
-    const popupPromise = context.waitForEvent('page', { timeout: 20000 })
+    // Presses that come before the question has been up for a second: the first as the button appears, then three
+    // more, 400 ms apart. They are made in the page so that none of them can be late
+    await page.evaluate(() => {
+      window.__earlyOpen = 0
+      const observer = new MutationObserver(() => {
+        const open = document.querySelector('.link-confirm-action.open')
+        if (!open) return
+        observer.disconnect()
+        const press = () => {
+          document.querySelector('.link-confirm-action.open')?.click()
+          if (++window.__earlyOpen < 4) setTimeout(press, 400)
+        }
+        press()
+      })
+      observer.observe(document.body, { childList: true, subtree: true })
+    })
+    let popups = 0
+    const countPopup = () => popups++
+    context.on('page', countPopup)
     ok((await probeCommand('openExternalTwice')).ok)
     await dialog.waitFor({ timeout: 15000 })
     eq(await dialog.locator('.link-confirm-address').innerText(), `http://${external}/status`, 'the first request')
     eq(dropped(), droppedBefore + 1, 'the second request was dropped and said so in the console')
-    // Open works once the question has been on screen for a second
+    await waitUntil(() => page.evaluate(() => window.__earlyOpen === 4), { timeout: 10000, message: 'early presses' })
+    eq(await dialog.count(), 1, 'the question is still there after four early presses on Open')
+    eq(popups, 0, 'and none of them opened anything')
+    // Open works once the question has been on screen for a second without a press
+    const openButton = dialog.getByRole('button', { name: 'Open' })
     await page.waitForSelector('.link-confirm-action.open:not(.waiting)', { timeout: 10000 })
-    eq(pages(), before, 'still nothing opened')
-    await dialog.getByRole('button', { name: 'Open' }).click()
+    // A pointer press does not leave the button focused, so the jump key answers nothing: the pointer goes down
+    // on Open and comes up elsewhere (no click), then Space is pressed
+    const box = await openButton.boundingBox()
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.mouse.down()
+    eq(
+      await page.evaluate(() => !!document.activeElement?.closest?.('.link-confirm')),
+      false,
+      'no button of the question took the focus'
+    )
+    await page.mouse.move(5, 5)
+    await page.mouse.up()
+    await page.keyboard.press('Space')
+    await sleep(500)
+    eq(await dialog.count(), 1, 'Space did not answer')
+    eq(popups, 0, 'still nothing opened')
+    eq(pages(), before, 'no new page')
+    context.off('page', countPopup)
+    const popupPromise = context.waitForEvent('page', { timeout: 20000 })
+    await openButton.click()
     const popup = await popupPromise
     await popup.waitForLoadState('domcontentloaded')
     const info = await popup.evaluate(() => ({ opener: window.opener, url: location.href }))

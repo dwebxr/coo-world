@@ -30,6 +30,11 @@ export class ClientUI extends System {
       }
       world.on(name, this.remember[name])
     }
+    // a question nobody can see or answer is taken back: in an immersive session this interface is not shown
+    this.onXRSession = session => {
+      if (session) this.latest.link?.cancel()
+    }
+    world.on('xrSession', this.onXRSession)
   }
 
   start() {
@@ -56,6 +61,7 @@ export class ClientUI extends System {
     ) {
       this.state.visible = !this.state.visible
       this.broadcast()
+      this.dropHiddenLink()
     }
     if (this.control.pointer.locked && this.state.active) {
       this.state.active = false
@@ -87,6 +93,7 @@ export class ClientUI extends System {
     if (this.state.visible === value) return
     this.state.visible = value
     this.broadcast()
+    this.dropHiddenLink()
   }
 
   setApp(app) {
@@ -127,7 +134,9 @@ export class ClientUI extends System {
   // it was not, as text.
   // - One question at a time. A request made while one is on screen is dropped: not queued (a script could line up
   //   any number) and not shown in its place (the address under the visitor's pointer would change).
-  // - Nothing is asked in an immersive session, where this interface is not visible.
+  // - Nothing is asked in an immersive session, where this interface is not visible, and a question that waits
+  //   when one starts, or when the interface is hidden (Z), is cancelled. An interface that is hidden when the
+  //   question comes is shown.
   // What this does not do: judge the page, stop a script from asking again after a Cancel, or stop it from drawing
   // its own text in the world around the question.
   askOpen({ href, host, shown, newTab, go }) {
@@ -147,16 +156,24 @@ export class ClientUI extends System {
       shown,
       newTab,
       open: () => {
-        if (close()) go()
+        if (!close()) return
+        // asked before the session began, answered in it by something other than the visitor's press
+        if (this.world.xr?.session) return
+        go()
       },
       cancel: () => {
         close()
       },
     }
     this.world.emit('link', link)
+    if (!this.state.visible) this.toggleVisible(true)
     // the buttons cannot be reached with the pointer held by the world
     this.world.controls?.unlockPointer?.()
     return true
+  }
+
+  dropHiddenLink() {
+    if (!this.state.visible) this.latest.link?.cancel()
   }
 
   broadcast() {
@@ -167,5 +184,6 @@ export class ClientUI extends System {
     this.control?.release()
     this.control = null
     for (const name in this.remember) this.world.off(name, this.remember[name])
+    this.world.off('xrSession', this.onXRSession)
   }
 }

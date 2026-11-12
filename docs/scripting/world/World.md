@@ -244,9 +244,11 @@ press Open (Cancel and Escape close the dialog). Nothing tells the script which 
 - One question at a time: a call made while a question is on screen is dropped, with a console warning. It is not
   queued.
 - Open works once the question has been on screen for a second, and a press before that starts the second again.
-- Nothing is asked, and nothing opens, in an immersive (VR) session, or in a client without the interface.
+  A pointer press does not focus a button, so keys the visitor uses in the world do not answer.
+- Nothing is asked, and nothing opens, in an immersive (VR) session, or in a client without the interface. A
+  question that waits when a session starts, or when the visitor hides the interface, is cancelled.
 - The question is the visitor's chance to see where a link goes. It does not check the page, and a script can
   still ask again after a Cancel and can show its own text in the world around the dialog: do not tell visitors
   that a link is safe because the world asked.
 
-Only `http(s)` URLs can be opened: relative paths resolve against the world's own origin and a bare host (`example.com/page`) gets `https://`, while scheme URLs such as `javascript:`, `data:` or `blob:` and anything served from the world's `/assets/` store (including `asset://` URLs and percent-encoded spellings of it) are rejected with a console error. A `host:port/path` without a scheme is rejected too (it parses as a scheme); write `http://host:port/path`. An address with a user name or password in it (`https://name@host/`) is rejected. New tabs are opened with `noopener,noreferrer`, so the opened page cannot reach the world.
+Only `http(s)` URLs can be opened: relative paths resolve against the world's own origin and a bare host (`example.com/page`) gets `https://`, while scheme URLs such as `javascript:`, `data:` or `blob:` and anything served from the world's `/assets/` store (including `asset://` URLs and percent-encoded spellings of it) are rejected with a console error. A `host:port/path` without a scheme is rejected too (it parses as a scheme); write `http://host:port/path`. An address with a user name or password in it (`https://name@host/`) is rejected, and so is a host name longer than 253 characters. New tabs are opened with `noopener,noreferrer`, so the opened page cannot reach the world.

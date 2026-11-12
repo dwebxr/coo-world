@@ -7,6 +7,7 @@ import { transformSync } from 'esbuild'
 
 import {
   OPEN_ARM_MS,
+  OPEN_HOST_MAX,
   OPEN_SHOWN_MAX,
   createOpenGuard,
   describeOpenURL,
@@ -27,6 +28,18 @@ test('open policy: an address with a user name or password in it is refused', ()
   // an @ further on is part of the path or the query, and the host is still the host
   assert.equal(open('https://other.example/@world.example'), 'https://other.example/@world.example')
   assert.equal(open('https://other.example/?next=a@b'), 'https://other.example/?next=a@b')
+})
+
+test('open policy: a host name longer than any that resolves is refused', () => {
+  const open = url => resolveOpenURL(url, { resolve: value => value, base: PAGE })
+  assert.equal(OPEN_HOST_MAX, 253)
+  const label = 'a'.repeat(63)
+  const longest = `${label}.${label}.${label}.${'a'.repeat(61)}`
+  assert.equal(longest.length, 253)
+  assert.equal(open(`https://${longest}/`), `https://${longest}/`)
+  assert.equal(open(`https://a${longest}/`), null)
+  // thousands of characters of host would push the buttons of the question off the screen
+  assert.equal(open(`https://${'a.'.repeat(4000)}example/`), null)
 })
 
 test('open policy: what is another site, and what the visitor is shown of it', () => {
@@ -99,6 +112,14 @@ test('open guard: a press counts only after a whole wait without one', () => {
   assert.equal(fast.press(11998), false)
   // a pause of the whole wait, then one press
   assert.equal(fast.press(12998), true)
+  // time spent where the question could not be seen does not count
+  const hidden = createOpenGuard(0)
+  assert.equal(hidden.armed(60_000), true)
+  hidden.restart(60_000)
+  assert.equal(hidden.armed(60_000), false)
+  assert.equal(hidden.remaining(60_500), 500)
+  assert.equal(hidden.press(60_999), false)
+  assert.equal(hidden.press(61_999), true)
   // a clock that goes back is not a reason to open
   const back = createOpenGuard(1000)
   assert.equal(back.press(0), false)
@@ -240,6 +261,75 @@ test('askOpen: nothing is asked in an immersive session, where the question coul
   assert.deepEqual(r.went, [])
 })
 
+test('askOpen: a question that waits when an immersive session starts is cancelled, and cannot open in it', () => {
+  const w = world()
+  const r = request()
+  w.ui.askOpen(r)
+  const link = w.ui.latest.link
+  w.xr.session = {}
+  w.emit('xrSession', w.xr.session)
+  assert.equal(w.ui.latest.link, null)
+  link.open()
+  assert.deepEqual(r.went, [])
+  // the end of a session cancels nothing
+  w.xr.session = null
+  const later = request()
+  w.ui.askOpen(later)
+  w.emit('xrSession', null)
+  assert.notEqual(w.ui.latest.link, null)
+  // a session the interface was not told about: an Open that reaches the question in it opens nothing
+  w.xr.session = {}
+  w.ui.latest.link.open()
+  assert.deepEqual(later.went, [])
+  assert.equal(w.ui.latest.link, null)
+  // a destroyed interface no longer listens
+  w.ui.destroy()
+  assert.equal(w.listenerCount('xrSession'), 0)
+})
+
+test('askOpen: a hidden interface is shown for the question, and hiding it cancels the question', () => {
+  const w = world()
+  w.ui.toggleVisible(false)
+  const seen = []
+  w.on('ui', state => seen.push(state.visible))
+  const r = request()
+  assert.equal(w.ui.askOpen(r), true)
+  assert.equal(w.ui.state.visible, true, 'the visitor can see what is asked')
+  assert.deepEqual(seen, [true])
+  assert.notEqual(w.ui.latest.link, null)
+  // hidden with the menu or with Z: nobody can see the question, so it is not left waiting behind the world
+  const link = w.ui.latest.link
+  w.ui.toggleVisible(false)
+  assert.equal(w.ui.latest.link, null)
+  link.open()
+  assert.deepEqual(r.went, [])
+  w.ui.toggleVisible(true)
+  const again = request()
+  w.ui.askOpen(again)
+  const idle = { pressed: false, down: false }
+  w.ui.control = {
+    escape: idle,
+    keyZ: { pressed: true },
+    metaLeft: idle,
+    controlLeft: idle,
+    shiftLeft: idle,
+    pointer: { locked: false },
+  }
+  w.ui.state.active = true
+  w.ui.update()
+  assert.equal(w.ui.state.visible, false)
+  assert.equal(w.ui.latest.link, null)
+  assert.deepEqual(again.went, [])
+  // showing the interface again is not hiding it
+  const third = request()
+  w.ui.update()
+  assert.equal(w.ui.state.visible, true)
+  w.ui.askOpen(third)
+  w.ui.control.keyZ = idle
+  w.ui.update()
+  assert.notEqual(w.ui.latest.link, null)
+})
+
 // world.open as a script calls it, with a window that records what would have been opened
 function apps({ uiSystem = true, location = 'https://world.example/?x=1' } = {}) {
   const opened = []
@@ -360,6 +450,7 @@ function dialog(link) {
   }).code
   const slots = []
   const timers = []
+  const listeners = []
   let cursor = 0
   let now = 50_000
   const context = {
@@ -387,6 +478,11 @@ function dialog(link) {
     },
     css() {},
     createOpenGuard,
+    document: {
+      visibilityState: 'visible',
+      addEventListener: (name, fn) => listeners.push([name, fn]),
+      removeEventListener() {},
+    },
     performance: { now: () => now },
     setTimeout: (fn, ms) => timers.push({ fn, at: now + ms }) && timers.length,
     clearTimeout: id => {
@@ -411,6 +507,20 @@ function dialog(link) {
   const button = label => find(render(), node => node.type === 'button' && node.children.includes(label)).props
   return {
     button,
+    // a press with the pointer (detail 1) or with a key on a focused button (detail 0)
+    press(label, detail = 1) {
+      const event = { detail, blurred: 0, currentTarget: { blur: () => event.blurred++ } }
+      button(label).onClick(event)
+      return event
+    },
+    // the page went to the background for `ms` and came back
+    background(ms) {
+      context.document.visibilityState = 'hidden'
+      for (const [name, fn] of listeners) if (name === 'visibilitychange') fn()
+      this.advance(ms)
+      context.document.visibilityState = 'visible'
+      for (const [name, fn] of listeners) if (name === 'visibilitychange') fn()
+    },
     advance(ms) {
       now += ms
       for (const timer of timers) {
@@ -438,18 +548,70 @@ test('the question: Open works after a second on screen, and presses before that
   // a visitor clicking fast where the button appeared
   for (let i = 0; i < 20; i++) {
     d.advance(300)
-    d.button('Open').onClick()
+    d.press('Open')
   }
   assert.deepEqual(answers, [])
   assert.equal(d.button('Open')['aria-disabled'], true)
   d.advance(999)
   assert.equal(d.button('Open')['aria-disabled'], true)
-  d.button('Open').onClick()
+  d.press('Open')
   assert.deepEqual(answers, [], 'one millisecond early is early')
   d.advance(1000)
   assert.equal(d.button('Open')['aria-disabled'], false)
   assert.match(d.button('Open').className, /^link-confirm-action open$/)
-  d.button('Open').onClick()
+  d.press('Open')
+  assert.deepEqual(answers, ['open'])
+})
+
+test('the question: a pointer press leaves no button focused, so a key of the world does not answer', () => {
+  const answers = []
+  const d = dialog({
+    host: 'other.example',
+    shown: 'https://other.example/',
+    newTab: true,
+    open: () => answers.push('open'),
+    cancel: () => answers.push('cancel'),
+  })
+  for (const label of ['Cancel', 'Open']) {
+    // the press itself gives no focus
+    let prevented = 0
+    d.button(label).onMouseDown({ preventDefault: () => prevented++ })
+    assert.equal(prevented, 1, label)
+  }
+  // and a focus the browser gave anyway is let go by the press that came too soon
+  const early = d.press('Open')
+  assert.equal(early.blurred, 1)
+  assert.deepEqual(answers, [])
+  // a key on a button the visitor focused with Tab is a press like any other: it waits for the second too
+  const key = d.press('Open', 0)
+  assert.equal(key.blurred, 0)
+  assert.deepEqual(answers, [])
+  d.advance(1000)
+  d.press('Open', 0)
+  assert.deepEqual(answers, ['open'])
+})
+
+test('the question: time in a background tab does not count towards the second', () => {
+  const answers = []
+  const d = dialog({
+    host: 'other.example',
+    shown: 'https://other.example/',
+    newTab: true,
+    open: () => answers.push('open'),
+    cancel: () => answers.push('cancel'),
+  })
+  // on screen for a moment, then a minute in the background: the timer that makes Open ready has long fired
+  d.advance(200)
+  assert.equal(d.button('Open')['aria-disabled'], true)
+  d.background(60_000)
+  assert.equal(d.button('Open')['aria-disabled'], true, 'back in view: Open waits again')
+  d.press('Open')
+  assert.deepEqual(answers, [])
+  d.advance(999)
+  assert.equal(d.button('Open')['aria-disabled'], true)
+  d.advance(1)
+  assert.equal(d.button('Open')['aria-disabled'], false)
+  d.press('Open')
   assert.deepEqual(answers, ['open'])
 })
 
@@ -462,8 +624,7 @@ test('the question: Cancel works at once, and no button is the default', () => {
     open: () => answers.push('open'),
     cancel: () => answers.push('cancel'),
   })
-  const cancel = d.button('Cancel')
-  cancel.onClick()
+  d.press('Cancel')
   assert.deepEqual(answers, ['cancel'])
   for (const label of ['Cancel', 'Open']) {
     const props = d.button(label)

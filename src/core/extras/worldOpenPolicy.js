@@ -73,6 +73,8 @@ export function resolveOpenURL(url, { resolve, base, assetsUrl } = {}) {
   if (!target || !OPEN_PROTOCOLS.includes(target.protocol)) return null
   // `https://this-world.example@other.example/` reads as this world and goes to the other host
   if (target.username || target.password) return null
+  // no name a resolver answers is longer than 253 characters; a longer one is only there to fill the question
+  if (target.hostname.length > OPEN_HOST_MAX) return null
   if (isAssetURL(target, base, assetsUrl)) return null
   return target.href
 }
@@ -82,6 +84,7 @@ export function resolveOpenURL(url, { resolve, base, assetsUrl } = {}) {
 // (xn--) form, and everything else that is not ASCII is percent-encoded, so neither can carry a look-alike letter
 // or a character that reorders the text. A long address is cut in what is shown, never in what is opened.
 export const OPEN_SHOWN_MAX = 300
+export const OPEN_HOST_MAX = 253
 
 export function describeOpenURL(href, base) {
   const target = parseURL(href)
@@ -114,5 +117,9 @@ export function createOpenGuard(now, delayMs = OPEN_ARM_MS) {
     },
     // ms until the button works, as of `at`
     remaining: at => Math.max(0, delayMs - (at - since)),
+    // the question came (back) into view: time it spent where the visitor could not see it does not count
+    restart(at) {
+      since = at
+    },
   }
 }

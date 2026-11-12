@@ -4,8 +4,16 @@ import { createOpenGuard } from '../../core/extras/worldOpenPolicy'
 
 // The question put before a script's link leaves this world's origin (ClientUI.askOpen). It names the host on a
 // line of its own, shows the address, and opens only from a press on Open that comes after the question has been
-// on screen untouched for a moment (createOpenGuard). Nothing here is focused or answered by a key: Escape cancels
-// (ClientUI), and Open has to be pressed.
+// on screen untouched for a moment (createOpenGuard): time the page spent hidden does not count. Escape cancels
+// (ClientUI). The dialog focuses nothing and a pointer press does not focus a button either, so a key the visitor
+// uses in the world (Space, Enter) answers nothing unless they moved the focus to a button themselves, with Tab.
+
+// no focus from a pointer press, and a focus the browser gave anyway is let go
+const keepFocus = e => e.preventDefault()
+const blurIfPointer = e => {
+  if (e.detail > 0) e.currentTarget.blur()
+}
+
 export function LinkConfirm({ link }) {
   const guard = useRef(null)
   if (!guard.current) guard.current = createOpenGuard(performance.now())
@@ -16,7 +24,19 @@ export function LinkConfirm({ link }) {
     const timer = setTimeout(() => setArmed(true), guard.current.remaining(performance.now()))
     return () => clearTimeout(timer)
   }, [early])
-  const onOpen = () => {
+  useEffect(() => {
+    // a tab that was in the background: the wait starts when the question can be seen
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible') return
+      guard.current.restart(performance.now())
+      setArmed(false)
+      setEarly(n => n + 1)
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [])
+  const onOpen = e => {
+    blurIfPointer(e)
     if (guard.current.press(performance.now())) return link.open()
     // too soon: Open is still shown as waiting, and the timer that makes it ready starts again
     setEarly(n => n + 1)
@@ -40,9 +60,16 @@ export function LinkConfirm({ link }) {
           backdrop-filter: blur(5px);
           width: 22rem;
           max-width: 100%;
+          /* whatever the address is, the buttons stay on screen: the text scrolls, they do not */
+          max-height: 100%;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
         }
         .link-confirm-content {
           padding: 1.4rem;
+          min-height: 0;
+          overflow: auto;
         }
         .link-confirm-title {
           text-align: center;
@@ -80,6 +107,7 @@ export function LinkConfirm({ link }) {
           border-top: 1px solid rgba(255, 255, 255, 0.05);
           display: flex;
           align-items: stretch;
+          flex-shrink: 0;
         }
         .link-confirm-action {
           flex: 1;
@@ -118,7 +146,12 @@ export function LinkConfirm({ link }) {
           </div>
         </div>
         <div className='link-confirm-actions'>
-          <button type='button' className='link-confirm-action left' onClick={link.cancel}>
+          <button
+            type='button'
+            className='link-confirm-action left'
+            onMouseDown={keepFocus}
+            onClick={() => link.cancel()}
+          >
             Cancel
           </button>
           {/* not `disabled`: a press that comes too soon has to be seen, since it starts the wait again */}
@@ -126,6 +159,7 @@ export function LinkConfirm({ link }) {
             type='button'
             className={armed ? 'link-confirm-action open' : 'link-confirm-action open waiting'}
             aria-disabled={!armed}
+            onMouseDown={keepFocus}
             onClick={onOpen}
           >
             Open

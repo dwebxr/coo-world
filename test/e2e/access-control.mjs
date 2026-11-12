@@ -50,7 +50,8 @@ import { installAsset, startServer } from './lib/server.mjs'
 import { WireClient } from './lib/ws.mjs'
 
 const lib = file => import(pathToFileURL(path.join(REPO_ROOT, file)))
-const { PACKET_RULES, REFUSED_EVENT_NAMES, namedCases, namesOfClass } = await lib('test/lib/packetAccess.mjs')
+const { PACKET_RULES, REFUSED_EVENT_NAMES, namedCases, namesOfCase, namesOfClass } =
+  await lib('test/lib/packetAccess.mjs')
 const { ENV_TABLE, envNamesOf } = await lib('test/lib/envTable.mjs')
 const { SERVED_AS_BEFORE_ENV_NAMES, SERVED_ENV_NAMES } = await lib('src/core/extras/publicEnv.js')
 
@@ -1137,18 +1138,17 @@ try {
 
   // ---------- the wallet flows, in a world that has none ----------
 
+  // The five wallet packets that a world with the feature answers to any sender: in this world they are not
+  // answered, and in the second server's they are (the positive control, below). The other six are answered to
+  // nobody without a wallet state of its own (a sign-in under way, a verified wallet), in either world, so their
+  // silence here would show nothing: their feature checks are asked in test/packetRefusals.test.js, with that state
+  // set (test/lib/packetAccess.mjs names them).
   const SOL_WALLET = '11111111111111111111111111111111'
   const EVM_WALLET = `0x${'12'.repeat(20)}`
   const walletPackets = () => ({
     requestBuilderNonce: { walletAddress: SOL_WALLET, attempt: 1 },
-    requestBuilderByToken: { walletAddress: SOL_WALLET, signature: 'x', nonce: 'a'.repeat(64), attempt: 1 },
-    requestBuilderRecheck: {},
     tokenBalanceRequest: { id: 2 },
-    revokeBuilderByToken: {},
     requestEvmNonce: { address: EVM_WALLET, attempt: 3 },
-    requestEvmVerify: { address: EVM_WALLET, signature: `0x${'1'.repeat(130)}`, nonce: 'a'.repeat(64), attempt: 3 },
-    revokeEvmWallet: {},
-    setEvmTipReceive: { enabled: true },
     requestEvmTipIntent: { id: 4, to: 'nobody', token: 'JPYC', amount: '1' },
     evmTip: { ticket: '0'.repeat(32), txHash: `0x${'1'.repeat(64)}` },
   })
@@ -1161,18 +1161,26 @@ try {
     'onEvmTipIntent',
     'onEvmTipStatus',
   ]
-  ok(same(Object.keys(walletPackets()).sort(), namesOfClass('feature').sort()), 'a payload for every wallet packet')
+  ok(
+    same(Object.keys(walletPackets()).sort(), namesOfCase('wallet').sort()),
+    'a payload for every packet [wallet] tries'
+  )
+  const walletUnitOnly = namesOfClass('feature').filter(name => !namesOfCase('wallet').includes(name))
 
-  await run('wallet', 'in a world without the wallet features, every wallet packet is ignored', async () => {
-    const from = visitor.mark()
-    for (const [name, payload] of Object.entries(walletPackets())) await send(visitor, name, payload)
-    const answers = visitor.since(from).filter(m => WALLET_ANSWERS.includes(m.method) || m.method === 'onChatAdded')
-    eq(answers.length, 0, `nothing is answered: ${JSON.stringify(answers.slice(0, 2))}`)
-    const now = await fresh()
-    eq(entityOf(now, visitor.id).rank, 0, 'no rank')
-    ok(!entityOf(now, visitor.id).evmTips, 'no tips switch')
-    return 'the positive control is the second server, where the same payloads are answered (below)'
-  })
+  await run(
+    'wallet',
+    'in a world without the wallet features, the five answered wallet packets are ignored',
+    async () => {
+      const from = visitor.mark()
+      for (const [name, payload] of Object.entries(walletPackets())) await send(visitor, name, payload)
+      const answers = visitor.since(from).filter(m => WALLET_ANSWERS.includes(m.method) || m.method === 'onChatAdded')
+      eq(answers.length, 0, `nothing is answered: ${JSON.stringify(answers.slice(0, 2))}`)
+      const now = await fresh()
+      eq(entityOf(now, visitor.id).rank, 0, 'no rank')
+      ok(!entityOf(now, visitor.id).evmTips, 'no tips switch')
+      return `the positive control is the second server, where the same payloads are answered (below); not tried here: ${walletUnitOnly.join(', ')} (test/packetRefusals.test.js)`
+    }
+  )
 
   // ---------- identity ----------
 
@@ -1422,10 +1430,7 @@ try {
   await run('wallet', 'in a world with the wallet features, the same packets from a visitor are answered', async () => {
     const guest = await w2.connect('guest')
     const from = guest.mark()
-    const packets = walletPackets()
-    for (const name of ['requestBuilderNonce', 'tokenBalanceRequest', 'requestEvmNonce', 'requestEvmTipIntent']) {
-      await w2.send(guest, name, packets[name])
-    }
+    for (const [name, payload] of Object.entries(walletPackets())) await w2.send(guest, name, payload)
     const answer = method => got(guest, from, method)[0]?.data
     eq(answer('onBuilderNonce')?.attempt, 1, 'a sign-in message for the token gate')
     ok(/^[a-f0-9]{64}$/.test(answer('onBuilderNonce').nonce), 'with a nonce')
@@ -1436,6 +1441,7 @@ try {
       'not_verified',
       'a tip intent is answered (and refused: no wallet is verified)'
     )
+    eq(answer('onEvmTipStatus')?.reason, 'unknown_ticket', 'a reported tip is answered (and refused: no such ticket)')
     return 'the positive control of [wallet]: the feature decides, not the rank'
   })
 

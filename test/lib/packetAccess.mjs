@@ -3,6 +3,7 @@
 //
 // test/packetAccess.test.js holds this table to the registry (a name without a rule fails, and so does a rule for a
 // name that is gone) and to the server (a name whose rules say it is handled has an `on<Name>`, and the reverse).
+// test/packetRefusals.test.js asks the handlers themselves, rule by rule, through the network harness.
 // test/e2e/access-control.mjs sends the packets against a running server: each rule names the case there that
 // tries it (`e2e`), or the existing test that does (`cover`), and the suite fails when a case named here did not
 // run. So a new packet cannot be added without saying who may send it, and a rule cannot claim a case that does
@@ -44,18 +45,19 @@ const e2e = (kind, what, id, also) => ({ class: kind, what, e2e: id, ...(also ? 
 // a rule another test already tries: the file, and a string that file must still contain (the step's name)
 const covered = (kind, what, file, has) => ({ class: kind, what, cover: { file, has } })
 const serverToClient = what => [e2e('no-handler', what, 'no-handler')]
-const SOLANA = [
-  e2e('feature', 'the token gate (PUBLIC_TOKEN_MINT)', 'wallet', { file: SOLANA_UNIT, has: 'onRequestBuilderNonce' }),
-]
-const EVM = [
-  e2e('feature', 'EVM sign-in (PUBLIC_EVM_CHAIN_IDS)', 'wallet', { file: EVM_WALLET, has: 'requestEvmNonce' }),
-]
-const TIPS = [
-  e2e('feature', 'tips (PUBLIC_EVM_CHAIN_IDS and PUBLIC_EVM_TIP_TOKENS)', 'wallet', {
-    file: EVM_TIPS,
-    has: 'requestEvmTipIntent',
-  }),
-]
+// The wallet flows. Where the world has the feature the packet is answered, or acts on the sender's wallet state;
+// where it has not, the handler returns before anything else. The five that are answered in a world with the
+// feature to any sender are tried by the e2e case `wallet` in both worlds. The other six are not answered to a
+// sender without a wallet state of its own (a sign-in under way, a verified wallet), whatever the world: from
+// outside, their feature check cannot be told from the next check, so they are asked in the unit test, with that
+// state set and collaborators that fail the test if they are touched.
+const REFUSALS = 'test/packetRefusals.test.js'
+const WALLET_UNIT = 'the wallet flows: in a world without the feature each handler returns before it reads anything'
+const walletRule = (what, also) => [e2e('feature', what, 'wallet', also)]
+const walletUnit = what => [covered('feature', what, REFUSALS, WALLET_UNIT)]
+const SOLANA = 'the token gate (PUBLIC_TOKEN_MINT)'
+const EVM = 'EVM sign-in (PUBLIC_EVM_CHAIN_IDS)'
+const TIPS = 'tips (PUBLIC_EVM_CHAIN_IDS and PUBLIC_EVM_TIP_TOKENS)'
 const RELAY = [
   covered(
     'relay',
@@ -153,23 +155,23 @@ export const PACKET_RULES = {
   ],
   ping: [e2e('any', 'answered with a pong: the barrier of every case', 'any-connection')],
   pong: serverToClient('the answer to a ping'),
-  requestBuilderByToken: SOLANA,
-  revokeBuilderByToken: SOLANA,
-  requestBuilderNonce: SOLANA,
+  requestBuilderByToken: walletUnit(`${SOLANA}: the signed message, for a sign-in under way`),
+  revokeBuilderByToken: walletUnit(`${SOLANA}: a verified wallet given up`),
+  requestBuilderNonce: walletRule(SOLANA, { file: SOLANA_UNIT, has: 'onRequestBuilderNonce' }),
   builderNonce: serverToClient('the sign-in message of the token gate'),
   walletStatus: serverToClient('whether the wallet is verified'),
-  tokenBalanceRequest: SOLANA,
+  tokenBalanceRequest: walletRule(SOLANA, { file: SOLANA_UNIT, has: 'onTokenBalanceRequest' }),
   tokenBalance: serverToClient('a token balance'),
-  requestBuilderRecheck: SOLANA,
-  requestEvmNonce: EVM,
+  requestBuilderRecheck: walletUnit(`${SOLANA}: a verified wallet's balance asked again`),
+  requestEvmNonce: walletRule(EVM, { file: EVM_WALLET, has: 'requestEvmNonce' }),
   evmNonce: serverToClient('the EVM sign-in message'),
-  requestEvmVerify: EVM,
+  requestEvmVerify: walletUnit(`${EVM}: the signed message, for a sign-in under way`),
   evmWalletStatus: serverToClient('whether the EVM wallet is verified'),
-  revokeEvmWallet: EVM,
-  setEvmTipReceive: TIPS,
-  requestEvmTipIntent: TIPS,
+  revokeEvmWallet: walletUnit(`${EVM}: a verified wallet given up`),
+  setEvmTipReceive: walletUnit(`${TIPS}: a verified wallet's switch for receiving tips`),
+  requestEvmTipIntent: walletRule(TIPS, { file: EVM_TIPS, has: 'requestEvmTipIntent' }),
   evmTipIntent: serverToClient('the answer to a tip intent'),
-  evmTip: TIPS,
+  evmTip: walletRule(TIPS, { file: EVM_TIPS, has: "wire.send('evmTip'" }),
   evmTipStatus: serverToClient('what became of a reported tip'),
   appChat: [
     e2e(
@@ -224,6 +226,9 @@ export const rulesOf = name => (Object.prototype.hasOwnProperty.call(PACKET_RULE
 export const isHandled = name => (rulesOf(name) ?? []).some(rule => HANDLED.includes(rule.class))
 export const namesOfClass = kind =>
   Object.keys(PACKET_RULES).filter(name => PACKET_RULES[name].some(rule => rule.class === kind))
+// the names a case of the suite tries
+export const namesOfCase = id =>
+  Object.keys(PACKET_RULES).filter(name => PACKET_RULES[name].some(rule => rule.e2e === id))
 
 // every case of the suite the tables name
 export function namedCases() {

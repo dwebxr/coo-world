@@ -30,6 +30,7 @@ import { walletOf } from './solana-gating'
 import { clientIpKeys, createUploadLimits, readUploadLimitsEnv } from './uploadLimits'
 import { createConnectionLimits, readConnectionLimitsEnv } from './connectionLimits'
 import { assetRoutes, uploadRoutes } from './uploadRoutes'
+import { readKickEnv } from './kickList'
 
 const rootDir = path.join(__dirname, '../')
 const worldDir = path.join(rootDir, process.env.WORLD)
@@ -46,6 +47,12 @@ checkJwtSecret(process.env.JWT_SECRET)
 checkPreviousJwtSecret(process.env.JWT_SECRET_PREVIOUS, process.env.JWT_SECRET)
 // the admin mode (a code, open to all, or locked: adminCode.js) and what there is to say about it
 for (const note of adminStartupNotes(process.env)) console[note.level](note.message)
+// what a kick keeps out (kickList.js): a bad value stops here, before the world loads
+if (readKickEnv(process.env).byAddress) {
+  console.log(
+    '[kick] KICK_BY_ADDRESS is on: after an admin kicks a player, new users from that address wait too. Behind a proxy that does not pass client addresses, that is every new user.'
+  )
+}
 if (!process.env.SAVE_INTERVAL) {
   throw new Error('[envs] SAVE_INTERVAL not set')
 }

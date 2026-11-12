@@ -1040,6 +1040,95 @@ async function probes(admin, watcher) {
     }
   )
 
+  // its own server: the kick list holds this machine's address for minutes, and every other step joins from it
+  await step(
+    'A14c a kicked player is told, closed and kept out; with KICK_BY_ADDRESS new users from its address wait too',
+    async () => {
+      const port = PORT + 2
+      const code = 'e2e-admin-code-long-enough'
+      const moderated = await startServer({
+        port,
+        logPath: path.join(OUT, `fullstack-${ENGINE}-kick-server.log`),
+        env: { ADMIN_CODE: code, KICK_BY_ADDRESS: 'true' },
+      })
+      const clients = []
+      const connect = async (label, options) => {
+        const client = await new WireClient(port, label).connect(label, options)
+        clients.push(client)
+        return client
+      }
+      // a connection that is refused gets a kick code and no snapshot
+      const refusal = async (label, options) => {
+        const client = new WireClient(port, label)
+        clients.push(client)
+        await client.open(label, options)
+        const kick = await client.waitFor(m => m.method === 'onKick', { timeout: 10000 * TIMEOUT_SCALE })
+        eq(client.inbox.filter(m => m.method === 'onSnapshot').length, 0, `${label}: no snapshot`)
+        return kick.data
+      }
+      try {
+        const admin = await connect('admin')
+        admin.send('command', { args: ['admin', code] })
+        await admin.waitFor(m => m.method === 'onEntityModified' && m.data.id === admin.id && m.data.rank === 2)
+        const regular = await connect('regular')
+        const visitor = await connect('visitor')
+        const bystander = await connect('bystander')
+        // a visitor cannot kick, and an app's id or a made-up one names nobody
+        visitor.send('kick', bystander.id)
+        visitor.send('kick', admin.id)
+        admin.send('kick', 'nobody-here')
+        // A ping is answered once the server has handled what its socket sent before it (in order). The admin's kick
+        // below goes on another socket, and the kicked socket's packets still waiting are dropped: without this the
+        // visitor's kicks might never be looked at. Each of the three is then asked on its own socket whether it is
+        // still connected; one that the visitor's kicks had closed answers with a kick or not at all.
+        let token = 0
+        const answer = async client => {
+          const from = client.mark()
+          const sent = ++token
+          client.send('ping', sent)
+          const reply = await client.waitFor(m => (m.method === 'onPong' && m.data === sent) || m.method === 'onKick', {
+            from,
+            timeout: 10000 * TIMEOUT_SCALE,
+          })
+          return reply.method
+        }
+        for (const client of [visitor, admin, bystander]) {
+          eq(await answer(client), 'onPong', `${client.label}: still connected after the visitor's kicks were handled`)
+        }
+        let closeCode
+        visitor.closed.then(value => (closeCode = value))
+        const fromBystander = bystander.mark()
+        admin.send('kick', visitor.id)
+        const kick = await visitor.waitFor(m => m.method === 'onKick')
+        eq(kick.data, 'moderation', 'the kicked player is told why')
+        await waitUntil(() => closeCode !== undefined, { message: 'the kicked socket to close' })
+        await bystander.waitFor(m => m.method === 'onEntityRemoved' && m.data === visitor.id, { from: fromBystander })
+        ok(
+          ![admin, bystander].some(client => client.inbox.some(m => m.method === 'onKick')),
+          "the visitor's kicks did nothing"
+        )
+        // the same user comes back at once with its session token
+        eq(await refusal('visitor-again', { authToken: visitor.authToken }), 'kicked', 'the kicked user id waits')
+        // a new user from the same address (this machine) waits too, since an admin kicked and the server asks for it
+        eq(await refusal('newcomer'), 'kicked', 'a new user from the kicked address waits')
+        // someone who was here before is not a new user: they leave and come back with their token
+        regular.close()
+        await bystander.waitFor(m => m.method === 'onEntityRemoved' && m.data === regular.id, { from: fromBystander })
+        const back = await connect('regular-again', { authToken: regular.authToken })
+        eq(back.id, regular.id, 'a returning user from that address joins as themselves')
+        const status = await (await fetch(`http://localhost:${port}/status`)).json()
+        const users = status.connectedUsers
+        eq(Array.isArray(users) ? users.length : users, 3, 'the admin, the bystander and the returning user')
+        eq(moderated.count('kept out for 10 min'), 1, 'one kick in the log')
+        eq(moderated.lines(/SqliteError|UnhandledPromiseRejection|SES_UNHANDLED/).length, 0, 'no errors in the log')
+        return 'kicked user refused with its token, a new user from its address refused, a returning user admitted'
+      } finally {
+        for (const client of clients) client.close()
+        await moderated.stop()
+      }
+    }
+  )
+
   await step('A15 an outdated client is kicked before any users row is created', async () => {
     const db = new Database(path.join(server.worldDir, 'db.sqlite'), { readonly: true, fileMustExist: true })
     const outdated = new WireClient(PORT, 'outdated', { version: null })

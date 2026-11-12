@@ -43,6 +43,7 @@ import { createTipWatcher } from '../../src/server/evmTipWatcher.js'
 import { formatUnits, isTxHash } from '../../src/core/extras/evmAbi.js'
 import { grantTokenRank, persistRank, revokeTokenRank } from '../../src/server/rankGrants.js'
 import { adminMode, adminWaitScale, createAdminGate } from '../../src/server/adminCode.js'
+import { createKickList, readKickEnv } from '../../src/server/kickList.js'
 import { isAdminCommand } from '../../src/core/extras/chatCommand.js'
 import { createSolanaRpc } from '../../src/server/solanaRpc.js'
 import { createTokenBalanceService } from '../../src/server/tokenBalance.js'
@@ -81,6 +82,10 @@ const names = [
   'onChatAdded',
   'onAppChat',
   'admin',
+  'kicks',
+  'moderated',
+  'onKick',
+  'onMute',
   'onCommand',
   'onModifyRank',
   'invalidateWallet',
@@ -158,6 +163,8 @@ function networkClass(context) {
     adminMode,
     adminWaitScale,
     createAdminGate,
+    createKickList,
+    readKickEnv,
     isAdminCommand,
     Uint8Array,
     Date,

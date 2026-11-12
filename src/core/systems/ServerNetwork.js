@@ -59,6 +59,7 @@ import { createSolanaRpc } from '../../server/solanaRpc'
 import { createTokenBalanceService } from '../../server/tokenBalance'
 import { grantTokenRank, persistRank, revokeTokenRank } from '../../server/rankGrants'
 import { adminMode, adminWaitScale, createAdminGate } from '../../server/adminCode'
+import { createKickList, readKickEnv } from '../../server/kickList'
 import { eventPayload } from '../extras/eventPayload.js'
 
 const SAVE_INTERVAL = parseInt(process.env.SAVE_INTERVAL || '60') // seconds
@@ -816,7 +817,13 @@ export class ServerNetwork extends System {
     return this.adminState
   }
 
-  // `origin`: the connection's address key and its wider networks (clientIpKeys), for the brake on admin codes
+  // who a kick keeps out for a while (kickList.js), made from the environment on first use
+  kicks() {
+    return (this.kickList ??= createKickList(readKickEnv(process.env)))
+  }
+
+  // `origin`: the connection's address key and its wider networks (clientIpKeys), for the brake on admin codes and
+  // for a kick that holds new users at its address
   async onConnection(ws, params, origin) {
     // still loading (start): the user ids and the join-state accounting are not complete yet
     if (this.stopping || this.starting) return ws.close()
@@ -848,6 +855,13 @@ export class ServerNetwork extends System {
           ws.close()
           return
         }
+      }
+
+      // A kicked user waits (kickList.js): told so and closed, with nothing added or announced. Asked where the
+      // user is first known, and once more after the join's last wait (below)
+      const refuseKicked = () => {
+        this.write(ws, writePacket('kick', 'kicked'), { name: 'kick' })
+        ws.close()
       }
 
       // check connection params
@@ -893,6 +907,9 @@ export class ServerNetwork extends System {
         }
       }
       if (!user) {
+        // no valid session token: a new user. Where an admin's kick holds new users at this address, it waits
+        // before a row is made for it
+        if (this.kicks().refusesNewcomer(origin?.key)) return refuseKicked()
         user = {
           id: uuid(),
           name: 'Anonymous',
@@ -913,6 +930,7 @@ export class ServerNetwork extends System {
         this.write(ws, packet, { name: 'kick' })
         ws.close()
       }
+      if (this.kicks().refusesUser(user.id)) return refuseKicked()
       // disconnect if user still connecting elsewhere (the id is reserved before the next await)
       if (this.connecting.has(user.id)) return refuseDuplicate()
       reserved = user.id
@@ -967,6 +985,9 @@ export class ServerNetwork extends System {
       // livekit options
       const livekit = await this.world.livekit.serialize(user.id)
       if (cancelled) return
+
+      // a kick that landed on this user's old connection while this one waited above (the takeover, the database)
+      if (this.kicks().refusesUser(user.id)) return refuseKicked()
 
       // an app holding this user's id (stored before new app ids were kept apart from user ids): it moves to a new
       // id and the player joins. Nothing awaits between here and the player's add
@@ -1068,6 +1089,10 @@ export class ServerNetwork extends System {
       if (!this.write(ws, snapshot, { name: 'snapshot', snapshot: true })) throw new Error('snapshot write failed')
 
       this.sockets.set(socket.id, socket)
+
+      // A muted player who comes back is said to be muted again: a join snapshot made under pressure leaves the
+      // mutes of absent players out (joinBudget.js), so someone who joined meanwhile may not have this one
+      if (this.world.livekit.muted?.has(user.id)) this.send('mute', { playerId: user.id, muted: true })
 
       // enter events on the server are sent after the snapshot.
       // on the client these are sent during PlayerRemote.js entity instantiation!
@@ -1321,27 +1346,38 @@ export class ServerNetwork extends System {
     }
   }
 
+  // The player a kick or a mute names, when the sender may: a player here (an app's id named none, and passed the
+  // rank comparison this replaces, since an app has no rank), outranked by the sender. Ranks are compared as the
+  // players pane compares them (playerRanks.outranks: the rank of the session, a token's grant included, and the
+  // world's): admins over builders and visitors, builders over visitors. Where everyone is an admin (a world open
+  // to all) nobody outranks anybody, so nobody kicks or mutes.
+  moderated(socket, playerId) {
+    const player = this.world.entities.getPlayer(playerId)
+    if (!player || !socket.player.outranks(player)) return null
+    return player
+  }
+
+  // The kicked player is told, closed, and kept out for a while (kickList.js: that user id, and with
+  // KICK_BY_ADDRESS new users from its address when an admin kicks). Its client leaves the voice room on the kick
+  // and every other client drops its voice and screen with the player (ClientLiveKit).
   onKick = (socket, playerId) => {
-    const player = this.world.entities.get(playerId)
+    const player = this.moderated(socket, playerId)
     if (!player) return
-    // admins can kick builders + visitors
-    // builders can kick visitors
-    // visitors cannot kick anyone
-    if (socket.player.data.rank <= player.data.rank) return
     const tSocket = this.sockets.get(playerId)
     if (!tSocket) return
+    this.kicks().add({ userId: playerId, addressKey: tSocket.addressKey, byAdmin: socket.player.isAdmin() })
+    console.log(
+      `[network] ${previewValue(socket.id, 64)} kicked ${previewValue(playerId, 64)}` +
+        (this.kicks().minutes ? `: kept out for ${this.kicks().minutes} min` : '')
+    )
     tSocket.send('kick', 'moderation')
     tSocket.disconnect()
   }
 
   onMute = (socket, data) => {
-    if (!isObject(data)) return
-    const player = this.world.entities.get(data.playerId)
+    if (!isObject(data) || typeof data.muted !== 'boolean') return
+    const player = this.moderated(socket, data.playerId)
     if (!player) return
-    // admins can mute builders + visitors
-    // builders can mute visitors
-    // visitors cannot mute anyone
-    if (socket.player.data.rank <= player.data.rank) return
     this.world.livekit.setMuted(data.playerId, data.muted)
   }
 

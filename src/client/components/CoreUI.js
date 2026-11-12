@@ -653,6 +653,8 @@ const kickMessages = {
   player_limit: 'Player limit reached.',
   outdated: 'This world was updated. Reload to continue.',
   admin_attempts: 'Too many admin code attempts.',
+  moderation: 'You were removed by a moderator.',
+  kicked: 'You were removed by a moderator. Try again in a few minutes.',
   unknown: 'You were kicked.',
 }
 function KickedOverlay({ code }) {

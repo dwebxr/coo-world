@@ -68,14 +68,14 @@ export function scanEnvCode(code, { file = '' } = {}) {
 export const scanEnvText = (text, options) => scanEnvCode(stripComments(text), options)
 
 // The whole source -> { names: Map(name -> files), stems: Map(stem -> files), blind: files }. `blind`: files with a
-// computed read and no name to go with it.
-export function scanEnvSource(files = sourceFiles()) {
+// computed read and no name to go with it. `read`: a file's code without comments (tests give their own files).
+export function scanEnvSource(files = sourceFiles(), read = codeOf) {
   const names = new Map()
   const stems = new Map()
   const blind = []
   const add = (map, key, file) => map.set(key, [...(map.get(key) ?? []), file])
   for (const file of files) {
-    const found = scanEnvCode(codeOf(file), { file })
+    const found = scanEnvCode(read(file), { file })
     for (const name of found.names) add(names, name, file)
     for (const stem of found.stems) add(stems, stem, file)
     if (found.computed && !found.fed) blind.push(file)

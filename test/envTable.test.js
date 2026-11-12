@@ -5,6 +5,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { PUBLIC_ENV_NAMES, SERVER_PUBLIC_ENV_NAMES } from '../src/core/extras/publicEnv.js'
 import { NOT_NAMES, scanEnvSource, scanEnvText } from './lib/envScan.mjs'
+import { stripComments } from './lib/sourceScan.mjs'
 import { ENV_CLASSES, ENV_TABLE, checkEnvTable, envEntry, envNamesOf } from './lib/envTable.mjs'
 
 const scan = scanEnvSource()
@@ -77,6 +78,15 @@ test('the scan: each shape of a read', () => {
   const blind = scanEnvText('export const read = (env, key) => env[key]')
   assert.equal(blind.computed, 1)
   assert.equal(blind.fed, 0)
+  const files = {
+    'reader.js': 'export const read = (env, key) => env[key]',
+    'table.js': 'const read = key => process.env[key]; read("NAMED_HERE")',
+    'plain.js': 'f(process.env.BY_NAME)',
+  }
+  const whole = scanEnvSource(Object.keys(files), file => stripComments(files[file]))
+  assert.deepEqual(whole.blind, ['reader.js'])
+  assert.deepEqual([...whole.names.keys()].sort(), ['BY_NAME', 'NAMED_HERE'])
+  assert.deepEqual(whole.names.get('NAMED_HERE'), ['table.js'])
 })
 
 test('the check: a name without a class, a class without a name, and a read the scan cannot name all fail', () => {

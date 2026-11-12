@@ -616,26 +616,55 @@ test('tip notice: a note found at page load counts its ten minutes from the requ
   assert.equal(notice.render(), null)
 })
 
-test('tip notice: reads the notes again when another tab changes one, and stops listening when it goes', () => {
+test('tip notice: reads the notes again a moment after another tab changes the storage, once for a burst', () => {
   let stored = []
   let reads = 0
   const notice = mount('TipMarkerNotice', { evm: { getTipMarkers: () => (reads++, stored) } })
   assert.equal(notice.render(), null)
   assert.equal(notice.page.listeners.get('storage').size, 1)
-  // another tab wrote a note: the browser's event names its key
+  // one read for the first render and one right after subscribing
+  assert.equal(reads, 2)
+  // another tab wrote a note: nothing is read at once, and one read follows for the whole burst of events
   stored = [NOTE]
-  const before = reads
-  notice.page.dispatch('storage', { key: `evmTipRequest:${NOTE.id}` })
-  assert.equal(reads, before + 1)
+  for (let n = 0; n < 50; n++) notice.page.dispatch('storage', { key: `evmTipRequest:${n}` })
+  assert.equal(reads, 2)
+  notice.advance(99)
+  assert.equal(reads, 2)
+  notice.advance(1)
+  assert.equal(reads, 3)
   assert.match(text(notice.render()), /A tip may have been sent/)
-  // a change of some other key of this site is not a note's
+  // a change of any other key of this site can cut a read short too: it is followed by a read as well
   notice.page.dispatch('storage', { key: 'hyperfy-settings' })
-  assert.equal(reads, before + 1)
-  // the storage was cleared (no key): read again
+  notice.advance(100)
+  assert.equal(reads, 4)
+  // the storage was cleared (no key), and an event without one
   stored = []
   notice.page.dispatch('storage', { key: null })
-  assert.equal(reads, before + 2)
+  notice.page.dispatch('storage', undefined)
+  notice.advance(100)
+  assert.equal(reads, 5)
   assert.equal(notice.render(), null)
+  // gone: no listener, and a read that was waiting is not made
+  notice.page.dispatch('storage', { key: null })
   notice.unmount()
   assert.equal(notice.page.listeners.get('storage').size, 0)
+  notice.advance(1000)
+  assert.equal(reads, 5)
+  assert.equal(notice.timers.size, 0)
+})
+
+test('tip notice: after a read in which a value could not be read, the line says the count is a lower bound', () => {
+  const some = Object.assign(
+    Array.from({ length: 6 }, (_, n) => ({ ...NOTE, id: n.toString(16).padStart(16, '0'), at: NOTE.at - n })),
+    { incomplete: true }
+  )
+  const notice = mount('TipMarkerNotice', { evm: { getTipMarkers: () => some } })
+  assert.match(
+    text(notice.render()),
+    /At least 2 more notes like these are kept in this browser\..* Some could not be read\./
+  )
+  // fewer than are shown, and some unreadable: the line still says there may be others
+  const few = Object.assign([{ ...NOTE }], { incomplete: true })
+  const other = mount('TipMarkerNotice', { evm: { getTipMarkers: () => few } })
+  assert.match(text(other.render()), /Other notes like these may be kept in this browser: some could not be read\./)
 })

@@ -55,8 +55,8 @@ export function tipErrorOutcome(error, requested, request) {
 // what bounds that is the browser's own limit on the storage (a few megabytes), nothing here. With a storage that
 // answers and that no other tab changes during the read, every live note is found, whatever else was put under the
 // prefix. A read that another tab's change cut short, or in which a value could not be read, gives fewer: the page
-// reads again when the browser tells it of another tab's change (TipForm.js), and what the notice counts is the
-// notes that could be read.
+// reads again a moment after the browser tells it of another tab's change (TipForm.js), a read with an unreadable
+// value says so (`incomplete`), and what the notice counts is the notes that were read.
 export const TIP_MARKER_PREFIX = 'evmTipRequest:'
 export const TIP_MARKER_TTL_MS = 600_000
 // the notice shows this many, and says how many more there are
@@ -112,7 +112,7 @@ export function clearTipMarker(backend, id) {
 
 // The notes, newest first (see above). A note whose time is up to ten minutes ahead of `now` (another tab's clock,
 // or this one set back) is kept and expires ten minutes after its own time, so at most twenty minutes from now. A
-// key whose value cannot be read is left as it is and not shown.
+// key whose value cannot be read is left as it is and not shown. The array then has `incomplete: true`.
 export function readTipMarkers(backend, now) {
   let storage
   const keys = []
@@ -133,11 +133,13 @@ export function readTipMarkers(backend, now) {
     }
   }
   const notes = []
+  let incomplete = false
   for (const key of keys) {
     let text
     try {
       text = storage.getItem(key)
     } catch {
+      incomplete = true
       continue
     }
     let value = null
@@ -154,14 +156,22 @@ export function readTipMarkers(backend, now) {
     if (kept) notes.push(pickMarker(value))
     else remove(key)
   }
-  return notes.sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1))
+  notes.sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1))
+  // a value that could not be read may have been a note: the caller is told that these are not all
+  if (incomplete) notes.incomplete = true
+  return notes
 }
 
-// under the notes the notice shows, when there are more of them
-export const tipMarkerMoreText = count =>
-  count === 1
-    ? '1 more note like these is kept in this browser. It is shown here when one of these is dismissed.'
-    : `${count} more notes like these are kept in this browser. They are shown here as these are dismissed.`
+// under the notes the notice shows, when there are more of them, or when a value could not be read (`incomplete`:
+// the count is then of the notes that were read, and there may be others)
+export const tipMarkerMoreText = (count, incomplete = false) => {
+  if (incomplete && count === 0) return 'Other notes like these may be kept in this browser: some could not be read.'
+  const more =
+    count === 1
+      ? '1 more note like these is kept in this browser. It is shown here when one of these is dismissed.'
+      : `${count} more notes like these are kept in this browser. They are shown here as these are dismissed.`
+  return incomplete ? `At least ${more} Some could not be read.` : more
+}
 
 // how long a note read at `now` is still shown
 export const tipMarkerRemainingMs = (marker, now) => Math.max(0, marker.at + TIP_MARKER_TTL_MS - now)

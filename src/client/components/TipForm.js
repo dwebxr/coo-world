@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from 'react'
 import { parseTipAmount, tipAmountReason } from '../../core/extras/evmTokens'
 import {
   TIP_NAME_TWIN_TEXT,
-  TIP_MARKER_PREFIX,
   TIP_MARKERS_SHOWN,
   TIP_UNCONFIRMED_TEXT,
   TIP_WALLET_VIEW_TEXT,
@@ -486,9 +485,13 @@ export function TipForm({ world, player, onClose }) {
 // the note it is shown beside (by its id); the read that follows removes only notes that are expired or are not
 // notes (tipOutcome.js), never another live one. A note is this browser's memory of a request, not a record of a
 // payment. The storage is read at the page's load, at the end of a send of its own, on a Dismiss, when a note is
-// ten minutes old, and when the browser tells this page that another tab changed a note (a `storage` event): so a
-// read that another tab's change cut short is followed by one that is not. The count the line gives is of the
-// notes that could be read.
+// ten minutes old, and again a moment after the browser tells this page that another tab changed this site's
+// storage (a `storage` event, for any key: a read lists every key, so any change can cut one short). That is a
+// retry, not a promise: the read it makes can be cut short in turn, and is retried the same way. The line counts
+// the notes that could be read, and says "at least" when a value could not be.
+// how long after another tab's change the notes are read again (one read for a burst of changes)
+const STORAGE_REREAD_MS = 100
+
 export function TipMarkerNotice({ world }) {
   const [markers, setMarkers] = useState(() => world.evm?.getTipMarkers() ?? [])
   useEffect(() => {
@@ -496,15 +499,24 @@ export function TipMarkerNotice({ world }) {
     world.on('evm:tipMarkers', onMarkers)
     return () => world.off('evm:tipMarkers', onMarkers)
   }, [world])
-  // another tab wrote or removed a note (or cleared the storage: no key): read again
+  // Another tab changed this site's storage: read again, once for a burst of events (a clean-up in the other tab
+  // removes many keys at once). And once right after subscribing, for a change that came between the first read
+  // above and this.
   useEffect(() => {
-    const onStorage = event => {
-      if (event?.key == null || String(event.key).startsWith(TIP_MARKER_PREFIX)) {
-        setMarkers(world.evm?.getTipMarkers() ?? [])
-      }
+    let timer = null
+    const read = () => {
+      timer = null
+      setMarkers(world.evm?.getTipMarkers() ?? [])
+    }
+    const onStorage = () => {
+      if (timer === null) timer = setTimeout(read, STORAGE_REREAD_MS)
     }
     window.addEventListener('storage', onStorage)
-    return () => window.removeEventListener('storage', onStorage)
+    read()
+    return () => {
+      window.removeEventListener('storage', onStorage)
+      if (timer !== null) clearTimeout(timer)
+    }
   }, [world])
   // the first note to be ten minutes old: then the storage is read again (which removes it)
   useEffect(() => {
@@ -567,8 +579,10 @@ export function TipMarkerNotice({ world }) {
           </button>
         </div>
       ))}
-      {markers.length > TIP_MARKERS_SHOWN && (
-        <div className='tip-marker-more'>{tipMarkerMoreText(markers.length - TIP_MARKERS_SHOWN)}</div>
+      {(markers.length > TIP_MARKERS_SHOWN || markers.incomplete === true) && (
+        <div className='tip-marker-more'>
+          {tipMarkerMoreText(Math.max(0, markers.length - TIP_MARKERS_SHOWN), markers.incomplete === true)}
+        </div>
       )}
     </div>
   )

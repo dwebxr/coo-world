@@ -306,6 +306,20 @@ test('tip marker: the line under the notes that the notice shows says how many m
     tipMarkerMoreText(5),
     '5 more notes like these are kept in this browser. They are shown here as these are dismissed.'
   )
+  // after a read in which a value could not be read, the count is a lower bound and says so
+  assert.equal(
+    tipMarkerMoreText(1, true),
+    'At least 1 more note like these is kept in this browser. It is shown here when one of these is dismissed. Some could not be read.'
+  )
+  assert.equal(
+    tipMarkerMoreText(5, true),
+    'At least 5 more notes like these are kept in this browser. They are shown here as these are dismissed. Some could not be read.'
+  )
+  assert.equal(
+    tipMarkerMoreText(0, true),
+    'Other notes like these may be kept in this browser: some could not be read.'
+  )
+  assert.equal(tipMarkerMoreText(5, false), tipMarkerMoreText(5))
 })
 
 test('tip marker: what is not a note is neither written nor shown, and under the prefix it is removed', () => {
@@ -395,13 +409,14 @@ test('tip marker: storage that throws, or is not there, never throws to the call
     null
   )
   assert.equal(readTipMarkers(() => full, 1_000_000)[0].amount, '100')
-  // a value that cannot be read is neither shown nor removed
+  // a value that cannot be read is neither shown nor removed, and the caller is told that these are not all
   const unreadable = withMethod(storage, 'getItem', denied)
-  assert.deepEqual(
-    readTipMarkers(() => unreadable, 1_000_000),
-    []
-  )
+  const partial = readTipMarkers(() => unreadable, 1_000_000)
+  assert.equal(partial.length, 0)
+  assert.equal(partial.incomplete, true)
   assert.equal(storage.items.has(KEY(id)), true)
+  // a read in which every value was read says nothing of the kind
+  assert.equal(Object.hasOwn(readTipMarkers(() => storage, 1_000_000), 'incomplete'), false)
   // an old note that cannot be removed is still not shown
   const stuck = withMethod(storage, 'removeItem', denied)
   assert.deepEqual(

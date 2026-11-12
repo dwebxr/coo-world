@@ -510,15 +510,11 @@ async function probes(admin, watcher) {
     const got = await waitUntil(
       () => {
         const packets = watcher.since(from).filter(RELAY_PACKET)
-        return packets.length >= 5 ? packets : null
+        return packets.length >= 3 ? packets : null
       },
       { timeout: 10000, message: 'relay packets from the server path' }
     )
-    eq(
-      got.map(m => m.method).join(','),
-      'onPlayerTeleport,onPlayerTeleport,onPlayerPush,onPlayerSessionAvatar,onPlayerSessionAvatar',
-      'packets in call order'
-    )
+    eq(got.map(m => m.method).join(','), 'onPlayerTeleport,onPlayerTeleport,onPlayerPush', 'packets in call order')
     eq(
       JSON.stringify(sanitizeTeleport(got[0].data)),
       JSON.stringify({ position: [1, 2, 3], rotationY: 0.5 }),
@@ -527,13 +523,100 @@ async function probes(admin, watcher) {
     ok(typeof got[1].data.rotationY !== 'number', 'the quaternion arrives as a non-number')
     eq(JSON.stringify(sanitizeTeleport(got[1].data)), JSON.stringify({ position: [4, 5, 6] }), 'rotationY ignored')
     eq(JSON.stringify(got[2].data), JSON.stringify({ force: [0, 0, -30] }), 'push payload')
-    eq(
-      JSON.stringify(got[3].data),
-      JSON.stringify({ avatar: 'asset://avatar.vrm' }),
-      'session avatar carries { avatar }'
-    )
-    eq(JSON.stringify(got[4].data), JSON.stringify({ avatar: null }), 'null clears')
     eq(admin.since(fromAdmin).filter(RELAY_PACKET).length, 0, 'only the target player received them')
+    // The session avatar is the server's own change now: applied there and told to everyone, the player included,
+    // as a change to the player (it used to go to the player's client alone, which sent it on as its own).
+    const avatars = client =>
+      client
+        .since(client === watcher ? from : fromAdmin)
+        .filter(m => m.method === 'onEntityModified' && m.data.id === watcher.id && 'sessionAvatar' in m.data)
+        .map(m => m.data.sessionAvatar)
+    for (const client of [watcher, admin]) {
+      await waitUntil(() => avatars(client).length >= 2, { timeout: 10000, message: 'session avatar changes' })
+      eq(JSON.stringify(avatars(client)), JSON.stringify(['asset://avatar.vrm', null]), 'set, then cleared')
+    }
+  })
+
+  await step('A9b a url outside the world: a script may choose it for a visitor; the visitor may not', async () => {
+    // files of this world's own store, by an address that is not the world's assets url (another host name), so
+    // they are urls outside the world as far as the rule goes
+    const outside = name => `http://127.0.0.1:${PORT}/assets/${name}`
+    const scriptAvatar = outside('avatar.vrm')
+    const scriptEmote = outside('emote-float.glb')
+    const own = outside('avatar.vrm?mine')
+    const fromAdmin = admin.mark()
+    const fromWatcher = watcher.mark()
+    const seen = (client, from, key) =>
+      client
+        .since(from)
+        .filter(m => m.method === 'onEntityModified' && m.data.id === watcher.id && key in m.data)
+        .map(m => m.data[key])
+    admin.installApp({
+      id: 's-outside',
+      script: 'asset://relay-probe.js',
+      model: 'asset://ai.glb',
+      props: { serverTarget: watcher.id, serverAvatar: scriptAvatar, serverEmote: scriptEmote },
+    })
+    // the script's choice reaches everyone: the avatar as the player's session avatar, the emote inside the effect
+    await waitUntil(() => seen(admin, fromAdmin, 'sessionAvatar').length >= 1, { message: "the script's avatar" })
+    eq(
+      seen(admin, fromAdmin, 'sessionAvatar')[0],
+      scriptAvatar,
+      'the avatar a script chose, with the visitor a visitor'
+    )
+    // and the visitor's own connection has it too, before the mark below is taken: arriving after it, this packet
+    // would be taken for the answer to the visitor's own update
+    await waitUntil(() => seen(watcher, fromWatcher, 'sessionAvatar').length >= 1, {
+      message: "the script's avatar, on the visitor's connection",
+    })
+    eq(JSON.stringify(seen(watcher, fromWatcher, 'sessionAvatar')), JSON.stringify([scriptAvatar]), 'told the visitor')
+    await waitUntil(() => seen(admin, fromAdmin, 'ef').length >= 1, { message: "the script's effect" })
+    eq(seen(admin, fromAdmin, 'ef')[0].emote, scriptEmote, 'the effect carries its emote')
+    // the visitor's client names the emote it plays: the one the script chose is relayed, another is not
+    watcher.send('entityModified', { id: watcher.id, e: scriptEmote })
+    watcher.send('entityModified', { id: watcher.id, e: outside('emote-jump.glb') })
+    await waitUntil(() => seen(admin, fromAdmin, 'e').length >= 2, { message: 'two emote changes' })
+    eq(JSON.stringify(seen(admin, fromAdmin, 'e')), JSON.stringify([scriptEmote, null]), 'chosen relayed, other nulled')
+    // The visitor's own avatar outside the world: not relayed, and put right for the visitor. An update the server
+    // does relay follows it (an emote of the world's own store): whatever the refused one made the server send the
+    // admin arrives before that one does, on the same ordered connection.
+    const barrier = 'asset://emote-float.glb?s=1.25'
+    const fromAdminOwn = admin.mark()
+    const fromWatcherOwn = watcher.mark()
+    // (numbered as a browser numbers its own session avatar updates)
+    watcher.send('entityModified', { id: watcher.id, sessionAvatar: own, sessionAvatarRequest: 41 })
+    watcher.send('entityModified', { id: watcher.id, e: barrier })
+    await waitUntil(() => seen(admin, fromAdminOwn, 'e').includes(barrier), { message: 'the update after it' })
+    eq(seen(admin, fromAdminOwn, 'sessionAvatar').length, 0, 'nothing relayed')
+    ok(!JSON.stringify(admin.since(fromAdmin)).includes('?mine'), "the visitor's url reached nobody")
+    ok(!JSON.stringify(admin.since(fromAdmin)).includes('sessionAvatarRequest'), 'nor its number')
+    // the answer: a packet sent after the refused update, with the avatar the server has (the script's) and the
+    // update's number
+    await waitUntil(() => seen(watcher, fromWatcherOwn, 'sessionAvatar').length >= 1, { message: 'the correction' })
+    eq(JSON.stringify(seen(watcher, fromWatcherOwn, 'sessionAvatar')), JSON.stringify([scriptAvatar]), 'the correction')
+    eq(JSON.stringify(seen(watcher, fromWatcherOwn, 'sessionAvatarRequest')), '[41]', 'carrying the number')
+    // a late joiner's snapshot carries the script's choice and nothing of the visitor's own
+    const late = await new WireClient(PORT, 'late').connect()
+    const record = late.snapshot.entities.find(entity => entity.id === watcher.id)
+    late.close()
+    eq(record.sessionAvatar, scriptAvatar, 'the snapshot has the avatar a script chose')
+    ok(!JSON.stringify(late.snapshot).includes('sessionAvatarRequest'), 'and no number')
+    // a builder's own url outside the world is relayed as before, and the builder is told the value the server took,
+    // as every sender of a session avatar is
+    const fromWatcher2 = watcher.mark()
+    const fromAdmin2 = admin.mark()
+    admin.send('entityModified', { id: admin.id, sessionAvatar: own })
+    for (const [client, from] of [
+      [watcher, fromWatcher2],
+      [admin, fromAdmin2],
+    ]) {
+      await client.waitFor(
+        m => m.method === 'onEntityModified' && m.data.id === admin.id && m.data.sessionAvatar === own,
+        { from, timeout: 10000 }
+      )
+    }
+    admin.send('entityModified', { id: admin.id, sessionAvatar: null })
+    watcher.send('entityModified', { id: watcher.id, sessionAvatar: null, e: null })
   })
 
   await step('A10 a malformed chat message is refused; a valid one is rebuilt by the server', async () => {

@@ -4,7 +4,7 @@ import { Teardown, tornDown } from './runTeardown.js'
 import { getRef } from '../nodes/Node'
 import { clamp, uuid } from '../utils'
 import * as THREE from './three'
-import { sanitizePlayerSelfModify } from './entityModifyPolicy'
+import { isAvatarUrl, isEmoteUrl, rememberScriptEmote, sanitizePlayerSelfModify } from './entityModifyPolicy'
 import { isPrimitive } from './scriptPrimitives.js'
 import { toEngineNumber } from './engineNumber.js'
 
@@ -240,12 +240,35 @@ export function createPlayerProxy(entity, player) {
       const avatar = url
       if (player.data.owner === world.network.id) {
         // if player is local we can set directly
+        // (the server passes a url outside the world on to the others only for a builder: said once here, where the
+        // script's author looks, since for a visitor the avatar then shows for a moment and is set back)
+        if (typeof avatar === 'string' && /^https?:\/\//i.test(avatar) && !player.isBuilder?.()) {
+          warnOnce(
+            '[player] setSessionAvatar: a url outside the world is shown to other players only for a builder; set it from a server script'
+          )
+        }
         world.network.enqueue('onPlayerSessionAvatar', { avatar })
       } else if (world.network.isClient) {
         remoteOnClient('setSessionAvatar')
       } else {
-        // if we're the server we need to notify the player
-        world.network.sendTo(player.data.owner, 'playerSessionAvatar', { avatar })
+        // On the server the choice is applied here and told to everyone, the player included (whose client takes it
+        // as it takes any change to its player, and sends nothing back). It used to be told to the player's client
+        // alone, which then sent it on as its own change: the server could not tell a script's choice from the
+        // player's, and what a script may choose for a player (any url) is more than a visitor may (ServerNetwork
+        // onEntityModified). The choice is remembered on the entity, so that the player's client repeating it is
+        // not taken for the player's own.
+        if (!isAvatarUrl(avatar)) return console.error('[player] setSessionAvatar url is not an avatar url')
+        if (player.destroyed) return
+        const sessionAvatar = avatar || null
+        // Told first (ServerNetwork broadcast). A packet the network does not admit (this tick's budget for script
+        // writes is used up) reached nobody, so the change is not made here either. One admitted is a change made,
+        // even when a recipient did not get it (a socket at its backlog limit): the clients that did have the new
+        // avatar, and the server's player and every later snapshot must have it too.
+        const result = world.network.broadcast('entityModified', { id: player.data.id, sessionAvatar })
+        if (result === 'refused') return false
+        player.scriptAvatar = sessionAvatar
+        player.modify({ sessionAvatar })
+        return result === 'delivered'
       }
     },
     // an amount is a number, kept by the engine's number rule (engineNumber.js: a numeric string is converted, an
@@ -319,6 +342,11 @@ export function createPlayerProxy(entity, player) {
       const safe = read && !invalid ? sanitizePlayerSelfModify({ ef: effect }, player.data.id) : null
       assertCanStart()
       if (!safe || !Object.prototype.hasOwnProperty.call(safe, 'ef')) return
+      // an emote that is not an emote url plays nowhere: the effect goes out without it
+      if (!isEmoteUrl(safe.ef.emote)) {
+        safe.ef = { ...safe.ef }
+        delete safe.ef.emote
+      }
       // called by the host when the effect ends, which may be during teardown
       const onEnd = read.onEnd
       const config = {
@@ -339,6 +367,12 @@ export function createPlayerProxy(entity, player) {
       activeEffectConfig = config
       player.setEffect(config.effect, config.onEnd)
       if (world.network.isServer) {
+        // The emote of an effect reaches the other clients through the player's own client, as the emote that
+        // player says it is playing. A script may choose any url; a visitor's client may not. So what a server
+        // script chose for this player is remembered here (the latest few, on the entity, not in its data), and the
+        // player's client naming one of them is taken (ServerNetwork onEntityModified). Only here: an effect a
+        // client sends for its own player must never be remembered.
+        rememberScriptEmote(player, config.effect.emote)
         world.network.send('entityModified', { id: player.data.id, ef: config.effect })
       }
       return {

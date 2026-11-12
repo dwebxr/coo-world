@@ -5,12 +5,14 @@ import vm from 'node:vm'
 import { inspect } from 'node:util'
 import moment from 'moment'
 import {
+  isExternalUrl,
   sanitizeAppModify,
   sanitizeAppRelease,
   sanitizeEntityAdd,
   sanitizeName,
   sanitizePlayerSelfModify,
   sanitizeSpawn,
+  sessionAvatarRequest,
 } from '../src/core/extras/entityModifyPolicy.js'
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../src/core/extras/settingsPolicy.js'
 import { briefError, createLogOnce } from '../src/core/extras/logOnce.js'
@@ -35,6 +37,8 @@ const methods = [
   'admin',
   'onCommand',
   'onModifyRank',
+  'defaultAvatar',
+  'dropBuilderUrls',
   'onSpawnModified',
   'onRequestBuilderByToken',
   'onRequestBuilderNonce',
@@ -69,12 +73,14 @@ function fixture() {
   }
   const Network = vm.runInNewContext(`(class { ${methods} })`, {
     isObject: value => value !== null && typeof value === 'object',
+    isExternalUrl,
     sanitizeAppModify,
     sanitizeAppRelease,
     sanitizeEntityAdd,
     sanitizeName,
     sanitizePlayerSelfModify,
     sanitizeSpawn,
+    sessionAvatarRequest,
     sanitizeBlueprintModify,
     isAdminOnlySettingKey,
     isKnownSettingKey,

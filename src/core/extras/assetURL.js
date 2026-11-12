@@ -99,20 +99,61 @@ export function scriptSource(value, assetsUrl) {
   if (!root) return unknown
   const canonical = assetName(ref)
   if (canonical) return { source: 'store', name: canonical }
-  if (!/^https?:\/\//.test(ref)) return unknown
-  if (resolveReference(ref, assetsUrl) !== ref || /[?#%\\]/.test(ref) || DOT_SEGMENT.test(ref)) return unknown
+  if (resolveReference(ref, assetsUrl) !== ref) return unknown
+  const name = storeAddressName(ref, root)
+  return name ? { source: 'store', name } : unknown
+}
+
+// The name of the store file an absolute URL is the plain address of, or null: it starts with the literal lower-case
+// http:// or https://, its own text has no `?`, `#`, `%`, backslash or dot segment, it has no userinfo, and its parsed
+// origin and path segments are the store's (`root`, storeRoot) followed by one valid name.
+function storeAddressName(href, root) {
+  if (!/^https?:\/\//.test(href) || /[?#%\\]/.test(href) || DOT_SEGMENT.test(href)) return null
   let url
   try {
-    url = new URL(ref)
+    url = new URL(href)
   } catch {
-    return unknown
+    return null
   }
-  if (url.username || url.password || url.origin !== root.origin) return unknown
+  if (url.username || url.password || url.origin !== root.origin) return null
   const segments = url.pathname.split('/').slice(1)
-  if (segments.length !== root.segments.length + 1) return unknown
-  if (root.segments.some((segment, i) => segments[i] !== segment)) return unknown
-  const name = assetName(ASSET_PROTOCOL + segments[segments.length - 1])
-  return name ? { source: 'store', name } : unknown
+  if (segments.length !== root.segments.length + 1) return null
+  if (root.segments.some((segment, i) => segments[i] !== segment)) return null
+  return assetName(ASSET_PROTOCOL + segments[segments.length - 1])
+}
+
+// The path under the store of what a client requests for a reference, or null when the request does not go to the
+// store for certain. A client requests what resolveReference makes of the reference, as the browser's URL parser
+// reads it, so that is what is read here: an http(s) URL without userinfo whose origin is the store's and whose
+// path is under the store's. `//host/assets/x`, `host/assets/x`, `HTTPS://host/assets/x` and asset://x, white space
+// around them or not, are requests for x in a store at https://host/assets; so is `…/assets/x?v=1` or `…/assets/x#a`
+// (the client's loader leaves a query and a fragment off a store address, ClientLoader resourceURL) and
+// `…/assets/a/../x` (the parser folds the dot segments before anything is asked). This is looser than what
+// scriptSource takes for the start-up clean-up, which must know the one file a script is; here the question is only
+// whether the request goes to the world's own store or to somewhere else. A page path such as /assets/x and a
+// `blob:` value are left for the browser to resolve against the page: whether that is the store depends on where
+// the page is served, which the server cannot know for certain (the assets URL may be another origin, or another
+// path of the page's own, and a proxy can put the page anywhere), so they are not requests to the store for certain.
+// Neither is anything without a clean assets URL (assetsUrlProblem).
+export function loadedStoreFile(value, assetsUrl) {
+  const ref = loaderReference(value)
+  if (typeof ref !== 'string' || !ref) return null
+  const root = storeRoot(assetsUrl)
+  if (!root) return null
+  const resolved = resolveReference(ref, assetsUrl)
+  if (!/^https?:\/\//i.test(resolved)) return null
+  let url
+  try {
+    url = new URL(resolved)
+  } catch {
+    return null
+  }
+  if (url.username || url.password || url.origin !== root.origin) return null
+  const segments = url.pathname.split('/').slice(1)
+  if (segments.length <= root.segments.length) return null
+  if (root.segments.some((segment, i) => segments[i] !== segment)) return null
+  const rest = segments.slice(root.segments.length).join('/')
+  return rest || null
 }
 
 // an http(s) URL that parses, with the literal lower-case prefix the server's loader fetches as remote

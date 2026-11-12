@@ -339,10 +339,11 @@ test('sanitizePlayerSelfModify: sessionAvatar and avatar follow the avatar url p
     id: me,
     sessionAvatar: 'asset://avatar.vrm',
   })
-  assert.deepEqual(sanitizePlayerSelfModify({ id: me, sessionAvatar: 'https://example.com/a.vrm' }, me), {
-    id: me,
-    sessionAvatar: 'https://example.com/a.vrm',
-  })
+  // (a url outside the world: for a builder, test/externalAvatarUrls.test.js)
+  assert.deepEqual(
+    sanitizePlayerSelfModify({ id: me, sessionAvatar: 'https://example.com/a.vrm' }, me, { allowExternal: true }),
+    { id: me, sessionAvatar: 'https://example.com/a.vrm' }
+  )
   for (const bad of [
     'data:text/plain,x',
     'blob:http://localhost/x',

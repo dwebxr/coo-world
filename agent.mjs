@@ -19,6 +19,8 @@ const dirname = path.dirname(fileURLToPath(import.meta.url))
 const WS_URL = process.env.WS_URL || process.env.PUBLIC_WS_URL || 'ws://localhost:3000/ws'
 const AGENT_ID = process.env.AGENT_ID || 'default'
 const AGENT_NAME = process.env.AGENT_NAME || undefined
+// an asset://<name>.vrm of the world, or an http(s) url: the server takes a url outside the world only when the
+// agent's user is a builder there (otherwise the agent wears the world's default avatar)
 const AGENT_AVATAR = process.env.AGENT_AVATAR || undefined
 const TICK_MS = Number(process.env.AGENT_TICK_MS) || 300
 const MAX_BACKOFF = 30000

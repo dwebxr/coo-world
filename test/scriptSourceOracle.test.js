@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { loadClient } from './lib/clientHarness.mjs'
-import { ASSET_PROTOCOL, resolveReference, scriptSource } from '../src/core/extras/assetURL.js'
+import { ASSET_PROTOCOL, loadedStoreFile, resolveReference, scriptSource } from '../src/core/extras/assetURL.js'
 
 // scriptSource says "this script is the store file X for certain" only where the runtime loads exactly X, on the
 // server and on a client. The oracles are the real code: World.resolveURL, then ServerLoader.fetchText (with its
@@ -75,6 +75,9 @@ function spellings(base) {
     'ht\ttps://',
     'https:\t//',
     ' https://',
+    // a protocol-relative and a bare host, which resolveReference makes https:// requests of
+    '//',
+    '',
   ]
   const hosts = [
     host,
@@ -159,6 +162,65 @@ test('scriptSource: every "certain store file" is exactly what the server loader
     'https://world.example/assetss.js',
   ]) {
     assert.equal(scriptSource(spelling, BASES[0]).source, 'unknown', JSON.stringify(spelling))
+  }
+})
+
+// loadedStoreFile says "a client requests X under the store" also for spellings resolveReference rewrites, since a
+// client fetches what it makes of them (`//host/assets/x`, `host/assets/x`), and for a store address with a query or
+// a fragment (the client's loader leaves both off a store address). The client oracle is the check: on every page,
+// for every assets base, the request goes to the store's origin and to that path. Codex: the avatar rule read such
+// a spelling as it is written, so a visitor's stored `//world.example/assets/mine.vrm` was taken for a url outside
+// the world; then `…/assets/mine.vrm?v=1` was.
+test('loadedStoreFile: everything it names is what a client requests from the store, on every page', () => {
+  let named = 0
+  let certain = 0
+  for (const base of BASES) {
+    const store = name => new URL(`${base}/${name}`).href
+    for (const spelling of spellings(base)) {
+      const name = loadedStoreFile(spelling, base)
+      const source = scriptSource(spelling, base)
+      // what the clean-up is certain of, a client loads by the same name
+      if (source.source === 'store') {
+        certain++
+        assert.equal(name, source.name, JSON.stringify(spelling))
+      }
+      if (name === null) continue
+      named++
+      for (const page of PAGES) {
+        // the address without its query and fragment: what ClientLoader resourceURL fetches for a store address
+        const request = new URL(clientRequest(spelling, base, page))
+        assert.equal(
+          `${request.origin}${request.pathname}`,
+          store(name),
+          `${JSON.stringify(spelling)} with ${base} on ${page}`
+        )
+        assert.equal(request.username + request.password, '', JSON.stringify(spelling))
+      }
+    }
+  }
+  assert.ok(named > certain, `${named} named, ${certain} certain for the clean-up`)
+  for (const [spelling, base] of [
+    ['//world.example/assets/s.js', BASES[0]],
+    ['world.example/assets/s.js', BASES[0]],
+    [' //cdn.example/assets/s.js\n', BASES[1]],
+    ['\tworld.example/w/assets/s.js ', BASES[2]],
+    ['asset://s.js', BASES[1]],
+  ]) {
+    assert.equal(loadedStoreFile(spelling, base), 's.js', JSON.stringify(spelling))
+  }
+  // A page path lands in the store only when the page is served from the assets base's origin and path: here on one
+  // base and not on another, for the same page. The server cannot know where the page is served, so it is not named.
+  assert.equal(clientRequest('/assets/s.js', BASES[0], PAGES[0]), `${BASES[0]}/s.js`)
+  assert.notEqual(clientRequest('/assets/s.js', BASES[1], PAGES[0]), `${BASES[1]}/s.js`)
+  for (const base of BASES) {
+    for (const spelling of ['/assets/s.js', '/w/assets/s.js', 'blob:https://world.example/assets/s.js']) {
+      assert.equal(loadedStoreFile(spelling, base), null, `${spelling} with ${base}`)
+    }
+  }
+  // without a clean assets base, nothing
+  for (const spelling of ['asset://s.js', '//world.example/assets/s.js']) {
+    assert.equal(loadedStoreFile(spelling, 'https://world.example/assets/'), null)
+    assert.equal(loadedStoreFile(spelling, undefined), null)
   }
 })
 

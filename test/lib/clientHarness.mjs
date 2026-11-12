@@ -20,7 +20,14 @@ import {
 } from '../../src/core/extras/blueprintPolicy.js'
 import { CHAT_BODY_MAX_LENGTH, chatEnvelope, cutText, sanitizeChatMessage } from '../../src/core/extras/chatPolicy.js'
 import { isAdminCommand, parseCommand } from '../../src/core/extras/chatCommand.js'
-import { sanitizeName, sanitizePlayerSelfModify, isEmoteUrl } from '../../src/core/extras/entityModifyPolicy.js'
+import {
+  sanitizeName,
+  sanitizePlayerSelfModify,
+  isAvatarUrl,
+  isEmoteUrl,
+  nextSessionAvatarRequest,
+  rememberScriptEmote,
+} from '../../src/core/extras/entityModifyPolicy.js'
 import { normalizeSettingValue } from '../../src/core/extras/settingsPolicy.js'
 import { createEventLedger } from '../../src/core/extras/appEventQueue.js'
 import { applyInitials, copyFields, copyProps } from '../../src/core/extras/appFields.js'
@@ -109,6 +116,9 @@ export function loadClient(file, name, context = {}) {
     sanitizeName,
     sanitizePlayerSelfModify,
     isEmoteUrl,
+    isAvatarUrl,
+    nextSessionAvatarRequest,
+    rememberScriptEmote,
     normalizeSettingValue,
     createEventLedger,
     internalEvents,

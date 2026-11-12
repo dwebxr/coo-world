@@ -28,7 +28,16 @@ import {
 import { waitForMemoryToSettle } from './lib/memory.mjs'
 import { installAsset, startServer } from './lib/server.mjs'
 import { WireClient, snapshot } from './lib/ws.mjs'
-import { appState, becomeAdmin, installApp, launchBrowser, saveArtifacts, watchPolicy } from './lib/browser.mjs'
+import {
+  REPORTED_INLINE,
+  appState,
+  becomeAdmin,
+  installApp,
+  launchBrowser,
+  runInlineScript,
+  saveArtifacts,
+  watchPolicy,
+} from './lib/browser.mjs'
 
 // the client's payload check, applied here to what the server really put on the wire
 const { sanitizeTeleport } = await import(pathToFileURL(path.join(REPO_ROOT, 'src/core/extras/playerRelayPolicy.js')))
@@ -2074,15 +2083,11 @@ async function probes(admin, watcher) {
   // And what it is: a report. An inline script without the nonce is outside the policy; it RUNS all the same (the
   // policy is not enforced), the document is told, and the server writes what was posted to it.
   const before = violations.length
-  // (not page.addScriptTag: in WebKit it takes the engine's report-only console message for a failure)
-  await page.evaluate(() => {
-    const script = document.createElement('script')
-    script.textContent = 'window.__inlineRan = (window.__inlineRan || 0) + 1'
-    document.head.appendChild(script)
+  const ran = await runInlineScript(page)
+  const wrote = await waitUntil(() => server.lines(REPORTED_INLINE).length === 1, {
+    timeout: 15000,
+    message: 'the report',
   })
-  const ran = await page.evaluate(() => window.__inlineRan)
-  const line = /\[csp\] report-only: script-src-elem would refuse inline, asked by /
-  const wrote = await waitUntil(() => server.lines(line).length === 1, { timeout: 15000, message: 'the report' })
     .then(() => true)
     .catch(() => false)
   const seen = violations.slice(before)

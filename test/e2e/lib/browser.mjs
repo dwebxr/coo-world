@@ -77,6 +77,20 @@ export async function watchPolicy(context) {
   return violations
 }
 
+// Puts an inline script without the nonce into the page: outside the world page's report-only policy. Returns how
+// many times such a script has run in this page (it runs: the policy is not enforced). The browser posts a report,
+// which the server writes as REPORTED_INLINE.
+// (not page.addScriptTag: in WebKit it takes the engine's report-only console message for a failure)
+export const REPORTED_INLINE = /\[csp\] report-only: script-src-elem would refuse inline, asked by /
+export function runInlineScript(page) {
+  return page.evaluate(() => {
+    const script = document.createElement('script')
+    script.textContent = 'window.__inlineRan = (window.__inlineRan || 0) + 1'
+    document.head.appendChild(script)
+    return window.__inlineRan
+  })
+}
+
 // writes <prefix>-console.log, <prefix>-page-errors.log and <prefix>-final.png; safe to call after an abort
 export async function saveArtifacts({ page, consoleLines = [], pageErrors = [], prefix }) {
   try {

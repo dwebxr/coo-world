@@ -301,7 +301,9 @@ test('the world page: a report-only policy with a nonce of its own on each respo
     path.join(withScripts, 'index.html'),
     '<!doctype html><title>{title}</title><meta name="description" content="{desc}" />' +
       '<script nonce="{nonce}">window.a = 1</script><script nonce="{nonce}">window.b = 2</script>' +
-      '<script src="/env.js"></script>'
+      '<script src="/env.js"></script>' +
+      // longer than the size compression starts at (1024 bytes)
+      `<!-- ${'padding '.repeat(200)} -->`
   )
   await fs.writeFile(path.join(withScripts, 'terms.html'), '<!doctype html><title>Terms</title>')
   // a world whose own texts spell the placeholder do not get the nonce
@@ -335,9 +337,8 @@ test('the world page: a report-only policy with a nonce of its own on each respo
     // compressed, the header and the page still carry the same nonce
     const zipped = await app.inject({ method: 'GET', url: '/', headers: { 'accept-encoding': 'gzip' } })
     const nonce = /'nonce-([^']+)'/.exec(zipped.headers[REPORT_ONLY])[1]
-    const text =
-      zipped.headers['content-encoding'] === 'gzip' ? zlib.gunzipSync(zipped.rawPayload).toString() : zipped.body
-    assert.equal(text.split(`nonce="${nonce}"`).length - 1, 2)
+    assert.equal(zipped.headers['content-encoding'], 'gzip')
+    assert.equal(zlib.gunzipSync(zipped.rawPayload).toString().split(`nonce="${nonce}"`).length - 1, 2)
     // the other pages and everything else: no report-only policy
     for (const url of ['/terms.html', '/env.js', '/status', '/missing', '/boom']) {
       const res = await app.inject({ method: 'GET', url })

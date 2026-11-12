@@ -29,7 +29,7 @@ import {
   sleep,
   waitUntil,
 } from './lib/common.mjs'
-import { launchBrowser, saveArtifacts } from './lib/browser.mjs'
+import { REPORTED_INLINE, launchBrowser, runInlineScript, saveArtifacts } from './lib/browser.mjs'
 import { installAsset, startServer, worldAssetsDir } from './lib/server.mjs'
 import { WireClient } from './lib/ws.mjs'
 
@@ -653,6 +653,10 @@ try {
   await step('the report-only policy: nothing the tips and the gate did is outside it', async () => {
     await sleep(3000)
     eq(server.lines(/\[csp\]/).join('\n'), '')
+    // and a report would have come: a script outside the policy runs, and the server writes the report of it
+    eq(await runInlineScript(pages[0].page), 1, 'the inline script ran')
+    await waitUntil(() => server.lines(REPORTED_INLINE).length === 1, { timeout: 15000, message: 'the report' })
+    eq(server.lines(/\[csp\]/).length, 1, 'that report and no other')
   })
 } catch (err) {
   console.log(`FAIL  setup -- ${err?.stack || err}`)

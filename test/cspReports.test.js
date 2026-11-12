@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import zlib from 'node:zlib'
 import Fastify from 'fastify'
 import compress from '@fastify/compress'
 import { compressOptions } from '../src/server/compressOptions.js'
@@ -230,7 +231,11 @@ async function app({ header = null, made = reports() } = {}) {
     return errorHandler(err, req, reply)
   })
   server.register(cspReportRoute, { reports: made, clientIpHeader: header })
-  server.post('/other', async req => ({ got: req.body }))
+  // in a plugin, as the server's own routes are: one declared before the compression plugin has loaded is never
+  // given a decompressed body
+  server.register(async scope => {
+    scope.post('/other', async req => ({ got: req.body }))
+  })
   await server.ready()
   const post = (payload, { type = 'application/csp-report', url = REPORT_PATH, headers = {}, remoteAddress } = {}) =>
     server.inject({
@@ -314,6 +319,60 @@ test('POST /csp-report: the rate is kept by address, read where the server reads
   assert.equal(res.statusCode, 429)
   res = await proxied.post(report(), { remoteAddress: '203.0.113.1', headers: { 'fly-client-ip': '2001:db8:1:3::1' } })
   assert.equal(res.statusCode, 204)
+})
+
+test('POST /csp-report: every post counts against the rate before its body is read, whatever it is', async t => {
+  const { server, post, made } = await app()
+  t.after(() => server.close())
+  const from = { remoteAddress: '203.0.113.5' }
+  // posts the parser refuses, and ones that are not reports
+  for (let i = 0; i < PER_ADDRESS; i++) {
+    const res =
+      i % 3 === 0
+        ? await post('x'.repeat(REPORT_MAX_BYTES + 1), from)
+        : i % 3 === 1
+          ? await post(report(), { ...from, type: 'text/plain' })
+          : await post('{nope', from)
+    assert.equal(res.statusCode, [413, 415, 400][i % 3], `post ${i}`)
+  }
+  // the address has used its minute: a good report is not read
+  assert.equal((await post(report(), from)).statusCode, 429)
+  assert.equal((await post('x'.repeat(REPORT_MAX_BYTES + 1), from)).statusCode, 429)
+  assert.deepEqual(made.lines, [])
+  assert.equal((await post(report(), { remoteAddress: '203.0.113.6' })).statusCode, 204)
+})
+
+test('POST /csp-report: a compressed body is refused before it is read', async t => {
+  const { server, post, logged, made } = await app()
+  t.after(() => server.close())
+  const zipped = zlib.gzipSync(report())
+  for (const encoding of ['gzip', 'GZIP', 'deflate', 'br', 'identity, gzip', 'x-unknown', '']) {
+    const res = await post(zipped, { headers: { 'content-encoding': encoding }, remoteAddress: '203.0.113.7' })
+    assert.equal(res.statusCode, 415, JSON.stringify(encoding))
+  }
+  // a gzip member whose header alone is far longer than the bound, and that decompresses to nothing: not read
+  const header = Buffer.concat([
+    Buffer.from([0x1f, 0x8b, 8, 0x10, 0, 0, 0, 0, 0, 3]),
+    Buffer.alloc(100_000, 0x61),
+    Buffer.from([0]),
+    zlib.deflateRawSync(''),
+    Buffer.alloc(8),
+  ])
+  assert.equal(zlib.gunzipSync(header).length, 0)
+  const res = await post(header, { headers: { 'content-encoding': 'gzip' }, remoteAddress: '203.0.113.8' })
+  assert.equal(res.statusCode, 415)
+  // said as it is, an identity body is read
+  const plain = await post(report(), { headers: { 'content-encoding': 'identity' }, remoteAddress: '203.0.113.9' })
+  assert.equal(plain.statusCode, 204)
+  assert.equal(made.lines.length, 1)
+  assert.deepEqual(logged, [])
+  // elsewhere on the server a compressed body is still read
+  const other = await post(zlib.gzipSync('{"a":1}'), {
+    type: 'application/json',
+    url: '/other',
+    headers: { 'content-encoding': 'gzip' },
+  })
+  assert.deepEqual(other.json(), { got: { a: 1 } })
 })
 
 test('POST /csp-report: a fault of the server itself still reaches the root handler', async t => {

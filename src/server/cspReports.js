@@ -13,11 +13,13 @@ import { clientIpKey } from './uploadLimits.js'
 //   browser put there, as `inline` or `eval`), and the path of the asking script when it is the page's own (its
 //   origin when it is not). Never a query string, a fragment, the page's address, the referrer, a script sample, or
 //   the path of an extension's file (Firefox gives each install its own).
-// - the bounds: a body of REPORT_MAX_BYTES at most; PER_ADDRESS posts a minute from one address (IPv6: its /64) and
-//   PER_MINUTE in all, the rest answered 429 and counted (so the addresses remembered in a minute are PER_MINUTE at
-//   most); KINDS_MAX different lines an hour, each written when first seen and again at 10, 100, 1000 … of the
-//   same; one line of totals when an hour with posts has passed (written when the next post comes: there is no
-//   timer).
+// - the bounds: PER_ADDRESS posts a minute from one address (IPv6: its /64) and PER_MINUTE in all, counted when
+//   the request's headers have come and before any of its body is read, whatever becomes of the post; the rest are
+//   answered 429 and counted (so the addresses remembered in a minute are PER_MINUTE at most). A body of
+//   REPORT_MAX_BYTES at most, as sent: a compressed body is refused (415) before it is read (a browser does not
+//   compress a report, and a decompressor reads input that the byte count never sees). KINDS_MAX different lines an
+//   hour, each written when first seen and again at 10, 100, 1000 … of the same; one line of totals when an hour
+//   with posts has passed (written when the next post comes: there is no timer).
 
 export const REPORT_PATH = '/csp-report'
 export const REPORT_MAX_BYTES = 8 * 1024
@@ -158,9 +160,15 @@ export async function cspReportRoute(fastify, { reports = createCspReports(), cl
     if (Number.isInteger(code) && code >= 400 && code < 500) return reply.code(code).send()
     throw err
   })
-  fastify.post(REPORT_PATH, { bodyLimit: REPORT_MAX_BYTES }, async (req, reply) => {
+  // before the body: the rate (a post counts whatever it turns out to be), and no encoding to undo (the
+  // compression plugin would decompress the body before the byte count sees it)
+  fastify.addHook('onRequest', async (req, reply) => {
     const address = clientIpKey(clientIpHeader ? req.headers[clientIpHeader] : undefined, req.ip)
     if (!reports.admit(address)) return reply.code(429).send()
+    const encoding = req.headers['content-encoding']
+    if (encoding !== undefined && encoding.trim().toLowerCase() !== 'identity') return reply.code(415).send()
+  })
+  fastify.post(REPORT_PATH, { bodyLimit: REPORT_MAX_BYTES }, async (req, reply) => {
     return reply.code(reports.take(req.body) ? 204 : 400).send()
   })
 }

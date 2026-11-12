@@ -658,3 +658,40 @@ test('a refusal that says nothing leaves the telling to the next one that does',
   assert.equal(m.b.socket.player.data.rank, Ranks.VISITOR)
   assert.equal(m.chats(m.got(m.admin)).filter(x => x.body === 'You are changing ranks too fast.').length, 1)
 })
+
+test('rank: where no admin code is set, an admin cannot lower their own rank; with a code, or for anyone else, they can', async () => {
+  const told = s => s.chats(s.got(s.admin)).filter(m => /no admin code/.test(m.body)).length
+  // locked: no code is set, so nobody becomes admin by typing one
+  const locked = await stage()
+  locked.f.network.admin().mode = 'locked'
+  for (const rank of [Ranks.BUILDER, Ranks.VISITOR]) {
+    await locked.f.network.onModifyRank(locked.admin.socket, { playerId: 'admin', rank }, { at: 1000 })
+    assert.equal(locked.admin.socket.player.data.rank, Ranks.ADMIN)
+  }
+  assert.equal(told(locked), 2)
+  assert.equal(locked.f.store.userUpdates, undefined, 'nothing is written')
+  // nothing was said to the others, and the budget was not used: ten more rank changes go through
+  assert.deepEqual(locked.got(locked.a), [])
+  for (let i = 0; i < 10; i++) {
+    await locked.f.network.onModifyRank(locked.admin.socket, { playerId: 'b', rank: i % 2 ? 0 : 1 }, { at: 1000 })
+  }
+  assert.equal(locked.b.socket.player.data.rank, Ranks.VISITOR)
+  assert.equal(locked.f.store.userUpdates.length, 10)
+  // their own rank kept as it is (admin to admin) is not a lowering
+  const same = await stage()
+  same.f.network.admin().mode = 'locked'
+  await same.f.network.onModifyRank(same.admin.socket, { playerId: 'admin', rank: Ranks.ADMIN }, { at: 1000 })
+  assert.equal(told(same), 0)
+  // another admin can still be lowered (this is a guard against a slip, not a rule that an admin remains)
+  const two = await stage()
+  two.f.network.admin().mode = 'locked'
+  two.a.socket.player.data.rank = Ranks.ADMIN
+  await two.f.network.onModifyRank(two.admin.socket, { playerId: 'a', rank: Ranks.VISITOR }, { at: 1000 })
+  assert.equal(two.a.socket.player.data.rank, Ranks.VISITOR)
+  // with a code the way back exists: lowering oneself is allowed
+  const coded = await stage()
+  coded.f.network.admin().mode = 'code'
+  await coded.f.network.onModifyRank(coded.admin.socket, { playerId: 'admin', rank: Ranks.BUILDER }, { at: 1000 })
+  assert.equal(coded.admin.socket.player.data.rank, Ranks.BUILDER)
+  assert.equal(told(coded), 0)
+})

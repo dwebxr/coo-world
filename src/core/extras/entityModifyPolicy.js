@@ -11,6 +11,11 @@ const JSON_MAX_BYTES = 8 * 1024
 const JSON_MAX_DEPTH = 16
 const JSON_MAX_ITEMS = 1024
 const AVATAR_URL_MAX_LENGTH = 512
+// The avatar kept in a user's row: the column holds 255 characters on PostgreSQL (db.js, `table.string`), where a
+// longer one failed to be stored with nothing but a line in the log, while the session went on showing it. A file of
+// the world's store is named in far fewer; a longer reference to it (a long store address) is not taken as the
+// stored avatar, and the sender is not told (the interface only sets store names).
+export const STORED_AVATAR_MAX_LENGTH = 255
 // a .vrm in the world's asset store: a built-in name (avatar.vrm) or a content hash
 const AVATAR_ASSET_URL = /^asset:\/\/[A-Za-z0-9._-]+\.vrm$/
 const EMOTE_URL_MAX_LENGTH = 512
@@ -349,7 +354,14 @@ export function sanitizePlayerSelfModify(
   }
   if (allowAvatar) {
     const avatar = data.avatar
-    if (typeof avatar === 'string' && isAvatarUrl(avatar) && !external(avatar)) safe.avatar = avatar
+    if (
+      typeof avatar === 'string' &&
+      avatar.length <= STORED_AVATAR_MAX_LENGTH &&
+      isAvatarUrl(avatar) &&
+      !external(avatar)
+    ) {
+      safe.avatar = avatar
+    }
   }
   return Object.keys(safe).length > 1 ? safe : null
 }

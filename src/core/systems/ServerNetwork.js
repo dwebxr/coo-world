@@ -1413,6 +1413,20 @@ export class ServerNetwork extends System {
     if (rank !== Ranks.VISITOR && rank !== Ranks.BUILDER && rank !== Ranks.ADMIN) return
     const player = this.world.entities.get(playerId)
     if (!player || !player.isPlayer) return
+    // Where no admin code is set (`locked`), nobody becomes admin by typing one: an admin who lowers their own rank
+    // has no way back but an edit of the database. That is refused, as a guard against a slip of the hand, and no
+    // more than that: an admin can still lower every other admin, and two can lower each other.
+    if (player === socket.player && rank < Ranks.ADMIN && this.admin().mode === 'locked') {
+      socket.send('chatAdded', {
+        id: uuid(),
+        kind: 'system',
+        from: null,
+        fromId: null,
+        body: 'This world has no admin code: you could not become admin again. Your rank was not changed.',
+        createdAt: moment().toISOString(),
+      })
+      return
+    }
     // a rank is written to everyone and to the database: counted with kicks and mutes, once it is one that is made
     if (!this.spend(socket, 'moderation', meta, 'You are changing ranks too fast.')) return
     player.rankRevision++

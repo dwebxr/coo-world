@@ -1,6 +1,11 @@
 // 投げゼニの tx がチェーンで確定するまで見張る (サーバー専用)。
 // - タイマーは 1 本の共有ループで、ジョブが無い時は止まる
 // - RPC は全体で 1 つの予算 (トークンバケット、同時数、1 回ごとの期限) から使う。予算が無ければ待つだけで失敗にしない
+//   What the budget comes to: a tick (1 s) starts at most `maxConcurrentCalls` (4) calls, all in one pass over the
+//   due jobs, and a step that needs a second call (the block after the finalized number, the lookup after a minute)
+//   makes it when its first returns. That is 4 to 8 calls a second (8 when all four steps make two), about 4 to 5
+//   in the flood tests; the bucket (`ratePerSecond` 8) is the ceiling, not the rate. The budget is shared by every
+//   job of every sender: nothing here gives one sender a part of it
 // - 確定済みブロック ('finalized') は 1 周期に 1 回だけ取り、確定待ちのジョブで共有する
 // - 時計とタイマーは注入できる (テスト用)
 import { RpcError } from './evmRpc.js'
@@ -225,7 +230,9 @@ export function createTipWatcher({
       }
       if (at >= entry.nextAt) due.push(entry)
     }
-    // 予算を公平に回す: 最後に RPC を呼べてから長いジョブから
+    // 予算を公平に回す: 最後に RPC を呼べてから長いジョブから (新しいジョブは届いた時刻から数える)。
+    // The order is by waiting time and nothing else: a sender's jobs are not kept apart from another's, and with
+    // enough jobs in the table every job waits (126 others: about half a minute between two calls for one job)
     due.sort((a, b) => a.polledAt - b.polledAt)
     for (const entry of due) step(entry)
     schedule()
@@ -247,7 +254,10 @@ export function createTipWatcher({
         startedAt: at,
         nextAt: at,
         busy: false,
-        polledAt: -Infinity,
+        // A new job waits its turn from the moment it arrives. It used to start at -Infinity, before every job
+        // that had been asked about once, so a stream of new reports was served ahead of the jobs waiting for
+        // their second call, and those could reach the 180 s deadline without it
+        polledAt: at,
         lookedUp: false,
         matched: null,
         controllers: new Set(),

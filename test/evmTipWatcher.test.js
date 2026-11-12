@@ -57,9 +57,11 @@ function setup({ answers = {}, options = {}, live = () => true } = {}) {
       if (state.hangFinalized && params[0] === 'finalized') return new Promise(() => {})
       const value =
         method === 'eth_getTransactionReceipt'
-          ? state.receipts
-            ? (state.receipts[params[0]] ?? null)
-            : state.receipt
+          ? state.receiptOf
+            ? state.receiptOf(params[0])
+            : state.receipts
+              ? (state.receipts[params[0]] ?? null)
+              : state.receipt
           : method === 'eth_getTransactionByHash'
             ? state.tx
             : method === 'eth_getBlockByNumber' && params[0] === 'finalized'
@@ -353,4 +355,76 @@ test('tip watcher: stop aborts a finalized-block read in flight', async () => {
   t.watcher.stop()
   assert.equal(signal.aborted, true)
   assert.equal(t.results.length, 0)
+})
+
+test('tip watcher: a job that arrives later is asked after a job that already waits', async () => {
+  const [waiting, late] = [`0x${'1'.repeat(64)}`, `0x${'2'.repeat(64)}`]
+  const t = setup({ options: { maxConcurrentCalls: 1 } })
+  t.watcher.watch(t.job({ txHash: waiting }))
+  await t.advance(3000)
+  assert.deepEqual(t.calls, [['eth_getTransactionReceipt', waiting]], 'asked once, due again at 4 s')
+  // a new report arrives while the first job waits for its second call; only one call fits in a tick
+  t.watcher.watch(t.job({ txHash: late }))
+  await t.advance(1000)
+  assert.deepEqual(t.calls.at(-1), ['eth_getTransactionReceipt', waiting], 'the job that waited longer goes first')
+  await t.advance(1000)
+  assert.deepEqual(t.calls.at(-1), ['eth_getTransactionReceipt', late], 'the new one a tick later')
+})
+
+// A flood as the server lets visitors make one (ServerNetwork.js): `senders` connections with two watch slots each,
+// every slot filled again when its job ends. One honest tip is reported at 30 s and mined 4 s later.
+// - 'mined': the junk is the hash of a real transaction without the transfer. It fails at its first call, and the
+//   connection has a new ticket every 10 s (the intent budget)
+// - 'unknown': the junk is a hash no node knows. It holds its slot for a minute, then the slot is used again at once
+async function flood({ senders, junk, honestAt = 30_000, minedAfter = 4_000 }) {
+  const t = setup({ answers: { finalized: { number: '0x20' }, tx: null } })
+  t.state.receiptOf = hash => {
+    if (hash === txHash) return t.now() >= honestAt + minedAfter ? receiptFor() : null
+    return junk === 'mined' ? receiptFor({ transactionHash: hash, logs: [] }) : null
+  }
+  const free = []
+  const nextTicketAt = new Array(senders).fill(0)
+  let made = 0
+  const report = slot => {
+    const hash = `0x${(++made).toString(16).padStart(64, '0')}`
+    t.watcher.watch(t.job({ txHash: hash, onDone: () => free.push(slot) }))
+  }
+  for (let slot = 0; slot < senders * 2; slot++) report(slot)
+  let honest = null
+  while (t.now() < 260_000 && !honest) {
+    await t.advance(1000)
+    for (let i = free.length - 1; i >= 0; i--) {
+      const sender = free[i] >> 1
+      if (junk === 'mined' && t.now() < nextTicketAt[sender]) continue
+      if (junk === 'mined') nextTicketAt[sender] = t.now() + 10_000
+      report(free.splice(i, 1)[0])
+    }
+    if (t.now() === honestAt) {
+      t.watcher.watch(t.job({ onDone: result => (honest = { result, seconds: (t.now() - honestAt) / 1000 }) }))
+    }
+  }
+  t.watcher.stop()
+  return { ...honest, callsPerSecond: t.calls.length / (t.now() / 1000), junkReports: made }
+}
+
+test('tip watcher: with 63 connections reporting junk, an honest tip is still confirmed', async () => {
+  // before a new job waited its turn, this one ended { unverified, timeout } at 180 s: about six new reports a
+  // second were each asked first, and the honest job never got the calls after its first
+  const mined = await flood({ senders: 63, junk: 'mined' })
+  assert.deepEqual(mined.result, { state: 'confirmed' })
+  assert.ok(mined.seconds < 120, `confirmed after ${mined.seconds} s`)
+  // a delay, not a separation: with no other job the same tip is confirmed in 5 s, and more reporters make it later
+  assert.ok(mined.seconds > 30, `the flood still delays it: ${mined.seconds} s`)
+  const alone = await flood({ senders: 0, junk: 'mined' })
+  assert.deepEqual(alone.result, { state: 'confirmed' })
+  assert.ok(alone.seconds <= 6, `alone: ${alone.seconds} s`)
+
+  const unknown = await flood({ senders: 63, junk: 'unknown' })
+  assert.deepEqual(unknown.result, { state: 'confirmed' })
+  assert.ok(unknown.seconds < 120, `confirmed after ${unknown.seconds} s`)
+  // the chain calls of the whole watcher: about 4 a second (4 started per tick, a second call for some steps),
+  // under the bucket's 8
+  for (const run of [mined, unknown]) {
+    assert.ok(run.callsPerSecond > 3 && run.callsPerSecond < 6, `calls per second ${run.callsPerSecond}`)
+  }
 })

@@ -52,7 +52,7 @@ export function finalizedNumber(block) {
 }
 
 // 確定済みの高さにある tx のブロックを確かめる。
-// ok / reorged (同じ高さに別のブロック) / too_old (チケット発行より前) / missing / bad_block
+// ok / reorged (同じ高さに別のブロック) / too_old (チケット発行より前、またはサーバーの起動より前) / missing / bad_block
 export function checkTipBlock(block, { blockNumber, blockHash, notBeforeSec }) {
   if (block === null) return 'missing'
   if (!isPlainObject(block) || quantity(block.number) !== blockNumber) return 'bad_block'

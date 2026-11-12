@@ -208,15 +208,25 @@ PUBLIC_EVM_TIP_TOKENS=JPYC,USDC   # Polygon (137) built-ins; or SYMBOL:0xaddress
 - Amounts per tip: 1 to 1,000 JPYC, 0.01 to 10 USDC (the maximum is the beta limit). A custom token has a maximum only when its spec gives one (`:min:max`). The client checks before the confirmation step and the server refuses a larger intent (`above_maximum`); a transfer that does not match an accepted tip intent (same recipient and exact amount) is never counted as a tip, so nothing above the maximum is confirmed or announced
 - With a server-side `EVM_RPC_URL_137`, the sender's client reports the transaction and the server confirms it on chain:
   - It looks for the token's `Transfer` log from the sender's verified address to the recipient's, with the exact amount.
-  - It waits for the `finalized` block and checks that the transaction is not older than the tip request.
+  - It waits for the `finalized` block and checks that the transaction's block is not more than about 30 s older than the tip request (whole seconds are compared, so up to 31 s), and not older than the server process.
   - It then announces "Alice tipped Bob 100 JPYC" in chat and fires the `tip` event for server scripts.
   - Announcements are paced: at most 3 at once then one every 3 s, one per sender every 30 s. Otherwise only the recipient is told.
+- How many reports the server watches, and in what order:
+  - A connection has 2 transactions watched at a time; a third report is answered "busy" and can be made again. The table for the whole world holds 2 for every connection the server admits (`WS_MAX_SOCKETS`, 64 by default: 128 jobs, about 1.1 KB of memory each), so the connections of one address (8 by default) do not fill it. With `WS_MAX_SOCKETS=0` it holds 128 and can be full.
+  - The chain calls are one budget for all reports of all senders: 4 calls started each second, with a second call for some, about 4 to 5 a second in the tests. A report waits its turn behind the ones that have waited longer, and a new report no longer goes ahead of them.
+  - That is a larger table and an order, not a share for each sender. A junk hash takes calls from the same budget as a real one, so connections that report junk delay every confirmation: in a simulation with 63 of them an honest tip was confirmed after about a minute instead of 5 s (it used to end unconfirmed). More of them, a slow RPC or a late `finalized` block can still take a tip past the roughly 180 s after which the server stops watching it; the sender's page can then report it once more.
+  - A tip that is not confirmed is not announced and scripts do not hear of it. That says nothing about the transfer itself: it may have gone through, be pending still, or never have been mined. Check the chain before making good a tip by hand.
 - Without that RPC, tips are still sent but never confirmed or announced
 - Not confirmed:
   - an RPC that does not answer the `finalized` tag
   - tokens that take a fee on transfer
-  - a second announcement of the same transaction
-- After a server restart, a transaction confirmed in the last ~30 s before the restart could be announced again
+  - a transfer the server has counted: the same transaction hash from the same sender is refused as a duplicate. Transfers of two different senders in one transaction (a bundler's) are both counted; a second transfer of the same sender in that transaction is not
+- One transfer is one tip as far as one server process can tell:
+  - What was counted is kept in that process's memory only: transaction hash and sender, 30 minutes each, cut to the newest 4096 before each new entry (so 4097 at most). Nothing is written to the database.
+  - A restart empties it. So a transfer in a block stamped earlier than the start of the running process is refused as too old: a transfer counted before a restart is not matched by a new tip request after it, as long as the node's block times are not ahead of this machine's clock and that clock did not go back.
+  - That is a rule on timestamps for one process at a time, not a record. Two processes serving the same world at once (a deploy that overlaps), a wrong clock, or an RPC node that answers wrongly are outside it, and a transfer can then be announced, and raise the `tip` event, twice.
+  - A tip whose confirmation is under way when the server restarts or is deployed may never be counted by this world: the tip requests are in memory too, the new process knows nothing of them, and the page's second report of the hash is refused there (`unknown_ticket`). The form has no way to have such a tip counted afterwards. This was so before the rule above and is so with it. Whether the transfer itself went through is on the chain either way.
+  - In the first 30 s after a start, a tip in a block stamped earlier than the start (this machine's clock ahead of the chain's) is refused as too old.
 - Not legal advice: check the rules that apply to you before enabling tips in production. Using tips to unlock paid perks, prizes or rankings can make the world operator a seller
 
 ### NFT checks for apps

@@ -34,8 +34,13 @@ const clear = socket => {
   socket.ws.packets.length = 0
 }
 
-function fixture(t, { evmGating = evmEnabled, balance = 0, evmHoldings, tipWatcher, timers, context } = {}) {
-  t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 })
+// now: the mocked clock at which this network starts. null: the test's clock is already mocked (a second network
+// in one test, a restart)
+function fixture(
+  t,
+  { evmGating = evmEnabled, balance = 0, evmHoldings, tipWatcher, timers, context, now = 1_000_000 } = {}
+) {
+  if (now !== null) t.mock.timers.enable({ apis: ['Date'], now })
   const users = new Map()
   const entities = new Map()
   const calls = []
@@ -796,8 +801,8 @@ function fakeTimers() {
 }
 const hashOf = n => `0x${n.toString(16).padStart(64, '0')}`
 
-async function tipFixture(t, { watcher = fakeWatcher(), timers = fakeTimers() } = {}) {
-  const f = fixture(t, { evmGating: tipsEnabled, tipWatcher: watcher, timers })
+async function tipFixture(t, { watcher = fakeWatcher(), timers = fakeTimers(), now } = {}) {
+  const f = fixture(t, { evmGating: tipsEnabled, tipWatcher: watcher, timers, now })
   f.watcher = watcher
   f.timers = timers
   f.a = await f.connect('a')
@@ -854,6 +859,8 @@ test('evm tip report: a ticket is the server copy of the intent, for its sender 
 
 test('evm tip report: checks the ticket and the hash; malformed reports get no reply', async t => {
   const f = await tipFixture(t)
+  // a minute after the start: of the two lower bounds on the block time, the ticket's is the later one
+  f.advance(60_000)
   const ticket = f.ticket()
   assert.deepEqual(f.report(f.a, { ticket, txHash: '0x12' }), [
     { ticket, txHash: '0x12', state: 'failed', reason: 'bad_tx' },
@@ -1093,6 +1100,211 @@ test('evm tip result: a confirmed transaction is counted once, and only once con
   assert.equal(f.report(f.a, { ticket: again, txHash: hashOf(7) })[0].state, 'watching')
 })
 
+test('evm tip result: two senders in one transaction are both counted; the same sender and hash again is not', async t => {
+  const f = await tipFixture(t)
+  const c = await f.connect('c')
+  await f.verify(c, { signer: privateKeyToAccount(`0x${'33'.repeat(32)}`) })
+  // one transaction (a bundler's) carries a transfer of Alice's wallet and one of Carol's
+  const mine = f.ticket()
+  assert.equal(f.report(f.a, { ticket: mine, txHash: hashOf(50) })[0].state, 'watching')
+  clear(f.a)
+  f.watcher.jobs.pop().onDone({ state: 'confirmed' })
+  assert.deepEqual(replies(f.a, 'onEvmTipStatus'), [{ ticket: mine, txHash: hashOf(50), state: 'confirmed' }])
+  // Alice's is counted; Carol's report of the same hash is not refused for that, and is counted too
+  const [first, racing, late] = [f.ticket(c), f.ticket(c), f.ticket(c)]
+  assert.equal(f.report(c, { ticket: first, txHash: hashOf(50) })[0].state, 'watching')
+  assert.equal(f.report(c, { ticket: racing, txHash: hashOf(50) })[0].state, 'watching')
+  clear(c)
+  for (const job of [...f.watcher.jobs]) job.onDone({ state: 'confirmed' })
+  f.watcher.jobs.length = 0
+  assert.deepEqual(
+    replies(c, 'onEvmTipStatus').map(r => r.state + (r.reason ? `:${r.reason}` : '')),
+    ['confirmed', 'failed:duplicate'],
+    'of two tickets of one sender for one hash, one is counted'
+  )
+  assert.deepEqual(
+    f.events.filter(([name]) => name === 'tip').map(([, tip]) => tip.fromPlayerId),
+    ['a', 'c']
+  )
+  assert.deepEqual(f.report(c, { ticket: late, txHash: hashOf(50) }), [
+    { ticket: late, txHash: hashOf(50), state: 'failed', reason: 'duplicate' },
+  ])
+  // the sender is compared as an address: neither its letter case nor the hash's makes it another transfer
+  const again = f.ticket()
+  f.a.evmWallet.tickets.get(again).from = account.address.toLowerCase()
+  const upper = `0x${hashOf(50).slice(2).toUpperCase()}`
+  assert.equal(f.report(f.a, { ticket: again, txHash: upper })[0].reason, 'duplicate')
+  const racingCase = f.ticket()
+  f.report(f.a, { ticket: racingCase, txHash: hashOf(51) })
+  const other51 = f.ticket()
+  f.report(f.a, { ticket: other51, txHash: hashOf(51) })
+  f.a.evmWallet.tickets.get(other51).from = account.address.toLowerCase()
+  clear(f.a)
+  for (const job of [...f.watcher.jobs]) job.onDone({ state: 'confirmed' })
+  assert.deepEqual(
+    replies(f.a, 'onEvmTipStatus').map(r => r.state + (r.reason ? `:${r.reason}` : '')),
+    ['confirmed', 'failed:duplicate']
+  )
+  assert.equal(f.events.filter(([name]) => name === 'tip').length, 3)
+})
+
+test('evm tip report: the block may be 30 s older than the ticket, and not older than this process', async t => {
+  // the process starts half a second into second 1000: the first whole second after its start is 1001
+  const f = await tipFixture(t, { now: 1_000_500 })
+  assert.equal(f.network.tipFloorSec, 1001)
+  const bound = () => {
+    f.report(f.a, { ticket: f.ticket(), txHash: hashOf(60) })
+    const job = f.watcher.jobs.pop()
+    job.onDone({ state: 'failed', reason: 'no_transfer' })
+    return job.notBeforeSec
+  }
+  assert.equal(bound(), 1001, 'at the start: the ticket alone would allow 970.5')
+  f.advance(30_400)
+  assert.equal(bound(), 1001, 'the ticket alone would allow 1000.9')
+  f.advance(200)
+  assert.equal(bound(), 1_031_100 / 1000 - 30, 'from 1001.1 on the ticket decides')
+  f.advance(60_000)
+  assert.equal(bound(), 1_091_100 / 1000 - 30)
+})
+
+// The real watcher on a chain the test writes: receipts by hash, the block time by block number. Its clock is the
+// test's mocked Date, and run() lets it work for a time.
+function fakeChain() {
+  const receipts = new Map()
+  const blocks = new Map()
+  const timers = new Set()
+  const hex = n => `0x${n.toString(16)}`
+  const rpc = {
+    async call(method, [arg]) {
+      if (method === 'eth_getTransactionReceipt') return receipts.get(arg) ?? null
+      if (method === 'eth_getTransactionByHash') return null
+      if (arg === 'finalized') return { number: '0x1000' }
+      return blocks.get(arg) ?? null
+    },
+  }
+  return {
+    watcher: () =>
+      createTipWatcher({
+        rpc,
+        now: () => Date.now(),
+        setTimeout: (fn, ms) => {
+          const timer = { at: Date.now() + ms, fn }
+          timers.add(timer)
+          return timer
+        },
+        clearTimeout: timer => timers.delete(timer),
+        log: { error() {} },
+      }),
+    // one transaction in block `number`, stamped `timestamp` (s), with one tip-token Transfer per entry of `transfers`
+    mine(hash, { number, timestamp, transfers }) {
+      const blockHash = hashOf(0xb10c0000 + number)
+      blocks.set(hex(number), { number: hex(number), hash: blockHash, timestamp: hex(timestamp) })
+      receipts.set(hash, {
+        transactionHash: hash,
+        status: '0x1',
+        blockNumber: hex(number),
+        blockHash,
+        logs: transfers.map(({ from, to, units }) => ({
+          address: tipsEnabled.EVM_TIP_TOKENS[0].address.toLowerCase(),
+          topics: [TRANSFER_TOPIC, `0x${encodeAddressWord(from)}`, `0x${encodeAddressWord(to)}`],
+          data: `0x${encodeUintWord(units)}`,
+        })),
+      })
+    },
+    async run(f, ms) {
+      for (let done = 0; done < ms; done += 1000) {
+        f.advance(1000)
+        for (const timer of [...timers].sort((a, b) => a.at - b.at)) {
+          if (timer.at > Date.now() || !timers.has(timer)) continue
+          timers.delete(timer)
+          timer.fn()
+        }
+        for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve))
+      }
+    },
+  }
+}
+const hundred = 100n * 10n ** 18n
+const tipEvents = f => f.events.filter(([name]) => name === 'tip').map(([, tip]) => tip.fromPlayerId)
+
+test('evm tips: after a restart, a transfer from before the new process is too old; one after its start is counted', async t => {
+  const chain = fakeChain()
+  // the first process counts a transfer of second 1005
+  const before = await tipFixture(t, { watcher: chain.watcher() })
+  before.advance(5_000)
+  const counted = before.ticket()
+  chain.mine(hashOf(70), {
+    number: 16,
+    timestamp: 1005,
+    transfers: [{ from: account.address, to: other.address, units: hundred }],
+  })
+  assert.equal(before.report(before.a, { ticket: counted, txHash: hashOf(70) })[0].state, 'watching')
+  await chain.run(before, 5_000)
+  assert.deepEqual(tipEvents(before), ['a'])
+  // it stops at 1010 s and the next one starts 1012.3 s: nothing is kept, not the tickets and not what was counted
+  before.network.tipWatcher.stop()
+  before.advance(2_300)
+  const after = await tipFixture(t, { watcher: chain.watcher(), now: null })
+  assert.equal(after.network.tipFloorSec, 1013)
+  // both sign in again at once and ask for the same tip: the ticket alone allows blocks from 982.3 s on
+  const fresh = after.ticket()
+  assert.equal(after.a.evmWallet.tickets.get(fresh).issuedAt, 1_012_300)
+  clear(after.a)
+  after.network.onEvmTip(after.a, { ticket: fresh, txHash: hashOf(70) })
+  await chain.run(after, 5_000)
+  assert.deepEqual(replies(after.a, 'onEvmTipStatus'), [
+    { ticket: fresh, txHash: hashOf(70), state: 'watching' },
+    { ticket: fresh, txHash: hashOf(70), state: 'failed', reason: 'too_old' },
+  ])
+  assert.deepEqual(tipEvents(after), [], 'not counted a second time')
+  assert.equal(after.chat.length, 0)
+  // a block stamped one second before the start is too old, the second of the start is not
+  for (const [hash, timestamp, number, expected] of [
+    [hashOf(71), 1012, 17, { state: 'failed', reason: 'too_old' }],
+    [hashOf(72), 1013, 18, { state: 'confirmed' }],
+  ]) {
+    const ticket = after.ticket()
+    chain.mine(hash, { number, timestamp, transfers: [{ from: account.address, to: other.address, units: hundred }] })
+    clear(after.a)
+    after.network.onEvmTip(after.a, { ticket, txHash: hash })
+    await chain.run(after, 5_000)
+    assert.deepEqual(replies(after.a, 'onEvmTipStatus').at(-1), { ticket, txHash: hash, ...expected })
+  }
+  assert.deepEqual(tipEvents(after), ['a'])
+})
+
+test('evm tips: one transaction with transfers of two senders, checked on the chain, is two tips', async t => {
+  const chain = fakeChain()
+  const f = await tipFixture(t, { watcher: chain.watcher() })
+  const carol = privateKeyToAccount(`0x${'33'.repeat(32)}`)
+  const c = await f.connect('c')
+  await f.verify(c, { signer: carol })
+  f.advance(5_000)
+  const [mine, hers] = [f.ticket(), f.ticket(c)]
+  chain.mine(hashOf(80), {
+    number: 16,
+    timestamp: 1006,
+    transfers: [
+      { from: account.address, to: other.address, units: hundred },
+      { from: carol.address, to: other.address, units: hundred },
+    ],
+  })
+  clear(f.a)
+  clear(c)
+  f.network.onEvmTip(f.a, { ticket: mine, txHash: hashOf(80) })
+  await chain.run(f, 5_000)
+  f.network.onEvmTip(c, { ticket: hers, txHash: hashOf(80) })
+  await chain.run(f, 5_000)
+  assert.equal(replies(f.a, 'onEvmTipStatus').at(-1).state, 'confirmed')
+  assert.deepEqual(replies(c, 'onEvmTipStatus').at(-1), { ticket: hers, txHash: hashOf(80), state: 'confirmed' })
+  assert.deepEqual(tipEvents(f), ['a', 'c'])
+  // the same sender and hash once more: refused before the chain is asked
+  const again = f.ticket(c)
+  assert.deepEqual(f.report(c, { ticket: again, txHash: hashOf(80) }), [
+    { ticket: again, txHash: hashOf(80), state: 'failed', reason: 'duplicate' },
+  ])
+})
+
 test('evm tip result: two tickets confirming the same transaction fire one event', async t => {
   const f = await tipFixture(t)
   const first = f.ticket()
@@ -1137,7 +1349,7 @@ test('evm tip result: unconfirmed tips can be reported again once with the same 
   assert.equal(f.chat.length, 0)
 })
 
-test('evm tip report: two watched tips per socket and sixteen in the world', async t => {
+test('evm tip report: two watched tips per socket, and a table of two for every connection the server admits', async t => {
   const f = await tipFixture(t)
   f.report(f.a, { ticket: f.ticket(), txHash: hashOf(10) })
   f.report(f.a, { ticket: f.ticket(), txHash: hashOf(11) })
@@ -1145,11 +1357,34 @@ test('evm tip report: two watched tips per socket and sixteen in the world', asy
   assert.equal(f.report(f.a, { ticket: third, txHash: hashOf(12) })[0].reason, 'busy')
   f.watcher.jobs.pop().onDone({ state: 'failed', reason: 'no_transfer' })
   assert.equal(f.report(f.a, { ticket: third, txHash: hashOf(12) })[0].state, 'watching', 'a slot came back')
+  // the table is full at TIP_WATCH_MAX, whoever filled it, and has room again one below it
   f.watcher.jobs.length = 0
-  for (let i = 0; i < 16; i++) f.watcher.jobs.push({ socket: null })
+  for (let i = 0; i < evm.TIP_WATCH_MAX; i++) f.watcher.jobs.push({ socket: null })
   f.network.onSetEvmTipReceive(f.a, { enabled: true })
   const fourth = f.ticket(f.b, { to: 'a' })
   assert.equal(f.report(f.b, { ticket: fourth, txHash: hashOf(13) })[0].reason, 'busy')
+  f.watcher.jobs.pop()
+  assert.equal(f.report(f.b, { ticket: fourth, txHash: hashOf(13) })[0].state, 'watching', 'busy leaves the ticket')
+})
+
+test('evm tip report: eight connections with two junk reports each leave a ninth its two slots', async t => {
+  // eight is what one address may have open (WS_CONNECT_CONCURRENT_PER_IP); the table used to hold 16 jobs
+  const f = await tipFixture(t)
+  const junk = privateKeyToAccount(`0x${'44'.repeat(32)}`)
+  let hash = 100
+  for (let i = 0; i < 8; i++) {
+    const socket = await f.connect(`junk${i}`)
+    await f.verify(socket, { signer: junk })
+    for (let slot = 0; slot < 2; slot++) {
+      assert.equal(f.report(socket, { ticket: f.ticket(socket), txHash: hashOf(hash++) })[0].state, 'watching')
+    }
+    assert.equal(f.report(socket, { ticket: f.ticket(socket), txHash: hashOf(hash++) })[0].reason, 'busy')
+  }
+  assert.equal(f.watcher.jobs.length, 16)
+  for (let slot = 0; slot < 2; slot++) {
+    assert.equal(f.report(f.a, { ticket: f.ticket(), txHash: hashOf(hash++) })[0].state, 'watching')
+  }
+  assert.equal(f.watcher.jobs.length, 18)
 })
 
 test('evm tip announcements: three at once then one every three seconds; a sender is announced once per 30 s', async t => {

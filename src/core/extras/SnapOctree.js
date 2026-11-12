@@ -116,7 +116,10 @@ class SnapOctreeNode {
     }
 
     // If this node is small enough relative to our snap point precision needs
-    // or if it has no children yet, store the point here
+    // or if it has no children yet, store the point here.
+    // As it stands that is every point: a node only gets children in subdivide(), which is reached below only when
+    // it already has some, so the tree is one node with a flat list and a query looks at every point. Measured
+    // with 200 points: 1 node. Left as it is (a world has few snap points); the name promises more than this does.
     if (this.size < 1 || !this.children.length) {
       this.points.push(point)
       point._node = this
@@ -144,8 +147,10 @@ class SnapOctreeNode {
 
   remove(point) {
     const idx = this.points.indexOf(point)
-    this.points.splice(idx, 1)
     point._node = null
+    // (a point this node does not hold: splice(-1, 1) would take out the last point it does hold)
+    if (idx === -1) return
+    this.points.splice(idx, 1)
     this.dec(1)
   }
 

@@ -134,7 +134,8 @@ export class ClientNetwork extends System {
         const ext = file.name.split('.').pop().toLowerCase()
         const filename = `${hash}.${ext}`
         // the size lets the server say now whether the upload itself would be refused
-        const url = `${this.apiUrl}/upload-check?filename=${filename}&size=${file.size}`
+        // (encoded: the extension is the file's own, and one with `&` or `#` in it changed the query)
+        const url = `${this.apiUrl}/upload-check?filename=${encodeURIComponent(filename)}&size=${file.size}`
         const resp = await fetchWithRetry(url, { headers }, { timeoutMs: CHECK_TIMEOUT_MS, signal })
         if (!resp.ok) throw await uploadError(resp)
         const data = await resp.json()

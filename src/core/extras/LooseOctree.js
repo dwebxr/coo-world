@@ -24,7 +24,7 @@ export class LooseOctree {
     const expansions = getOctreeExpansions(this.root, item.sphere.center, item.sphere.radius, true)
     if (expansions < 0) return this.park(item)
     const prevNode = item._node
-    this.remove(item)
+    this.detach(item)
     for (let i = 0; i < expansions; i++) this.expand()
     const added = this.root.insert(item)
     prevNode?.checkCollapse()
@@ -45,7 +45,7 @@ export class LooseOctree {
 
   park(item) {
     const prevNode = item._node
-    this.remove(item)
+    this.detach(item)
     item._node = null
     item._parked = true
     prevNode?.checkCollapse()
@@ -56,7 +56,18 @@ export class LooseOctree {
     return false
   }
 
+  // An item leaves the tree for good. The nodes that were made for it and now hold nothing are given back: only
+  // insert and park did that, so a tree that items were removed from kept every node it ever grew (20 scattered
+  // items made 513 nodes, and 513 stayed after all 20 were removed).
   remove(item) {
+    const node = item._node
+    this.detach(item)
+    node?.checkCollapse()
+  }
+
+  // takes the item out of its node and leaves the nodes as they are: insert and park put it somewhere else first
+  // and collapse afterwards, so that the nodes it goes back into are not thrown away in between
+  detach(item) {
     item._node?.remove(item)
     item._parked = false
   }
@@ -123,7 +134,6 @@ export class LooseOctree {
   //   console.timeEnd('prune')
   //   console.log('pruned:', this.pruneCount)
   // }
-
 }
 
 class LooseOctreeNode {
@@ -172,8 +182,10 @@ class LooseOctreeNode {
 
   remove(item) {
     const idx = this.items.indexOf(item)
-    this.items.splice(idx, 1)
     item._node = null
+    // (an item this node does not hold: splice(-1, 1) would take out the last item it does hold)
+    if (idx === -1) return
+    this.items.splice(idx, 1)
     this.dec(1)
   }
 
@@ -341,4 +353,3 @@ function sortAscending(a, b) {
 //   // Prefix with '#' to form a valid hex color code
 //   return '#' + hexColor;
 // }
-

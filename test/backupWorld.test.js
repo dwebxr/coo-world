@@ -25,7 +25,15 @@ function unpack(t, file) {
   execFileSync('tar', ['-xzf', file, '-C', out])
   return out
 }
-const tree = dir => fs.readdirSync(dir, { recursive: true }).map(String).sort()
+// every path below `dir`; a link is listed and not entered
+const tree = (dir, under = '') =>
+  fs
+    .readdirSync(path.join(dir, under), { withFileTypes: true })
+    .flatMap(entry => {
+      const name = path.join(under, entry.name)
+      return entry.isDirectory() ? [name, ...tree(dir, name)] : [name]
+    })
+    .sort()
 const quiet = () => {}
 
 test('backup: the archive is the world’s folder, with the database as one consistent state while it is written', async t => {
@@ -43,6 +51,7 @@ test('backup: the archive is the world’s folder, with the database as one cons
   insert.run('uncommitted', 'not yet')
   const file = await backupWorld({ rootDir, world, now: new Date(2026, 10, 13, 9, 5, 7), log: quiet })
   live.exec('ROLLBACK')
+  assert.equal(live.prepare('SELECT COUNT(*) AS n FROM users').get().n, 200, 'the live database is as it was')
   assert.equal(path.relative(dir, file), path.join('backups', 'backup_2026-11-13_09-05-07.tar.gz'))
   const out = unpack(t, file)
   // laid out as the world's folder is; the log and the lock file of the live database are not in it, nor backups
@@ -54,7 +63,6 @@ test('backup: the archive is the world’s folder, with the database as one cons
     'world/storage.json',
   ])
   assert.equal(fs.readFileSync(path.join(out, 'world/assets/model.glb'), 'utf8'), 'glb bytes')
-  assert.equal(fs.lstatSync(path.join(out, 'world/storage.json')).isSymbolicLink(), false, 'files, not links to them')
   // the copy opens by itself and has every committed row, and not the one that was never committed
   const copy = new Database(path.join(out, 'world/db.sqlite'), { readonly: true })
   t.after(() => copy.close())
@@ -74,8 +82,125 @@ test('backup: the archive is the world’s folder, with the database as one cons
 
 test('backup: a world without a database (another database is used) is archived as it is', async t => {
   const { rootDir, world } = project(t)
-  const file = await backupWorld({ rootDir, world, log: quiet })
+  const said = []
+  const file = await backupWorld({ rootDir, world, log: line => said.push(line) })
   assert.deepEqual(tree(unpack(t, file)), ['world', 'world/assets', 'world/assets/model.glb', 'world/storage.json'])
+  assert.equal(said.filter(line => /holds no database/.test(line)).length, 1, 'and it says that it holds none')
+})
+
+test('backup: a database that stays locked is a failed backup, not an archive without it', async t => {
+  const { rootDir, dir, world } = project(t)
+  // the default journal: a writer that holds the file for itself shuts readers out
+  const live = new Database(path.join(dir, 'db.sqlite'))
+  t.after(() => live.close())
+  live.exec('CREATE TABLE users (id TEXT PRIMARY KEY); INSERT INTO users VALUES (1)')
+  live.exec('BEGIN EXCLUSIVE')
+  await assert.rejects(backupWorld({ rootDir, world, log: quiet, busyTimeout: 50 }), /locked|busy/i)
+  assert.deepEqual(fs.readdirSync(path.join(dir, 'backups')), [], 'no archive, and no working folder')
+  live.exec('COMMIT')
+  const said = []
+  const file = await backupWorld({ rootDir, world, log: line => said.push(line), busyTimeout: 50 })
+  assert.ok(tree(unpack(t, file)).includes('world/db.sqlite'))
+  assert.equal(said.filter(line => /holds no database/.test(line)).length, 0)
+})
+
+test('backup: links in the world’s folder stay links, and the files are not copied to be read', async t => {
+  const { rootDir, dir, world } = project(t)
+  const live = new Database(path.join(dir, 'db.sqlite'))
+  t.after(() => live.close())
+  live.exec('CREATE TABLE users (id TEXT PRIMARY KEY)')
+  fs.mkdirSync(path.join(dir, 'backups'))
+  fs.writeFileSync(path.join(dir, 'backups', 'backup_2020-01-01_00-00-00.tar.gz'), 'an old archive')
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'backup-elsewhere-'))
+  t.after(() => fs.rmSync(elsewhere, { recursive: true, force: true }))
+  fs.writeFileSync(path.join(elsewhere, 'private.txt'), 'not the world’s')
+  // following these would put the live database, the old archives and another folder's files into the archive,
+  // and a link to nothing or to its own folder would fail it
+  const links = {
+    'alias.sqlite': 'db.sqlite',
+    history: 'backups',
+    outside: elsewhere,
+    gone: 'nothing-here',
+    'assets/loop': '..',
+  }
+  for (const [name, target] of Object.entries(links)) fs.symlinkSync(target, path.join(dir, name))
+  fs.mkdirSync(path.join(dir, 'collections', 'default'), { recursive: true })
+  fs.writeFileSync(path.join(dir, 'collections', 'default', 'manifest.json'), '{}')
+  const older = new Date(2021, 2, 3, 4, 5, 6)
+  fs.utimesSync(path.join(dir, 'collections', 'default'), older, older)
+  fs.chmodSync(path.join(dir, 'collections', 'default'), 0o550)
+  fs.chmodSync(path.join(dir, 'collections'), 0o750)
+  // and something that is neither a file, a folder nor a link
+  execFileSync('mkfifo', [path.join(dir, 'pipe')])
+  const said = []
+  const linked = []
+  const file = await backupWorld({
+    rootDir,
+    world,
+    log: line => said.push(line),
+    link: (from, to) => (linked.push(path.relative(dir, from)), fs.linkSync(from, to)),
+  }).finally(() => fs.chmodSync(path.join(dir, 'collections', 'default'), 0o750))
+  const out = unpack(t, file)
+  assert.deepEqual(tree(out), [
+    'world',
+    'world/alias.sqlite',
+    'world/assets',
+    'world/assets/loop',
+    'world/assets/model.glb',
+    'world/collections',
+    'world/collections/default',
+    'world/collections/default/manifest.json',
+    'world/db.sqlite',
+    'world/gone',
+    'world/history',
+    'world/outside',
+    'world/storage.json',
+  ])
+  for (const [name, target] of Object.entries(links)) {
+    assert.equal(fs.lstatSync(path.join(out, 'world', name)).isSymbolicLink(), true, name)
+    assert.equal(fs.readlinkSync(path.join(out, 'world', name)), target, name)
+  }
+  assert.equal(fs.statSync(path.join(out, 'world/collections')).mode & 0o777, 0o750, 'a folder keeps its permissions')
+  const folder = fs.statSync(path.join(out, 'world/collections/default'))
+  assert.equal(folder.mode & 0o777, 0o750, 'except that its owner can write to it')
+  assert.equal(folder.mtime.getTime(), older.getTime(), 'and its time')
+  assert.deepEqual(
+    said.filter(line => /^Left out/.test(line)),
+    [`Left out (not a file, a folder or a link): ${path.join(dir, 'pipe')}`]
+  )
+  // every file of the world was handed to tar as a hard link (the last one is the archive getting its name)
+  assert.deepEqual(linked.slice(0, -1).sort(), [
+    'assets/model.glb',
+    'collections/default/manifest.json',
+    'storage.json',
+  ])
+  assert.ok(linked.at(-1).endsWith('archive.tar.gz'))
+  assert.equal(fs.statSync(path.join(dir, 'storage.json')).nlink, 1, 'and the working folder is gone')
+  assert.deepEqual(fs.readdirSync(path.join(dir, 'backups')).sort(), [
+    'backup_2020-01-01_00-00-00.tar.gz',
+    path.basename(file),
+  ])
+})
+
+test('backup: where no hard link can be made the files are copied, and the archive is the same', async t => {
+  const { rootDir, dir, world } = project(t)
+  const older = new Date(2021, 2, 3, 4, 5, 6)
+  fs.utimesSync(path.join(dir, 'assets', 'model.glb'), older, older)
+  const refuse = code => () => {
+    throw Object.assign(new Error(code), { code })
+  }
+  for (const [day, code] of ['EXDEV', 'EPERM'].entries()) {
+    const now = new Date(2026, 1, 1 + day)
+    const file = await backupWorld({ rootDir, world, log: quiet, link: refuse(code), now })
+    const out = unpack(t, file)
+    assert.deepEqual(tree(out), ['world', 'world/assets', 'world/assets/model.glb', 'world/storage.json'])
+    assert.equal(fs.readFileSync(path.join(out, 'world/assets/model.glb'), 'utf8'), 'glb bytes')
+    assert.equal(fs.statSync(path.join(out, 'world/assets/model.glb')).mtime.getTime(), older.getTime())
+  }
+  // any other failure is a failure: a file that went away is not papered over by a copy
+  const failing = (from, to) => (from.startsWith(dir + path.sep + 'assets') ? refuse('EIO')() : fs.linkSync(from, to))
+  await assert.rejects(backupWorld({ rootDir, world, log: quiet, link: failing }), /EIO/)
+  assert.equal(fs.readdirSync(path.join(dir, 'backups')).filter(name => name.startsWith('.')).length, 0)
 })
 
 test('backup: nothing of the world’s name is read by a shell', async t => {
@@ -90,8 +215,14 @@ test('backup: nothing of the world’s name is read by a shell', async t => {
     marks.filter(mark => fs.existsSync(mark)),
     []
   )
-  assert.deepEqual(fs.readdirSync(rootDir), [world])
   assert.ok(tree(unpack(t, file)).includes(`${world}/storage.json`))
+  // nor is a name that begins with a dash read by tar as its options
+  fs.mkdirSync(path.join(rootDir, '-world'))
+  fs.writeFileSync(path.join(rootDir, '-world', 'storage.json'), '{}')
+  for (const dashed of ['-world', './-world']) {
+    const archive = await backupWorld({ rootDir, world: dashed, log: quiet, now: new Date(2026, 0, dashed.length) })
+    assert.deepEqual(tree(unpack(t, archive)), ['-world', '-world/storage.json'])
+  }
 })
 
 test('backup: WORLD is read as the server reads it, and one that names no folder makes nothing', async t => {
@@ -149,11 +280,32 @@ test('backup: a tar that fails leaves no archive behind; the newest seven are ke
   await assert.rejects(backupWorld({ rootDir, world, now: taken, log: quiet }), /exists already/)
   assert.equal(fs.readFileSync(first, 'utf8'), 'the first of that second')
   fs.rmSync(first)
-  assert.deepEqual(
-    fs.readdirSync(os.tmpdir()).filter(name => name.startsWith('world-backup-')),
-    [],
-    'and no working folder'
-  )
+  // ... also when it appears while this run is at work (another run of the same second), with or without hard links
+  const lateBy = make => (from, to) => {
+    if (to === first) fs.writeFileSync(first, 'the other run’s')
+    return make(from, to)
+  }
+  const noLinks = (from, to) => {
+    if (to !== first) return fs.linkSync(from, to)
+    throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+  }
+  for (const link of [lateBy(fs.linkSync), lateBy(noLinks)]) {
+    await assert.rejects(backupWorld({ rootDir, world, now: taken, log: quiet, link }), /exists already/)
+    assert.equal(fs.readFileSync(first, 'utf8'), 'the other run’s')
+    fs.rmSync(first)
+  }
+  // without hard links the archive gets its name by a copy
+  const copied = await backupWorld({ rootDir, world, now: taken, log: quiet, link: noLinks })
+  assert.ok(tree(unpack(t, copied)).includes('world/storage.json'))
+  fs.rmSync(copied)
+  assert.deepEqual(fs.readdirSync(backups), [], 'and no working folder is left by any of these')
+  // the archive just made is not the one removed, whatever the names of the others say
+  for (let i = 1; i <= 7; i++) fs.writeFileSync(path.join(backups, `backup_2031-01-0${i}_00-00-00.tar.gz`), 'later')
+  const early = await backupWorld({ rootDir, world, now: taken, log: quiet })
+  assert.ok(fs.existsSync(early))
+  for (const name of fs.readdirSync(backups)) fs.rmSync(path.join(backups, name))
+  // a folder with an archive's name is not an archive: it neither counts nor is removed
+  fs.mkdirSync(path.join(backups, 'backup_2032-01-01_00-00-00.tar.gz'))
   // ten backups, a file that is not one of them, and one whose name only looks like one
   assert.equal(BACKUPS_KEPT, 7)
   fs.writeFileSync(path.join(backups, 'notes.txt'), 'keep me')
@@ -175,6 +327,7 @@ test('backup: a tar that fails leaves no archive behind; the newest seven are ke
     'backup_2026-06-08_12-00-00.tar.gz',
     'backup_2026-06-09_12-00-00.tar.gz',
     'backup_2026-06-10_12-00-00.tar.gz',
+    'backup_2032-01-01_00-00-00.tar.gz',
     'my_backup_copy.tar.gz',
     'notes.txt',
   ])

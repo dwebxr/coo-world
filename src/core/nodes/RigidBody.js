@@ -19,7 +19,15 @@ import {
 
 import { Node } from './Node'
 import { callForScript } from '../extras/scriptValues'
-import { finiteNumber, massOk, MAX_PUSH, MIN_MASS, normalizeQuat, positionOk, pushDelta } from '../extras/physicsValidate.js'
+import {
+  finiteNumber,
+  massOk,
+  MAX_PUSH,
+  MIN_MASS,
+  normalizeQuat,
+  positionOk,
+  pushDelta,
+} from '../extras/physicsValidate.js'
 import { isFunction } from 'lodash-es'
 
 const _v1 = new THREE.Vector3()
@@ -253,6 +261,10 @@ export class RigidBody extends Node {
     super.copy(source, recursive)
     this._type = source._type
     this._mass = source._mass
+    this._linearDamping = source._linearDamping
+    this._angularDamping = source._angularDamping
+    // (a vector of the clone's own: setCenterOfMass writes into the one it finds)
+    if (source._centerOfMass) this._centerOfMass = new THREE.Vector3().copy(source._centerOfMass)
     this._tag = source._tag
     this._onContactStart = source._onContactStart
     this._onContactEnd = source._onContactEnd

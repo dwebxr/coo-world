@@ -752,7 +752,7 @@ export class Node {
           return self.rotation
         },
         set rotation(value) {
-          throw new Error('Cannot replace node position')
+          throw new Error('Cannot replace node rotation')
         },
         get scale() {
           return self.scale

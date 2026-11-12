@@ -10,6 +10,8 @@ An absolute url to an audio file, or an asset url from an audio file embedded in
 
 Currently only `mp3` files are supported.
 
+Another `src` plays from its start: set while the audio plays, the new file starts at once from the beginning; set while it is paused, the next `play()` starts there. (Changing `loop`, `group` or `spatial` keeps the current time.)
+
 ### `.volume`: Number
 
 The audio volume. Defaults to `1`. Kept between `0` and `100`.

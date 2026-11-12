@@ -93,6 +93,14 @@ export class Avatar extends Node {
     }
     if (this._src === value) return
     this._src = value
+    // the avatar the previous src loaded is not this node's any more. mountInstance replaces the factory only when
+    // there is a src to load, so with no src it stayed, and the rebuild this asks for made the old avatar again. (An
+    // avatar node of a model has a factory of its own and no src: setting null, which its src already is, returns
+    // above and changes nothing for it.) Nor is a load of the previous src that is still on its way: when it arrived it
+    // made that avatar and called `onLoad`, and with the src cleared the rebuild made it again from the factory it left.
+    this.n++
+    this.factory = null
+    this.hooks = null
     this.needsRebuild = true
     this.setDirty()
   }

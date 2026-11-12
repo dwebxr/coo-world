@@ -493,23 +493,23 @@ export class UI extends Node {
     return null
   }
 
+  // The node drawn last at a point of the canvas (boxes are in canvas pixels). A child is drawn where its layout puts
+  // it, also outside its parent's box (nothing is clipped: an absolute child, or one wider than its parent), so the
+  // children are looked at before the node's own box. The box used to come first: a child that reached outside its
+  // parent could not be hit there, and the pointer went to whatever was drawn behind it. Only the canvas itself
+  // bounds everything: nothing is drawn outside it.
   findNodeAt(x, y) {
-    const findHitNode = (node, offsetX = 0, offsetY = 0) => {
+    const inside = box => x >= box.left && x <= box.left + box.width && y >= box.top && y <= box.top + box.height
+    const findHitNode = node => {
       if (!node.box || node._display === 'none') return null
-      const left = offsetX + node.box.left
-      const top = offsetY + node.box.top
-      const width = node.box.width
-      const height = node.box.height
-      if (x < left || x > left + width || y < top || y > top + height) {
-        return null
-      }
-      // Check children from front to back
+      // children from front to back: the later one is drawn over the earlier, and each over its parent
       for (let i = node.children.length - 1; i >= 0; i--) {
-        const childHit = findHitNode(node.children[i], offsetX, offsetY)
+        const childHit = findHitNode(node.children[i])
         if (childHit) return childHit
       }
-      return node
+      return inside(node.box) ? node : null
     }
+    if (!this.box || !inside(this.box)) return null
     return findHitNode(this)
   }
 

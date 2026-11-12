@@ -306,7 +306,8 @@ export class Video extends Node {
 
     this.gain = this.ctx.world.audio.ctx.createGain()
     this.gain.gain.value = this._volume
-    this.gain.connect(this.ctx.world.audio.groupGains.music)
+    // (the node's own group: it went to `music` whatever `group` said)
+    this.gain.connect(this.ctx.world.audio.groupGains[this._group])
     if (this._spatial) {
       this.panner = this.ctx.world.audio.ctx.createPanner()
       this.panner.panningModel = 'HRTF'
@@ -414,7 +415,7 @@ export class Video extends Node {
       } else {
         this.instance.audio?.disconnect(this.gain)
       }
-      // (the gain feeds the music output: it is taken off it, or every mount would leave one connected there)
+      // (the gain feeds its group's output: it is taken off it, or every mount would leave one connected there)
       this.panner?.disconnect()
       this.gain?.disconnect()
       this.panner = null
@@ -474,7 +475,6 @@ export class Video extends Node {
     this._geometry = source._geometry
 
     this._volume = source._volume
-    this._spatial = source._spatial
     this._group = source._group
     this._spatial = source._spatial
     this._distanceModel = source._distanceModel
@@ -484,6 +484,8 @@ export class Video extends Node {
     this._coneInnerAngle = source._coneInnerAngle
     this._coneOuterAngle = source._coneOuterAngle
     this._coneOuterGain = source._coneOuterGain
+
+    this._onLoad = source._onLoad
 
     // this._color = source._color
     return this

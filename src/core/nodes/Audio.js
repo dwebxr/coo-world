@@ -128,7 +128,20 @@ export class Audio extends Node {
     if (!isString(value) && value !== null) {
       throw new Error('[audio] src not a string')
     }
-    this._src = value || null
+    value = value || null
+    // Another file plays from its start. The rebuild below is the one a changed `loop` or `group` asks for: it keeps
+    // the place, which for another file is the place the previous one had got to (a track changed after a minute
+    // started a minute in). What plays is stopped and played again (as `currentTime` does); a node that is paused or
+    // stopped has its place put back to the start.
+    if (this._src !== value) {
+      this._src = value
+      if (this.source) {
+        this.stop()
+        watchLoad(this, this.play())
+        return
+      }
+      this.offset = 0
+    }
     this.needsRebuild = true
     this.setDirty()
   }
@@ -332,15 +345,21 @@ export class Audio extends Node {
     if (restartIfPlaying) this.stop()
     if (this.source) return
     const n = ++this.n
+    const src = this._src
     let buffer
+    let failed = false
     try {
-      buffer = loader.get('audio', this._src)
-      if (!buffer) buffer = await loader.load('audio', this._src)
+      buffer = loader.get('audio', src)
+      if (!buffer) buffer = await loader.load('audio', src)
     } catch (err) {
       console.error(err)
-      return
+      failed = true
     }
     if (n !== this.n || !this.mounted || !this.canMount()) return
+    // the src changed while its file loaded (nothing was playing yet, so nothing restarted it): the node was asked to
+    // play, and what it plays is its src, not the file that happened to be on its way, loaded or not
+    if (this._src !== src) return this.play()
+    if (failed) return
 
     this.source = audio.ctx.createBufferSource()
     this.source.buffer = buffer
@@ -382,8 +401,10 @@ export class Audio extends Node {
   pause() {
     const audio = this.ctx.world.audio
     if (!audio) return
+    // also when there is no source yet: a play still waiting for its file is called off, as stop() calls it off (a src
+    // set while the node played starts one at once, and `src = …; pause()` played the new file when it arrived)
+    this.n++
     if (this.source) {
-      this.n++
       // (a source still waiting for the audio unlock has played nothing: the offset stays)
       if (this.sourceStarted) this.offset = audio.ctx.currentTime - this.startTime
       this.releaseSource()

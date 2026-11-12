@@ -2,7 +2,8 @@
 
 Browser-driven checks of a built world: the script sandbox, the script editor, movement, uploads,
 the AI path, the node-client agent and a performance stress world. They run in CI
-(`.github/workflows/e2e.yml`, Chromium/WebKit/Firefox) and locally.
+(`.github/workflows/e2e.yml`, Chromium/WebKit/Firefox) and locally. One suite needs no browser,
+`access-control.mjs`, and runs once in `.github/workflows/ci.yml` after the server build.
 
 Everything here is `.mjs`, so the unit test glob (`test/**/*.test.js`) never picks it up. Paths are
 relative to the repo; nothing reads the developer's `.env`.
@@ -23,6 +24,7 @@ The server build must come last: each build empties `build/`.
 | script | what it checks |
 | --- | --- |
 | `fullstack.mjs --engine=<e>` | boots a server on a throwaway `world-e2e-*` directory, runs the sandbox probes over the wire protocol (intrinsic/endowment/stash writes, blob facade, object URL types, error shapes, Stage/Physics containment, the retry cap) and the player-relay checks (a client-sent `playerTeleport`/`playerPush`/`playerSessionAvatar` is dropped and logged once per socket; a server script's calls still reach the target with well-formed payloads) and the chat check (a malformed chat message from a ws client is refused, a valid one is rebuilt server-side, and the history a later browser receives renders as text), then loads the world in the browser: frozen intrinsics, the same probes, `world.open` policy, an image from `createObjectURL`, a throwing script, a client script acting on a remote player (no packet, one log per method) and on its local player (teleport, push, session avatar through the URL policy), and the Monaco editor (colouring, widgets, edit + save, server confirmation) |
+| `access-control.mjs` | no browser: a visitor, a builder and an admin over raw sockets against the real server. For each rule of `test/lib/packetAccess.mjs` (who may send which packet), a connection below the rank sends a well-formed packet and nothing comes of it: a ping sent after it is answered, the server's log has its line for the refusal where it writes one, and the join snapshot of a connection that joins afterwards shows the state unchanged; then, where there is one, the positive control: the same payload from a connection with the rank takes effect (each result line says whether the case has one). Also: a kick and a mute against the target's rank, an admin-only setting sent by a builder, the holder of a move or an upload after losing its rank, an `entityEvent` named `tip`, `evmWallet` or `command`, a wrong `/admin` code up to the closed socket, a forged session token and one for a user that does not exist. Secrets: the server runs with a sentinel in every variable `test/lib/envTable.mjs` classes as a secret (not `DB_URI`), and none is in `/`, `/env.js`, `/status`, `/health`, a visitor's or an admin's join snapshot, any packet received or the server log, also after the tokens found there are decoded; a second server with the wallet features on is searched the same way. It does not repeat what `fullstack.mjs` (A8, A8b, A14b, A14c, A15), `gate-extras.mjs` (uploads, headers) and `test/sessionTokens.test.js` assert; the table names them |
 | `phone-images.mjs --engine=<e>` | one page at a time on a throwaway world: an iPhone Safari user agent and an iPad in desktop mode (Mac user agent, 5 touch points) load the model images (the local avatar's) as `<img>` elements, while a Mac with the same Safari version keeps three's ImageBitmaps (skipped where the engine has no `createImageBitmap`); no page errors |
 | `gate-extras.mjs --engine=<e>` | walk, jump, VRM session avatar, builder uploads (glb/vrm/png), AI create through a mock Anthropic base URL, `agent.mjs` for 60 s |
 | `token-gate.mjs --engine=<e>` | (a) unverified and (b) signed low balance blocked by panel colliders; (c) raised balance opens locally and crosses; (d) concurrent second context stays blocked; (e) no browser RPC requests or sentinel in served JS/maps; (f) outage fails closed while ticking; (g) admin wallet verification; (h) fresh builder grant, revoke/recheck refusal and signature-free refresh grant |
@@ -62,6 +64,20 @@ machine: it counts garbage the collector has not reached yet, and it stays high 
 free heap capacity and allocator fragmentation. `test/e2eMemoryProbe.test.js` checks the probe against a process
 that holds heap and buffer memory, drops it and makes garbage, and checks the request protocol and the deadline
 (`lib/memory.mjs`).
+
+## Access control and secrets (no browser)
+
+```bash
+npm run build
+node test/e2e/access-control.mjs            # --port=<n> (default 3131; the second server takes <n>+1)
+```
+
+It starts the built server twice (the harness's world, then one with the token gate, EVM sign-in and tips on),
+with made-up values in every secret, and a loopback mock for the AI provider and the chain RPCs: nothing outside
+the machine is asked. Each result line names its case in brackets; `test/lib/packetAccess.mjs` says which rule a
+case tries, and the run fails when a case named there did not run. The server logs go to
+`access-control-server.log` and `access-control-wallet-server.log` in the output directory. A run takes about ten
+seconds.
 
 ## Token gate (local only)
 

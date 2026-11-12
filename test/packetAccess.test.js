@@ -295,7 +295,11 @@ test('the cases and tests the rules name exist', () => {
     assert.ok(fs.existsSync(new URL(`../${file}`, import.meta.url)), `${file} (${rule.what})`)
     assert.ok(read(file).includes(text), `${file} no longer contains ${JSON.stringify(text)} (${rule.what})`)
   }
-  assert.ok(namedCases().length > 20)
+  // every case the tables name is a case the suite runs: `await run('<id>', …)` (the suite checks the other
+  // direction itself when it ends, and that each one ran)
+  const suite = read('test/e2e/access-control.mjs')
+  const ran = [...suite.matchAll(/await run\(\s*'([a-z-]+)'/g)].map(match => match[1])
+  assert.deepEqual([...new Set(ran)].sort(), namedCases())
   assert.equal(HANDLED.includes('no-handler'), false)
   assert.equal(HANDLED.length, Object.keys(CLASSES).length - 1)
 })

@@ -92,7 +92,7 @@ export function describeOpenURL(href, base) {
     host: target.host,
     shown: target.href.length > OPEN_SHOWN_MAX ? `${target.href.slice(0, OPEN_SHOWN_MAX)}…` : target.href,
     // a page this cannot place (no base) is treated as another site
-    external: !page || page.origin === 'null' || target.origin !== page.origin,
+    external: !page || target.origin !== page.origin,
   }
 }
 

@@ -18,7 +18,7 @@ export function LinkConfirm({ link }) {
   }, [early])
   const onOpen = () => {
     if (guard.current.press(performance.now())) return link.open()
-    setArmed(false)
+    // too soon: Open is still shown as waiting, and the timer that makes it ready starts again
     setEarly(n => n + 1)
   }
   return (

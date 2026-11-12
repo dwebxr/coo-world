@@ -3,9 +3,6 @@ import { isString } from 'lodash-es'
 import { Emotes } from '../core/extras/playerEmotes'
 import { setDebugGlobal } from '../core/extras/debugGlobals'
 
-const MAX_UPLOAD_SIZE = 1000000000000 // TODO
-const MAX_UPLOAD_SIZE_LABEL = '1LOLS'
-
 const FOV = 70
 const PLANE_ASPECT_RATIO = 16 / 9
 const HDR_URL = '/day2.hdr'
@@ -77,8 +74,11 @@ export class AvatarPreview {
   async load(file, url) {
     this.file = file
     this.url = url
-    if (this.file.size > MAX_UPLOAD_SIZE) {
-      return { error: `Max file size ${MAX_UPLOAD_SIZE_LABEL}` }
+    // the size the server takes (megabytes, told at join): a larger file is said so here, before it is loaded
+    // for the preview. (The limit here was a placeholder of a terabyte, with the label "1LOLS".)
+    const maxUploadSize = this.world.network?.maxUploadSize
+    if (maxUploadSize > 0 && this.file.size > maxUploadSize * 1024 * 1024) {
+      return { error: `Max file size ${maxUploadSize} MB` }
     }
     // load hdri
     const texture = await this.world.loader.load('hdr', HDR_URL)

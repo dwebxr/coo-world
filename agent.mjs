@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { createNodeClientWorld } from './build/world-node-client.js'
+import { agentId, logText, saveTokenFile, tokenFileOf } from './scripts/lib/agentFiles.mjs'
 
 // coo-world AI エージェント runtime (node-client)
 //
@@ -17,7 +18,12 @@ const dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // --- config ---
 const WS_URL = process.env.WS_URL || process.env.PUBLIC_WS_URL || 'ws://localhost:3000/ws'
-const AGENT_ID = process.env.AGENT_ID || 'default'
+const AGENT_ID = agentId(process.env.AGENT_ID)
+if (AGENT_ID === null) {
+  // (it names the token file: scripts/lib/agentFiles.mjs)
+  console.error('[agent] AGENT_ID must be 1 to 64 letters, digits, _ or -')
+  process.exit(1)
+}
 const AGENT_NAME = process.env.AGENT_NAME || undefined
 // an asset://<name>.vrm of the world, or an http(s) url: the server takes a url outside the world only when the
 // agent's user is a builder there (otherwise the agent wears the world's default avatar)
@@ -26,7 +32,7 @@ const TICK_MS = Number(process.env.AGENT_TICK_MS) || 300
 const MAX_BACKOFF = 30000
 
 // --- per-instance auth token 永続化 (N体同時起動 + 再起動をまたぐ同一性) ---
-const tokenFile = path.join(dirname, `.agent-token-${AGENT_ID}.json`)
+const tokenFile = tokenFileOf(dirname, AGENT_ID)
 function loadToken() {
   try {
     return JSON.parse(fs.readFileSync(tokenFile, 'utf8')).authToken || null
@@ -42,7 +48,8 @@ let latestToken = null
 function saveToken(token) {
   latestToken = token
   try {
-    fs.writeFileSync(tokenFile, JSON.stringify({ authToken: token }))
+    // (readable by its owner only: the token is this agent's identity and rank in the world)
+    saveTokenFile(tokenFile, token)
   } catch (err) {
     console.error(`[agent ${AGENT_ID}] token save failed:`, err?.message || err)
   }
@@ -126,13 +133,22 @@ function connect() {
   const world = createNodeClientWorld()
   currentWorld = world
 
-  world.init({
-    wsUrl: WS_URL,
-    name: AGENT_NAME,
-    avatar: AGENT_AVATAR,
-    authToken: latestToken || loadToken(),
-    onAuthToken: token => saveToken(token),
-  })
+  // A start that fails (the node client could not be set up, the address is not one) is said and tried again like
+  // a lost connection: it used to be a rejection nobody handled, and the agent stayed up doing nothing.
+  Promise.resolve()
+    .then(() =>
+      world.init({
+        wsUrl: WS_URL,
+        name: AGENT_NAME,
+        avatar: AGENT_AVATAR,
+        authToken: latestToken || loadToken(),
+        onAuthToken: token => saveToken(token),
+      })
+    )
+    .catch(err => {
+      console.error(`[agent ${AGENT_ID}] start failed: ${logText(err?.message || err)}`)
+      retry(world)
+    })
 
   world.once('ready', () => {
     console.log(`[agent ${AGENT_ID}] ready`)
@@ -142,7 +158,8 @@ function connect() {
       const last = msgs[msgs.length - 1]
       const myId = world.entities.player?.data.id
       if (last && last.fromId && last.fromId !== myId) {
-        console.log(`[chat] ${last.from}: ${last.body}`)
+        // (another player's text, on the operator's terminal: without its control characters)
+        console.log(`[chat] ${logText(last.from, 80)}: ${logText(last.body)}`)
       }
     })
     runLoop(world)
@@ -160,15 +177,24 @@ function connect() {
     // transient kicks (player_limit 等) は disconnect ハンドラ経由で再接続
   })
 
-  world.on('disconnect', () => {
-    teardown()
+  world.on('disconnect', () => retry(world))
+}
+
+// this world is over (its connection closed, or it never started): the next one is made after the backoff. Once
+// for a world: a start that failed and a disconnect of the same world do not both start a new one
+function retry(world) {
+  if (currentWorld !== world) return
+  teardown()
+  try {
     world.destroy()
-    currentWorld = null
-    if (stopped) return
-    console.log(`[agent ${AGENT_ID}] disconnected — reconnecting in ${backoff}ms`)
-    setTimeout(connect, backoff)
-    backoff = Math.min(backoff * 2, MAX_BACKOFF)
-  })
+  } catch (err) {
+    console.error(`[agent ${AGENT_ID}] destroy failed: ${logText(err?.message || err)}`)
+  }
+  currentWorld = null
+  if (stopped) return
+  console.log(`[agent ${AGENT_ID}] disconnected — reconnecting in ${backoff}ms`)
+  setTimeout(connect, backoff)
+  backoff = Math.min(backoff * 2, MAX_BACKOFF)
 }
 
 // --- graceful shutdown ---

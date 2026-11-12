@@ -9,6 +9,7 @@ import { callEntry, callScript } from '../extras/callScript'
 import { readOnce, toText } from '../extras/scriptText'
 import { briefError, createLogOnce } from '../extras/logOnce'
 import { setQuaternionFromPoint, setVectorFromPoint } from '../extras/xrPose'
+import { readXRGamepad } from '../extras/xrGamepad'
 
 const LMB = 1 // bitmask
 const RMB = 2 // bitmask
@@ -487,8 +488,10 @@ export class ClientControls extends System {
       const actions = control.actions
       if (actions) {
         for (const action of actions) {
-          // ignore if already existing
-          if (!action.type === 'custom') {
+          // One action for a key: the first control to name it, which is the one of the highest priority and so
+          // the one the key goes to. (`!action.type === 'custom'` was never true, so every control's action for
+          // the same key was listed.) Custom actions have no key and are all listed.
+          if (action.type !== 'custom') {
             const idx = this.actions.findIndex(a => a.type === action.type)
             if (idx !== -1) continue
           }
@@ -851,6 +854,8 @@ function updateXRHand(controls, src, frame, referenceSpace, side) {
   const gripProp = `xr${side}Grip`
   const btn1Prop = `xr${side}Btn1`
   const btn2Prop = `xr${side}Btn2`
+  // (what this input source lacks reads as not pressed: xrGamepad.js)
+  const pad = readXRGamepad(src.gamepad)
   captured.clear()
   for (const control of controls.controls) {
     if (!control.active) continue
@@ -895,8 +900,8 @@ function updateXRHand(controls, src, frame, referenceSpace, side) {
           control.entries[stickProp].value.x = 0
           control.entries[stickProp].value.z = 0
         } else {
-          control.entries[stickProp].value.x = src.gamepad.axes[2]
-          control.entries[stickProp].value.z = src.gamepad.axes[3]
+          control.entries[stickProp].value.x = pad.stickX
+          control.entries[stickProp].value.z = pad.stickZ
           if (control.entries[stickProp].capture) {
             captured.add(stickProp)
           }
@@ -904,7 +909,7 @@ function updateXRHand(controls, src, frame, referenceSpace, side) {
       }
       if (control.entries[triggerProp]) {
         const button = control.entries[triggerProp]
-        const down = src.gamepad.buttons[0].value > 0.9
+        const down = pad.trigger > 0.9
         if (down && !button.down) {
           button.pressed = true
           callControlEntry(control, button, 'onPress')
@@ -914,11 +919,11 @@ function updateXRHand(controls, src, frame, referenceSpace, side) {
           callControlEntry(control, button, 'onRelease')
         }
         button.down = down
-        button.value = src.gamepad.buttons[0].value
+        button.value = pad.trigger
       }
       if (control.entries[gripProp]) {
         const button = control.entries[gripProp]
-        const down = src.gamepad.buttons[1].pressed
+        const down = pad.gripDown
         if (down && !button.down) {
           button.pressed = true
           callControlEntry(control, button, 'onPress')
@@ -928,11 +933,11 @@ function updateXRHand(controls, src, frame, referenceSpace, side) {
           callControlEntry(control, button, 'onRelease')
         }
         button.down = down
-        button.value = src.gamepad.buttons[1].value
+        button.value = pad.grip
       }
       if (control.entries[btn1Prop]) {
         const button = control.entries[btn1Prop]
-        const down = src.gamepad.buttons[4].pressed
+        const down = pad.button1Down
         if (down && !button.down) {
           button.pressed = true
           callControlEntry(control, button, 'onPress')
@@ -945,7 +950,7 @@ function updateXRHand(controls, src, frame, referenceSpace, side) {
       }
       if (control.entries[btn2Prop]) {
         const button = control.entries[btn2Prop]
-        const down = src.gamepad.buttons[5].pressed
+        const down = pad.button2Down
         if (down && !button.down) {
           button.pressed = true
           callControlEntry(control, button, 'onPress')

@@ -716,8 +716,7 @@ export class PlayerLocal extends Entity {
       }
 
       // ground/air jump
-      const shouldJump =
-        this.grounded && !this.jumping && this.jumpDown && !snare && !this.data.effect?.freeze
+      const shouldJump = this.grounded && !this.jumping && this.jumpDown && !snare && !this.data.effect?.freeze
       const shouldAirJump =
         false && !this.grounded && !this.airJumped && this.jumpPressed && !this.world.builder?.enabled // temp: disabled
       if (shouldJump || shouldAirJump) {
@@ -1181,10 +1180,15 @@ export class PlayerLocal extends Entity {
       return
     }
     const hasRotation = Number.isFinite(rotationY)
-    // snap to position
-    const pose = this.capsule.getGlobalPose()
-    vec3ToPxPos(teleportPosition, pose)
-    this.capsuleHandle.snap(pose)
+    // snap to position. A teleport can come before the body exists: the server sends one as soon as the player has
+    // joined (a script's spawn point), while init() is still waiting for the first assets. The position is taken
+    // all the same and the body is made there (initCapsule starts it at this.base.position); reading the pose of a
+    // body that was not there threw, and the teleport was lost.
+    if (this.capsule) {
+      const pose = this.capsule.getGlobalPose()
+      vec3ToPxPos(teleportPosition, pose)
+      this.capsuleHandle.snap(pose)
+    }
     writeVec3(this.base.position, teleportPosition.x, teleportPosition.y, teleportPosition.z)
     if (hasRotation) this.base.rotation.y = rotationY
     // send network update
@@ -1198,8 +1202,11 @@ export class PlayerLocal extends Entity {
     this.cam.position.copy(this.base.position)
     this.cam.position.y += this.camHeight
     if (hasRotation) this.cam.rotation.y = rotationY
-    this.control.camera.position.copy(this.cam.position)
-    this.control.camera.quaternion.copy(this.cam.quaternion)
+    // (the control is bound after the body, in init(): it takes the camera from this.cam then)
+    if (this.control) {
+      this.control.camera.position.copy(this.cam.position)
+      this.control.camera.quaternion.copy(this.cam.quaternion)
+    }
   }
 
   setEffect(effect, onEnd) {

@@ -3,14 +3,20 @@
 //
 // The model must have a static rigidbody `Frame` and kinematic rigidbodies `LeftDoor` and `RightDoor` (the
 // door model of the "TOKEN GATE COO" app). The holding check runs in the server script with
-// player.getEvmHolding(): the wallet address never reaches the script, and the answer goes to that player
-// only, with app.sendTo. The door opens on that player's screen only (a modified client could open it for
-// itself), and app settings and this script are sent to every visitor, so nothing here is secret.
+// player.getEvmHolding(): the server looks the wallet address up itself and gives the script the contract's
+// answer (a balance), not the address, and the answer goes to that player only, with app.sendTo. The door
+// opens on that player's screen only (a modified client could open it for itself), and app settings and this
+// script are sent to every visitor, so nothing here is secret.
 //
 // The defaults are the OpenPay license contract on Polygon and the "Coo-World NFT Gate" product
 // (h_dc83087ae6050a26540f963151de4c1f). For another OpenPay product, set Token ID to
 // keccak256('openpay:license:' + productId) in hex and Store URL to the product's page. The world needs
 // PUBLIC_EVM_CHAIN_IDS with 137 and a server-side EVM_RPC_URL_137.
+//
+// The server asks only about contracts in the world's EVM_HOLDING_CONTRACTS. Not set, that list is this
+// OpenPay contract on Polygon, so the defaults work; a world that sets the variable has to keep
+// 137:0x1c652241Cc820Ce897F0d8D9351Df9AD8a0916cc in it. With another Contract in the settings, or without
+// this one in the list, every answer is "unknown" and the sign says TRY AGAIN.
 
 const OPENPAY_LICENSE_CONTRACT = '0x1c652241Cc820Ce897F0d8D9351Df9AD8a0916cc'
 // keccak256('openpay:license:h_dc83087ae6050a26540f963151de4c1f')

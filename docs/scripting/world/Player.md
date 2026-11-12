@@ -85,12 +85,17 @@ if (world.isClient) {
 
 **Server scripts only.** Returns an intrinsic Promise of a fresh, frozen `{ verified, known, balance, holds }`
 object telling whether this player's EVM wallet, verified by the server for this connection (Sign-In with
-Ethereum in the wallet panel), holds an NFT. The address itself never reaches the script.
+Ethereum in the wallet panel), holds an NFT. The server looks the address up itself and does not hand it to the
+script. The script gets what the contract answers about that address, and only for contracts the world's
+operator listed (see [what a script can learn](#what-a-script-can-learn-from-a-holdings-check) below).
 
 `spec` is `{ chainId, contract, standard, tokenId?, minBalance? }`:
 
 - `chainId`: a chain listed in `PUBLIC_EVM_CHAIN_IDS` that has a server-side `EVM_RPC_URL_<chainId>`.
-- `contract`: the token contract (`0x` + 40 hex digits).
+- `contract`: the token contract (`0x` + 40 hex digits). It must be in the operator's `EVM_HOLDING_CONTRACTS`
+  (comma-separated `chainId:0xaddress`, compared without regard to case). When that variable is not set, the list
+  is OpenPay's license contract on Polygon, `137:0x1c652241Cc820Ce897F0d8D9351Df9AD8a0916cc`; setting it replaces
+  that default, and setting it to nothing allows no contract.
 - `standard`: `'erc721'` or `'erc1155'`.
 - `tokenId`: a decimal string, a `0x` hex string or a safe integer. Required for ERC-1155. For ERC-721 it
   checks `ownerOf(tokenId)`; without it, any token of the collection counts (`balanceOf`). Pass 256-bit ids
@@ -104,6 +109,9 @@ Results:
 - `known`: the read succeeded. **`known: false` means "unknown right now", not "does not hold"**: an RPC
   outage, the shared request budget, an unsupported chain or an invalid `spec` (warned once per app) all
   give `known: false`. Ask again later instead of treating it as a refusal.
+  A contract that is not in `EVM_HOLDING_CONTRACTS` also gives `known: false`, every time: the server makes no
+  request for it, and writes one line to its log naming the contract (the first 16 such contracts of a server
+  run). Asking again does not help; the operator has to list the contract and restart the server.
 - `balance`: the count read at the latest block (capped at `Number.MAX_SAFE_INTEGER`), or `0`.
 - `holds`: `known && balance >= minBalance`.
 
@@ -113,6 +121,32 @@ a burst of checks resolves `known: false` instead of waiting. A client script ge
 `getTokenBalance`, it never settles if the app stops or the world becomes fatal while waiting. NFTs can be
 transferred, so check again when it matters (the engine's [`evmWallet` event](/docs/scripting/world/World.md#engine-events)
 tells server scripts when a player's verification changes).
+
+#### What a script can learn from a holdings check
+
+The script is not given the player's address. It is given a number that the contract computes from that
+address, so what it learns is whatever the listed contracts say:
+
+- **A listed ERC-721 with `tokenId`.** The answer is whether the player's wallet is `ownerOf(tokenId)`. A script
+  that asks token id after token id finds which token the player holds, and the owner of a token is public on
+  chain: that is the player's address. Each question is one request against the shared budget, which makes this
+  slow for a large collection and does not stop it.
+- **A listed ERC-721 without `tokenId`, a listed ERC-1155, or a listed ERC-20 asked as `'erc721'` without
+  `tokenId`** (`balanceOf(address)` is the same call). The answer is the balance (for an ERC-20, in its
+  smallest unit), up to `Number.MAX_SAFE_INTEGER`. An exact balance of a token with few holders can also name
+  one wallet on chain.
+- **A listed contract that is not what it seems.** `balanceOf` is the contract's own code. A contract written
+  for it can return part of the owner's address as the "balance" (40 bits a call: four calls give the whole
+  address). The server cannot tell. This is why the operator names the contracts: listing one means trusting
+  its `balanceOf` / `ownerOf` not to encode the owner, now and later. A contract that can be upgraded, or that
+  whoever asked for the listing controls, can start doing so after it was listed. The default list has one
+  contract, OpenPay's license contract: the project's notes of 2026-11-10
+  (goals/phase7-openpay-nft-door-design.md) record that, read on chain then, it was not an upgradeable proxy
+  and its `balanceOf` was the standard ERC-1155 one. Nothing checks that again.
+- **A contract that is not listed.** Nothing: `known: false`, and no request is made.
+
+For world operators: `EVM_HOLDING_CONTRACTS` is the list of contracts you let every script in your world, by
+any builder, ask about your visitors' verified wallets. Add a contract only if you would accept that.
 
 Decide on the server and send the result only to that player with `app.sendTo`. Anything opened on the
 client (a door, a barrier) is still only that player's screen. App settings (`props`) and the script are

@@ -39,7 +39,7 @@ import * as solanaGating from '../../src/server/solana-gating.js'
 import * as evmGating from '../../src/server/evm-gating.js'
 import { parseTipAmount, tipAmountReason } from '../../src/core/extras/evmTokens.js'
 import { createEvmRpcs } from '../../src/server/evmRpc.js'
-import { createEvmHoldingService } from '../../src/server/evmHoldings.js'
+import { createEvmHoldingService, readHoldingContractsEnv } from '../../src/server/evmHoldings.js'
 import { createTipWatcher } from '../../src/server/evmTipWatcher.js'
 import { formatUnits, isTxHash } from '../../src/core/extras/evmAbi.js'
 import { grantTokenRank, persistRank, revokeTokenRank } from '../../src/server/rankGrants.js'
@@ -223,6 +223,7 @@ function networkClass(context) {
     tipAmountReason,
     createEvmRpcs,
     createEvmHoldingService,
+    readHoldingContractsEnv,
     createTipWatcher,
     formatUnits,
     isTxHash,

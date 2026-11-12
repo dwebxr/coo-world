@@ -51,7 +51,7 @@ import { readInboundPacket } from '../../server/inboundDecode'
 import * as solanaGating from '../../server/solana-gating'
 import * as evmGating from '../../server/evm-gating'
 import { createEvmRpcs } from '../../server/evmRpc'
-import { createEvmHoldingService } from '../../server/evmHoldings'
+import { createEvmHoldingService, readHoldingContractsEnv } from '../../server/evmHoldings'
 import { createTipWatcher } from '../../server/evmTipWatcher'
 import { parseTipAmount, tipAmountReason } from '../extras/evmTokens'
 import { formatUnits, isTxHash } from '../extras/evmAbi'
@@ -121,8 +121,11 @@ export class ServerNetwork extends System {
       ? (tokenBalanceService ?? createTokenBalanceService({ readRaw: createSolanaRpc().readRaw }))
       : null
     const rpcs = evmGating.EVM_ENABLED ? createEvmRpcs() : new Map()
-    // NFT 保有判定 (EVM_RPC_URL_<chainId> があるチェーンだけ)。スクリプトの player.getEvmHolding が使う
-    this.evmHoldings = evmGating.EVM_ENABLED ? (evmHoldings ?? createEvmHoldingService({ rpcs })) : null
+    // NFT 保有判定 (EVM_RPC_URL_<chainId> があるチェーンだけ)。スクリプトの player.getEvmHolding が使う。
+    // It asks only about the contracts of EVM_HOLDING_CONTRACTS (evmHoldings.js; index.js has refused a bad value)
+    this.evmHoldings = evmGating.EVM_ENABLED
+      ? (evmHoldings ?? createEvmHoldingService({ rpcs, contracts: readHoldingContractsEnv(process.env) }))
+      : null
     // 投げゼニの確定確認 (投げゼニが有効で、サインインのチェーンの RPC がある時だけ。無ければ送金のみ)
     const tipRpc = rpcs.get(evmGating.EVM_CHAIN_ID)
     // コントラクトのアカウント (Myna Wallet など) のサインイン確認。サインインのチェーンの RPC がある時だけ
@@ -2128,7 +2131,9 @@ export class ServerNetwork extends System {
     this.tipWatcher?.cancel(job => job.socket === socket)
   }
 
-  // サーバースクリプトの player.getEvmHolding から呼ばれる。アドレスはスクリプトに見せず、ここで引く
+  // サーバースクリプトの player.getEvmHolding から呼ばれる。アドレスはスクリプトに渡さず、ここで引く。
+  // The script is not handed the address; it gets what the contract answers about it, and a contract's answer can
+  // carry the address. That is why the read is made only for a contract the operator listed (evmHoldings.js)
   async evmHolding(playerId, spec) {
     const socket = this.sockets.get(playerId)
     const state = socket && !socket.disconnected ? socket.evmWallet : null

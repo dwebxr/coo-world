@@ -1,9 +1,16 @@
 // NFT gate: a barrier that opens only on the screen of a player whose verified EVM wallet holds the
 // configured NFT (ERC-721 or ERC-1155), and a welcome line for holders.
 //
-// The decision is made by the server script with player.getEvmHolding(): the wallet address never reaches
-// the script, and the answer is sent with app.sendTo to that player only. The barrier is opened on the
-// holder's own screen (a modified client could open it for itself).
+// The decision is made by the server script with player.getEvmHolding(): the server looks the wallet address
+// up itself and gives the script the contract's answer, not the address, and the answer is sent with
+// app.sendTo to that player only. The barrier is opened on the holder's own screen (a modified client could
+// open it for itself).
+//
+// The contract must be in the world's EVM_HOLDING_CONTRACTS (chainId:0xaddress, set by the operator; not set,
+// only OpenPay's license contract on Polygon is listed). For any other contract the answer is always "unknown"
+// and the sign says TRY AGAIN. What a listed contract answers can still tell a script about the wallet: an
+// ERC-721 asked token id by token id says which token the player holds, and so which wallet
+// (docs/scripting/world/Player.md).
 //
 // IMPORTANT: nothing in this app is secret. App settings (props) and the script itself are sent to every
 // visitor, so the welcome text below is readable by anyone who looks. Content that must reach holders only
@@ -11,7 +18,8 @@
 // script with app.sendTo after the check.
 //
 // Paste this into an app's script, configure it in the app's settings and export the app as a .hyp file to
-// place it in other worlds. The world needs PUBLIC_EVM_CHAIN_IDS and a server-side EVM_RPC_URL_<chainId>.
+// place it in other worlds. The world needs PUBLIC_EVM_CHAIN_IDS, a server-side EVM_RPC_URL_<chainId> and the
+// contract in EVM_HOLDING_CONTRACTS.
 // For an OpenPay license NFT use ERC-1155, the contract 0x1c652241Cc820Ce897F0d8D9351Df9AD8a0916cc on Polygon (137)
 // and keccak256('openpay:license:' + productId) as the token id (hex). nft-door.js is a door preset for one.
 

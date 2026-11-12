@@ -667,4 +667,12 @@ test('tip notice: after a read in which a value could not be read, the line says
   const few = Object.assign([{ ...NOTE }], { incomplete: true })
   const other = mount('TipMarkerNotice', { evm: { getTipMarkers: () => few } })
   assert.match(text(other.render()), /Other notes like these may be kept in this browser: some could not be read\./)
+  // no note could be read at all: the notice still shows, with that line alone
+  const none = Object.assign([], { incomplete: true })
+  const empty = mount('TipMarkerNotice', { evm: { getTipMarkers: () => none } })
+  const shown = text(empty.render())
+  assert.match(shown, /Other notes like these may be kept in this browser: some could not be read\./)
+  assert.doesNotMatch(shown, /A tip may have been sent/)
+  // and with nothing kept and nothing unreadable there is no notice
+  assert.equal(mount('TipMarkerNotice', { evm: { getTipMarkers: () => [] } }).render(), null)
 })

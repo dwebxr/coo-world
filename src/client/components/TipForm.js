@@ -528,7 +528,8 @@ export function TipMarkerNotice({ world }) {
     )
     return () => clearTimeout(timer)
   }, [world, markers])
-  if (!markers.length) return null
+  // nothing to show, unless a value could not be read: then the line below says that there may be notes
+  if (!markers.length && markers.incomplete !== true) return null
   return (
     <div
       className='tip-marker'

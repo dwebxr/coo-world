@@ -2410,7 +2410,10 @@ export class ServerNetwork extends System {
     if (typeof name !== 'string' || internalEvents.includes(name)) return
     if (!Number.isSafeInteger(version) || version < 0) return
     const entity = this.world.entities.get(id)
-    entity?.onEvent(version, name, data, socket.id, meta)
+    // `allow`: asked by the app once it knows it would take the event (App.onEvent), so that an event for an app
+    // that is not here, of a version the app refuses, or that nothing listens to uses none of the connection's
+    // budget for script events (actionBudget.js event). Counted by when the packet arrived, as the other budgets
+    entity?.onEvent(version, name, data, socket.id, { ...meta, allow: () => this.spend(socket, 'event', meta) })
   }
 
   onEntityRemoved = (socket, id) => {

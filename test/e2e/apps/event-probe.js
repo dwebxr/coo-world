@@ -10,6 +10,17 @@ if (world.isServer) {
   app.on('size', (data, networkId) => {
     world.chat({ id: uuid(), body: 'P5_SIZE ' + JSON.stringify({ length: data.length, from: networkId }) }, true)
   })
+  // how many 'count' events each connection's script got through, told when it asks ('counted')
+  const counts = new Map()
+  app.on('count', (data, networkId) => {
+    counts.set(networkId, (counts.get(networkId) || 0) + 1)
+  })
+  app.on('counted', (data, networkId) => {
+    world.chat(
+      { id: uuid(), body: 'P5_COUNT ' + JSON.stringify({ count: counts.get(networkId) || 0, from: networkId }) },
+      true
+    )
+  })
   app.on('probe', (data, networkId) => {
     world.chat(
       { id: uuid(), body: 'P5_PING ' + JSON.stringify({ data, from: networkId, revision: props.revision || 0 }) },

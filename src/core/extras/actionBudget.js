@@ -13,9 +13,14 @@
 // avatar or session avatar is taken out of its packet (whose other fields go on) and the sender is given back the
 // value the server keeps; a world setting is held, the latest value of each, and applied when the budget allows.
 //
+// Script events (`event`) are the one kind here that nobody sends by hand: a client script sends them (app.send), at
+// the rate its author chose, often one a frame. Their budget bounds how many events of one connection the server's
+// apps take in a second: the app asks (App.onEvent) once it knows it would take the event, and one over the budget
+// is dropped there, counted with the app's other dropped events. Nothing is held and nobody is closed.
+//
 // What this is not: a limit per person. A connection is cheap, and several of them multiply every number here; the
-// limits on connections per address (connectionLimits.js) are what bounds that. Movement, building and script
-// events are not here: an honest client sends those at frame rate, and a dropped one leaves players out of step.
+// limits on connections per address (connectionLimits.js) are what bounds that. Movement and building are not
+// here: an honest client sends those at frame rate, and a dropped one leaves players out of step.
 
 export const ACTION_BUDGETS = Object.freeze({
   // a line of chat typed by a player
@@ -34,6 +39,11 @@ export const ACTION_BUDGETS = Object.freeze({
   // a kick, a mute, a change of a player's rank (also the admin code's own toggle): each is written to everyone, a
   // rank to the database too. A bucket of its own, so that editing settings never leaves a moderator without one
   moderation: Object.freeze({ rate: 2, burst: 10 }),
+  // a script event from a client that the app takes on the server: one it has a listener for, or keeps while it
+  // builds. A script that sends one a frame sends 60 to 240 a second, depending on the display; two apps doing so
+  // at 144 Hz send 288, which passes. This bounds small events: one of 6 KiB or more costs the inbound gate
+  // (inboundPolicy.js) four units or more, and the gate lets fewer than 320 of those a second through
+  event: Object.freeze({ rate: 320, burst: 1280 }),
 })
 
 // `budgets`: { [action]: { rate, burst } }. The state lives with the connection object and goes with it.

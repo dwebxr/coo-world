@@ -268,9 +268,11 @@ test('onEntityEvent: rejects invalid versions silently and passes scheduler meta
   network.flush()
   assert.equal(seen.length, 1)
   assert.deepEqual(seen[0].slice(0, 4), [1, 'probe', 'ok', socket.id])
-  const { at, ...appMeta } = seen[0][4]
+  // (`allow`: asks the connection's budget for script events when the app takes the event; this app is a stand-in)
+  const { at, allow, ...appMeta } = seen[0][4]
   assert.deepEqual(appMeta, { bytes: packet.length, nodes: 7, socketId: socket.id, builder: true })
   assert.ok(Number.isFinite(at))
+  assert.equal(typeof allow, 'function')
 })
 
 test('onBlueprintModified: passes the editing socket as author without changing the existing local argument', () => {

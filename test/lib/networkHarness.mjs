@@ -29,6 +29,7 @@ import {
 import { readInboundPacket } from '../../src/server/inboundDecode.js'
 import { appChatLine, sanitizeChatMessage } from '../../src/core/extras/chatPolicy.js'
 import { eventPayload } from '../../src/core/extras/eventPayload.js'
+import { internalEvents } from '../../src/core/extras/internalEvents.js'
 import {
   isAdminOnlySettingKey,
   isKnownSettingKey,
@@ -150,6 +151,7 @@ const names = [
   'onEntityAdded',
   'onEntityModified',
   'onEntityRemoved',
+  'onEntityEvent',
   'onSettingsModified',
   'onSpawnModified',
   'onAi',
@@ -243,6 +245,7 @@ function networkClass(context) {
     sanitizeChatMessage,
     appChatLine,
     eventPayload,
+    internalEvents,
     isObject: value => value !== null && typeof value === 'object',
     ...context,
   })

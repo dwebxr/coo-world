@@ -1198,6 +1198,53 @@ async function probes(admin, watcher) {
     }
   )
 
+  await step(
+    'A14e a flood of script events: the server script gets the burst and then the rate; the sender stays',
+    async () => {
+      const sender = await new WireClient(PORT, 'eventer').connect()
+      let senderClosed = false
+      sender.closed.then(() => (senderClosed = true))
+      try {
+        const fromSender = sender.mark()
+        const started = Date.now()
+        // under the inbound gate's burst (2048 small packets), so that every one of them is handed to the app
+        const EVENTS = 2000
+        for (let i = 0; i < EVENTS; i++) sender.send('entityEvent', ['s-event', 0, 'count', i])
+        // the sender's packets are handled in order: when its ping is answered, every event before it was looked at
+        sender.send('ping', 515151)
+        await sender.waitFor(m => m.method === 'onPong' && m.data === 515151, {
+          from: fromSender,
+          timeout: 20000 * TIMEOUT_SCALE,
+        })
+        // The most the budget can have let through: the burst, and the rate for the time the events took to
+        // arrive. On a machine slow enough for that to reach all of them, only the burst can be told here (the
+        // exact rate is asserted on a clock of the test's own in test/eventBudget.test.js).
+        const elapsed = Date.now() - started
+        const most = Math.min(EVENTS, 1280 + Math.ceil((elapsed / 1000) * 320) + 1)
+        // a second later the budget has room again: an event is delivered, and tells the count
+        await sleep(1100)
+        const fromReport = watcher.mark()
+        sender.send('entityEvent', ['s-event', 0, 'counted', null])
+        const report = await watcher.waitForReport('P5_COUNT', { from: fromReport, timeout: 10000 * TIMEOUT_SCALE })
+        eq(report.from, sender.id, "the count is this connection's")
+        ok(report.count >= 1280 && report.count <= most, `${report.count} of ${EVENTS} events reached the script`)
+        const escaped = sender.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const logged = [
+          server.lines(new RegExp(`\\[network\\] "${escaped}" is over its event budget: dropped`)).length,
+          server.lines(/\[app\] s-event: event dropped \(sender over its event budget\)/).length,
+        ]
+        // once for the connection and once for the app, when events were dropped; on a machine so slow that the
+        // budget had room for all of them, none need have been
+        if (most < EVENTS) eq(logged.join(), '1,1', 'logged once for the connection and once for the app')
+        else ok(logged[0] <= 1 && logged[1] <= 1, 'logged at most once each')
+        eq(senderClosed, false, 'the sender is not closed: its events are dropped')
+        return `${report.count} of ${EVENTS} events reached the script (at most ${most})`
+      } finally {
+        sender.close()
+      }
+    }
+  )
+
   await step('A15 an outdated client is kicked before any users row is created', async () => {
     const db = new Database(path.join(server.worldDir, 'db.sqlite'), { readonly: true, fileMustExist: true })
     const outdated = new WireClient(PORT, 'outdated', { version: null })

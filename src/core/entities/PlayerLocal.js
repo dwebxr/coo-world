@@ -174,6 +174,9 @@ export class PlayerLocal extends Entity {
     if (this.world.loader?.preloader) {
       await this.world.loader.preloader
     }
+    // removed while the first assets were loading (destroy()): a player that is gone gets no body, no control and
+    // no place in the frame loop, and does not tell the world it is ready. It used to be set up all the same.
+    if (this.destroyed) return
 
     this.applyAvatar()
     this.initCapsule()
@@ -182,6 +185,37 @@ export class PlayerLocal extends Entity {
     this.world.setHot(this, true)
     this.world.on('xrSession', this.onXRSession)
     this.world.emit('ready', true)
+  }
+
+  // The local player leaves the world (Entities.remove: the world is destroyed, or the server removed the entity).
+  // There was no destroy: the body stayed in the physics scene with its shape and material, the control stayed
+  // bound, the player stayed in the frame loop and went on following XR sessions. A client that makes a new world for
+  // each connection (agent.mjs) left one of each behind per world.
+  // Everything init() made is let go of once; what init() had not made yet (a player removed while the first assets
+  // load) is skipped, and init() stops when its wait ends. A load of an avatar that is under way installs nothing
+  // (isCurrentAvatarLoad reads `destroyed`). No `leave` event is emitted: that one is for the players a client sees
+  // leave, and a script that hears it for its own player would be new.
+  destroy() {
+    if (this.destroyed) return
+    this.destroyed = true
+    clearTimeout(this.chatTimer)
+    this.world.setHot(this, false)
+    this.world.off('xrSession', this.onXRSession)
+    this.control?.release()
+    this.control = null
+    // the body: out of the scene, then the body, its shape and their material
+    this.capsuleHandle?.destroy()
+    this.capsuleHandle = null
+    this.capsule?.release()
+    this.capsule = null
+    this.capsuleShape?.release()
+    this.capsuleShape = null
+    this.material?.release()
+    this.material = null
+    if (this.groundSweepGeometry) PHYSX.destroy(this.groundSweepGeometry)
+    this.groundSweepGeometry = null
+    this.base.deactivate()
+    this.aura.deactivate()
   }
 
   getAvatarUrl() {
@@ -232,7 +266,7 @@ export class PlayerLocal extends Entity {
     // material.setFrictionCombineMode(PHYSX.PxCombineModeEnum.eMIN)
     // material.setRestitutionCombineMode(PHYSX.PxCombineModeEnum.eMIN)
     const flags = new PHYSX.PxShapeFlags(PHYSX.PxShapeFlagEnum.eSCENE_QUERY_SHAPE | PHYSX.PxShapeFlagEnum.eSIMULATION_SHAPE) // prettier-ignore
-    const shape = this.world.physics.physics.createShape(geometry, this.material, true, flags)
+    const shape = (this.capsuleShape = this.world.physics.physics.createShape(geometry, this.material, true, flags))
     const localPose = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
     // rotate to stand up
     q1.set(0, 0, 0).setFromAxisAngle(BACKWARD, Math.PI / 2)
@@ -291,6 +325,12 @@ export class PlayerLocal extends Entity {
         this.base.position.copy(position)
       },
     })
+    // the shape and the body have their own copies of these
+    PHYSX.destroy(geometry)
+    PHYSX.destroy(flags)
+    PHYSX.destroy(localPose)
+    PHYSX.destroy(filterData)
+    PHYSX.destroy(transform)
   }
 
   initControl() {

@@ -49,16 +49,23 @@ export class ClientAudio extends System {
   }
 
   ready(fn) {
+    // (a destroyed system starts nothing: its context is closed)
+    if (this.destroyed) return
     if (this.unlocked) return fn()
     this.queue.push(fn)
   }
 
   setupUnlockListener() {
-    const complete = () => {
-      this.unlocked = true
+    const remove = () => {
       document.removeEventListener('click', unlock)
       document.removeEventListener('touchstart', unlock)
       document.removeEventListener('keydown', unlock)
+    }
+    const complete = () => {
+      remove()
+      // destroyed while the context was resuming: what waited is not started on a closed context
+      if (this.destroyed) return
+      this.unlocked = true
       // each waiting sound on its own: one that throws must not leave the others, of other apps, unstarted
       while (this.queue.length) {
         const start = this.queue.pop()
@@ -73,6 +80,7 @@ export class ClientAudio extends System {
     const unlock = async () => {
       try {
         await this.ctx.resume()
+        if (this.destroyed) return
         if (this.ctx.state !== 'running') throw new Error('Audio still suspended')
         const video = document.createElement('video')
         video.playsInline = true
@@ -95,6 +103,7 @@ export class ClientAudio extends System {
         complete()
       }
     }
+    this.removeUnlockListener = remove
     document.addEventListener('click', unlock)
     document.addEventListener('touchstart', unlock)
     document.addEventListener('keydown', unlock)
@@ -144,7 +153,14 @@ export class ClientAudio extends System {
     }
   }
 
+  // The page's unlock listeners stayed after this: the next click resumed a closed context (which rejects) and then
+  // started every sound queued since. They are taken off, the prefs are no longer followed, and a second call does
+  // nothing (closing a closed context rejects).
   destroy() {
+    if (this.destroyed) return
+    this.destroyed = true
+    this.removeUnlockListener?.()
+    this.world.prefs?.off('change', this.onPrefsChange)
     this.groupGains.music.disconnect()
     this.groupGains.sfx.disconnect()
     this.groupGains.voice.disconnect()

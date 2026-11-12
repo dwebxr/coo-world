@@ -371,4 +371,9 @@ export class Nametags extends System {
   onXRSession = session => {
     this.uniforms.uXR.value = session ? 1 : 0
   }
+
+  // (what start() listens to; there was no destroy)
+  destroy() {
+    this.world.off('xrSession', this.onXRSession)
+  }
 }

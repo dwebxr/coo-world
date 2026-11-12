@@ -58,6 +58,8 @@ export function geometryToPxMesh(world, geometry, convex, entity) {
     warnOnce('[physics] mesh has no geometry')
     return null
   }
+  // (a world whose physics was destroyed cooks nothing: the cooking parameters are freed with it)
+  if (world.physics?.destroyed) return null
   const id = `${geometry.uuid}_${convex ? 'convex' : 'triangles'}`
   const holder = entity ?? world
 

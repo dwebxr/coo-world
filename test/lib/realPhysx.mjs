@@ -41,6 +41,8 @@ export async function bundleRealPhysx({ sourceRoot = process.env.REAL_PHYSX_SOUR
           export { World } from './src/core/World.js'
           export { callForScript } from './src/core/extras/scriptValues.js'
           export { App } from './src/core/entities/App.js'
+          export { PlayerLocal } from './src/core/entities/PlayerLocal.js'
+          export { geometryToPxMesh } from './src/core/extras/geometryToPxMesh.js'
           export * as THREE from './src/core/extras/three.js'
         `,
         resolveDir: root,

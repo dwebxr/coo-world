@@ -1,5 +1,5 @@
 import { test, before, after } from 'node:test'
-import { holdEffect } from './lib/effectPlayer.mjs'
+import { holdEffect, reserveLike } from './lib/effectPlayer.mjs'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { bundleProbe } from './lib/workerProbe.mjs'
@@ -62,6 +62,7 @@ function makeWorld(script, { isServer = false, livekit = false } = {}) {
       id: 'me',
       send: () => true,
       broadcast: () => 'delivered',
+      reserve: reserveLike,
       asScript: fn => fn(),
     },
     entities: {
@@ -899,4 +900,46 @@ test('effects: a handle left believing in an effect the player no longer has end
   assert.deepEqual(seen, ['ended'], 'and its script is told')
   assert.equal(players.p1.data.effect, others, 'the effect the player has is left alone')
   assert.equal(efs().length, sentSoFar, 'and nobody is told it ended')
+})
+
+test('effects: an effect the clients could not be told of is not given: the one the player has stays', async () => {
+  const seen = []
+  let p, first
+  const { world, players, efs } = effectWorld(world => {
+    p = world.getPlayer('p1')
+    first = p.applyEffect({ freeze: true, onEnd: () => seen.push('first ended') })
+  })
+  await tick()
+  // no room left for script writes in this tick
+  world.network.outcome = 'refused'
+  assert.equal(p.applyEffect({ snare: 0.5, onEnd: () => seen.push('second ended') }), false)
+  assert.deepEqual(players.p1.data.effect, FREEZE, 'the server has what the clients have')
+  assert.equal(first.active, true)
+  assert.deepEqual(seen, [], 'the effect that stays was not ended, and the one refused never began')
+  assert.deepEqual(efs(), [{ id: 'p1', ef: FREEZE }])
+  // with room again it is given, after the end of the first reached its script
+  world.network.outcome = 'delivered'
+  const second = p.applyEffect({ snare: 0.5 })
+  assert.equal(second.active, true)
+  assert.equal(first.active, false)
+  assert.deepEqual(seen, ['first ended'])
+  assert.deepEqual(efs().slice(1), [{ id: 'p1', ef: { snare: 0.5 } }])
+})
+
+test('effects: what an ended effect makes its script tell goes out before the effect that takes its place', async () => {
+  let p
+  const { efs } = effectWorld(world => {
+    p = world.getPlayer('p1')
+  })
+  await tick()
+  // the first effect answers its end with a chat line of its own kind: here, by ending and being seen to
+  const order = []
+  p.applyEffect({ freeze: true, onEnd: () => order.push(`ended with ${efs().length} effect messages sent`) })
+  p.applyEffect({ snare: 0.5 })
+  // the message for the second was admitted first and sent last
+  assert.deepEqual(order, ['ended with 1 effect messages sent'])
+  assert.deepEqual(efs(), [
+    { id: 'p1', ef: FREEZE },
+    { id: 'p1', ef: { snare: 0.5 } },
+  ])
 })

@@ -428,6 +428,37 @@ test('a script write that was refused takes nothing out of what is pending', asy
   // nobody was told the script's values, so the player's own are still to be told
   assert.deepEqual(s.told(s.settle().b, s.a), [{ id: 'a', ef: { freeze: true }, sessionAvatar: 'asset://mine.vrm' }])
   assert.equal(s.a.player.data.sessionAvatar, 'asset://mine.vrm', 'a session avatar that is refused is not set')
+  assert.deepEqual(s.a.player.data.effect, { freeze: true }, 'nor is an effect: the server has what the others have')
+})
+
+test('an effect a script could not tell anyone of is not given: the end the client sent is told', async () => {
+  const s = await stage()
+  s.actions.chain = () =>
+    s.handle(s.a).applyEffect({ freeze: true, onEnd: () => s.handle(s.a).applyEffect({ snare: 0.5 }) })
+  s.ask(s.b, 'chain')
+  s.tick()
+  assert.deepEqual(s.told(s.settle().b, s.a), [{ id: 'a', ef: { freeze: true } }])
+  // the tick's room for script writes is used up (as in the test above), and then the player's client ends the
+  // freeze: the script answers with a snare it cannot tell anyone of
+  s.f.network.writer.resetTick()
+  for (const filler of [{ body: 'x'.repeat(60000) }, 0]) {
+    for (;;) {
+      let result
+      s.f.network.asScript(() => (result = s.f.network.broadcast('chatAdded', filler)), { id: 'script' }, 'fill')
+      for (const one of s.everyone) s.got(one)
+      if (result === 'refused') break
+    }
+  }
+  s.own(s.a, { ef: null })
+  s.f.network.flush()
+  assert.equal(s.pending(), 0)
+  // the snare was not given, so the player has no effect, and the others are told the end: the server used to
+  // keep the snare, tell nobody, and leave the others on the freeze
+  assert.equal(s.a.player.data.effect, null)
+  const seen = s.settle()
+  assert.deepEqual(s.told(seen.b, s.a), [{ id: 'a', ef: null }])
+  assert.deepEqual(s.told(seen.a, s.a), [], 'the player ended it itself and is told nothing more')
+  s.assertInStep()
 })
 
 test('a change that ends an effect whose end starts another: told in the order the server made them', async () => {

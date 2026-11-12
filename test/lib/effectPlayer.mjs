@@ -7,3 +7,10 @@ export function holdEffect(effect, onEnd) {
   this.onEffectEnd = onEnd
   ended?.()
 }
+
+// ServerNetwork.reserve for a stand-in network that has broadcast(): the packet is admitted now (null when the
+// stand-in's broadcast would answer 'refused': set `network.outcome = 'refused'`), and sent by the function returned.
+export function reserveLike(name, data) {
+  if (this.outcome === 'refused') return null
+  return () => this.broadcast(name, data)
+}

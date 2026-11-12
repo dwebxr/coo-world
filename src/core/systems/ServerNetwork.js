@@ -292,11 +292,12 @@ export class ServerNetwork extends System {
   // tells the first apart from the others: only a refused packet left every client as it was.
   // `skippable`: a packet a recipient can do without (writeLedger.js): left out for a connection whose backlog is
   // high, which then counts as not delivered
-  broadcast(name, data, ignoreSocketId, { skippable = false } = {}) {
+  // `prepared`: a packet reserve() admitted earlier (below); it is not admitted a second time
+  broadcast(name, data, ignoreSocketId, { skippable = false, prepared } = {}) {
     // a player that is removed takes along what was pending for it (flushPending): no change of a player is told
     // after its removal
     if (name === 'entityRemoved') this.pending?.drop(data)
-    const packet = this.writer.prepare(writePacket(name, data), { name })
+    const packet = prepared ?? this.writer.prepare(writePacket(name, data), { name })
     if (packet === false) return 'refused'
     // What the server itself tells everyone about a player (a script's effect or session avatar, health, a name,
     // a rank, urls a former builder may not show) is later than what that player's client sent before in this
@@ -311,6 +312,17 @@ export class ServerNetwork extends System {
       if (!this.write(socket.ws, packet, { name, prepared: true, skippable })) delivered = false
     })
     return delivered ? 'delivered' : 'partial'
+  }
+
+  // The first half of broadcast, for a caller that changes state along with the packet and must not change it
+  // when nobody can be told: the packet is admitted now (a script's counts in this tick's room for script writes
+  // from this moment) and the function this returns sends it to everyone, with broadcast's answer. null: refused,
+  // as broadcast's 'refused'; nothing was reserved and nobody will be told. The caller reserves, makes its change,
+  // then sends, so what it tells goes out after anything its change made others tell.
+  reserve(name, data) {
+    const packet = this.writer.prepare(writePacket(name, data), { name })
+    if (packet === false) return null
+    return () => this.broadcast(name, data, undefined, { prepared: packet })
   }
 
   // true when every recipient got the packet (broadcast)

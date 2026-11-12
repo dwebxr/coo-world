@@ -1,5 +1,5 @@
 import { test, before, after } from 'node:test'
-import { holdEffect } from './lib/effectPlayer.mjs'
+import { holdEffect, reserveLike } from './lib/effectPlayer.mjs'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 
@@ -46,6 +46,7 @@ function makeWorld({ isServer = false } = {}) {
       id: 'me',
       send: () => true,
       broadcast: () => 'delivered',
+      reserve: reserveLike,
       asScript: fn => fn(),
     },
     entities: { items: new Map(), remove: id => world.entities.items.delete(id) },

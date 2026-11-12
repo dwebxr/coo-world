@@ -134,6 +134,7 @@ const names = [
   'asScript',
   'write',
   'broadcast',
+  'reserve',
   'send',
   'sendTo',
   'checkSockets',

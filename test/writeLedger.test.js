@@ -31,6 +31,7 @@ import {
   WRITE_OVERHEAD,
 } from '../src/core/extras/writeLedger.js'
 import { fakeWs, makeNetwork, Socket, connectionMethod } from './lib/networkHarness.mjs'
+import { writePacket } from '../src/core/packets.js'
 import { readPacket } from '../src/core/packets.js'
 import { readScriptData } from '../src/core/extras/scriptData.js'
 import { toEngineNumber } from '../src/core/extras/engineNumber.js'
@@ -334,6 +335,10 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
   assert.equal(effect.cancel(), false)
   assert.equal(proxy.cancelEffect(), false)
   assert.equal(effect.active, true)
+  // and so is giving one: refused, the player does not get it, and keeps the one it has with its handle
+  assert.equal(proxy.applyEffect({ freeze: true }), false)
+  assert.deepEqual(player.data.effect, { snare: 0.5 })
+  assert.equal(effect.active, true)
   for (const call of [
     () => apps.appMethods.send(entity, 'event', 1),
     () => apps.appMethods.sendTo(entity, socket.id, 'event', 1),
@@ -495,4 +500,34 @@ test('writeLedger: explicit system option cannot bypass script attribution and c
     }, {}),
     false
   )
+})
+
+test('ServerNetwork.reserve: a packet is admitted once, when it is reserved, and sent later with the room it took', () => {
+  const network = makeNetwork()
+  const socket = addSocket(network)
+  const data = { id: socket.id, ef: { freeze: true } }
+  const size = writePacket('entityModified', data).length
+  network.asScript(
+    () => {
+      // room for exactly one such packet is left in this tick
+      network.writer.prepare(bytes(SCRIPT_TICK_CAP - size), { script: true })
+      const send = network.reserve('entityModified', data)
+      assert.equal(typeof send, 'function')
+      // it holds its room from now on: a second one is refused, and nothing was written yet
+      assert.equal(network.reserve('entityModified', data), null)
+      assert.equal(socket.ws.packets.length, 0)
+      // sending it does not ask for the room again
+      assert.equal(send(), 'delivered')
+    },
+    { id: 'script' },
+    'reserve'
+  )
+  assert.deepEqual(
+    socket.ws.packets.map(packet => readPacket(packet)),
+    [['onEntityModified', data]]
+  )
+  // outside a script it is the engine's write, which the tick's room for scripts does not concern
+  const engine = network.reserve('entityModified', data)
+  assert.equal(engine(), 'delivered')
+  assert.equal(socket.ws.packets.length, 2)
 })

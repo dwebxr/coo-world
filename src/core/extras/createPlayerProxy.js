@@ -385,6 +385,15 @@ export function createPlayerProxy(entity, player) {
           if (!entity.crashed && !world.fatalError && run === entity.deadHook && !run?.dead) callBack(onEnd)
         },
       }
+      // On the server the message that tells the clients is admitted before anything changes (reserve: it counts
+      // in this tick's room for script writes). When there is no room the player is not given the effect, the one
+      // it has stays, and the call answers false: the server used to give it all the same, and held an effect no
+      // client had heard of.
+      let tell
+      if (world.network.isServer) {
+        tell = world.network.reserve('entityModified', { id: player.data.id, ef: config.effect })
+        if (!tell) return false
+      }
       // (a callback that applies another effect each time is not followed for ever)
       for (let tries = 0; player.data.effect; tries++) {
         if (tries >= 3) throw new Error('[player] the current effect could not be ended')
@@ -393,14 +402,15 @@ export function createPlayerProxy(entity, player) {
       }
       activeEffectConfig = config
       player.setEffect(config.effect, config.onEnd)
-      if (world.network.isServer) {
+      if (tell) {
         // The emote of an effect reaches the other clients through the player's own client, as the emote that
         // player says it is playing. A script may choose any url; a visitor's client may not. So what a server
         // script chose for this player is remembered here (the latest few, on the entity, not in its data), and the
         // player's client naming one of them is taken (ServerNetwork onEntityModified). Only here: an effect a
         // client sends for its own player must never be remembered.
         rememberScriptEmote(player, config.effect.emote)
-        world.network.send('entityModified', { id: player.data.id, ef: config.effect })
+        // sent last: after whatever the effects that just ended made their scripts tell
+        tell()
       }
       return {
         get active() {

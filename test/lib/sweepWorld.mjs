@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { holdEffect } from './effectPlayer.mjs'
+import { holdEffect, reserveLike } from './effectPlayer.mjs'
 import { EventEmitter } from 'node:events'
 import { resolveObjectURL } from 'node:buffer'
 
@@ -168,6 +168,7 @@ export function createSweep({ m, scripts, requests }) {
         send: () => true,
         sendTo: () => true,
         broadcast: () => 'delivered',
+        reserve: reserveLike,
         asScript: fn => fn(),
       },
       // (the server's world store; a client world has none)

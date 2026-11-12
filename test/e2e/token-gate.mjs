@@ -527,7 +527,35 @@ async function runSuite() {
       },
       DOOR
     )
-    await bounded(page.locator('#solana-wallet-panel').waitFor({ state: 'visible' }), 'wallet panel')
+    // The world is up by now (the sidebar, "world ready" and the door were waited for above), so what is left is that
+    // the page goes on drawing and that the panel is laid out. Two steps, each saying what it found missing:
+    // - frames: a page whose renderer has stalled fails here, as "no frames", and not as a missing panel.
+    // - the panel: polled like every other wait of this suite (an evaluate every 100 ms). It was the one wait left
+    //   to Playwright's own visibility check, which polls on animation frames, under the 5 s default of `bounded`
+    //   (15 s on CI): on a loaded runner with a software renderer and a second page loading, that ran out with the
+    //   panel mounted. The other suites give the same wait their page default (90 s on CI).
+    await wait(
+      client,
+      () => {
+        const frame = window.world.frame
+        window.__tokenFrame ??= frame
+        return frame - window.__tokenFrame >= 3
+      },
+      'the page draws frames',
+      null,
+      30000
+    )
+    await wait(
+      client,
+      () => {
+        const panel = document.getElementById('solana-wallet-panel')
+        // (what "visible" means to Playwright: it has a box, and is not hidden by style)
+        return !!panel && panel.getClientRects().length > 0 && getComputedStyle(panel).visibility === 'visible'
+      },
+      'wallet panel visible',
+      null,
+      30000
+    )
     return client
   }
 

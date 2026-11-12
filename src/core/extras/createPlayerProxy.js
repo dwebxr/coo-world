@@ -97,6 +97,32 @@ export function createPlayerProxy(entity, player) {
     warned.add(method)
     console.error(`[player] ${method} on a remote player must be called on the server`)
   }
+  // This script ends its effect (cancel, cancelEffect, or the cleanup of its handle when the run ends): the same as
+  // the host ending it (config.onEnd), and on the server the clients are told as well. Nothing else tells them: the
+  // player's client ends an effect by itself only when its duration is over or, for a cancellable one, when the
+  // player moves, so an effect a server script took back stayed on that client, for good when it had neither.
+  // Told before the script's onEnd runs: an effect that callback applies goes out after this, not under it.
+  // Not told when the end comes from the player (their client said so; ServerNetwork passes that on) or from another
+  // effect taking this one's place (that one goes out instead): config.onEnd is all that runs then.
+  // What it cannot tell apart: a client script that gives its own player another effect at the moment a server
+  // script ends this one may see the new one ended instead, since the message names no effect.
+  // The message is a script's write when a script asked for the end (cancel, cancelEffect: counted in this tick's
+  // room for script writes like the one that gave the effect, so that giving and ending in a loop is no way round
+  // it). When there is no room it is refused, nobody was told, and the effect is left as it is, here as on the
+  // clients: the call answers false and can be made again. The clean-up's is the engine's own and is not refused.
+  // And only for an effect the player still has from this handle (the callback the player holds is this one's): a
+  // handle whose effect was taken off without it hearing must not end what the player has now, which is someone
+  // else's. It is told instead that its own is over.
+  const endByScript = config => {
+    // (config.onEnd does nothing for a handle that is already done)
+    if (player.onEffectEnd !== config.onEnd) return config.onEnd()
+    if (world.network.isServer && !player.destroyed) {
+      const outcome = world.network.broadcast('entityModified', { id: player.data.id, ef: null })
+      if (outcome === 'refused') return false
+    }
+    // the player lets go of the effect and calls config.onEnd
+    player.setEffect(null)
+  }
   const proxy = {
     get networkId() {
       return player.data.owner
@@ -347,16 +373,26 @@ export function createPlayerProxy(entity, player) {
         safe.ef = { ...safe.ef }
         delete safe.ef.emote
       }
-      // called by the host when the effect ends, which may be during teardown
+      // called by the player when the effect is over, for whatever reason (its time ran out, the player moved,
+      // another effect took its place, this script ended it), which may be during teardown: the handle is done and
+      // the script is told. The player has let go of the effect by then; nothing is done to it here
       const onEnd = read.onEnd
       const config = {
         effect: safe.ef,
         onEnd: () => {
           if (activeEffectConfig !== config) return
           activeEffectConfig = null
-          player.setEffect(null)
           if (!entity.crashed && !world.fatalError && run === entity.deadHook && !run?.dead) callBack(onEnd)
         },
+      }
+      // On the server the message that tells the clients is admitted before anything changes (reserve: it counts
+      // in this tick's room for script writes). When there is no room the player is not given the effect, the one
+      // it has stays, and the call answers false: the server used to give it all the same, and held an effect no
+      // client had heard of.
+      let tell
+      if (world.network.isServer) {
+        tell = world.network.reserve('entityModified', { id: player.data.id, ef: config.effect })
+        if (!tell) return false
       }
       // (a callback that applies another effect each time is not followed for ever)
       for (let tries = 0; player.data.effect; tries++) {
@@ -366,14 +402,15 @@ export function createPlayerProxy(entity, player) {
       }
       activeEffectConfig = config
       player.setEffect(config.effect, config.onEnd)
-      if (world.network.isServer) {
+      if (tell) {
         // The emote of an effect reaches the other clients through the player's own client, as the emote that
         // player says it is playing. A script may choose any url; a visitor's client may not. So what a server
         // script chose for this player is remembered here (the latest few, on the entity, not in its data), and the
         // player's client naming one of them is taken (ServerNetwork onEntityModified). Only here: an effect a
         // client sends for its own player must never be remembered.
         rememberScriptEmote(player, config.effect.emote)
-        world.network.send('entityModified', { id: player.data.id, ef: config.effect })
+        // sent last: after whatever the effects that just ended made their scripts tell
+        tell()
       }
       return {
         get active() {
@@ -381,12 +418,15 @@ export function createPlayerProxy(entity, player) {
         },
         cancel: () => {
           if (run !== entity.deadHook) throw stoppedError(entity)
-          config.onEnd()
+          // (attributed to the script like the proxy's own methods, below)
+          return world.network.isServer
+            ? world.network.asScript(() => endByScript(config), entity, 'cancelEffect')
+            : endByScript(config)
         },
       }
     },
     cancelEffect() {
-      activeEffectConfig?.onEnd()
+      if (activeEffectConfig) return endByScript(activeEffectConfig)
     },
     push(force) {
       if (player.data.owner !== world.network.id && world.network.isClient) {
@@ -447,7 +487,7 @@ export function createPlayerProxy(entity, player) {
   handles.set(proxy, { player, run, entity, retire: () => (retired = true) })
   cleanups.set(proxy, () => {
     try {
-      activeEffectConfig?.onEnd()
+      if (activeEffectConfig) endByScript(activeEffectConfig)
     } finally {
       if (voiceMod) {
         voiceMod = world.livekit.removeModifier(voiceMod)

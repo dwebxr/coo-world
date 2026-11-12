@@ -25,7 +25,7 @@ import {
 } from '../extras/entityModifyPolicy'
 import { createRelayDrop } from '../extras/playerRelayPolicy'
 import { appChatLine, sanitizeChatMessage } from '../extras/chatPolicy'
-import { isAdminCommand } from '../extras/chatCommand'
+import { isAdminCommand, readCommandPacket } from '../extras/chatCommand'
 import { sanitizeBlueprintAdd, sanitizeBlueprintModify, WORLD_BLUEPRINT_BYTES } from '../extras/blueprintPolicy'
 import { previewValue } from '../extras/assetURL'
 import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../extras/settingsPolicy'
@@ -293,11 +293,12 @@ export class ServerNetwork extends System {
   // tells the first apart from the others: only a refused packet left every client as it was.
   // `skippable`: a packet a recipient can do without (writeLedger.js): left out for a connection whose backlog is
   // high, which then counts as not delivered
-  broadcast(name, data, ignoreSocketId, { skippable = false } = {}) {
+  // `prepared`: a packet reserve() admitted earlier (below); it is not admitted a second time
+  broadcast(name, data, ignoreSocketId, { skippable = false, prepared } = {}) {
     // a player that is removed takes along what was pending for it (flushPending): no change of a player is told
     // after its removal
     if (name === 'entityRemoved') this.pending?.drop(data)
-    const packet = this.writer.prepare(writePacket(name, data), { name })
+    const packet = prepared ?? this.writer.prepare(writePacket(name, data), { name })
     if (packet === false) return 'refused'
     // What the server itself tells everyone about a player (a script's effect or session avatar, health, a name,
     // a rank, urls a former builder may not show) is later than what that player's client sent before in this
@@ -312,6 +313,17 @@ export class ServerNetwork extends System {
       if (!this.write(socket.ws, packet, { name, prepared: true, skippable })) delivered = false
     })
     return delivered ? 'delivered' : 'partial'
+  }
+
+  // The first half of broadcast, for a caller that changes state along with the packet and must not change it
+  // when nobody can be told: the packet is admitted now (a script's counts in this tick's room for script writes
+  // from this moment) and the function this returns sends it to everyone, with broadcast's answer. null: refused,
+  // as broadcast's 'refused'; nothing was reserved and nobody will be told. The caller reserves, makes its change,
+  // then sends, so what it tells goes out after anything its change made others tell.
+  reserve(name, data) {
+    const packet = this.writer.prepare(writePacket(name, data), { name })
+    if (packet === false) return null
+    return () => this.broadcast(name, data, undefined, { prepared: packet })
   }
 
   // true when every recipient got the packet (broadcast)
@@ -1313,8 +1325,10 @@ export class ServerNetwork extends System {
   }
 
   onCommand = async (socket, data, meta) => {
-    if (!isObject(data) || !Array.isArray(data.args)) return
-    const { args } = data
+    // (a list of words as a chat line can hold them: chatCommand.js)
+    const command = isObject(data) ? readCommandPacket(data) : null
+    if (!command) return
+    const { args } = command
     // handle slash commands
     const player = socket.player
     const playerId = player.data.id
@@ -1431,7 +1445,8 @@ export class ServerNetwork extends System {
     }
     // emit event for all except admin
     if (!adminCommand) {
-      this.world.events.emit('command', eventPayload({ playerId, args }))
+      // the shape a client script gets from Chat.command (the server's event used to carry `args` alone)
+      this.world.events.emit('command', eventPayload({ playerId, cmd: command.cmd, value: command.value, args }))
     }
   }
 
@@ -1703,7 +1718,7 @@ export class ServerNetwork extends System {
   endTokenGrant(socket, body) {
     const player = socket.player
     if (!player) return false
-    if (!(player.data.rank === Ranks.BUILDER && player.data.tokenGrantedRank)) return false
+    if (!(player.data.rank === Ranks.BUILDER && player.tokenGrantedRank)) return false
     const rank = Ranks.VISITOR
     player.rankRevision++
     player.modify({ rank })
@@ -2364,7 +2379,15 @@ export class ServerNetwork extends System {
       // did when both were written at once.
       if (fields) {
         entity.modify(fields)
-        ;(this.pending ??= createPendingChanges()).merge(fields)
+        // An effect the client set (or ended) that a script answered with one of its own: applying it ended the
+        // script's effect, whose onEnd gave the player another. That one is the player's effect now, and everyone
+        // was told it from inside the apply, the sender too. The client's is not told after it: the others would
+        // end on an effect the server does not have.
+        if (has(fields, 'ef') && (entity.data.effect ?? null) !== (fields.ef ?? null)) {
+          fields = { ...fields }
+          delete fields.ef
+        }
+        if (Object.keys(fields).length > 1) (this.pending ??= createPendingChanges()).merge(fields)
       }
       // The sender applied its session avatar before sending it. Whether it was taken or not, the sender is told the
       // session avatar the server now has, after everything the server told it before, with the number the sender
@@ -2657,7 +2680,7 @@ export class ServerNetwork extends System {
     // only by holding a token (a user id is free: every new connection gets one). A refused request is answered to
     // that player.
     const player = socket.player
-    const wallet = player.data.tokenGrantedRank ? solanaGating.walletOf(socket.id) : null
+    const wallet = player.tokenGrantedRank ? solanaGating.walletOf(socket.id) : null
     const refusal = this.world.ai.onAction(action, wallet ? `wallet:${wallet}` : `user:${player.data.userId}`)
     if (refusal) {
       socket.send('chatAdded', {

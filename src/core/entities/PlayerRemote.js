@@ -158,15 +158,17 @@ export class PlayerRemote extends Entity {
     }
   }
 
+  // The effect that was current is over: its callback is taken off and the new effect (or none) is in place before
+  // the callback runs. A callback that gives the player another effect then replaces this one in the usual way, and
+  // what it set stays. (The callback used to run first and was then wiped together with whatever it had set: a
+  // handle went on believing in an effect the player no longer had, and could later end somebody else's.)
   setEffect(effect, onEnd) {
-    if (this.data.effect) {
-      this.data.effect = null
-      this.onEffectEnd?.()
-      this.onEffectEnd = null
-    }
+    const ended = this.data.effect ? this.onEffectEnd : null
     this.data.effect = effect
     this.onEffectEnd = onEnd
     this.body.active = effect?.anchorId ? false : true
+    // (an effect the callback sets goes through here again, and sets the body for itself)
+    ended?.()
   }
 
   setSpeaking(speaking) {

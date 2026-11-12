@@ -1,4 +1,5 @@
 import { test, before, after } from 'node:test'
+import { holdEffect, reserveLike } from './lib/effectPlayer.mjs'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 
@@ -39,7 +40,15 @@ const STOPPED = '[app] this app has stopped'
 function makeWorld({ isServer = false } = {}) {
   const compiled = new Map()
   const world = Object.assign(new EventEmitter(), {
-    network: { isServer, isClient: !isServer, id: 'me', send: () => true, asScript: fn => fn() },
+    network: {
+      isServer,
+      isClient: !isServer,
+      id: 'me',
+      send: () => true,
+      broadcast: () => 'delivered',
+      reserve: reserveLike,
+      asScript: fn => fn(),
+    },
     entities: { items: new Map(), remove: id => world.entities.items.delete(id) },
     events: new EventEmitter(),
     hot: new Set(),
@@ -71,7 +80,7 @@ function makeWorld({ isServer = false } = {}) {
     effects: [],
     setEffect(effect, onEnd) {
       this.effects.push(effect)
-      this.onEnd = onEnd
+      holdEffect.call(this, effect, onEnd)
     },
     modify(data) {
       Object.assign(this.data, data)

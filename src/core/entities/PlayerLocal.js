@@ -1214,11 +1214,9 @@ export class PlayerLocal extends Entity {
     if (!safe || !Object.prototype.hasOwnProperty.call(safe, 'ef')) return
     effect = safe.ef
     if (this.data.effect === effect) return
-    if (this.data.effect) {
-      this.data.effect = null
-      this.onEffectEnd?.()
-      this.onEffectEnd = null
-    }
+    // (as PlayerRemote.setEffect: the callback of the effect that is over runs last, with the new one in place and
+    // already sent, so an effect it gives goes out after this one and stays)
+    const ended = this.data.effect ? this.onEffectEnd : null
     this.data.effect = effect
     this.onEffectEnd = onEnd
     // send network update
@@ -1226,6 +1224,7 @@ export class PlayerLocal extends Entity {
       id: this.data.id,
       ef: effect,
     })
+    ended?.()
   }
 
   setSpeaking(speaking) {
@@ -1309,12 +1308,13 @@ export class PlayerLocal extends Entity {
       this.data.sessionAvatar = data.sessionAvatar
     }
     if (Object.prototype.hasOwnProperty.call(data, 'ef')) {
-      if (this.data.effect) {
-        this.data.effect = null
-        this.onEffectEnd?.()
-        this.onEffectEnd = null
-      }
+      // what the server says is taken first, then the callback of the effect it ended runs: an effect that callback
+      // gives (setEffect, which tells the server) stays, where it used to be overwritten by this value after the
+      // server had already been told of it
+      const ended = this.data.effect ? this.onEffectEnd : null
       this.data.effect = data.ef
+      this.onEffectEnd = null
+      ended?.()
     }
     if (Object.prototype.hasOwnProperty.call(data, 'rank')) {
       this.data.rank = data.rank

@@ -555,9 +555,15 @@ test('engine world events from their real producers: enter, leave, health and co
   const network = makeNetwork()
   const server = capture()
   network.world.events = server.events
+  // (a list with something in it that is not a word is no command: nothing is emitted for it)
   await network.onCommand({ id: 'p', player: { data: { id: 'p' } } }, { args: ['dance', { deep: [1] }] })
+  assert.deepEqual(server.emitted, [])
+  const packet = { cmd: 'dance', value: 'now', args: ['dance', 'now'] }
+  await network.onCommand({ id: 'p', player: { data: { id: 'p' } } }, packet)
   assertFrozenPayload(server.emitted[0], 'command')
-  assert.ok(Object.isFrozen(server.emitted[0][1].args[1].deep))
+  assert.deepEqual(server.emitted[0][1], { playerId: 'p', cmd: 'dance', value: 'now', args: ['dance', 'now'] })
+  // a copy: the packet's own list is not what scripts hold
+  assert.notEqual(server.emitted[0][1].args, packet.args)
 })
 
 test('shared defaults: action default callbacks are frozen; engine calls never look up call/apply on a callback', () => {

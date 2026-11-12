@@ -223,6 +223,10 @@ effect. A refused effect is not applied, locally or for
 other players: `applyEffect` returns `undefined` and the player's current effect stays. A falsy value leaves its
 option out.
 
+What travels to the server and to other players is these options and nothing else, each as a short primitive: a
+string of at most 512 characters, a finite number or a boolean; and all of them together at most 2 KB (the UTF-8
+bytes of their JSON). An effect over that is refused, as above.
+
 **anchor**: an [Anchor](/docs/scripting/nodes/types/Anchor.md) to attach the player to. Its network
 `anchorId` must be a string of at most 128 characters; any other `anchorId` refuses the whole effect, as above.
 Scale is removed when deriving the player's rotation, which is normalised. A non-finite, singular or

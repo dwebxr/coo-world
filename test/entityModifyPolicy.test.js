@@ -321,12 +321,92 @@ test('sanitizePlayerSelfModify: e and sessionAvatar preserve undefined and null 
   assert.equal(safe.sessionAvatar, null)
 })
 
-test('sanitizePlayerSelfModify: ef accepts null or a bounded json object only', () => {
+test('sanitizePlayerSelfModify: ef is null or the seven fields the engine builds, each a short primitive', () => {
   assert.deepEqual(sanitizePlayerSelfModify({ id: me, ef: null }, me), { id: me, ef: null })
-  assert.equal(sanitizePlayerSelfModify({ id: me, ef: new Map() }, me), null)
-  assert.equal(sanitizePlayerSelfModify({ id: me, ef: { m: new Map([['k', 'v'.repeat(20000)]]) } }, me), null)
-  assert.equal(sanitizePlayerSelfModify({ id: me, ef: { s: 'x'.repeat(9000) } }, me), null)
-  assert.equal(sanitizePlayerSelfModify({ id: me, ef: { s: '漢'.repeat(3000) } }, me), null)
+  const full = {
+    anchorId: 'seat-1',
+    emote: 'asset://emote-float.glb?s=1.5',
+    snare: 0.5,
+    freeze: true,
+    turn: true,
+    duration: 4,
+    cancellable: true,
+  }
+  assert.deepEqual(sanitizePlayerSelfModify({ id: me, ef: full }, me), { id: me, ef: full })
+  assert.notEqual(sanitizePlayerSelfModify({ id: me, ef: full }, me).ef, full, 'a copy')
+  assert.deepEqual(sanitizePlayerSelfModify({ id: me, ef: {} }, me), { id: me, ef: {} })
+  // a script may pass any primitive (createPlayerProxy applyEffect takes what is truthy and primitive)
+  assert.deepEqual(sanitizePlayerSelfModify({ id: me, ef: { turn: 1, freeze: 'yes', snare: 1 } }, me).ef, {
+    turn: 1,
+    freeze: 'yes',
+    snare: 1,
+  })
+  assert.deepEqual(sanitizePlayerSelfModify({ id: me, ef: { emote: 'x'.repeat(512) } }, me).ef, {
+    emote: 'x'.repeat(512),
+  })
+  for (const ef of [
+    new Map(),
+    [],
+    'freeze',
+    7,
+    { m: new Map([['k', 'v'.repeat(20000)]]) },
+    { s: 'x'.repeat(9000) },
+    { s: '漢'.repeat(3000) },
+    // a field the engine does not build: not an effect (it was kept, up to 8 KB of it)
+    { freeze: true, note: 'x' },
+    { ...full, extra: 1 },
+    // a field that is not a short primitive
+    { emote: 'x'.repeat(513) },
+    { duration: Infinity },
+    { duration: NaN },
+    { snare: {} },
+    { freeze: [true] },
+    { turn: null },
+    { cancellable: undefined },
+    { duration: 4n },
+  ]) {
+    assert.equal(
+      sanitizePlayerSelfModify({ id: me, ef }, me),
+      null,
+      JSON.stringify(ef, (k, v) => (typeof v === 'bigint' ? `${v}n` : v))?.slice(0, 60)
+    )
+  }
+})
+
+test('sanitizePlayerSelfModify: an effect is at most 2 KB in all, counted in UTF-8 bytes', () => {
+  const bytes = ef => new TextEncoder().encode(JSON.stringify(ef)).length
+  const kept = ef => sanitizePlayerSelfModify({ id: me, ef }, me)?.ef
+  // the longest the engine builds (an anchor id, an emote url of 512 characters, numbers and booleans): under 1 KB
+  const engine = {
+    anchorId: 'a'.repeat(128),
+    emote: `https://example.com/${'e'.repeat(492)}.glb`.slice(0, 512),
+    snare: 0.5,
+    freeze: true,
+    turn: true,
+    duration: 4.25,
+    cancellable: true,
+  }
+  assert.ok(bytes(engine) < 1024, `${bytes(engine)} bytes`)
+  assert.deepEqual(kept(engine), engine)
+  // three bytes a character: at the bound it is kept, a byte over it is not an effect
+  const base = { anchorId: '漢'.repeat(128), emote: '漢'.repeat(500), snare: '' }
+  const pad = 2048 - bytes(base)
+  assert.ok(pad > 0 && pad < 512)
+  const atBound = { ...base, snare: 'x'.repeat(pad) }
+  assert.equal(bytes(atBound), 2048)
+  assert.deepEqual(kept(atBound), atBound)
+  assert.equal(kept({ ...base, snare: 'x'.repeat(pad + 1) }), undefined)
+  assert.equal(sanitizePlayerSelfModify({ id: me, ef: { ...base, snare: 'x'.repeat(pad + 1) } }, me), null)
+  // every field at its length in characters, of three bytes each: over 9 KB, refused (the limits per field alone
+  // let it through)
+  const widest = { anchorId: '漢'.repeat(128) }
+  for (const key of ['emote', 'snare', 'freeze', 'turn', 'duration', 'cancellable']) widest[key] = '漢'.repeat(512)
+  assert.ok(bytes(widest) > 9000)
+  assert.equal(kept(widest), undefined)
+  // and in ASCII too, past 2 KB
+  const ascii = { anchorId: 'a'.repeat(128) }
+  for (const key of ['emote', 'snare', 'freeze', 'turn', 'duration', 'cancellable']) ascii[key] = 'x'.repeat(512)
+  assert.equal(kept(ascii), undefined)
 })
 
 test('sanitizePlayerSelfModify: name is truncated to 64 characters', () => {
@@ -638,6 +718,14 @@ test('sanitizePlayerSelfModify: an invalid anchorId drops the whole effect; stri
   }
   assert.equal(sanitizePlayerSelfModify({ ef: { anchorId: 'ok', text: 'x'.repeat(9000) } }, me), null)
   assert.equal(sanitizePlayerSelfModify({ ef: { anchorId: 'ok', nested: new Map() } }, me), null)
+  // a getter is read once: the value checked is the value kept
+  let reads = 0
+  const tricky = {
+    get anchorId() {
+      return reads++ === 0 ? 'ok' : 'x'.repeat(9000)
+    },
+  }
+  assert.deepEqual(sanitizePlayerSelfModify({ ef: tricky }, me), { id: me, ef: { anchorId: 'ok' } })
 })
 
 for (const operation of ['modify', 'add']) {

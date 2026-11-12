@@ -116,7 +116,16 @@ export function fixture({ env = {}, context = {} } = {}) {
     if (table === 'entities') return appTable(store.rows)
     assert.equal(table, 'users')
     return {
-      where: (key, id) => ({ first: async () => users.get(id) }),
+      where: (key, id) => ({
+        first: async () => users.get(id),
+        // a user row's UPDATE, applied and recorded in `store.userUpdates`
+        update: async changes => {
+          ;(store.userUpdates ??= []).push({ id, changes: { ...changes } })
+          const row = users.get(id)
+          if (row) Object.assign(row, changes)
+          return row ? 1 : 0
+        },
+      }),
       insert: async row => users.set(row.id, row),
     }
   }

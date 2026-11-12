@@ -19,6 +19,7 @@ import { eventPayload } from '../../src/core/extras/eventPayload.js'
 import { appChatLine } from '../../src/core/extras/chatPolicy.js'
 import { adminMode, adminWaitScale, createAdminGate } from '../../src/server/adminCode.js'
 import { createKickList, readKickEnv } from '../../src/server/kickList.js'
+import { createActionBudgets } from '../../src/core/extras/actionBudget.js'
 import { isAdminCommand } from '../../src/core/extras/chatCommand.js'
 import * as aiBudget from '../../src/server/aiBudget.js'
 
@@ -65,6 +66,7 @@ export function load(file, name, extra = {}) {
     createAdminGate,
     createKickList,
     readKickEnv,
+    createActionBudgets,
     isAdminCommand,
     ...entityPolicy,
     ...blueprintPolicy,

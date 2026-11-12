@@ -40,6 +40,7 @@ const methods = [
 const socketSource = fs.readFileSync(new URL('../src/core/Socket.js', import.meta.url), 'utf8')
 const Socket = vm.runInNewContext(`(${socketSource.slice(socketSource.indexOf('class Socket'))})`, { writePacket })
 const Network = vm.runInNewContext(`(class Network { ${methods} })`, {
+  performance,
   packetNodeLimit,
   readInboundPacket,
   briefError,
@@ -89,7 +90,10 @@ test('Socket: admission precedes exact-size copy; flush passes bytes, nodes, soc
   assert.equal(seen.length, 1)
   assert.equal(seen[0].s, socket)
   assert.deepEqual(seen[0].data, ['app', 0, 'probe', { n: 1 }])
-  assert.deepEqual({ ...seen[0].meta }, { bytes: packet.length, nodes: 9, socketId: 'test', builder: true })
+  // (and when it arrived, for the budgets of what a packet sets off)
+  const { at, ...meta } = seen[0].meta
+  assert.deepEqual(meta, { bytes: packet.length, nodes: 9, socketId: 'test', builder: true })
+  assert.ok(Number.isFinite(at) && at > 0 && at <= performance.now(), `arrival time: ${at}`)
 })
 
 test('Socket: refused scans and a full inbox are counted, logged once, and never copied', () => {
@@ -264,7 +268,9 @@ test('onEntityEvent: rejects invalid versions silently and passes scheduler meta
   network.flush()
   assert.equal(seen.length, 1)
   assert.deepEqual(seen[0].slice(0, 4), [1, 'probe', 'ok', socket.id])
-  assert.deepEqual({ ...seen[0][4] }, { bytes: packet.length, nodes: 7, socketId: socket.id, builder: true })
+  const { at, ...appMeta } = seen[0][4]
+  assert.deepEqual(appMeta, { bytes: packet.length, nodes: 7, socketId: socket.id, builder: true })
+  assert.ok(Number.isFinite(at))
 })
 
 test('onBlueprintModified: passes the editing socket as author without changing the existing local argument', () => {

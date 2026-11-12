@@ -78,7 +78,14 @@ export function createWriteLedger({ log = () => {} } = {}) {
   }
 
   // A null packet is a ping. It has the same callback accounting as a data write.
-  function write(ws, packet, { script = false, name = 'packet', prepared = false, snapshot = false } = {}) {
+  // `skippable`: a packet a recipient can do without (a chat line). Like a script's packet it is not written to a
+  // connection whose backlog is already high, so it can never be what fills the backlog and gets that connection
+  // closed: a recipient on a slow link misses chat lines during a flood instead of being disconnected.
+  function write(
+    ws,
+    packet,
+    { script = false, name = 'packet', prepared = false, snapshot = false, skippable = false } = {}
+  ) {
     script ||= scriptDepth > 0
     const entry = state(ws)
     if (entry.terminated || ws.readyState !== 1) return failed()
@@ -89,6 +96,7 @@ export function createWriteLedger({ log = () => {} } = {}) {
     }
     const cost = (ping ? 0 : packet.length) + WRITE_OVERHEAD
     if (script && entry.queued + cost > SCRIPT_BACKLOG_CAP) return refuse(name, 'script backlog full')
+    if (skippable && entry.queued + cost > SCRIPT_BACKLOG_CAP) return refuse(name, 'backlog high, skipped')
     if (entry.queued + cost > BACKLOG_CAP) {
       entry.terminated = true
       log(`[network] write backlog full: queued=${entry.queued}`)

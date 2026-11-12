@@ -1129,6 +1129,64 @@ async function probes(admin, watcher) {
     }
   )
 
+  await step(
+    'A14d a flood of chat lines reaches the others as a burst; the flooder is told and nobody is closed',
+    async () => {
+      const flooder = await new WireClient(PORT, 'flooder').connect()
+      const listener = await new WireClient(PORT, 'listener').connect()
+      let flooderClosed = false
+      let listenerClosed = false
+      flooder.closed.then(() => (flooderClosed = true))
+      listener.closed.then(() => (listenerClosed = true))
+      try {
+        const fromListener = listener.mark()
+        const fromFlooder = flooder.mark()
+        const started = Date.now()
+        // far more than a person types, in one go (the inbound gate admits about a thousand small packets a second)
+        const LINES = 400
+        for (let i = 0; i < LINES; i++) flooder.send('chatAdded', { body: `e2e flood ${i}` })
+        // the flooder's packets are handled in order: when its ping is answered, every line before it was looked at
+        flooder.send('ping', 424242)
+        await flooder.waitFor(m => m.method === 'onPong' && m.data === 424242, {
+          from: fromFlooder,
+          timeout: 20000 * TIMEOUT_SCALE,
+        })
+        // and what the server told the others about them reached the listener before this one, sent after them
+        flooder.send('entityModified', { id: flooder.id, p: [42.5, 0, -42.5] })
+        await listener.waitFor(
+          m => m.method === 'onEntityModified' && m.data.id === flooder.id && m.data.p?.[0] === 42.5,
+          { from: fromListener, timeout: 20000 * TIMEOUT_SCALE }
+        )
+        const seconds = Math.ceil((Date.now() - started) / 1000)
+        const lines = listener
+          .since(fromListener)
+          .filter(
+            m => m.method === 'onChatAdded' && m.data.fromId === flooder.id && /^e2e flood \d+$/.test(m.data.body)
+          )
+        // the burst, and at most a line for each second this took
+        ok(
+          lines.length >= 6 && lines.length <= 6 + seconds,
+          `${lines.length} of ${LINES} lines relayed in ${seconds} s`
+        )
+        eq(lines[0].data.body, 'e2e flood 0', 'the first lines are the ones that went through')
+        const told = flooder
+          .since(fromFlooder)
+          .filter(m => m.method === 'onChatAdded' && m.data.kind === 'system' && /too fast/.test(m.data.body))
+        ok(told.length >= 1 && told.length <= 1 + seconds, `the flooder is told, once per wait: ${told.length}`)
+        ok(
+          !listener.since(fromListener).some(m => m.method === 'onChatAdded' && /too fast/.test(String(m.data.body))),
+          'nobody else is told'
+        )
+        eq(flooderClosed, false, 'the flooder is not closed: its lines are dropped')
+        eq(listenerClosed, false, 'the listener is not closed')
+        return `${lines.length} of ${LINES} lines relayed; the flooder told ${told.length} time(s)`
+      } finally {
+        flooder.close()
+        listener.close()
+      }
+    }
+  )
+
   await step('A15 an outdated client is kicked before any users row is created', async () => {
     const db = new Database(path.join(server.worldDir, 'db.sqlite'), { readonly: true, fileMustExist: true })
     const outdated = new WireClient(PORT, 'outdated', { version: null })

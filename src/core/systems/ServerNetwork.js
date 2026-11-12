@@ -60,6 +60,7 @@ import { createTokenBalanceService } from '../../server/tokenBalance'
 import { grantTokenRank, persistRank, revokeTokenRank } from '../../server/rankGrants'
 import { adminMode, adminWaitScale, createAdminGate } from '../../server/adminCode'
 import { createKickList, readKickEnv } from '../../server/kickList'
+import { createActionBudgets } from '../extras/actionBudget'
 import { eventPayload } from '../extras/eventPayload.js'
 
 const SAVE_INTERVAL = parseInt(process.env.SAVE_INTERVAL || '60') // seconds
@@ -247,6 +248,14 @@ export class ServerNetwork extends System {
   preFixedUpdate() {
     this.writer.resetTick()
     this.flush()
+    // world settings held over the settings budget (onSettingsModified), after this tick's packets (a value held
+    // that one of them replaced is not applied first), the connection whose oldest value came first first
+    if (this.heldSettings?.size) {
+      const now = performance.now()
+      const oldest = mine => mine.values().next().value?.seq ?? Infinity
+      const order = [...this.heldSettings].sort((a, b) => oldest(a[1]) - oldest(b[1])).map(([socket]) => socket)
+      for (const socket of order) this.releaseSettings(socket, now)
+    }
   }
 
   asScript(fn, source, name) {
@@ -263,20 +272,22 @@ export class ServerNetwork extends System {
   // 'partial': it was admitted and one or more recipients did not get it (a socket at its backlog limit, or closing),
   // while the others did. 'delivered': every recipient got it. A caller that changes state along with the packet
   // tells the first apart from the others: only a refused packet left every client as it was.
-  broadcast(name, data, ignoreSocketId) {
+  // `skippable`: a packet a recipient can do without (writeLedger.js): left out for a connection whose backlog is
+  // high, which then counts as not delivered
+  broadcast(name, data, ignoreSocketId, { skippable = false } = {}) {
     const packet = this.writer.prepare(writePacket(name, data), { name })
     if (packet === false) return 'refused'
     let delivered = true
     this.sockets.forEach(socket => {
       if (socket.id === ignoreSocketId) return
-      if (!this.write(socket.ws, packet, { name, prepared: true })) delivered = false
+      if (!this.write(socket.ws, packet, { name, prepared: true, skippable })) delivered = false
     })
     return delivered ? 'delivered' : 'partial'
   }
 
   // true when every recipient got the packet (broadcast)
-  send(name, data, ignoreSocketId) {
-    return this.broadcast(name, data, ignoreSocketId) === 'delivered'
+  send(name, data, ignoreSocketId, options) {
+    return this.broadcast(name, data, ignoreSocketId, options) === 'delivered'
   }
 
   sendTo(socketId, name, data) {
@@ -376,7 +387,38 @@ export class ServerNetwork extends System {
   // Admission charges the bytes and nodes before the inbox retains a copy.
   admit(socket, packet) {
     if (this.stopping || this.starting) return false
-    return this.gate.admit(socket, packet, { builder: socket.player?.isBuilder() === true })
+    const entry = this.gate.admit(socket, packet, { builder: socket.player?.isBuilder() === true })
+    // when it arrived, for the budgets of what it sets off (spend): a packet may wait in the inbox for its turn,
+    // and those that waited together did not arrive together
+    if (entry) entry.at = performance.now()
+    return entry
+  }
+
+  // One action of a connection against its budget for that kind (actionBudget.js), asked once the action is known
+  // to be one the server would carry out. Over it, the action is not carried out now (the handler says what becomes
+  // of it): said in the log once per connection and kind, and, where a person can get there by hand, to the sender
+  // once per wait (`told`, a line of their own chat).
+  // -> whether the action is within the budget
+  spend(socket, action, meta, told) {
+    const budgets = (this.actionBudgets ??= createActionBudgets())
+    const result = budgets.spend(socket, action, meta?.at ?? performance.now())
+    if (result.ok) return true
+    this.logOnce(
+      socket,
+      `budget:${action}`,
+      `[network] ${previewValue(socket.id, 64)} is over its ${action} budget: dropped (further ones from this connection are not logged)`
+    )
+    if (result.tell && told) {
+      socket.send('chatAdded', {
+        id: uuid(),
+        kind: 'system',
+        from: null,
+        fromId: null,
+        body: told,
+        createdAt: moment().toISOString(),
+      })
+    }
+    return false
   }
 
   // Capacity is reserved before copying, including arrivals deferred during dispatch.
@@ -417,7 +459,7 @@ export class ServerNetwork extends System {
         this.logOnce(socket, `${name}:handler`, `[network] ${name} from client ${socket.id} failed: ${briefError(err)}`)
       }
       try {
-        const meta = { bytes, nodes, socketId: socket.id, builder }
+        const meta = { bytes, nodes, socketId: socket.id, builder, at: entry.at }
         const result = this[method]?.(socket, data, meta)
         // async handlers reject later; keep those failures contained too
         if (typeof result?.then === 'function') result.then(undefined, failed)
@@ -1149,7 +1191,7 @@ export class ServerNetwork extends System {
     }
   }
 
-  onChatAdded = async (socket, msg) => {
+  onChatAdded = async (socket, msg, meta) => {
     // the stored and broadcast message is built here from the allowed fields only; the sender identity
     // and the time come from the server, not the packet
     const safe = sanitizeChatMessage(msg)
@@ -1160,6 +1202,10 @@ export class ServerNetwork extends System {
         `onChatAdded: invalid message from ${socket.id} (further ones from this connection are not logged)`
       )
     }
+    // A line of chat is written to every connection: a line a second, with a few at once (actionBudget.js). What
+    // is not a line was dropped above and is not counted. The sender's own client has shown the line already, so
+    // it is told that some did not go out.
+    if (!this.spend(socket, 'chat', meta, 'You are sending messages too fast. Some were not sent.')) return
     const message = {
       id: uuid(),
       kind: 'player',
@@ -1169,13 +1215,14 @@ export class ServerNetwork extends System {
       createdAt: moment().toISOString(),
     }
     this.world.chat.add(message, false)
-    this.send('chatAdded', message, socket.id)
+    // a recipient that lags misses the line rather than being closed for its backlog (writeLedger.js skippable)
+    this.send('chatAdded', message, socket.id, { skippable: true })
   }
 
   // a client script's broadcast world.chat(): relayed as that app's line. Only the text and a display name come
   // from the packet (through the script chat rules); the kind, the missing player id and the app's name (from the
   // server's blueprint) are the server's. Any visitor may send it, since client scripts run in visitors' browsers
-  onAppChat = async (socket, data) => {
+  onAppChat = async (socket, data, meta) => {
     if (!isObject(data) || Array.isArray(data) || typeof data.id !== 'string') {
       return this.logOnce(
         socket,
@@ -1199,12 +1246,15 @@ export class ServerNetwork extends System {
         `onAppChat: invalid message from ${socket.id} (further ones are not logged)`
       )
     }
+    // a client script speaking through the player's connection: a budget of its own, and nothing said to a player
+    // who typed nothing
+    if (!this.spend(socket, 'appChat', meta)) return
     const message = { id: uuid(), ...line, createdAt: moment().toISOString() }
     this.world.chat.add(message, false)
-    this.send('chatAdded', message, socket.id)
+    this.send('chatAdded', message, socket.id, { skippable: true })
   }
 
-  onCommand = async (socket, data) => {
+  onCommand = async (socket, data, meta) => {
     if (!isObject(data) || !Array.isArray(data.args)) return
     const { args } = data
     // handle slash commands
@@ -1215,6 +1265,9 @@ export class ServerNetwork extends System {
     // code is in it). A wrong code is answered and, past a few, slowed down (adminCode.js); this socket's line only,
     // never a broadcast.
     const adminCommand = isAdminCommand(args)
+    // A command is a line a person types: two a second, with a few at once (actionBudget.js). The admin command is
+    // not counted here: its attempts have a brake of their own (adminCode.js), which must see every one of them.
+    if (!adminCommand && !this.spend(socket, 'command', meta, 'You are sending commands too fast.')) return
     if (adminCommand) {
       const attempt = this.admin().gate.attempt(
         { socket, user: player.data.userId, address: socket.addressKey, parents: socket.addressParents },
@@ -1235,6 +1288,9 @@ export class ServerNetwork extends System {
         socket.disconnect()
         return
       }
+      // The right code clears its own brake, so a holder could turn admin on and off without end: each turn is a
+      // rank written to everyone and to the database, and is counted with the other changes of rank.
+      if (attempt.ok && !this.spend(socket, 'moderation', meta, 'You are changing ranks too fast.')) return
       if (attempt.ok) {
         const id = player.data.id
         const userId = player.data.userId
@@ -1283,12 +1339,18 @@ export class ServerNetwork extends System {
     }
     if (cmd === 'name') {
       const name = sanitizeName(arg1)
+      // A name is written to everyone and to the database: one every two seconds, with a few at once. The name
+      // the player has already is answered and changes nothing.
+      const changed = !!name && name !== player.data.name
+      if (changed && !this.spend(socket, 'identity', meta, 'You are changing your name too fast.')) return
       if (name) {
         const id = player.data.id
         const userId = player.data.userId
-        player.data.name = name
-        player.modify({ name })
-        this.send('entityModified', { id, name })
+        if (changed) {
+          player.data.name = name
+          player.modify({ name })
+          this.send('entityModified', { id, name })
+        }
         socket.send('chatAdded', {
           id: uuid(),
           kind: 'system',
@@ -1297,16 +1359,18 @@ export class ServerNetwork extends System {
           body: `Name set to ${name}!`,
           createdAt: moment().toISOString(),
         })
-        try {
-          await this.db('users').where('id', userId).update({ name })
-        } catch (err) {
-          this.logOnce(socket, 'user-name-save', `error saving user name: ${briefError(err)}`)
+        if (changed) {
+          try {
+            await this.db('users').where('id', userId).update({ name })
+          } catch (err) {
+            this.logOnce(socket, 'user-name-save', `error saving user name: ${briefError(err)}`)
+          }
         }
       }
     }
     if (cmd === 'spawn') {
       const op = arg1
-      this.onSpawnModified(socket, op)
+      this.onSpawnModified(socket, op, meta)
     }
     if (cmd === 'chat') {
       const op = arg1
@@ -1341,7 +1405,7 @@ export class ServerNetwork extends System {
     }
   }
 
-  onModifyRank = async (socket, data) => {
+  onModifyRank = async (socket, data, meta) => {
     if (!socket.player.isAdmin()) return
     if (!isObject(data)) return
     const { playerId, rank } = data
@@ -1349,6 +1413,8 @@ export class ServerNetwork extends System {
     if (rank !== Ranks.VISITOR && rank !== Ranks.BUILDER && rank !== Ranks.ADMIN) return
     const player = this.world.entities.get(playerId)
     if (!player || !player.isPlayer) return
+    // a rank is written to everyone and to the database: counted with kicks and mutes, once it is one that is made
+    if (!this.spend(socket, 'moderation', meta, 'You are changing ranks too fast.')) return
     player.rankRevision++
     player.modify({ rank })
     this.send('entityModified', { id: playerId, rank })
@@ -1392,11 +1458,13 @@ export class ServerNetwork extends System {
   // The kicked player is told, closed, and kept out for a while (kickList.js: that user id, and with
   // KICK_BY_ADDRESS new users from its address when an admin kicks). Its client leaves the voice room on the kick
   // and every other client drops its voice and screen with the player (ClientLiveKit).
-  onKick = (socket, playerId) => {
+  onKick = (socket, playerId, meta) => {
     const player = this.moderated(socket, playerId)
     if (!player) return
     const tSocket = this.sockets.get(playerId)
     if (!tSocket) return
+    // counted with mutes and ranks, once it is a kick that is made
+    if (!this.spend(socket, 'moderation', meta)) return
     this.kicks().add({ userId: playerId, addressKey: tSocket.addressKey, byAdmin: socket.player.isAdmin() })
     console.log(
       `[network] ${previewValue(socket.id, 64)} kicked ${previewValue(playerId, 64)}` +
@@ -1406,10 +1474,12 @@ export class ServerNetwork extends System {
     tSocket.disconnect()
   }
 
-  onMute = (socket, data) => {
+  onMute = (socket, data, meta) => {
     if (!isObject(data) || typeof data.muted !== 'boolean') return
     const player = this.moderated(socket, data.playerId)
     if (!player) return
+    // a mute is written to everyone; the players pane shows the state the server has, so a dropped one is seen
+    if (!this.spend(socket, 'moderation', meta)) return
     this.world.livekit.setMuted(data.playerId, data.muted)
   }
 
@@ -2168,7 +2238,7 @@ export class ServerNetwork extends System {
     this.world.entities.add(safe)
   }
 
-  onEntityModified = async (socket, data) => {
+  onEntityModified = async (socket, data, meta) => {
     if (this.stopping) return
     if (!isObject(data)) return this.logOnce(socket, 'entity-packet-invalid', 'onEntityModified: invalid packet')
     const entity = this.world.entities.get(data.id)
@@ -2199,9 +2269,36 @@ export class ServerNetwork extends System {
           'a session avatar was not taken: a url outside this world needs builder rank or a server script'
         )
       }
-      if (safe) {
-        entity.modify(safe)
-        this.send('entityModified', safe, socket.id)
+      // What is applied and told to the others: the permitted fields, without an identity field (name, avatar,
+      // session avatar) that says what the player has already (nothing to tell, nothing to store), and without
+      // those fields altogether when the connection is over its budget for them. Each change of one is written to
+      // everyone, and name and avatar to the database: one every two seconds, with a few at once
+      // (actionBudget.js). The movement fields of the same packet go on. The sender applied its values before
+      // sending, so it is told the ones the server keeps: here for name and avatar, below for the session avatar.
+      const has = (object, key) => Object.prototype.hasOwnProperty.call(object, key)
+      const IDENTITY = ['name', 'avatar', 'sessionAvatar']
+      let fields = safe ? { ...safe } : null
+      // whether the sender was given back the name the server keeps (over the budget, below)
+      let nameTold = false
+      if (fields) {
+        for (const key of IDENTITY) {
+          if (has(fields, key) && (fields[key] ?? null) === (entity.data[key] ?? null)) delete fields[key]
+        }
+        const identity = IDENTITY.filter(key => has(fields, key))
+        if (identity.length && !this.spend(socket, 'identity', meta)) {
+          const kept = { id: entity.data.id }
+          for (const key of identity) {
+            delete fields[key]
+            if (key !== 'sessionAvatar') kept[key] = entity.data[key] ?? null
+          }
+          if (Object.keys(kept).length > 1) socket.send('entityModified', kept)
+          nameTold = has(kept, 'name')
+        }
+        if (Object.keys(fields).length <= 1) fields = null
+      }
+      if (fields) {
+        entity.modify(fields)
+        this.send('entityModified', fields, socket.id)
       }
       // The sender applied its session avatar before sending it. Whether it was taken or not, the sender is told the
       // session avatar the server now has, after everything the server told it before, with the number the sender
@@ -2224,19 +2321,21 @@ export class ServerNetwork extends System {
           `onEntityModified: no permitted fields: ${previewValue(data.id, 64)}`
         )
       }
-      // the sender applied its name locally before sending; correct it if it was truncated
-      if (Object.prototype.hasOwnProperty.call(safe, 'name') && safe.name !== data.name) {
+      // The sender applied its name locally before sending; correct it if it was truncated. Decided for the name
+      // alone: only a name given back over the budget (above) needs nothing more, whatever became of the other fields
+      // (a truncated name equal to the one kept is taken out above as no change, and is still corrected here).
+      if (!nameTold && has(safe, 'name') && safe.name !== data.name) {
         socket.send('entityModified', { id: entity.data.id, name: safe.name })
       }
-      // persist player name and avatar changes
+      // persist player name and avatar changes: one write for each change that was taken
       const changes = {}
       let changed
-      if (Object.prototype.hasOwnProperty.call(safe, 'name')) {
-        changes.name = safe.name
+      if (fields && has(fields, 'name')) {
+        changes.name = fields.name
         changed = true
       }
-      if (Object.prototype.hasOwnProperty.call(safe, 'avatar')) {
-        changes.avatar = safe.avatar
+      if (fields && has(fields, 'avatar')) {
+        changes.avatar = fields.avatar
         changed = true
       }
       if (changed) {
@@ -2315,7 +2414,26 @@ export class ServerNetwork extends System {
     this.send('entityRemoved', id, socket.id)
   }
 
-  onSettingsModified = (socket, data) => {
+  // A world setting from a builder's settings pane. Each one applied is written to everyone, so they have a budget
+  // per connection (actionBudget.js settings). A number field sends a change per key repeat, about thirty a second
+  // while an arrow key is held, so what goes over is not dropped: the latest value of each setting from this
+  // connection is held and applied when the budget allows (releaseSettings, here and from the tick). The value a
+  // builder ends on is the one the world keeps, and a flood of them reaches everyone at most five times a second
+  // after the first thirty. The sender applied its value before sending and is not answered while it is held (its
+  // field would jump back under the key). A value is checked when it arrives, so that a refused one never takes the
+  // place of one held, and again when it is applied. One still held when the server stops is not kept, as one that
+  // arrives then is not.
+  // Several builders: of the values of one setting held for different connections, only the one that came last can
+  // be applied. One that came earlier waits (releaseSettings) and is let go once the later one is applied; if the
+  // later one goes first (its connection closes, its builder loses the rank, it is refused when checked again), the
+  // earlier one is applied after all, on a later tick. So between a value's arrival and its application no other
+  // value of that setting is applied, and the builder who sent it is not shown another value meanwhile. A held value
+  // that is refused when it comes to be applied (its builder lost the rank) is answered to its sender with the
+  // value the server has. So every pane that sent or was told a value of a setting ends on the value the world
+  // keeps. Not covered, as without any budget: two values crossing in flight. The builder whose value reached the
+  // server second is told the first one, and when that message comes after its own change its field shows the first
+  // value while the world keeps its own (as before the budgets).
+  onSettingsModified = (socket, data, meta) => {
     if (this.stopping) return
     if (!this.requireBuilder(socket, 'modify settings')) return
     if (!isObject(data)) return
@@ -2323,53 +2441,125 @@ export class ServerNetwork extends System {
     if (!isKnownSettingKey(key)) {
       return this.logOnce(socket, 'setting-unknown', `onSettingsModified: unknown setting: ${previewValue(key, 64)}`)
     }
+    const result = this.settingAllowed(socket, key, value)
+    if (!result) return
+    // socket -> setting -> { value, changed, seq }: the latest value of a setting takes the place of the one held
+    // and goes after the others; `seq` is the order of arrival among all connections
+    const held = (this.heldSettings ??= new Map())
+    if (!held.has(socket)) held.set(socket, new Map())
+    const mine = held.get(socket)
+    mine.delete(key)
+    this.settingsSeq = (this.settingsSeq ?? 0) + 1
+    mine.set(key, { value: result.value, changed: result.changed, seq: this.settingsSeq })
+    this.releaseSettings(socket, meta?.at ?? performance.now())
+  }
+
+  // Whether this connection may set this value: a builder, an admin for an admin's setting, and a value the settings
+  // rules take. Asked when it arrives and again when it is applied (the rank may have changed while it was held).
+  // -> the value to store ({ value, changed }: normalizeSettingValue), or null
+  settingAllowed(socket, key, value) {
+    if (!this.requireBuilder(socket, 'modify settings')) return null
     if (isAdminOnlySettingKey(key) && !socket.player.isAdmin()) {
-      return this.logOnce(socket, 'setting-admin', 'player attempted to modify setting without admin permission')
+      this.logOnce(socket, 'setting-admin', 'player attempted to modify setting without admin permission')
+      return null
     }
     const result = normalizeSettingValue(key, value)
     if (!result.ok) {
-      return this.logOnce(socket, 'setting-invalid', `onSettingsModified: invalid value for ${previewValue(key, 64)}`)
+      this.logOnce(socket, 'setting-invalid', `onSettingsModified: invalid value for ${previewValue(key, 64)}`)
+      return null
     }
-    // settings are part of the join snapshot's world state (joinBudget.js): measured as they would be
-    const next = settingsBytes({ ...this.world.settings.serialize(), [key]: result.value })
-    if (!fitsJoinState(this.world, next - (this.settingsBytes || 0))) {
-      this.logOnce(socket, 'setting-budget', 'onSettingsModified: world is full (join-state budget exceeded)')
-      // the sender applied its value locally before sending: it gets the stored one back
-      socket.send('settingsModified', { key, value: this.world.settings.serialize()[key] })
-      return
-    }
-    this.world.settings.set(key, result.value)
-    this.settingsBytes = settingsBytes(this.world.settings.serialize())
-    this.send('settingsModified', { key, value: result.value }, socket.id)
-    // the sender applied its value locally before sending; correct it if it was adjusted
-    if (result.changed) socket.send('settingsModified', { key, value: result.value })
-    // the world's rank is everyone's least rank: lowered, it can end "everyone is a builder"
-    if (key === 'rank') this.sockets.forEach(other => this.dropBuilderUrls(other.player))
+    return result
   }
 
-  onSpawnModified = async (socket, op) => {
-    if (this.stopping) return
-    if (!this.requireBuilder(socket, 'modify spawn')) return
-    const player = socket.player
-    if (op === 'set') {
-      const spawn = sanitizeSpawn(player.data)
-      if (!spawn) {
-        socket.send('chatAdded', {
-          id: uuid(),
-          kind: 'system',
-          from: null,
-          fromId: null,
-          body: 'Spawn not updated: invalid player transform',
-          createdAt: moment().toISOString(),
-        })
-        return
-      }
-      this.spawn = spawn
-    } else if (op === 'clear') {
-      this.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
-    } else {
+  // Applies the settings this connection has held, the oldest first, while its settings budget allows (`at`: the
+  // time counted). A value refused now is let go without using the budget, and its sender is told the server's; one
+  // that another connection's later value of the same setting is waiting behind stays held, without using it
+  // either. Nothing is kept for a connection that is gone, or once the server stops.
+  releaseSettings(socket, at) {
+    const mine = this.heldSettings?.get(socket)
+    if (!mine) return
+    if (this.stopping || socket.closed || socket.disconnected) {
+      this.heldSettings.delete(socket)
       return
     }
+    const budgets = (this.actionBudgets ??= createActionBudgets())
+    for (const [key, held] of mine) {
+      const result = this.settingAllowed(socket, key, held.value)
+      if (!result) {
+        // Let go, and its sender (alone) is told the value the server has, which its pane showed before it sent
+        // this one. A newer value it may have typed meanwhile is not set back by that: it came from someone who is
+        // no longer a builder (or was refused when it came), and was not taken either.
+        mine.delete(key)
+        socket.send('settingsModified', { key, value: this.world.settings.serialize()[key] })
+        continue
+      }
+      if (this.heldAfter(socket, key, held.seq)) continue
+      // settings are part of the join snapshot's world state (joinBudget.js): measured as they would be
+      const next = settingsBytes({ ...this.world.settings.serialize(), [key]: result.value })
+      if (!fitsJoinState(this.world, next - (this.settingsBytes || 0))) {
+        mine.delete(key)
+        this.logOnce(socket, 'setting-budget', 'onSettingsModified: world is full (join-state budget exceeded)')
+        // the sender applied its value locally before sending: it gets the stored one back
+        socket.send('settingsModified', { key, value: this.world.settings.serialize()[key] })
+        continue
+      }
+      if (!budgets.spend(socket, 'settings', at).ok) {
+        this.logOnce(
+          socket,
+          'budget:settings',
+          `[network] ${previewValue(socket.id, 64)} is over its settings budget: the latest value of each setting is held and applied as the budget allows (further ones from this connection are not logged)`
+        )
+        return
+      }
+      mine.delete(key)
+      // A value of this setting held for another connection that arrived before this one is replaced by it, not
+      // applied after it: that connection is told this value now.
+      for (const [other, theirs] of this.heldSettings) {
+        if (other === socket || !(theirs.get(key)?.seq < held.seq)) continue
+        theirs.delete(key)
+        if (!theirs.size) this.heldSettings.delete(other)
+      }
+      this.world.settings.set(key, result.value)
+      this.settingsBytes = settingsBytes(this.world.settings.serialize())
+      this.send('settingsModified', { key, value: result.value }, socket.id)
+      // the sender applied its value locally before sending; correct it if it was adjusted
+      if (held.changed) socket.send('settingsModified', { key, value: result.value })
+      // the world's rank is everyone's least rank: lowered, it can end "everyone is a builder"
+      if (key === 'rank') this.sockets.forEach(other => this.dropBuilderUrls(other.player))
+    }
+    if (!mine.size) this.heldSettings.delete(socket)
+  }
+
+  // Whether another connection holds a value of this setting that came after `seq`. One that can no longer be
+  // applied (its connection closed, its builder's rank gone) is let go by that connection's own release, at the
+  // latest on the next tick, and the earlier value goes then.
+  heldAfter(socket, key, seq) {
+    for (const [other, theirs] of this.heldSettings) {
+      if (other !== socket && theirs.get(key)?.seq > seq) return true
+    }
+    return false
+  }
+
+  onSpawnModified = async (socket, op, meta) => {
+    if (this.stopping) return
+    if (!this.requireBuilder(socket, 'modify spawn')) return
+    if (op !== 'set' && op !== 'clear') return
+    const spawn = op === 'set' ? sanitizeSpawn(socket.player.data) : { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
+    if (!spawn) {
+      socket.send('chatAdded', {
+        id: uuid(),
+        kind: 'system',
+        from: null,
+        fromId: null,
+        body: 'Spawn not updated: invalid player transform',
+        createdAt: moment().toISOString(),
+      })
+      return
+    }
+    // The spawn is a row of the world's config: counted with the settings, once it is one that is made (through
+    // /spawn the command's own budget was asked first)
+    if (!this.spend(socket, 'settings', meta, 'You are changing the spawn too fast.')) return
+    this.spawn = spawn
     await this.saveConfig('spawn', this.spawn)
     socket.send('chatAdded', {
       id: uuid(),

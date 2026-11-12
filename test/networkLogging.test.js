@@ -20,12 +20,17 @@ import { eventPayload } from '../src/core/extras/eventPayload.js'
 import { Ranks } from '../src/core/extras/ranks.js'
 import { sanitizeBlueprintModify } from '../src/core/extras/blueprintPolicy.js'
 import { previewValue } from '../src/core/extras/assetURL.js'
+import { createActionBudgets } from '../src/core/extras/actionBudget.js'
 import { adminMode, adminWaitScale, createAdminGate } from '../src/server/adminCode.js'
 import { isAdminCommand } from '../src/core/extras/chatCommand.js'
 
 const source = fs.readFileSync(new URL('../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
 const methods = [
   'requireBuilder',
+  'spend',
+  'settingAllowed',
+  'releaseSettings',
+  'heldAfter',
   'saveConfig',
   'onBlueprintModified',
   'revertBlueprint',
@@ -72,6 +77,8 @@ function fixture() {
     },
   }
   const Network = vm.runInNewContext(`(class { ${methods} })`, {
+    performance,
+    createActionBudgets,
     isObject: value => value !== null && typeof value === 'object',
     isExternalUrl,
     sanitizeAppModify,

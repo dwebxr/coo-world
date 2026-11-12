@@ -226,6 +226,42 @@ export function isExternalUrl(value, assetsUrl) {
   return loadedStoreFile(ref, assetsUrl) === null
 }
 
+// A player's effect as it travels: the fields the engine builds one from (createPlayerProxy applyEffect) and reads
+// (PlayerLocal, PlayerRemote), each a short primitive. It was any JSON object up to 8 KB, and every update of it is
+// written to every connection: now it is at most these seven values, 2 KB in all. A field the engine does not build
+// makes it no effect at all (dropped silently, the rest would replace the player's effect with something else than
+// was sent).
+// -> null (no effect), the effect, or undefined when it is not one
+export const EFFECT_ANCHOR_MAX_LENGTH = 128
+export const EFFECT_TEXT_MAX_LENGTH = 512
+// The whole effect, measured as the UTF-8 bytes of its JSON. The limits above count characters, and a character can
+// take three bytes: 128 + 6 x 512 of them would be over 9 KB. What the engine builds is an anchor id (an app id and
+// a node id), an emote url (an asset name, or an http url of at most 512 characters), and small numbers and
+// booleans: under 1 KB in ASCII. 2 KB leaves room for text outside ASCII in those.
+export const EFFECT_MAX_BYTES = 2048
+const EFFECT_FIELDS = ['emote', 'snare', 'freeze', 'turn', 'duration', 'cancellable']
+export function sanitizeEffect(value) {
+  if (value === null) return null
+  if (!isPlainObject(value)) return undefined
+  const effect = {}
+  for (const key of Object.keys(value)) if (key !== 'anchorId' && !EFFECT_FIELDS.includes(key)) return undefined
+  if (has(value, 'anchorId')) {
+    // read once: the value checked is the value kept, also when a host caller supplies a getter
+    const anchorId = value.anchorId
+    if (typeof anchorId !== 'string' || anchorId.length > EFFECT_ANCHOR_MAX_LENGTH) return undefined
+    effect.anchorId = anchorId
+  }
+  for (const key of EFFECT_FIELDS) {
+    if (!has(value, key)) continue
+    const field = value[key]
+    if (typeof field === 'boolean' || (typeof field === 'number' && Number.isFinite(field))) effect[key] = field
+    else if (typeof field === 'string' && field.length <= EFFECT_TEXT_MAX_LENGTH) effect[key] = field
+    else return undefined
+  }
+  if (encoder.encode(JSON.stringify(effect)).length > EFFECT_MAX_BYTES) return undefined
+  return effect
+}
+
 // A client numbers the session avatar updates it sends for its own player (PlayerLocal setSessionAvatar), in
 // `sessionAvatarRequest`: 1, 2, 3, …, and 1 again after SESSION_AVATAR_REQUEST_MAX, which is far more than a session
 // sends. The server hands the number back in its answer to that update, to that client alone (ServerNetwork
@@ -296,13 +332,8 @@ export function sanitizePlayerSelfModify(
     safe.e = isEmoteUrl(e) && (!external(e) || scriptEmotes?.has(e) === true) ? e : null
   }
   if (has(data, 'ef')) {
-    let ef = data.ef
-    if (isPlainObject(ef) && has(ef, 'anchorId')) {
-      // retain the checked anchor id, even when a host caller supplies a getter
-      ef = { ...ef }
-      if (typeof ef.anchorId !== 'string' || ef.anchorId.length > 128) ef = undefined
-    }
-    if (ef === null || isBoundedJsonObject(ef)) safe.ef = ef
+    const ef = sanitizeEffect(data.ef)
+    if (ef !== undefined) safe.ef = ef
   }
   if (data.t === true) safe.t = true
   if (has(data, 'name')) {

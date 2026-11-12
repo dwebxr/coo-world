@@ -136,8 +136,22 @@ export class ServerNetwork extends System {
       evmGating.EVM_ENABLED && evmGating.EVM_TIP_TOKENS.length
         ? (tipWatcher ?? (tipRpc ? createTipWatcher({ rpc: tipRpc }) : null))
         : null
-    // 確定した txHash → 覚えておく期限、ワールド全体の告知の間引き
+    // 数えた送金 (`txHash:from`、小文字) → 覚えておく期限、ワールド全体の告知の間引き。
+    // One sender's transfer in one transaction is counted once while its entry is here: in this process's memory,
+    // TIP_SEEN_MAX (4096) entries, the oldest dropped beyond that, TIP_SEEN_TTL_MS (30 minutes) each; a ticket lasts
+    // 10. Two senders in one transaction (a bundler's) have two entries. The key does not use the node's logIndex,
+    // so a second transfer of the same sender in the same transaction is refused as a duplicate
     this.tipSeen = new Map()
+    // The set above is empty after a restart, so a tip's block time has a second lower bound: the first whole
+    // second after this process came to this line (start-up, before the server listens). A transfer in an earlier
+    // block may be one an earlier process counted, and is refused as too old. Every ticket of this process is
+    // issued after its start, so what the bound takes from an honest tip is the ticket's 30 s of
+    // TIP_TIME_SKEW_SEC (and the rounding, under a second), during the first 30 s after a start.
+    // It is a rule on two clocks, not a record of what was counted. It assumes that the block timestamps the RPC
+    // node gives are not ahead of this machine's clock (Date.now(), which also stamps the tickets) and that this
+    // clock did not go back across the restart. It says nothing about two processes that run the same world at
+    // once (an overlapping deploy): each has its own set and its own start
+    this.tipFloorSec = Math.ceil(Date.now() / 1000)
     this.tipAnnounce = { queue: [], tokens: evmGating.TIP_ANNOUNCE_BURST, at: Date.now(), timer: null, last: new Map() }
   }
 
@@ -1981,7 +1995,8 @@ export class ServerNetwork extends System {
       return reply('unverified', 'no_rpc')
     }
     this.pruneTipSeen(now)
-    if (this.tipSeen.has(hash)) {
+    // 数えた送金の鍵は tx と送り手 (チケットの from)。同じ tx でも送り手が違えば別の送金
+    if (this.tipSeen.has(`${hash}:${ticket.from.toLowerCase()}`)) {
       state.tickets.delete(id)
       return reply('failed', 'duplicate')
     }
@@ -2005,7 +2020,8 @@ export class ServerNetwork extends System {
       recipient: ticket.recipient,
       token: ticket.token.address,
       units: ticket.units,
-      notBeforeSec: ticket.issuedAt / 1000 - evmGating.TIP_TIME_SKEW_SEC,
+      // not before the ticket (less the skew), and not before this process started (tipFloorSec, in init)
+      notBeforeSec: Math.max(ticket.issuedAt / 1000 - evmGating.TIP_TIME_SKEW_SEC, this.tipFloorSec),
       isLive: () =>
         this.sockets.get(socket.id) === socket && !socket.disconnected && !this.stopping && !this.world.fatalError,
       onDone: result => this.onTipResult(socket, id, hash, result),
@@ -2018,9 +2034,9 @@ export class ServerNetwork extends System {
   }
 
   pruneTipSeen(now) {
-    for (const [hash, until] of this.tipSeen) {
+    for (const [key, until] of this.tipSeen) {
       if (until > now && this.tipSeen.size <= evmGating.TIP_SEEN_MAX) break
-      this.tipSeen.delete(hash)
+      this.tipSeen.delete(key)
     }
   }
 
@@ -2033,12 +2049,13 @@ export class ServerNetwork extends System {
     if (state === 'confirmed') {
       const now = Date.now()
       this.pruneTipSeen(now)
-      // 同じ tx を別のチケットで先に確定していれば、二度目は数えない
-      if (this.tipSeen.has(hash)) {
+      // 同じ tx の同じ送り手の送金を別のチケットで先に確定していれば、二度目は数えない
+      const key = `${hash}:${ticket.from.toLowerCase()}`
+      if (this.tipSeen.has(key)) {
         state = 'failed'
         reason = 'duplicate'
       } else {
-        this.tipSeen.set(hash, now + evmGating.TIP_SEEN_TTL_MS)
+        this.tipSeen.set(key, now + evmGating.TIP_SEEN_TTL_MS)
       }
     }
     // 確認できなかった時は 1 回だけ再提出できる (RPC が無い・送り手の離脱は除く)

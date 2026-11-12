@@ -101,24 +101,29 @@ Subscribes to both engine events (eg when players `enter` or `leave` the world) 
   - `amount` is a normalized decimal string (eg `'100'`, `'0.5'`).
   - `units` is the exact amount in the token's smallest unit, as a decimal string.
   - `at` is the server time in ms.
-  - `tipId` is the id of the tip request the transfer was matched to. It is not the transaction's, and it does
-    not tell a repeat of a transfer from a new one (see below).
+  - `tipId` is the id of the tip request the transfer was matched to, and it is new for every event. It is not
+    the transaction's: if a transfer is counted a second time (below), the second event has another `tipId`, and
+    nothing in the payload says that it is a repeat.
+
+  The recipient may have left the world by then. Addresses and the transaction hash are not included. The event
+  fires when the server counts a confirmed transfer, also when the chat announcement is skipped by its rate
+  limits. Scripts cannot emit or send it, and a chat message that looks like a tip announcement is not proof of
+  one: only this event is.
+
+  What the server counts once is one sender's transfer in one transaction, for as long as one server process
+  remembers it (in memory: 4096 entries, 30 minutes each), and it refuses a transfer from a block older than the
+  process. A script must still tolerate a repeat. The same transfer can raise the event again when two server
+  processes run the world at the same time (a deploy that overlaps), when the server restarts and its clock and
+  the block times of its RPC node disagree, when more than 4096 other transfers were counted in the minutes
+  between (its entry is dropped), or when that node answers wrongly. And not every tip raises it: one that was
+  being confirmed when the server restarted, or that the server stopped watching, never does, though the money
+  arrived. So do not give for a tip what you could not afford to give twice, or to miss.
 
   The two players may be one person. The server only refuses a tip between two connections verified with the
   same wallet: one person with two wallets, or with two accounts, can tip themselves for the network fee alone,
   and the tokens need not be theirs for longer than the transaction. Do not treat a `tip` as proof of a payment
   from someone else: a script that ranks, rewards or unlocks by tips can be fed this way.
 
-  A transaction that was counted is remembered by its hash, in the memory of the server process, for 30 minutes
-  (the oldest go sooner when more than 4,096 are kept): while it is remembered, a second report of it is refused
-  and fires nothing. Nothing of this survives a restart: a transfer from shortly before one (its block at most 30 seconds older than the new
-  tip request) that is reported again with a new tip request can fire another `tip`, with a new `tipId`. A script
-  that grants something for a tip must tolerate that, and must not take a tip as proof that two different people
-  were involved.
-
-  The recipient may have left the world by then. Addresses and the transaction hash are not included. It fires
-  even when the chat announcement is skipped by its rate limits. Scripts cannot emit or send it, and a chat
-  message that looks like a tip announcement is not proof of one: only this event is.
   If you turn tips into paid perks, prizes or rankings, you are selling something, and consumer, premium and
   gambling rules may apply to you.
 

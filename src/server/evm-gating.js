@@ -254,8 +254,9 @@ export const TIP_INTENT_BURST = 3
 export const TIP_INTENT_REFILL_MS = 10_000
 export const TIP_RECEIVE_COOLDOWN_MS = 1_000
 // 確定確認 (P2b): チケットは 10 分、ソケットあたり 3 件。監視はソケットあたり 2 件。
-// 確定した txHash は 30 分 (上限 4096 件) 覚える。
-// 確定したブロックの時刻はチケット発行の 30 秒前まで認める (時計のずれ)
+// 数えた送金 (txHash と送り手) は 30 分 (上限 4096 件) 覚える。メモリの中だけ。
+// 確定したブロックの時刻はチケット発行の 30 秒前まで認める (時計のずれ)。ただしサーバーの起動時刻より前は認めない
+// (ServerNetwork.js の tipFloorSec)
 export const TIP_TICKET_TTL_MS = 600_000
 export const TIP_TICKETS_PER_SOCKET = 3
 export const TIP_WATCH_PER_SOCKET = 2

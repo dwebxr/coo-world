@@ -28,6 +28,12 @@
 //   one that reads as text, in any script, is decoded once more. The search is tried on itself first: a planted
 //   sentinel in each of those encodings is found, also among text that is mostly not ASCII. A second server with
 //   the wallet features on is searched the same way.
+// - Places kept for ranked users (WS_RESERVED_SOCKETS), on a third server at WS_MAX_SOCKETS 3 with 2 kept: at the cap,
+//   an upgrade with no token, a visitor's or a builder's genuine token, or a token naming the admin signed with
+//   another secret gets 503 with Retry-After and is never upgraded; the admin's own token comes in as the admin, a
+//   second connection with it is refused as a duplicate, a visitor is still refused while the admin is one of the 3
+//   open, and the admin comes in past a playerLimit of 1 where a visitor is refused. The log says each kept place
+//   once per user id and has no token.
 //
 // What it does not ask (the tables name the tests that do): uploads and response headers (gate-extras.mjs,
 // test/uploadRoutes.test.js), the relay packets (fullstack.mjs A8), /status (A8b), the wait after wrong admin codes
@@ -44,6 +50,7 @@ import crypto from 'node:crypto'
 import http from 'node:http'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import WebSocket from 'ws'
 
 import {
   APPS_DIR,
@@ -66,6 +73,7 @@ const { PACKET_RULES, REFUSED_EVENT_NAMES, namedCases, namesOfCase, namesOfClass
 const { ENV_TABLE, envNamesOf } = await lib('test/lib/envTable.mjs')
 const { ACTION_BUDGETS } = await lib('src/core/extras/actionBudget.js')
 const { SERVED_AS_BEFORE_ENV_NAMES, SERVED_ENV_NAMES } = await lib('src/core/extras/publicEnv.js')
+const { PROTOCOL_VERSION, readPacket } = await lib('src/core/packets.js')
 
 const PORT = Number(arg('port', 3131))
 const OUT = ensureOut()
@@ -474,6 +482,43 @@ function world(server) {
   return { port, clients, connect, barrier, send, fresh, logFrom, logged, close, refused }
 }
 
+// An upgrade the server may refuse before it upgrades (the connection limits), through the ws package, whose
+// 'unexpected-response' gives the HTTP answer (as fullstack.mjs's churn probe does): -> { status, retryAfter,
+// upgraded } for a refusal, { method, data } for the first packet of one let in (then closed), within a wait
+const upgrade = (port, label, authToken) =>
+  new Promise((resolve, reject) => {
+    const query = new URLSearchParams({ v: String(PROTOCOL_VERSION), name: label })
+    if (authToken !== undefined) query.set('authToken', authToken)
+    const ws = new WebSocket(`ws://localhost:${port}/ws?${query}`)
+    let upgraded = false
+    let settled = false
+    const finish = (value, err) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (err) reject(err)
+      else resolve(value)
+    }
+    const timer = setTimeout(() => {
+      ws.terminate()
+      finish(null, new Error(`[${label}] no answer within the wait`))
+    }, wait(10000))
+    ws.on('open', () => (upgraded = true))
+    ws.on('unexpected-response', (req, res) => {
+      const result = { status: res.statusCode, retryAfter: res.headers['retry-after'], upgraded }
+      res.resume()
+      req.destroy()
+      finish(result)
+    })
+    ws.on('message', packet => {
+      const [method, data] = readPacket(packet)
+      ws.close()
+      finish({ method, data, upgraded })
+    })
+    ws.on('close', () => finish(null, new Error(`[${label}] closed before an answer`)))
+    ws.on('error', err => finish(null, err))
+  })
+
 const entityOf = (snapshot, id) => snapshot.entities.find(entity => entity.id === id)
 const blueprintOf = (snapshot, id) => snapshot.blueprints.find(item => item.id === id)
 const got = (client, from, method, pred = () => true) =>
@@ -492,6 +537,7 @@ const NONE = 'no positive control'
 
 let main
 let second
+let third
 try {
   // ---------- the search, tried on itself ----------
 
@@ -1776,6 +1822,139 @@ try {
     second = null
   }
 
+  // ====================================================================================================
+  // the third server: the places kept for ranked users (WS_RESERVED_SOCKETS), at WS_MAX_SOCKETS 3 with 2 kept. The
+  // harness turns the per-address limits off (lib/server.mjs), so WS_MAX_SOCKETS is what refuses here
+  // ====================================================================================================
+  third = await startServer({
+    port: PORT + 1,
+    env: { ...baseEnv, WS_MAX_SOCKETS: '3', WS_RESERVED_SOCKETS: '2' },
+    logPath: path.join(OUT, 'access-control-reserve-server.log'),
+  })
+  const thirdServer = third
+  const w3 = world(third)
+
+  await run(
+    'reserve',
+    'at WS_MAX_SOCKETS only a stored admin with a verified token comes in, on a kept place; visitors never take one',
+    async () => {
+      const port = PORT + 1
+      const origin = `http://localhost:${port}`
+      const connectedUsers = async () =>
+        (await (await fetch(`${origin}/status`, { signal: AbortSignal.timeout(wait(10000)) })).json()).connectedUsers
+      // every connection closed, and the server's count of them back to `count` (the transports close with them)
+      const settled = async (count = 0) => {
+        await waitUntil(async () => (await connectedUsers()) === count, {
+          timeout: wait(10000),
+          interval: 50,
+          message: `${count} connected`,
+        })
+        await sleep(300)
+      }
+      const refusedAtTheDoor = async (label, authToken) => {
+        const outcome = await upgrade(port, label, authToken)
+        eq(outcome.status, 503, `${label}: refused with 503`)
+        eq(outcome.retryAfter, '10', `${label}: Retry-After: 10`)
+        eq(outcome.upgraded, false, `${label}: never upgraded`)
+      }
+      eq(
+        thirdServer.count(
+          '[envs] 2 connections beyond WS_MAX_SOCKETS (3), and 2 players beyond playerLimit, are kept for users with a stored rank of admin'
+        ),
+        1,
+        'said at start-up'
+      )
+
+      // on an empty server: an admin (by the code), a builder (by modifyRank) and a user who is neither
+      const admin = await w3.connect('admin')
+      await admin.becomeAdmin(SECRETS.ADMIN_CODE.value)
+      const builder = await w3.connect('builder')
+      {
+        const from = builder.mark()
+        admin.send('modifyRank', { playerId: builder.id, rank: 1 })
+        await builder.waitFor(m => m.method === 'onEntityModified' && m.data.id === builder.id && m.data.rank === 1, {
+          from,
+          timeout: wait(10000),
+        })
+      }
+      const former = await w3.connect('former')
+      const tokens = { admin: admin.authToken, builder: builder.authToken, former: former.authToken }
+      tokens.forged = signToken(sessionPayload(admin.id), 'not-the-secret-of-this-server')
+      for (const client of [admin, builder, former]) await w3.close(client)
+      await settled()
+
+      // three visitors fill it
+      const visitors = []
+      for (const label of ['v1', 'v2', 'v3']) visitors.push(await w3.connect(label))
+      // what does not get a kept place: no token, a visitor's genuine token, a builder's (the places are for
+      // admins), a token naming the admin signed with another secret
+      await refusedAtTheDoor('no token')
+      await refusedAtTheDoor("former's token", tokens.former)
+      await refusedAtTheDoor("the builder's token", tokens.builder)
+      await refusedAtTheDoor('a forged token naming the admin', tokens.forged)
+      eq(await connectedUsers(), 3, 'the three visitors, still')
+
+      // the admin's own token comes in, as the admin
+      const back = await w3.connect('admin-back', { authToken: tokens.admin })
+      eq(back.id, admin.id, 'the same user')
+      eq(entityOf(back.snapshot, back.id)?.rank, 2, 'an admin in its own snapshot')
+      eq(await connectedUsers(), 4, 'one beyond WS_MAX_SOCKETS')
+      // a second connection with the same token: let in at the door (2 per user), refused as a duplicate
+      const again = await upgrade(port, 'admin-again', tokens.admin)
+      eq(again.method, 'onKick', 'the second connection is told why')
+      eq(again.data, 'duplicate_user')
+      ok(back.isOpen, 'the first stays')
+
+      // the admin kicks a visitor; with the admin and two visitors open (3), a visitor is still refused
+      const [v1, v2, v3] = visitors
+      back.send('kick', v1.id)
+      await within(v1.closed, wait(10000), '[v1] the kick')
+      await settled(3)
+      await refusedAtTheDoor('a visitor while the admin holds a kept place')
+
+      // playerLimit: the admin sets 1 and leaves, and so do the visitors
+      await w3.send(back, 'settingsModified', { key: 'playerLimit', value: 1 })
+      for (const client of [back, v2, v3]) await w3.close(client)
+      await settled()
+      const p1 = await w3.connect('p1')
+      const p2 = await upgrade(port, 'p2')
+      eq(p2.method, 'onKick', 'the next visitor is told why')
+      eq(p2.data, 'player_limit')
+      // the admin comes in past the limit on a kept place, twice (one line in the log)
+      for (const label of ['admin-past-limit', 'admin-past-limit-again']) {
+        const past = await w3.connect(label, { authToken: tokens.admin })
+        eq(past.id, admin.id, `${label}: the admin`)
+        await w3.close(past)
+        await settled(1)
+      }
+      ok(p1.isOpen, 'the visitor in the one place stays')
+      await w3.close(p1)
+
+      // the log: one line per user id for the door's kept place and for playerLimit's, and no token
+      eq(thirdServer.count('came in through a place kept for ranked users'), 1, 'the door said it once')
+      eq(
+        thirdServer.count(
+          `[connections] at WS_MAX_SOCKETS: ${JSON.stringify(admin.id)} (stored rank admin) came in through a place kept for ranked users (1 of 2 in use)`
+        ),
+        1,
+        'the line, with the user id'
+      )
+      eq(thirdServer.count('was let past playerLimit (1) on a place kept for ranked users'), 1, 'playerLimit: once')
+      eq(thirdServer.count('kept for ranked users is not one'), 0, 'nothing let in at the door was refused after it')
+      for (const [name, token] of Object.entries(tokens)) {
+        eq(thirdServer.count(token), 0, `the ${name} token is not in the log`)
+        eq(thirdServer.count(token.split('.')[2]), 0, `nor its signature`)
+      }
+      return "positive control: the admin's own token comes in at WS_MAX_SOCKETS and past playerLimit, where a visitor, a builder and a forged token naming the admin are refused"
+    }
+  )
+
+  if (third) {
+    for (const client of w3.clients) client.close()
+    await third.stop()
+    third = null
+  }
+
   // every case the tables name ran, and every case that ran is named there
   await step('every case the rules name ran, and passed', async () => {
     const named = namedCases()
@@ -1792,6 +1971,7 @@ try {
 } finally {
   await main?.stop().catch(() => {})
   await second?.stop().catch(() => {})
+  await third?.stop().catch(() => {})
   mockServer.closeAllConnections()
   await new Promise(resolve => mockServer.close(resolve))
   process.exit(finish() ? 1 : 0)

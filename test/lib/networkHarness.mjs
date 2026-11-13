@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import vm from 'node:vm'
-import { EventEmitter } from 'node:events'
 import moment from 'moment'
 import { appPersistenceData, persistenceRecord } from '../../src/core/extras/persistenceRecord.js'
 import { uuid } from '../../src/core/utils.js'
@@ -73,6 +72,9 @@ import {
   SESSION_AVATAR_MAX_LENGTH,
   isBoundedJsonObject,
 } from '../../src/core/extras/entityModifyPolicy.js'
+
+// (the same stand-in connection as the tests of the real class use)
+export { fakeWs } from './network.mjs'
 
 export const serverSource = fs.readFileSync(new URL('../../src/server/index.js', import.meta.url), 'utf8')
 const source = fs.readFileSync(new URL('../../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
@@ -296,34 +298,6 @@ export function makeNetwork(log = () => {}, { context, tokenBalanceService, evmH
     entities: { items: new Map() },
   }
   return network
-}
-
-export function fakeWs() {
-  const ws = new EventEmitter()
-  ws.readyState = 1
-  ws.pending = []
-  ws.packets = []
-  ws.terminations = 0
-  ws.send = (packet, cb) => {
-    ws.packets.push(packet)
-    ws.pending.push(cb)
-  }
-  ws.ping = (data, mask, cb) => {
-    assert.equal(data, undefined)
-    assert.equal(mask, false)
-    ws.pending.push(cb)
-  }
-  ws.terminate = () => {
-    ws.terminations++
-    if (ws.readyState === 3) return
-    ws.readyState = 3
-    ws.emit('close')
-  }
-  ws.close = ws.terminate
-  ws.drain = () => {
-    for (const cb of ws.pending.splice(0)) cb()
-  }
-  return ws
 }
 
 // Run the actual index.js options, preValidation and route without booting physics or a database.

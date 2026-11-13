@@ -31,3 +31,7 @@ export function boundedText(value, max) {
 // the width and height of an image or video screen, in metres: a geometry, not an allocation, but one NaN in it is a
 // NaN in the scene's bounds
 export const SCREEN_MAX_SIDE = 1e6
+
+// the largest float32; a Float32Array (an instance attribute, a particle buffer) holds Infinity for a number from
+// 3.4028235677973366e38 up
+export const FLOAT32_MAX = 3.4028234663852886e38

@@ -3,6 +3,7 @@ import * as THREE from '../extras/three'
 import { vec3ToPxPos, quatToPxRot, warnOnce } from '../extras/physxConvert.js'
 import { isArray, isEqual } from 'lodash-es'
 import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
+import { boundedNumber, FLOAT32_MAX } from '../extras/boundedValue.js'
 
 import { Node } from './Node'
 import { Layers } from '../extras/Layers'
@@ -811,6 +812,10 @@ export class Prim extends Node {
     if (!isNumber(value) || value < 0) {
       throw new Error('[prim] emissiveIntensity must be positive number')
     }
+    // NaN is the default and a number past the largest float32 is that number (boundedValue.js: no bound throws):
+    // the value is written to a Float32Array the shader reads (Stage's instanceEmissiveIntensity), which holds
+    // Infinity for Infinity and for a number from 3.4028235677973366e38 up
+    value = boundedNumber(value, defaults.emissiveIntensity, 0, FLOAT32_MAX)
     if (this._emissiveIntensity === value) return
     this._emissiveIntensity = value
     this.handle?.setEmissiveIntensity(value) // no rebuild needed!

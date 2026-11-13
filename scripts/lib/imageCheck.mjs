@@ -970,7 +970,7 @@ export async function runImageCheck({
           .join('; ')
     )
     if (verdict.ok) {
-      report.info(`  ${signal}: the server saved and the container exited 0 by itself`)
+      report.info(`  ${signal}: the server's log says it saved, and the container exited 0 by itself`)
       return
     }
     for (const reason of verdict.reasons) fail(`${role} (${signal}, ${timeoutS} s): ${reason}`)
@@ -1061,7 +1061,7 @@ export async function runImageCheck({
     const second = await startAndWait('sigint')
     await stop(second, STOPS.sigint)
 
-    // g. the world the two runs wrote loads again
+    // g. a third start on the same volume becomes healthy (nothing was changed in the world: that is all it shows)
     const third = await startAndWait('restart')
     report.info(`restart: healthy after ${third.healthy.seconds} s on the volume of the two stopped runs`)
   } catch (err) {

@@ -1435,7 +1435,7 @@ test('the script against a fake docker: it passes, and writes the summary and th
       out.stdout,
       /PID 1: executable \/usr\/local\/bin\/node, name "npm run start", uid 0, SIGTERM handled, SIGINT handled/
     )
-    assert.match(out.stdout, /SIGINT: the server saved and the container exited 0 by itself/)
+    assert.match(out.stdout, /SIGINT: the server's log says it saved, and the container exited 0 by itself/)
     assert.match(
       out.stdout,
       /by Docker's clock SIGINT sent, and its die event \(exitCode 0\) 0\.200 s later; the `docker stop` command took \d+\.\d s/

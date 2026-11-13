@@ -15,7 +15,8 @@
 //      line saying that something was not stopped or not saved (NOT_STOPPED_OR_SAVED in the library);
 //   f. a second container on the same volume, stopped with `docker stop --signal SIGINT -t 5` (Fly's documented
 //      default signal and timeout): the same, with SIGINT in the server's line;
-//   g. a third container on the same volume becomes healthy: the world the first two wrote loads;
+//   g. a third container on the same volume becomes healthy (only that: nothing was changed in the world, so it
+//      does not show that what the first two saved is read back);
 //   h. always, also after a failure or a SIGINT/SIGTERM to this script: the containers, the volume and the image
 //      tag of this run are removed. Their names carry a random id of the run; nothing else is touched.
 // A SIGINT or SIGTERM (a cancelled workflow run) ends the docker command in flight unless it creates or removes

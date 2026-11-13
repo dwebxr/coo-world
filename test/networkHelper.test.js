@@ -162,12 +162,11 @@ test('network helper: env varies a constant read at import, in one call that res
   const before = { sockets: process.env.WS_MAX_SOCKETS, interval: process.env.SAVE_INTERVAL }
   await assert.rejects(loadNetwork({ env: { WS_MAX_SOCKETS: 'many', SAVE_INTERVAL: '5' } }), /WS_MAX_SOCKETS/)
   assert.deepEqual({ sockets: process.env.WS_MAX_SOCKETS, interval: process.env.SAVE_INTERVAL }, before)
-  // ... and when the test is over, the shell's own values are back
+  // ... and when the test is over, the shell's own values are back (hooks run in the order they were registered:
+  // the helper's restore, registered by the first makeNetwork above, has run by now)
   t.after(() => {
-    setImmediate(() => {
-      assert.equal(process.env.WS_MAX_SOCKETS, sockets)
-      assert.equal(process.env.SAVE_INTERVAL, saved)
-    })
+    assert.equal(process.env.WS_MAX_SOCKETS, sockets)
+    assert.equal(process.env.SAVE_INTERVAL, saved)
   })
 })
 
@@ -274,7 +273,12 @@ test('network helper: the ported files pass with those settings in their environ
     // this one (its time-out, or the end of the test, stops the whole group)
     detached: process.platform !== 'win32',
   })
+  // Stops the group, once, and only while it is ours: after `close` the group is gone and its number may be given to
+  // another group, which a late signal would kill.
+  let running = true
   const stop = () => {
+    if (!running) return
+    running = false
     try {
       if (process.platform === 'win32') child.kill('SIGKILL')
       else process.kill(-child.pid, 'SIGKILL')
@@ -284,6 +288,10 @@ test('network helper: the ported files pass with those settings in their environ
   }
   t.signal.addEventListener('abort', stop)
   t.after(stop)
+  child.once('close', () => {
+    running = false
+    t.signal.removeEventListener('abort', stop)
+  })
   let out = ''
   child.stdout.on('data', data => (out += data))
   child.stderr.on('data', data => (out += data))

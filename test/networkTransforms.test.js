@@ -1,33 +1,45 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import moment from 'moment'
-import { isAvatarUrl, sanitizeName } from '../src/core/extras/entityModifyPolicy.js'
 import { createLogOnce } from '../src/core/extras/logOnce.js'
 import { readPacket } from '../src/core/packets.js'
-import { connectionMethod, fakeWs, makeNetwork } from './lib/networkHarness.mjs'
+import { fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
 import { loadClient } from './lib/clientHarness.mjs'
 
 const Player = loadClient('core/entities/PlayerRemote.js', 'PlayerRemote')
 const App = loadClient('core/entities/App.js', 'App', { createLogOnce })
 const defaultPose = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
 const poseOf = data => ({ position: data.position, quaternion: data.quaternion })
+// (the old harness's network saved nothing on a timer; a join's session token and new ids are the test's)
+const UTILS = 'src/core/utils.js'
+const SESSION = 'src/core/utils-server.js'
+const net = await loadNetwork({ env: { SAVE_INTERVAL: 0 }, standIns: [UTILS, SESSION] })
 
-function fixture(spawnRow) {
+function fixture(t, spawnRow) {
   const logs = []
   const saved = []
   const entities = new Map()
-  const network = makeNetwork(line => logs.push(line))
-  network.connecting = new Set()
-  network.db = table => {
+  const db = table => {
     if (table === 'blueprints' || table === 'entities') return []
     return {
       where: (_key, value) => ({ first: async () => (value === 'spawn' ? spawnRow : undefined) }),
+      // the user ids start() reads: none (the old harness's network logged elsewhere that it could not read them)
+      select: async () => [],
       insert: row => {
         if (table === 'users') return Promise.resolve()
         return { onConflict: () => ({ merge: async () => saved.push(row) }) }
       },
     }
   }
+  let nextId = 0
+  const network = makeNetwork(t, {
+    net,
+    log: line => logs.push(line),
+    init: { db },
+    modules: {
+      [SESSION]: { readJWT: async () => null, createJWT: async () => 'token', expiredSessionUser: async () => null },
+      [UTILS]: { uuid: () => `player-${++nextId}` },
+    },
+  })
   const serial = { serialize: () => [] }
   Object.assign(network.world, {
     settings: { ...serial, deserialize() {}, setHasAdminCode() {}, on() {} },
@@ -45,7 +57,7 @@ function fixture(spawnRow) {
       measureApp() {},
       trackApp() {},
       add(data) {
-        // onConnection runs in a VM; policies and entity data share the host realm in production.
+        // (a copy, from when onConnection ran in a VM; policies and entity data share one realm, as in production)
         data = { ...data }
         const entity = {
           data,
@@ -66,19 +78,6 @@ function fixture(spawnRow) {
       },
     },
   })
-  let nextId = 0
-  network.onConnection = connectionMethod({
-    isNumber: value => typeof value === 'number',
-    sanitizeName,
-    isAvatarUrl,
-    moment,
-    performance,
-    HEALTH_MAX: 100,
-    readJWT: async () => null,
-    createJWT: async () => 'token',
-    uuid: () => `player-${++nextId}`,
-    process: { env: {} },
-  })
   const join = async () => {
     const ws = fakeWs()
     ws.close = () => assert.fail('join unexpectedly failed')
@@ -91,7 +90,7 @@ function fixture(spawnRow) {
   return { network, logs, saved, entities, join }
 }
 
-test('spawn load: malformed JSON and invalid stored poses fall back once; joins and late joins receive default pose', async () => {
+test('spawn load: malformed JSON and invalid stored poses fall back once; joins and late joins receive default pose', async t => {
   for (const value of [
     '',
     '{',
@@ -102,7 +101,7 @@ test('spawn load: malformed JSON and invalid stored poses fall back once; joins 
     JSON.stringify({ ...defaultPose, quaternion: [1e200, 0, 0, 1] }),
     '{"position":[1e309,0,0],"quaternion":[0,0,0,1]}',
   ]) {
-    const f = fixture({ value })
+    const f = fixture(t, { value })
     await f.network.start()
     await f.network.start()
     assert.deepEqual(f.network.spawn, defaultPose)
@@ -117,14 +116,14 @@ test('spawn load: malformed JSON and invalid stored poses fall back once; joins 
   }
 })
 
-test('spawn load: absent spawn defaults silently and accepted stored quaternion drift is normalized before join', async () => {
+test('spawn load: absent spawn defaults silently and accepted stored quaternion drift is normalized before join', async t => {
   for (const spawnRow of [
     undefined,
     {
       value: JSON.stringify({ position: [-1e6, 0, 1e6], quaternion: [0, 0, 0, 1.0000001] }),
     },
   ]) {
-    const f = fixture(spawnRow)
+    const f = fixture(t, spawnRow)
     await f.network.start()
     const expected = spawnRow ? { position: [-1e6, 0, 1e6], quaternion: [0, 0, 0, 1] } : defaultPose
     assert.deepEqual(f.network.spawn, expected)
@@ -134,8 +133,8 @@ test('spawn load: absent spawn defaults silently and accepted stored quaternion 
   }
 })
 
-test('spawn setter: retains builder authorization, refuses invalid poses with a message, normalizes and persists valid sets', async () => {
-  const f = fixture()
+test('spawn setter: retains builder authorization, refuses invalid poses with a message, normalizes and persists valid sets', async t => {
+  const f = fixture(t)
   await f.network.start()
   const { socket, ws } = await f.join()
   const previous = f.network.spawn
@@ -166,8 +165,8 @@ test('spawn setter: retains builder authorization, refuses invalid poses with a 
   assert.equal(readPacket(ws.packets.at(-1))[1].body, 'Spawn cleared')
 })
 
-test('entity transforms: server storage, observer broadcasts and late joins share normalized poses and release-only state', async () => {
-  const f = fixture()
+test('entity transforms: server storage, observer broadcasts and late joins share normalized poses and release-only state', async t => {
+  const f = fixture(t)
   await f.network.start()
   const { socket: author } = await f.join()
   const { ws: observer } = await f.join()

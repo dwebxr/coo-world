@@ -16,9 +16,12 @@ import { serializeError } from '../src/core/extras/serializeError.js'
 import { writeClientPacket } from '../src/core/packets.js'
 import { readInboundPacket } from '../src/server/inboundDecode.js'
 import { loadClient } from './lib/clientHarness.mjs'
-import { makeNetwork } from './lib/networkHarness.mjs'
+import { loadNetwork, makeNetwork } from './lib/network.mjs'
 
 const HOUR = 60 * 60 * 1000
+// (the old harness's network saved nothing on a timer; its test gives the token gate one name of its own)
+const SOLANA = 'src/server/solana-gating.js'
+const net = await loadNetwork({ env: { SAVE_INTERVAL: 0 }, standIns: [SOLANA] })
 
 function budget(limits) {
   let time = 0
@@ -855,10 +858,12 @@ test('every provider client sets an output limit: 16,000 tokens for a script, 4,
   }
 })
 
-test('ServerNetwork.onAi: counted against the user, or the wallet of a builder by token; a refusal is said to that player', () => {
+test('ServerNetwork.onAi: counted against the user, or the wallet of a builder by token; a refusal is said to that player', t => {
   const wallets = new Map([['token-builder', 'WALLET111']])
-  const network = makeNetwork(() => {}, {
-    context: { solanaGating: { walletOf: id => wallets.get(id) || null, TOKEN_GATING_ENABLED: false } },
+  const network = makeNetwork(t, {
+    net,
+    log: () => {},
+    modules: { [SOLANA]: { walletOf: id => wallets.get(id) || null, TOKEN_GATING_ENABLED: false } },
   })
   const asked = []
   network.world.ai = {

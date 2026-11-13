@@ -391,6 +391,7 @@ test('network helper: settings of the environment the tests run in change nothin
 
 test('network helper: the ported files pass with those settings in their environment', { timeout: 120000 }, async t => {
   const files = [
+    'aiBudget',
     'announceBeforeApply',
     'blueprintEnforcement',
     'connectionHolds',
@@ -399,6 +400,7 @@ test('network helper: the ported files pass with those settings in their environ
     'joinAdmission',
     'joinBudget',
     'moderation',
+    'networkTransforms',
     'packetAccess',
     'packetRefusals',
     'persistence',
@@ -407,6 +409,8 @@ test('network helper: the ported files pass with those settings in their environ
     'scriptChat',
     'serverFileRead',
     'sharedObjects',
+    'userRowsNetwork',
+    'writeLedger',
   ].map(name => fileURLToPath(new URL(`./${name}.test.js`, import.meta.url)))
   const { PATH, HOME, TMPDIR } = process.env
   // (the reporter is named: with its output piped, Node 22 would print TAP and Node 24 the spec lines read below)

@@ -30,11 +30,17 @@ import {
   SCRIPT_TICK_CAP,
   WRITE_OVERHEAD,
 } from '../src/core/extras/writeLedger.js'
-import { fakeWs, makeNetwork, Socket, connectionMethod } from './lib/networkHarness.mjs'
+import { fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
 import { writePacket } from '../src/core/packets.js'
 import { readPacket } from '../src/core/packets.js'
 import { readScriptData } from '../src/core/extras/scriptData.js'
 import { toEngineNumber } from '../src/core/extras/engineNumber.js'
+
+// (the old harness's network saved nothing on a timer and logged nowhere unless a test asked; a join's session token
+// here names its stored user)
+const SESSION = 'src/core/utils-server.js'
+const net = await loadNetwork({ env: { SAVE_INTERVAL: 0 }, standIns: [SESSION] })
+const { Socket } = net
 
 const bytes = n => new Uint8Array(n)
 const addSocket = (network, id = 'player') => {
@@ -121,8 +127,8 @@ test('writeLedger: only the recipient exceeding its system backlog terminates; c
   assert.equal(ledger.state(a).queued, 0)
 })
 
-test('writeLedger: broadcast copies once, reserves unique script bytes once, and returns partial delivery', () => {
-  const network = makeNetwork()
+test('writeLedger: broadcast copies once, reserves unique script bytes once, and returns partial delivery', t => {
+  const network = makeNetwork(t, { net, log: () => {} })
   const a = addSocket(network, 'a')
   const b = addSocket(network, 'b')
   const entity = {}
@@ -148,8 +154,8 @@ test('writeLedger: broadcast copies once, reserves unique script bytes once, and
   assert.equal(a.ws.terminations + b.ws.terminations, 0)
 })
 
-test('writeLedger: 40 x 400 KiB script sendTo calls stop at the producer without disconnecting', () => {
-  const network = makeNetwork()
+test('writeLedger: 40 x 400 KiB script sendTo calls stop at the producer without disconnecting', t => {
+  const network = makeNetwork(t, { net, log: () => {} })
   const socket = addSocket(network)
   const entity = {}
   const results = []
@@ -216,8 +222,8 @@ test('writeLedger: logs refusals once per app and name', () => {
   assert.equal(logs.length, 3)
 })
 
-test('writeLedger: ping credit clears in callback; unsolicited pong cannot hide a pending ping', () => {
-  const network = makeNetwork()
+test('writeLedger: ping credit clears in callback; unsolicited pong cannot hide a pending ping', t => {
+  const network = makeNetwork(t, { net, log: () => {} })
   const socket = addSocket(network)
   network.checkSockets()
   assert.equal(socket.alive, false)
@@ -282,8 +288,8 @@ const loadClass = (file, name, context = {}) => {
   })
 }
 
-test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit updates carry script attribution', () => {
-  const network = makeNetwork()
+test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit updates carry script attribution', t => {
+  const network = makeNetwork(t, { net, log: () => {} })
   const socket = addSocket(network)
   const world = { network, events: { emit() {} }, entities: { get: () => player } }
   const player = {
@@ -373,8 +379,8 @@ test('writeLedger: real Apps send, sendTo, chat, proxy relays and LiveKit update
 // a getter in app.send data that sends: the data is read before anything is packed (extras/scriptData.js), so the
 // inner message goes out first, whole, and the outer one after it, whole (packed inside the reading of the outer
 // one it could come out unreadable, and the outer one with its bytes in it)
-test('Apps: a send from a getter in the data of another send delivers both messages whole, the inner one first', () => {
-  const network = makeNetwork()
+test('Apps: a send from a getter in the data of another send delivers both messages whole, the inner one first', t => {
+  const network = makeNetwork(t, { net, log: () => {} })
   const socket = addSocket(network)
   const world = { network, events: { emit() {} }, entities: { get: () => ({ data: { id: socket.id } }) } }
   const Apps = loadClass('systems/Apps.js', 'Apps')
@@ -429,14 +435,17 @@ test('Apps: unknown players and internal-event refusals return false without sen
   assert.equal(logs.length, 2)
 })
 
-test('ServerNetwork: a snapshot over its cap after every step refuses the join (player_limit), never sent, no player added', async () => {
+test('ServerNetwork: a snapshot over its cap after every step refuses the join (player_limit), never sent, no player added', async t => {
   const logs = []
-  const network = makeNetwork(line => logs.push(line))
-  network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
-  network.connecting = new Set()
   // a stored admin: the visitor headroom does not apply, only the snapshot's real size
   const user = { id: 'player', rank: 2 }
-  network.db = () => ({ where: () => ({ first: async () => user }) })
+  const network = makeNetwork(t, {
+    net,
+    log: line => logs.push(line),
+    init: { db: () => ({ where: () => ({ first: async () => user }) }) },
+    modules: { [SESSION]: { readJWT: async () => ({ userId: user.id }), expiredSessionUser: async () => null } },
+  })
+  network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
   const serial = { serialize: () => [] }
   let added = 0
   network.world = {
@@ -450,21 +459,11 @@ test('ServerNetwork: a snapshot over its cap after every step refuses the join (
     entities: { ...serial, get: () => undefined, add: () => (added++, { data: user, destroy() {} }) },
     events: { emit() {} },
   }
-  const method = connectionMethod({
-    isNumber: n => typeof n === 'number',
-    sanitizeName: () => 'name',
-    isAvatarUrl: () => false,
-    readJWT: async () => ({ userId: user.id }),
-    process: { env: {} },
-    performance,
-    HEALTH_MAX: 100,
-    console: { error: line => logs.push(line) },
-  })
   const ws = fakeWs()
   ws.close = code => {
     ws.closeCode = code
   }
-  await method.call(network, ws, { authToken: 'valid' })
+  await network.onConnection(ws, { authToken: 'valid' })
   assert.equal(ws.closeCode, undefined, 'an ordinary close after the kick')
   assert.equal(logs.length, 1)
   assert.match(logs[0], /^\[network\] a player was turned away: the join snapshot is \d+ bytes after every step/)
@@ -474,8 +473,8 @@ test('ServerNetwork: a snapshot over its cap after every step refuses the join (
   assert.equal(network.sockets.size, 0)
 })
 
-test('ServerNetwork: each tick resets the script budget before dispatching inbound handlers', () => {
-  const network = makeNetwork()
+test('ServerNetwork: each tick resets the script budget before dispatching inbound handlers', t => {
+  const network = makeNetwork(t, { net, log: () => {} })
   const socket = addSocket(network)
   network.writer.prepare(bytes(SCRIPT_TICK_CAP), { script: true })
   const send = () => network.send('entityEvent', 1)
@@ -502,8 +501,8 @@ test('writeLedger: explicit system option cannot bypass script attribution and c
   )
 })
 
-test('ServerNetwork.reserve: a packet is admitted once, when it is reserved, and sent later with the room it took', () => {
-  const network = makeNetwork()
+test('ServerNetwork.reserve: a packet is admitted once, when it is reserved, and sent later with the room it took', t => {
+  const network = makeNetwork(t, { net, log: () => {} })
   const socket = addSocket(network)
   const data = { id: socket.id, ef: { freeze: true } }
   const size = writePacket('entityModified', data).length

@@ -6,8 +6,8 @@ import { BACKLOG_CAP, SCRIPT_BACKLOG_CAP } from '../src/core/extras/writeLedger.
 import { fixture } from './lib/joinFixture.mjs'
 
 // A world with an admin code (so a visitor is a visitor), an admin, and two visitors: `a` acts, `b` watches
-async function stage() {
-  const f = fixture()
+async function stage(t) {
+  const f = fixture(t)
   f.world.settings.setHasAdminCode(true)
   f.world.settings.rank = Ranks.VISITOR
   const lines = []
@@ -39,8 +39,8 @@ async function stage() {
   return { f, lines, events, admin, a, b, got, chat, chats, tick, TOO_FAST }
 }
 
-test('chat: a thousand lines a second from one visitor reach the others as a burst and then a line a second', async () => {
-  const s = await stage()
+test('chat: a thousand lines a second from one visitor reach the others as a burst and then a line a second', async t => {
+  const s = await stage(t)
   for (let ms = 0; ms < 3000; ms++) s.chat(s.a, `line ${ms}`, 10_000 + ms)
   const seen = s.chats(s.got(s.b))
   assert.equal(seen.length, 6 + 2, 'the burst, and one for each second that passed')
@@ -59,8 +59,8 @@ test('chat: a thousand lines a second from one visitor reach the others as a bur
   assert.equal(s.f.logs.filter(line => /over its chat budget/.test(line)).length, 1, 'logged once per connection')
 })
 
-test('chat: what is not a line of chat is dropped without using the budget', async () => {
-  const s = await stage()
+test('chat: what is not a line of chat is dropped without using the budget', async t => {
+  const s = await stage(t)
   for (let i = 0; i < 100; i++) {
     s.f.network.onChatAdded(s.a.socket, { body: { not: 'text' } }, { at: 1000 })
     s.f.network.onChatAdded(s.a.socket, { body: '   ' }, { at: 1000 })
@@ -74,8 +74,8 @@ test('chat: what is not a line of chat is dropped without using the budget', asy
   assert.equal(s.chats(s.got(s.b)).length, 6)
 })
 
-test('chat: a person typing is never refused; another connection is not held by a flooder', async () => {
-  const s = await stage()
+test('chat: a person typing is never refused; another connection is not held by a flooder', async t => {
+  const s = await stage(t)
   for (let i = 0; i < 2000; i++) s.chat(s.a, 'flood', 5000)
   s.got(s.admin)
   // b types a line every two seconds for a minute, with three quick ones now and then
@@ -93,7 +93,7 @@ test('chat: a person typing is never refused; another connection is not held by 
 })
 
 test('chat: the arrival time of the packet is what is counted, through the real admission', async t => {
-  const s = await stage()
+  const s = await stage(t)
   const seen = []
   assert.equal(s.f.network.actionBudgets, undefined, 'made on first use')
   s.f.network.actionBudgets = { spend: (socket, action, at) => (seen.push([socket.id, action, at]), { ok: true }) }
@@ -109,8 +109,8 @@ test('chat: the arrival time of the packet is what is counted, through the real 
   assert.equal(s.chats(s.got(s.b)).length, 1)
 })
 
-test('app chat: a script speaking through a connection has its own budget and its player is told nothing', async () => {
-  const s = await stage()
+test('app chat: a script speaking through a connection has its own budget and its player is told nothing', async t => {
+  const s = await stage(t)
   s.f.world.entities.add({ id: 'shop', type: 'app', blueprint: 'bp', position: [0, 0, 0], quaternion: [0, 0, 0, 1] })
   for (let i = 0; i < 500; i++) s.f.network.onAppChat(s.a.socket, { id: 'shop', body: `sale ${i}` }, { at: 1000 })
   assert.equal(s.chats(s.got(s.b)).length, 10, 'the burst')
@@ -120,8 +120,8 @@ test('app chat: a script speaking through a connection has its own budget and it
   assert.equal(s.chats(s.got(s.b)).length, 6)
 })
 
-test('chat: a recipient whose backlog is high misses the line instead of being closed for it', async () => {
-  const s = await stage()
+test('chat: a recipient whose backlog is high misses the line instead of being closed for it', async t => {
+  const s = await stage(t)
   // b reads nothing: its backlog is filled to over the mark with packets it must have
   const big = writePacket('chatAdded', { id: 'x', kind: 'system', from: null, fromId: null, body: 'x'.repeat(60000) })
   while (s.b.ws.packets.reduce((sum, packet) => sum + packet.length + 1024, 0) <= SCRIPT_BACKLOG_CAP) {
@@ -138,8 +138,8 @@ test('chat: a recipient whose backlog is high misses the line instead of being c
   assert.ok(s.b.ws.packets.reduce((sum, packet) => sum + packet.length + 1024, 0) <= BACKLOG_CAP)
 })
 
-test('/name: the name the player has is answered and changes nothing; a flood of names is five and then one every two seconds', async () => {
-  const s = await stage()
+test('/name: the name the player has is answered and changes nothing; a flood of names is five and then one every two seconds', async t => {
+  const s = await stage(t)
   const name = (value, at) => s.f.network.onCommand(s.a.socket, { args: ['name', value] }, { at })
   const NAME_FAST = 'You are changing your name too fast.'
   // the name it has already: answered, not told to anyone, not written
@@ -178,8 +178,8 @@ test('/name: the name the player has is answered and changes nothing; a flood of
   assert.equal(s.f.users.get('a').name, 'later')
 })
 
-test('own player: a name or avatar that is not new is not told or written again', async () => {
-  const s = await stage()
+test('own player: a name or avatar that is not new is not told or written again', async t => {
+  const s = await stage(t)
   s.f.world.settings.customAvatars = true
   const modify = (data, at) => s.tick(s.f.network.onEntityModified(s.a.socket, { id: 'a', ...data }, { at }))
   // (a user without an avatar of their own wears the world's)
@@ -238,8 +238,8 @@ test("own player: over the budget, name and avatar are taken out, the sender get
   assert.deepEqual(s.got(s.b), [['onEntityModified', { id: 'a', name: 'later' }]])
 })
 
-test('own player: a truncated name is corrected whatever became of the avatar in the same packet', async () => {
-  const s = await stage()
+test('own player: a truncated name is corrected whatever became of the avatar in the same packet', async t => {
+  const s = await stage(t)
   s.f.world.settings.customAvatars = true
   const modify = (data, at) => s.tick(s.f.network.onEntityModified(s.a.socket, { id: 'a', ...data }, { at }))
   const long = 'N'.repeat(64)
@@ -262,8 +262,8 @@ test('own player: a truncated name is corrected whatever became of the avatar in
   assert.deepEqual(s.got(s.a), [['onEntityModified', { id: 'a', name: long }]])
 })
 
-test('commands: ten at once, then two a second; the admin code is not counted here, a granted toggle is counted with the moderation', async () => {
-  const s = await stage()
+test('commands: ten at once, then two a second; the admin code is not counted here, a granted toggle is counted with the moderation', async t => {
+  const s = await stage(t)
   for (let i = 0; i < 100; i++) await s.f.network.onCommand(s.a.socket, { args: ['dance', String(i)] }, { at: 1000 })
   assert.equal(s.events.filter(([name]) => name === 'command').length, 10)
   assert.equal(s.chats(s.got(s.a)).filter(m => m.body === 'You are sending commands too fast.').length, 1)
@@ -299,7 +299,7 @@ const settingsTo = (s, who) =>
     .map(([, data]) => data)
 
 test('settings: an arrow key held on a number field for five seconds ends on the last value; the others see a few changes a second, the sender none', async t => {
-  const s = await stage()
+  const s = await stage(t)
   const clock = clockFor(t)
   const set = value => s.f.network.onSettingsModified(s.admin.socket, { key: 'playerLimit', value }, { at: clock.now })
   // FieldNumber sends a change per key repeat, each one more than the value shown: thirty a second, and a tick
@@ -326,7 +326,7 @@ test('settings: an arrow key held on a number field for five seconds ends on the
 })
 
 test('settings: a flood of a thousand a second for a minute reaches the others at most five times a second, ends on its last value, and leaves moderation alone', async t => {
-  const s = await stage()
+  const s = await stage(t)
   const clock = clockFor(t)
   const muted = []
   s.f.world.livekit.muted = new Set()
@@ -353,7 +353,7 @@ test('settings: a flood of a thousand a second for a minute reaches the others a
 })
 
 test('settings: a value held is checked again when it is applied, and a connection that is gone keeps nothing', async t => {
-  const s = await stage()
+  const s = await stage(t)
   const clock = clockFor(t)
   const set = (who, key, value) => s.f.network.onSettingsModified(who.socket, { key, value }, { at: clock.now })
   // the admin's burst is used up, and a value is held
@@ -434,7 +434,7 @@ function panes(s, builders, key) {
 
 // three builders whose settings budgets are used up, each pane showing the same title
 async function builders(t) {
-  const s = await stage()
+  const s = await stage(t)
   const clock = clockFor(t)
   s.a.socket.player.data.rank = Ranks.BUILDER
   s.b.socket.player.data.rank = Ranks.BUILDER
@@ -561,8 +561,8 @@ test("settings: the tick releases the connections by their values' arrival", asy
   assert.deepEqual(order, ['admin', 'b', 'a'])
 })
 
-test('moderation: kicks, mutes and ranks have a bucket of their own, ten at once and then two a second', async () => {
-  const s = await stage()
+test('moderation: kicks, mutes and ranks have a bucket of their own, ten at once and then two a second', async t => {
+  const s = await stage(t)
   const muted = []
   s.f.world.livekit.muted = new Set()
   s.f.world.livekit.setMuted = (id, value) => muted.push([id, value])
@@ -584,8 +584,8 @@ test('moderation: kicks, mutes and ranks have a bucket of their own, ten at once
   assert.equal(s.f.world.settings.playerLimit, 30)
 })
 
-test('a request that is refused uses no budget: thirty refused, then a valid one is carried out at once', async () => {
-  const s = await stage()
+test('a request that is refused uses no budget: thirty refused, then a valid one is carried out at once', async t => {
+  const s = await stage(t)
   s.f.network.saveConfig = async () => true
   const muted = []
   s.f.world.livekit.muted = new Set()
@@ -608,8 +608,8 @@ test('a request that is refused uses no budget: thirty refused, then a valid one
   }
   await s.f.network.onModifyRank(s.admin.socket, { playerId: 'b', rank: Ranks.BUILDER }, { at: 1000 })
   assert.equal(s.b.socket.player.data.rank, Ranks.BUILDER)
-  // a spawn where the player's transform is not one (the player's record is made again here: the one the join made
-  // belongs to the handlers' own realm, which the transform check does not take for a plain object)
+  // a spawn where the player's transform is not one (the player's record is made again here, as when the one the
+  // join made belonged to the old harness's realm, which the transform check did not take for a plain object)
   const record = s.a.socket.player.data
   s.a.socket.player.data = { ...record, position: [NaN, 0, 0], quaternion: [0, 0, 0, 1] }
   for (let i = 0; i < 30; i++) await s.f.network.onSpawnModified(s.a.socket, 'set', { at: 1000 })
@@ -629,8 +629,8 @@ test('a request that is refused uses no budget: thirty refused, then a valid one
   assert.equal(s.f.network.sockets.has('b'), false)
 })
 
-test('spawn: set through the command, counted with the settings; an unknown operation is nothing', async () => {
-  const s = await stage()
+test('spawn: set through the command, counted with the settings; an unknown operation is nothing', async t => {
+  const s = await stage(t)
   const saved = []
   s.f.network.saveConfig = async (key, value) => saved.push([key, value])
   await s.f.network.onSpawnModified(s.admin.socket, 'explode', { at: 1000 })
@@ -640,9 +640,9 @@ test('spawn: set through the command, counted with the settings; an unknown oper
   assert.equal(s.chats(s.got(s.admin)).filter(m => m.body === 'You are changing the spawn too fast.').length, 1)
 })
 
-test('a refusal that says nothing leaves the telling to the next one that does', async () => {
+test('a refusal that says nothing leaves the telling to the next one that does', async t => {
   // a setting held over the budget is not answered; the spawn refused after it is
-  const s = await stage()
+  const s = await stage(t)
   const saved = []
   s.f.network.saveConfig = async (key, value) => saved.push([key, value])
   for (let i = 1; i <= 31; i++) {
@@ -655,7 +655,7 @@ test('a refusal that says nothing leaves the telling to the next one that does',
   assert.equal(s.chats(s.got(s.admin)).filter(m => m.body === 'You are changing the spawn too fast.').length, 1)
 
   // a mute refused over the budget is not answered; the change of rank refused after it is
-  const m = await stage()
+  const m = await stage(t)
   m.f.world.livekit.muted = new Set()
   m.f.world.livekit.setMuted = () => {}
   for (let i = 0; i < 11; i++) m.f.network.onMute(m.admin.socket, { playerId: 'b', muted: i % 2 === 0 }, { at: 1000 })

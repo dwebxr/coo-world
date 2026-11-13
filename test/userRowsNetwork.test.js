@@ -1,15 +1,13 @@
 // A user's row and the server's memory of it (src/server/userRows.js), through the real ServerNetwork handlers and
-// the real join (test/lib/networkHarness.mjs): what a join gets when the row it read is older than a change, in
+// the real join (test/lib/network.mjs): what a join gets when the row it read is older than a change, in
 // which order a user's writes reach the database, and what a write that fails leaves. The rules on their own are
 // in test/userRows.test.js; what a decided rank does to a token grant is in test/serverWallet.test.js.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import moment from 'moment'
 
-import { connectionMethod, fakeWs, makeNetwork } from './lib/networkHarness.mjs'
+import { fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
 import { readPacket } from '../src/core/packets.js'
 import { Ranks } from '../src/core/extras/ranks.js'
-import { isAvatarUrl, sanitizeName } from '../src/core/extras/entityModifyPolicy.js'
 
 const deferred = () => {
   let resolve, reject
@@ -21,18 +19,16 @@ const deferred = () => {
 }
 const turn = () => new Promise(resolve => setImmediate(resolve))
 
+// (the old harness's network saved nothing on a timer; a session token here is the id of its user)
+const SESSION = 'src/core/utils-server.js'
+const net = await loadNetwork({ env: { SAVE_INTERVAL: 0 }, standIns: [SESSION] })
+
 // `users` is the table. A read returns a copy of the row as it is when the read is issued and may be held
 // (`f.read`); an update is recorded when it starts (`statements`), may be held or fail (`f.write`), and changes the
 // row when it lands. The voice token (the join's last wait) may be held too (`f.voice`).
-function fixture() {
+function fixture(t) {
   const f = { logs: [], users: new Map(), entities: new Map(), statements: [], read: null, write: null, voice: null }
-  // (a write that fails is a plain line of the server's log: console.error)
-  const network = makeNetwork(line => f.logs.push(line), {
-    context: { process: { env: { ADMIN_CODE: 'code' } }, console: { ...console, error: line => f.logs.push(line) } },
-  })
-  f.network = network
-  network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
-  network.db = table => {
+  const db = table => {
     assert.equal(table, 'users')
     return {
       where: (column, id) => ({
@@ -50,6 +46,16 @@ function fixture() {
       }),
     }
   }
+  // (a write that fails is a plain line of the server's log: console.error)
+  const network = makeNetwork(t, {
+    net,
+    log: line => f.logs.push(line),
+    env: { ADMIN_CODE: 'code' },
+    init: { db },
+    modules: { [SESSION]: { readJWT: async userId => ({ userId }), expiredSessionUser: async () => null } },
+  })
+  f.network = network
+  network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
   Object.assign(network.world, {
     settings: { serialize: () => ({}), effectiveRank: 0, customAvatars: true },
     livekit: {
@@ -81,16 +87,6 @@ function fixture() {
       get: id => f.entities.get(id),
       serialize: () => [...f.entities.values()].map(player => ({ ...player.data })),
     },
-  })
-  network.onConnection = connectionMethod({
-    moment,
-    sanitizeName,
-    isAvatarUrl,
-    isNumber: value => typeof value === 'number',
-    readJWT: async userId => ({ userId }),
-    HEALTH_MAX: 100,
-    process: { env: {} },
-    performance,
   })
   // a join of user `id`, not waited for, with the query parameters of its WebSocket URL: -> { ws, done }
   f.join = (id, params = {}) => {
@@ -134,9 +130,9 @@ async function reloadDuring(f, change, params) {
   return { next, ws }
 }
 
-test('join: a rank taken while the row was being read is the rank of the new session, write pending, landed or failed', async () => {
+test('join: a rank taken while the row was being read is the rank of the new session, write pending, landed or failed', async t => {
   for (const fate of ['pending', 'landed', 'failed']) {
-    const f = fixture()
+    const f = fixture(t)
     await f.connect('u', Ranks.ADMIN)
     const admin = await f.connect('admin', Ranks.ADMIN)
     const write = deferred()
@@ -178,9 +174,9 @@ test('join: a rank taken while the row was being read is the rank of the new ses
   }
 })
 
-test('join: a name and an avatar set while the row was being read are those of the new session', async () => {
+test('join: a name and an avatar set while the row was being read are those of the new session', async t => {
   for (const fate of ['pending', 'landed', 'failed']) {
-    const f = fixture()
+    const f = fixture(t)
     await f.connect('u')
     const write = deferred()
     const { next } = await reloadDuring(f, async old => {
@@ -207,9 +203,9 @@ test('join: a name and an avatar set while the row was being read are those of t
 // client of this repository gives none). sanitizeName keeps a string with at least one visible character, cut to
 // 64 characters, and the join prefers it to the name of the row, which the decided values go over first. It is
 // not written to the row.
-test('join: a name the connection brings is the name of the new session, over a name decided while the row was read', async () => {
+test('join: a name the connection brings is the name of the new session, over a name decided while the row was read', async t => {
   for (const brought of ['Old', ' ​ ', undefined]) {
-    const f = fixture()
+    const f = fixture(t)
     await f.connect('u')
     const { next, ws } = await reloadDuring(
       f,
@@ -237,9 +233,9 @@ test('join: a name the connection brings is the name of the new session, over a 
   }
 })
 
-test('join: a rank changed while the old connection is asked, or while it is closed, is the rank of the replacement', async () => {
+test('join: a rank changed while the old connection is asked, or while it is closed, is the rank of the replacement', async t => {
   for (const when of ['asked', 'closing']) {
-    const f = fixture()
+    const f = fixture(t)
     f.network.takeoverPingMs = 30
     f.network.takeoverCloseMs = 1000
     const old = await f.connect('u', Ranks.ADMIN)
@@ -277,8 +273,8 @@ test('join: a rank changed while the old connection is asked, or while it is clo
   }
 })
 
-test('join: a change after the last wait finds the new player, and a later join reads it from the row', async () => {
-  const f = fixture()
+test('join: a change after the last wait finds the new player, and a later join reads it from the row', async t => {
+  const f = fixture(t)
   await f.connect('u')
   const admin = await f.connect('admin', Ranks.ADMIN)
   f.network.sockets.get('u').ws.terminate()
@@ -308,8 +304,8 @@ test('join: a change after the last wait finds the new player, and a later join 
   assert.equal(again.player.data.rank, Ranks.BUILDER)
 })
 
-test('join: a join that ends without a player gives the kept entry back', async () => {
-  const f = fixture()
+test('join: a join that ends without a player gives the kept entry back', async t => {
+  const f = fixture(t)
   await f.connect('u', Ranks.ADMIN)
   const admin = await f.connect('admin', Ranks.ADMIN)
   const read = deferred()
@@ -332,8 +328,8 @@ test('join: a join that ends without a player gives the kept entry back', async 
   assert.equal(f.network.joining.size, 0)
 })
 
-test('writes of one user reach the database one at a time, in the order decided: the row ends on the last', async () => {
-  const f = fixture()
+test('writes of one user reach the database one at a time, in the order decided: the row ends on the last', async t => {
+  const f = fixture(t)
   await f.connect('u')
   const admin = await f.connect('admin', Ranks.ADMIN)
   // a pool of several connections: given two statements of a user at once, it would land the later one first
@@ -357,8 +353,8 @@ test('writes of one user reach the database one at a time, in the order decided:
   assert.equal(f.rows().size, 0)
 })
 
-test('the handlers do not wait for the write: a held statement holds up neither the handler nor the next packet', async () => {
-  const f = fixture()
+test('the handlers do not wait for the write: a held statement holds up neither the handler nor the next packet', async t => {
+  const f = fixture(t)
   const socket = await f.connect('u')
   const admin = await f.connect('admin', Ranks.ADMIN)
   const never = new Promise(() => {})
@@ -384,8 +380,8 @@ test('the handlers do not wait for the write: a held statement holds up neither 
   assert.equal(socket.player.data.rank, Ranks.BUILDER)
 })
 
-test('each change of a row goes through the same writer: /name, the own-player change, a rank, the admin code', async () => {
-  const f = fixture()
+test('each change of a row goes through the same writer: /name, the own-player change, a rank, the admin code', async t => {
+  const f = fixture(t)
   const socket = await f.connect('u')
   const admin = await f.connect('admin', Ranks.ADMIN)
   const fail = async () => {
@@ -422,8 +418,8 @@ test('each change of a row goes through the same writer: /name, the own-player c
   assert.equal(f.logs.filter(line => line.includes('rank of user "admin" not stored')).length, 1)
 })
 
-test('a column the database refuses does not keep a rank from being stored', async () => {
-  const f = fixture()
+test('a column the database refuses does not keep a rank from being stored', async t => {
+  const f = fixture(t)
   const socket = await f.connect('u')
   const admin = await f.connect('admin', Ranks.ADMIN)
   // a column narrower than the avatar the server takes (as PostgreSQL's varchar(255) was for a 512-character url)

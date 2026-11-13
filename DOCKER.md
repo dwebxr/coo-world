@@ -39,7 +39,7 @@ The image has no `.env` file, so every setting comes from the container's enviro
 
 - `ADMIN_CODE` is not needed to start. Because the image sets `NODE_ENV=production`, a container without it is `locked`: nobody can become admin with a code, and the server logs an error line saying so. Set `ADMIN_CODE` (16 or more random characters without spaces: `openssl rand -hex 16`), or `ADMIN_OPEN=true` if every visitor is meant to be an admin. Wrong codes are only slowed down: the code itself is the protection.
 - Several optional settings are checked as well (`UPLOAD_*`, `WS_CONNECT_*`, `STORAGE_*`, `CLEAN_TRASH_DAYS`, `HSTS_MAX_AGE` among them): a value the server refuses stops the start-up the same way. `.env.example` lists the settings with their defaults.
-- The three addresses (`PUBLIC_WS_URL`, `PUBLIC_API_URL`, `ASSETS_BASE_URL`) are used by browsers, so they name the host and port as reached from outside the container. `PUBLIC_*` values are read when the container starts and served to the page (`/env.js`); they do not have to be present at build time.
+- The three addresses (`PUBLIC_WS_URL`, `PUBLIC_API_URL`, `ASSETS_BASE_URL`) are used by browsers, so they name the host and port as reached from outside the container. The `PUBLIC_` values the page is handed (a list of names: `src/core/extras/publicEnv.js`) are read when the container starts and served as `/env.js`; they do not have to be present at build time. A `PUBLIC_` name that is not on the list is not served, and the start-up log names it.
 
 ## Where the world's data is
 

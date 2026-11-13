@@ -169,7 +169,7 @@ PUBLIC_TOKEN_DECIMALS=6
 
 - Free public RPCs have rate limits; using an RPC provider like [Helius](https://helius.dev/) is recommended
 - Token mint address should be a Solana SPL token address
-- Environment variables with `PUBLIC_` prefix are exposed to the client (all but the deprecated `PUBLIC_RPC_URL`, which is never sent)
+- The page is handed a list of `PUBLIC_` variables, not every variable with that prefix: the names the client reads, plus `PUBLIC_API_URL`, `PUBLIC_MAX_UPLOAD_SIZE` and `PUBLIC_TOKEN_DECIMALS` (the list is in `src/core/extras/publicEnv.js`). Any other `PUBLIC_` variable is not sent and is named once in an error line at start-up; the deprecated `PUBLIC_RPC_URL` is never sent. Whatever is put under a listed name is public
 
 ## 🦊 EVM Wallets (Sign-In with Ethereum)
 

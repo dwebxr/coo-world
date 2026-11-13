@@ -135,10 +135,11 @@ test('readReport: three fields and nothing else of what was posted', () => {
   }
 })
 
-function reports(start = Date.UTC(2026, 10, 12, 0, 0, 0)) {
+// `mode` left out: the default
+function reports(start = Date.UTC(2026, 10, 12, 0, 0, 0), mode) {
   const lines = []
   const clock = { at: start }
-  const made = createCspReports({ log: line => lines.push(line), now: () => clock.at })
+  const made = createCspReports({ log: line => lines.push(line), now: () => clock.at, ...(mode && { mode }) })
   return { ...made, lines, clock }
 }
 
@@ -193,6 +194,42 @@ test('an hour has room for a fixed number of kinds; the rest are counted, and th
   r.clock.at += 3_600_000
   r.admit('203.0.113.1')
   assert.equal(r.lines.length, count + 1, 'the hour that had none')
+})
+
+test('the words of a line are the server mode: report-only and would refuse in report mode, as before', () => {
+  for (const mode of [undefined, 'report']) {
+    const r = reports(undefined, mode)
+    for (let i = 0; i < 10; i++) r.take(report({ disposition: 'enforce' }))
+    r.clock.at += 3_600_000
+    r.admit('203.0.113.1')
+    // byte for byte the lines report mode has always written, whatever the post says of itself
+    assert.deepEqual(r.lines, [
+      '[csp] report-only: script-src-elem would refuse inline, asked by /app-ABC.js',
+      '[csp] report-only: script-src-elem would refuse inline, asked by /app-ABC.js (10 this hour)',
+      '[csp] report-only, the hour to 2026-11-12T01:00:00.000Z: 10 reports of 1 kinds',
+    ])
+  }
+})
+
+test('enforce mode: a line says what was refused, never report-only or would refuse, whatever the post says', () => {
+  const r = reports(undefined, 'enforce')
+  // a browser under an enforced policy says `enforce`; a post can say anything, and the line does not follow it
+  for (let i = 0; i < 10; i++) r.take(report({ disposition: i % 2 ? 'report' : 'enforce' }))
+  r.take(report({ 'blocked-uri': 'https://evil.example/x.js', disposition: 'report' }))
+  for (let i = 0; i < PER_ADDRESS + 1; i++) r.admit('203.0.113.1')
+  r.clock.at += 3_600_000
+  r.admit('203.0.113.1')
+  assert.deepEqual(r.lines, [
+    '[csp] enforced: script-src-elem refused inline, asked by /app-ABC.js',
+    '[csp] enforced: script-src-elem refused inline, asked by /app-ABC.js (10 this hour)',
+    '[csp] enforced: script-src-elem refused https://evil.example, asked by /app-ABC.js',
+    '[csp] enforced, the hour to 2026-11-12T01:00:00.000Z: 11 reports of 2 kinds, 1 posts over the rate',
+  ])
+  for (const line of r.lines) assert.doesNotMatch(line, /report-only|would refuse/)
+  // a mode that is neither is refused, not taken for one of them
+  for (const mode of ['', 'Enforce', 'report-only', 'toString', '__proto__', null]) {
+    assert.throws(() => createCspReports({ mode }), /unknown CSP mode/, String(mode))
+  }
 })
 
 test('admit: a number of posts a minute from one address, and a number in all', () => {
@@ -281,6 +318,41 @@ test('POST /csp-report: 204 for a report, 400 for what is not one, and the parse
   assert.deepEqual(res.json(), { got: { a: 1 } })
   assert.equal((await post('{nope', { type: 'application/json', url: '/other' })).statusCode, 400)
   assert.deepEqual(logged, [400])
+})
+
+test('POST /csp-report: the route words its lines in the mode it is given, report when it is given none', async t => {
+  const logs = t.mock.method(console, 'log', () => {})
+  for (const [options, line] of [
+    [{}, '[csp] report-only: script-src-elem would refuse inline, asked by /app-ABC.js'],
+    [{ mode: 'report' }, '[csp] report-only: script-src-elem would refuse inline, asked by /app-ABC.js'],
+    [{ mode: 'enforce' }, '[csp] enforced: script-src-elem refused inline, asked by /app-ABC.js'],
+  ]) {
+    const server = Fastify()
+    server.register(cspReportRoute, options)
+    await server.ready()
+    try {
+      const res = await server.inject({
+        method: 'POST',
+        url: REPORT_PATH,
+        payload: report({ disposition: options.mode === 'enforce' ? 'report' : 'enforce' }),
+        headers: { 'content-type': 'application/csp-report' },
+      })
+      assert.equal(res.statusCode, 204)
+      assert.deepEqual(
+        logs.mock.calls.map(call => call.arguments[0]),
+        [line],
+        JSON.stringify(options)
+      )
+      logs.mock.resetCalls()
+    } finally {
+      await server.close()
+    }
+  }
+  // a mode that is neither stops the registration
+  const bad = Fastify()
+  bad.register(cspReportRoute, { mode: 'Enforce' })
+  await assert.rejects(bad.ready(), /unknown CSP mode/)
+  await bad.close()
 })
 
 test('POST /csp-report: the rate is kept by address, read where the server reads addresses', async t => {

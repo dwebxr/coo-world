@@ -11,7 +11,8 @@ import { escapeHtml } from './escapeHtml.js'
 // What the headers do, and no more:
 // - `X-Content-Type-Options: nosniff` (a browser takes a response for what its Content-Type says) on every response
 //   sent through a Fastify reply: the pages, the statics, the assets, the API, 404s and errors.
-// - on the pages: a Content-Security-Policy of four directives that nothing on these pages uses. No other site can
+// - on the pages: a Content-Security-Policy of four directives that nothing on these pages uses (PAGE_CSP; on the
+//   world page in enforce mode, the world's own policy holds the same four, below). No other site can
 //   put the page in a frame (`frame-ancestors`, with `X-Frame-Options` for browsers that do not read it): the world
 //   page asks for wallet signatures and sends tips, and a framed copy under someone else's page can be clicked
 //   through. Markup that got into the page cannot change where relative URLs load from (`base-uri`), embed a plugin
@@ -25,14 +26,21 @@ import { escapeHtml } from './escapeHtml.js'
 //   no browser shows or runs), the errors the HTTP layer writes itself before any route runs (a 400 for a URL it
 //   cannot decode, a 408, a 431: none of them a page), and HTML typed after the hook runs or sent as a native
 //   `Response` (no route here does either).
-// - it is NOT a policy on scripts, styles or connections: markup that got into the page could still run a script.
-// - on the world page only, a second policy as `Content-Security-Policy-Report-Only` (reportOnlyPolicy below): the
-//   policy on scripts, styles, frames and workers that is meant to be enforced one day. REPORT-ONLY PROTECTS
-//   NOTHING: the browser loads and runs everything as before, and posts what the policy would have refused to
-//   /csp-report (cspReports.js), which is how to learn what enforcing it would break for real visitors (a wallet
-//   extension that puts a script in the page, a wallet's in-app browser, a frame a wallet library opens) before
-//   it breaks. The nonce on the page's two inline scripts is there so that they are not reported; it guards
-//   nothing until the policy is enforced. The other static pages (terms.html) do not get this policy.
+// - it (PAGE_CSP) is NOT a policy on scripts, styles or connections: markup that got into a page that has only it
+//   could still run a script.
+// - on the world page only, the policy on scripts, styles, frames and workers (worldDirectives below), sent as
+//   CSP_MODE says (readCspModeEnv):
+//   - `report`, the default: as `Content-Security-Policy-Report-Only` (reportOnlyPolicy), beside PAGE_CSP.
+//     REPORT-ONLY PROTECTS NOTHING: the browser loads and runs everything as before, and posts what the policy would
+//     have refused to /csp-report (cspReports.js), which is how to learn what enforcing it would break for real
+//     visitors (a wallet extension that puts a script in the page, a wallet's in-app browser, a frame a wallet
+//     library opens) before it breaks. The nonce on the page's two inline scripts is there so that they are not
+//     reported; in this mode it guards nothing.
+//   - `enforce`: as the page's one `Content-Security-Policy` (enforcedPolicy): the same directives and nonce with
+//     `frame-ancestors 'none'` added, so that it holds all four of PAGE_CSP's, and no report-only header. The
+//     browser refuses what it does not allow, and posts that to /csp-report too. What it refuses, and what it does
+//     not stop, is said above worldDirectives.
+//   The other static pages (terms.html), and every other HTML reply, get PAGE_CSP alone, in either mode.
 // - `Strict-Transport-Security` only when HSTS_MAX_AGE is set: whether every host of the domain is served over
 //   https for that long is the operator's to know.
 
@@ -43,21 +51,26 @@ export const PAGE_PERMISSIONS = 'camera=(), geolocation=(), payment=(), usb=()'
 // font, and what its workers import.
 export const MONACO_SOURCE = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.49.0/'
 
-// The policy the world page is tried against. What each part would do if it were enforced:
+// The world page's policy. In report mode (the default) none of what follows happens: the browser only reports it.
+// What each part does when the policy is enforced (CSP_MODE=enforce):
 // - script-src: a script runs when the page's own origin serves it as a script (a store upload is text/plain, so it
 //   is not one), when it carries this response's nonce, or when it comes from the script editor's folder on cdnjs.
-//   An inline script without the nonce, an inline handler (`onerror=`) and a script of any other host would not run.
+//   An inline script without the nonce, an inline handler (`onerror=`) and a script of any other host do not run.
 //   `'unsafe-eval'` has to stay: app scripts are evaluated (SES), so text that reaches an `eval` of the page's own
 //   code still runs; and whoever controls that cdnjs folder still runs code in a builder's page.
+// - App scripts are not limited by it at all: they are text the page itself evaluates, and what they ask for (a
+//   fetch, an image) goes to hosts the policy allows anyway. Nor does it limit a visitor's browser extensions: their
+//   own scripts run outside it (a script element one writes into the page is checked, and refused without the nonce:
+//   that is what the owner's manual check with real wallets is to find).
 // - style-src keeps `'unsafe-inline'` (the interface writes style elements and attributes): injected CSS is not
 //   stopped. img-src, media-src and connect-src allow every host (a world shows images and video from anywhere, and
 //   app scripts fetch from anywhere): nothing here stops a page that was got into from sending data out.
 // - frame-src: only the two hosts WalletConnect's Verify frame is loaded from. worker-src: the page's own files and
 //   blob: (the physics and particle workers, and the script editor's).
-// - object-src, base-uri and form-action are as in the enforced policy (PAGE_CSP). `frame-ancestors` is not
-//   repeated: it is enforced already, and WebKit writes an error to every visitor's console for one in a report-only
-//   policy (it ignores it there).
-export function reportOnlyPolicy(nonce) {
+// - object-src, base-uri and form-action are as in PAGE_CSP. `frame-ancestors` is added only to the enforced
+//   header, which replaces PAGE_CSP on the world page: in a report-only policy WebKit writes an error to every
+//   visitor's console for it (and ignores it there), and in report mode PAGE_CSP enforces it already.
+function worldDirectives(nonce) {
   return [
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}' 'unsafe-eval' 'wasm-unsafe-eval' ${MONACO_SOURCE}`,
@@ -72,8 +85,47 @@ export function reportOnlyPolicy(nonce) {
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'self'",
-    `report-uri ${REPORT_PATH}`,
-  ].join('; ')
+  ]
+}
+
+// report mode: the `Content-Security-Policy-Report-Only` header, beside PAGE_CSP
+export function reportOnlyPolicy(nonce) {
+  return [...worldDirectives(nonce), `report-uri ${REPORT_PATH}`].join('; ')
+}
+
+// enforce mode: the one `Content-Security-Policy` header, in place of PAGE_CSP (it holds PAGE_CSP's four directives)
+export function enforcedPolicy(nonce) {
+  return [...worldDirectives(nonce), "frame-ancestors 'none'", `report-uri ${REPORT_PATH}`].join('; ')
+}
+
+export const CSP_MODES = ['report', 'enforce']
+
+// CSP_MODE: `report` (also when unset or empty) or `enforce`. Any other value throws at start-up: a mode that is
+// not the one written is not guessed. The message does not repeat the value.
+export function readCspModeEnv(env) {
+  const raw = env.CSP_MODE
+  if (raw === undefined || raw === '') return 'report'
+  if (CSP_MODES.includes(raw)) return raw
+  throw new Error('[envs] CSP_MODE must be report or enforce (unset or empty: report)')
+}
+
+// what the server says of the mode at start-up
+export function cspModeNote(mode) {
+  if (mode === 'report') {
+    return (
+      "[envs] CSP_MODE=report: the world page's full policy is tried only: nothing is refused (browsers post what it " +
+      'would refuse to /csp-report)'
+    )
+  }
+  if (mode === 'enforce') {
+    return (
+      "[envs] CSP_MODE=enforce: the world page's full policy is enforced: browsers refuse there a script that is not " +
+      "one of the page's own files, the script editor's from cdnjs or an inline script with the page's nonce (inline " +
+      "handlers included), a stylesheet or font file from a host other than the page's or the script editor's " +
+      "folder, a frame other than WalletConnect's Verify, and a worker not from the page or blob:"
+    )
+  }
+  throw new Error('unknown CSP mode')
 }
 
 const HSTS_MAX_SECONDS = 2 * 365 * 24 * 60 * 60
@@ -106,18 +158,26 @@ const isHtml = type => typeof type === 'string' && /^text\/html\b/i.test(type)
 // the names the send library (its `mime` table) types as text/html, in any case
 const isHtmlFile = filePath => /\.(?:html?|shtml)$/i.test(filePath)
 
+// The world page's replies that carry the enforced policy (enforce mode): the hook below leaves their
+// Content-Security-Policy as the world handler set it. Every other HTML reply gets PAGE_CSP from the hook.
+const enforcedReplies = new WeakSet()
+
 // Registered on the root instance, so the hook runs for every reply of every plugin: pages, statics, assets, the API,
 // 404s and errors (what it does not see is listed at the top).
 export function securityHeaders(fastify, { hstsMaxAge = null } = {}) {
   fastify.addHook('onSend', (req, reply, payload, done) => {
-    reply.headers(responseHeaders({ html: isHtml(reply.getHeader('content-type')), hstsMaxAge }))
+    const headers = responseHeaders({ html: isHtml(reply.getHeader('content-type')), hstsMaxAge })
+    if (enforcedReplies.has(reply)) delete headers['Content-Security-Policy']
+    reply.headers(headers)
     done(null, payload)
   })
 }
 
 // The world page, the public environment script and the static files of `publicDir`.
 // `page()` gives what the world page says about the world: { title, desc, image, url }.
-export async function pageRoutes(fastify, { publicDir, page, envsCode }) {
+// `cspMode`: how the world page's policy is sent, `report` or `enforce` (readCspModeEnv).
+export async function pageRoutes(fastify, { publicDir, page, envsCode, cspMode = 'report' }) {
+  if (!CSP_MODES.includes(cspMode)) throw new Error('unknown CSP mode')
   const world = async (req, reply) => {
     const { title, desc, image, url } = page()
     let html = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf-8')
@@ -133,7 +193,12 @@ export async function pageRoutes(fastify, { publicDir, page, envsCode }) {
     // compression plugin had loaded, and so was not), and an async handler that sends and then returns nothing
     // leaves a compressed response empty
     reply.type('text/html')
-    reply.header('Content-Security-Policy-Report-Only', reportOnlyPolicy(nonce))
+    if (cspMode === 'enforce') {
+      reply.header('Content-Security-Policy', enforcedPolicy(nonce))
+      enforcedReplies.add(reply)
+    } else {
+      reply.header('Content-Security-Policy-Report-Only', reportOnlyPolicy(nonce))
+    }
     // a cache has to ask the server again before it uses a copy (and the page has nothing to revalidate with, so it
     // gets a new one): a cache that keeps to that does not hand one response, and one nonce, to two visitors
     reply.header('Cache-Control', 'no-cache')

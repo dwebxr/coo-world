@@ -31,8 +31,9 @@ node is added, and once the element has its first frame the video's sound is con
 What a script sees differently from a visible video:
 
 - `loading` stays `true`, and `onLoad` is never called.
-- A `play()` made before the video has its player is dropped. That is the case right after the node is added when its
-  `src` has not been loaded in the page before. A visible video keeps such a call and plays once its first frame has
+- A `play()` made before the video has its player (right after the node is added, when its `src` has not been loaded
+  in the page before) is kept, but not carried out while the video is hidden: it stays pending, and runs once the node
+  is made visible and its new element has its first frame. A visible video carries it out once its first frame has
   arrived. A `play()` made once the player exists reaches the video element, visible or not.
 - To know that a hidden video's first frame has arrived, read `duration`: it is `0` before the video has a player,
   `undefined` from then until the first frame, and the video's length after that.
@@ -41,14 +42,16 @@ Setting `visible` to `true` later rebuilds the node: its video element is let go
 (unless another node still holds the same `linked` element), `loading` is `true` until the new element's first frame,
 and then `onLoad` is called.
 
-To load a video before showing it, add a video with `visible: false` and a `linked` key, and later add the video to show
-with the same `src` and the same `linked` key. Both use the one element, which is already loaded: the shown video's
-`onLoad` is called just after it is added, with no second video element, and `loading` is then `false`. Linked videos share
+To load a video before showing it, add a video with `visible: false` and a `linked` key, and once its `duration`
+reports the video's length (its element has its first frame), add the video to show with the same `src` and the same
+`linked` key. Both use the one element, which is then loaded: the shown video's `onLoad` is called just after it is
+added, with no second video element, and `loading` is then `false`. A shown video added before that uses the same
+element too, but its `onLoad` waits for that first frame. Linked videos share
 their playback (see `linked`). Removing the hidden video afterwards leaves the element to the shown one.
 
 These were observed in a test that runs a script, the engine's video node and its video loader with a stand-in video
-element, not in a browser. It is left as it is on purpose: a change would make hidden videos in existing worlds play a
-`play()` they now drop, and so start to sound.
+element, not in a browser. It is left as it is on purpose: a change would make hidden videos in existing worlds carry out
+a `play()` they now keep pending, and so start to sound.
 
 ### `.material`
 
@@ -98,15 +101,16 @@ Defaults to `contain`.
 ### `.width`: Number|null
 
 The fixed width of the plane when not using a custom geometry. Can be set to `null` to be automatic: the width is then
-`height` × `aspect` until the video's first frame has arrived, and `height` × the video's own width / height after that.
+`height * aspect` until the video's first frame has arrived, and `height * (videoWidth / videoHeight)`, with the video's
+own aspect ratio, after that.
 Defaults to `null` (with the default `height` of `1` and `aspect` of `16 / 9`, a plane 1.78 wide before the first frame,
 1.33 wide for a 4:3 video after it). When `width` and `height` are both `null` the plane has no size.
 
 ### `.height`: Number|null
 
 The fixed height of the plane when not using a custom geometry. Can be set to `null` to be automatic: the height is
-then `width` / `aspect` until the video's first frame has arrived, and `width` / the video's own width / height after
-that. Defaults to `1`, so a `width` alone gives a fixed plane: set `height` to `null` for an automatic one.
+then `width / aspect` until the video's first frame has arrived, and `width / (videoWidth / videoHeight)`, with the
+video's own aspect ratio, after that. Defaults to `1`, so a `width` alone gives a fixed plane: set `height` to `null` for an automatic one.
 
 ### `.geometry`: Geometry
 

@@ -36,10 +36,13 @@ const box = app.create('mesh', {
 app.add(box)
 ```
 
-With `linked: true` (the default), the meshes scripts made that draw the same geometry (the same box size, sphere
-radius or geometry given), in any app, are drawn together as one batch with one white material, apart from the meshes
-of a model that have that geometry and a material of their own. They share that material: its `color`, for one, is the
-same for all of them. With `linked: false` each has a white material of its own. (Until this was corrected, giving a
+With `linked: true` (the default), the meshes one app's script made that draw the same geometry (the same box size,
+sphere radius or geometry given) with the same `castShadow` and `receiveShadow` are drawn together as one batch, with
+one white material of that app's own. They share that material: its `color`, for one, is the same for all of them.
+Another app's meshes are another batch with another material, so one app's script cannot recolour them; so are the
+meshes of a model that have that geometry and a material of their own. The batch and its material are let go once the
+batch has had no mesh for 10 seconds (for instance after the app is removed). With `linked: false` each mesh has a
+white material of its own. (Until this was corrected, giving a
 `geometry` to a script's mesh with `linked: true` crashed the app.)
 
 These were observed in a test that runs a script with the engine's app, stage and mesh node, not in a browser ("drawn"

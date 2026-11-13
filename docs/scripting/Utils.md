@@ -22,8 +22,10 @@ const randomInt = num(0, 10);
 const randomFloat = num(100, 1000, 2);
 ```
 
-`num` rounds a `Math.random()` number to `dp` decimal places, so `min` and `max` come up half as often as each value
-between them. Measured: over 40,000 calls `num(0, 3)` gave 0 6784 times, 1 13169 times, 2 13461 times and 3 6586 times.
+`num` rounds a `Math.random()` number to `dp` decimal places. So when `min` and `max` are themselves on that grid (whole
+numbers for `dp` 0), they come up half as often as each value between them. Measured over 40,000 calls each: `num(0, 3)`
+gave 0 6784 times, 1 13169 times, 2 13461 times and 3 6586 times; `num(0.5, 3.5)` gave 1, 2 and 3 13250, 13296 and
+13454 times.
 
 ---
 
@@ -31,7 +33,9 @@ between them. Measured: over 40,000 calls `num(0, 3)` gave 0 6784 times, 1 13169
 
 `prng(seed)` returns a function `rand(min, max, dp = 0)` that draws numbers from a sequence fixed by `seed`. `rand(max)`
 is `rand(0, max)`, `min` and `max` are swapped when `min` is the larger, and `dp` asks for that many decimal places.
-With `dp` 0 the result is a whole number from `min` to `max`, both included.
+With `dp` 0 the result is `min` plus a whole number, up to `max`: a whole number from `min` to `max`, both included,
+when `min` and `max` are whole numbers, and otherwise not (`prng(42)` with `rand(0.5, 3.5)` gives 0.5, 1.5, 2.5 and
+3.5).
 
 ```javascript
 const rand = prng(42)
@@ -53,8 +57,10 @@ seeds, 4,200 calls each, the same numbers in all three. `prng()` and `prng(0)` u
 | `100`   | 1265 | 1187 | 814  | 734  |
 | `12345` | 1051 | 1044 | 950  | 955  |
 
-Seed `1` was still uneven after 400,000 calls (102526, 98004, 100675, 98795). A seed whose lowest 31 bits are all 0
-(`2147483648`, `4294967296`, `-2147483648`, ...) gives `min` on every call.
+Seed `1` was still uneven after 400,000 calls (102526, 98004, 100675, 98795). A seed other than `0` whose lowest 31 bits
+are all 0 (`2147483648`, `4294967296`, `-2147483648`, ...) gives the same number on every call, the smallest it can
+give: `min` with `dp` 0 (`rand(3, 9)` gives 3, `rand(0.5, 3)` gives 0.5), and `min` rounded up to `dp` decimal places
+otherwise (`rand(0.05, 1, 1)` gives 0.1). Seed `0` is the built-in seed (above).
 
 **The range has a limit.** `max - min` must be at most `2147483647`; with decimals, `(max - min) * 10 ** dp` must be.
 For a larger range about half of the results are below `min` (negative when `min` is 0), and none is more than
@@ -75,8 +81,8 @@ When a script needs evenly spread numbers:
 
 - `Math.random()` works in a script (it is the engine's own `Math`). `Math.floor(Math.random() * (max - min + 1)) + min`
   gives a whole number from `min` to `max`; measured for 0 to 3 over 40,000 calls: 10261, 9940, 9751, 10048. It has no
-  seed: each call, on the server and in each browser, gives a different number. `num` (above) favours the values
-  between its ends.
+  seed: its numbers are not the same on the server and in each browser, and a number may come up again. `num` (above)
+  favours the values between its ends.
 - For a sequence that repeats from a seed, a script can carry its own generator. The one below (known as Mulberry32)
   ran in a script: for seeds 1 to 20, 40,000 calls each, each of 0 to 3 came up between 9,743 and 10,221 times, and it
   gave the same numbers in Node, Chromium and WebKit.

@@ -11,8 +11,8 @@ import { createSweep } from './lib/sweepWorld.mjs'
 // A mesh a script makes (`app.create('mesh')`) has no material: a script cannot set one. Given a geometry, a linked one
 // (the default) crashed its app in Stage.insertLinked (it read the uuid of the missing material). Here, through the
 // script's handle in the sweep world (the real App, Apps, Stage and Mesh node): such a mesh is drawn with the stage's
-// fallback material, a white standard one, and material-less meshes of one geometry share one batch, apart from the
-// batch of a mesh with a real material.
+// fallback material, a white standard one, and an app's material-less meshes of one geometry share one batch, apart
+// from the batch of a mesh with a real material and from another app's (a script can recolour the material).
 let bundle
 let m
 let scripts
@@ -149,18 +149,6 @@ test("two of a script's meshes of one geometry share one batch, apart from a rea
   // one material for the batch: both handles read it
   assert.ok(a.handle.material === b.handle.material, 'one material')
   assert.equal(world.stage.scene.children.filter(object => object.isInstancedMesh).length, 2)
-  // a second app's material-less mesh of that geometry joins the same batch
-  const other = sweep.addApp(
-    world,
-    `app.add((app.state.c = app.create('mesh', { type: 'geometry', geometry: app.get('first').geometry })))`,
-    'b'
-  )
-  await sweep.tick()
-  world.stage.update()
-  assert.equal(other.crashed, false, other.scriptError?.message)
-  assert.ok(ofNode(world, m.getNodeRef(other.data.state.c)) === model, "the second app's joins it")
-  assert.equal(model.items.length, 3)
-  other.destroy()
   // one removed: the other stays, drawn
   a.parent.remove(a)
   world.stage.clean()
@@ -188,7 +176,7 @@ test("a hidden script's mesh (visible false) with a geometry is in the octree, a
   )
 })
 
-test("a script's boxes of one size share a batch, as do its spheres of one radius; another size is another batch", async () => {
+test("a script's boxes of one size share a batch, as do its spheres of one radius; another size or shadow flag is another batch", async () => {
   const { world, app } = await run(`
     const geometry = app.get('first').geometry
     for (const options of [
@@ -197,17 +185,81 @@ test("a script's boxes of one size share a batch, as do its spheres of one radiu
       { type: 'box', width: 3 },
       { type: 'sphere', radius: 2 },
       { type: 'sphere', radius: 2 },
+      { type: 'box', width: 2, castShadow: false },
     ]) app.add(app.create('mesh', { ...options, geometry }))
   `)
   assert.equal(app.crashed, false, app.scriptError?.message)
-  // the model's batch of two, then the boxes of width 2, the box of width 3, the spheres
+  // the model's batch of two, then the boxes of width 2, the box of width 3, the spheres, the box of width 2 that casts no
+  // shadow (other shadow flags: another batch, with a material of its own)
   assert.deepEqual(
     batches(world).map(b => b.count),
-    [2, 2, 1, 2]
+    [2, 2, 1, 2, 1]
   )
+  const [, boxes, , , unshadowed] = batches(world)
+  assert.ok(boxes.model.iMesh.material !== unshadowed.model.iMesh.material)
   assert.ok(
     batches(world)
       .slice(1)
       .every(b => white(b.model.iMesh.material))
   )
+})
+
+// two apps of one blueprint's model: each app's material-less boxes are a batch of their own with a material of their
+// own, so app A's recolour through its handle never reaches app B; the model's meshes (a real material) are still one
+// batch for both apps. A's batch and its material go once A is removed and the batch has been empty for the idle time.
+test("a script's fallback material is its app's own: a recolour stays in the app; it goes with the app's batch", async () => {
+  const env = sweep.makeWorld()
+  const { world } = env
+  const code = recolour => `
+    const geometry = app.get('first').geometry
+    app.state.m1 = app.create('mesh', { type: 'box', width: 2, geometry })
+    app.state.m2 = app.create('mesh', { type: 'box', width: 2, geometry })
+    app.add(app.state.m1)
+    app.add(app.state.m2)
+    ${recolour ? `app.state.m1.material.color = 'red'` : ''}
+  `
+  const a = sweep.addApp(world, code(true), 'a')
+  const b = sweep.addApp(world, code(false), 'b')
+  await sweep.tick()
+  world.stage.clean()
+  world.stage.update()
+  assert.equal(a.crashed, false, a.scriptError?.message)
+  assert.equal(b.crashed, false, b.scriptError?.message)
+  const batchA = ofNode(world, m.getNodeRef(a.data.state.m1))
+  const batchB = ofNode(world, m.getNodeRef(b.data.state.m1))
+  assert.ok(ofNode(world, m.getNodeRef(a.data.state.m2)) === batchA, 'within app A one batch')
+  assert.ok(ofNode(world, m.getNodeRef(b.data.state.m2)) === batchB, 'within app B one batch')
+  assert.ok(batchA !== batchB, 'a batch per app')
+  assert.ok(batchA.iMesh.material !== batchB.iMesh.material, 'a material per app')
+  assert.equal(batchA.iMesh.material.color.getHexString(), 'ff0000', "A's recolour")
+  assert.equal(batchB.iMesh.material.color.getHexString(), 'ffffff', "B's material is as it was")
+  assert.equal(b.data.state.m2.material.color.getHexString(), 'ffffff', "B's handle reads white")
+  assert.equal(batchB.iMesh.instanceColor, null, 'no instance colour in B')
+  assert.deepEqual([batchA.items.length, batchB.items.length], [2, 2])
+  // the model's own meshes, one real material: one batch for both apps, as before
+  const modelBatch = ofNode(world, a.root.get('first'))
+  assert.ok(ofNode(world, b.root.get('first')) === modelBatch, "the model's batch is shared")
+  assert.equal(modelBatch.items.length, 4)
+  // A removed: its batch empties, and goes with its material after the idle time; B's stays
+  const idA = batchA.id
+  const fallbackA = world.stage.linkedMaterials.get(idA)
+  assert.ok(fallbackA?.raw === batchA.iMesh.material, "A's fallback is the batch's material")
+  let disposed = 0
+  fallbackA.raw.addEventListener('dispose', () => disposed++)
+  a.destroy()
+  world.time = 0
+  world.stage.update()
+  assert.equal(batchA.items.length, 0)
+  assert.ok(world.stage.models.get(idA) === batchA, 'kept through the idle time')
+  world.time = 11
+  world.stage.update()
+  assert.equal(world.stage.models.has(idA), false, "A's batch released")
+  assert.equal(world.stage.linkedMaterials.has(idA), false, "A's fallback material released")
+  assert.equal(disposed, 1, 'and disposed, once')
+  assert.ok(world.stage.models.get(batchB.id) === batchB, "B's batch stays")
+  assert.ok(world.stage.linkedMaterials.get(batchB.id)?.raw === batchB.iMesh.material, "B's material stays")
+  assert.equal(batchB.items.length, 2)
+  assert.ok(world.stage.scene.children.includes(batchB.iMesh))
+  assert.equal(modelBatch.items.length, 2, "the model's batch keeps B's")
+  b.destroy()
 })

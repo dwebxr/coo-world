@@ -13,7 +13,7 @@ let bundle
 let net
 before(async () => {
   bundle = await bundleRealPhysx()
-  net = await loadNetwork()
+  net = await loadNetwork({ sourceRoot: process.env.REAL_PHYSX_SOURCE_ROOT })
 })
 after(() => {
   bundle?.destroy()
@@ -23,9 +23,10 @@ after(() => {
 test('persistence: real static rigidbody proxy in discarded state cannot invoke native getters', async () => {
   await runRealPhysx(
     bundle,
-    async ({ body }, { harness, networkUrl }) => {
+    async ({ body }, { harness, helper, network: evaluation }) => {
       const { database, fixture } = await import(harness)
-      const net = await import(networkUrl)
+      const { importNetwork } = await import(helper)
+      const net = await importNetwork(evaluation)
       const cleanups = []
       const { db, tables } = database()
       const { network, entity, socket } = fixture({ after: fn => cleanups.push(fn) }, { net, db })
@@ -40,7 +41,11 @@ test('persistence: real static rigidbody proxy in discarded state cannot invoke 
         for (const cleanup of cleanups) cleanup()
       }
     },
-    { harness: new URL('./lib/persistenceFixture.mjs', import.meta.url).href, networkUrl: net.url }
+    {
+      harness: new URL('./lib/persistenceFixture.mjs', import.meta.url).href,
+      helper: new URL('./lib/network.mjs', import.meta.url).href,
+      network: { url: net.url, env: net.env },
+    }
   )
 })
 

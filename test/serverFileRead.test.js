@@ -16,8 +16,9 @@ import { ASSET_PROTOCOL, resolveReference } from '../src/core/extras/assetURL.js
 // every fs read the loader makes.
 
 // the real network and Blueprints, imported before any test puts the loader's globals in place (as the server
-// imports them before it makes its loader)
-const net = await loadNetwork()
+// imports them before it makes its loader); against the REAL_PHYSX_SOURCE_ROOT checkout when it is set, as
+// persistenceHarness.mjs ran them
+const net = await loadNetwork({ sourceRoot: process.env.REAL_PHYSX_SOURCE_ROOT })
 const { Blueprints } = net
 
 // World.resolveURL as the engine defines it (the loader's own mapping of asset:// and remote URLs)

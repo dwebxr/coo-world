@@ -10,7 +10,8 @@ import { database, deferred, fixture as persistenceFixture } from './lib/persist
 import { Storage } from '../src/server/Storage.js'
 import { installShutdown } from '../src/server/shutdown.js'
 
-const net = await loadNetwork()
+// (against the REAL_PHYSX_SOURCE_ROOT checkout when it is set, as persistenceHarness.mjs ran it)
+const net = await loadNetwork({ sourceRoot: process.env.REAL_PHYSX_SOURCE_ROOT })
 const { Settings } = net
 const fixture = (t, db) => persistenceFixture(t, { net, db })
 
@@ -444,17 +445,12 @@ test(
 
 test('a stored settings row that cannot be parsed does not make every visitor an admin', { timeout: 5000 }, async t => {
   t.mock.method(console, 'error', () => {})
-  const saved = process.env.ADMIN_CODE
-  process.env.ADMIN_CODE = 'a-code-for-this-test'
-  t.after(() => {
-    if (saved === undefined) delete process.env.ADMIN_CODE
-    else process.env.ADMIN_CODE = saved
-  })
   const { db, tables } = database()
   tables.config.set('settings', { key: 'settings', value: '{' })
   tables.config.set('spawn', { key: 'spawn', value: JSON.stringify({ position: [0, 0, 0], quaternion: [0, 0, 0, 1] }) })
   const network = makeNetwork(t, {
     net,
+    env: { ADMIN_CODE: 'a-code-for-this-test' },
     world: { blueprints: { add() {} }, entities: { add() {} } },
     init: {
       db: table =>

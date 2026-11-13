@@ -11,7 +11,7 @@ const policyUrl = process.env.REAL_PHYSX_SOURCE_ROOT
   : new URL('../src/core/extras/entityModifyPolicy.js', import.meta.url)
 const policy = await import(policyUrl)
 const options = { blueprintExists: id => id === 'bp' }
-const net = await loadNetwork()
+const net = await loadNetwork({ sourceRoot: process.env.REAL_PHYSX_SOURCE_ROOT })
 const { Blueprints } = net
 
 function fixture(t, blueprints = [], entities = [], extra = {}) {

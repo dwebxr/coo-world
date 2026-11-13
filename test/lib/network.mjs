@@ -3,24 +3,34 @@
 // class out of its source text (networkHarness.mjs, persistenceHarness.mjs), which ran it in another realm with
 // injected names.
 //
-// loadNetwork({ replace, env, sourceRoot }) → net: the bundle's exports (below) plus `url` and `destroy`.
-//   `replace` and `sourceRoot` as bundleServer takes them; `sourceRoot` is REAL_PHYSX_SOURCE_ROOT unless given.
-//   `env`: values process.env holds while the bundle is evaluated (bundleServer's importWith), for constants a
-//   module computes at import; process.env is as before once this returns.
+// The environment is a known one. testEnvironment(): every name the server reads (envTable.mjs), but the system's
+// PATH, HOME and TMPDIR, unset, as the old harness gave the class (`process: { env: {} }`); the defaults the code
+// documents apply (SAVE_INTERVAL 60, no token gate, no EVM, no admin code, …). The bundle is evaluated with it
+// (plus loadNetwork's `env`), and process.env holds it (plus makeNetwork's `env`) from makeNetwork to the test's end,
+// when the values the test found are put back. What a developer's shell sets changes nothing in these tests.
+//
+// loadNetwork({ replace, env, sourceRoot }) → net: the bundle's exports (below) plus `url` and `env` (the evaluation
+//   these exports come from, and the environment it was evaluated with: a worker or a child process imports that
+//   one with importNetwork({ url, env })) and `destroy`. `replace` and `sourceRoot` as buildServer takes them; a
+//   file that ran against REAL_PHYSX_SOURCE_ROOT before passes it as `sourceRoot` (nothing else reads it).
 //   The classes a test constructs (Socket, RpcError, Settings, …) are taken from `net`: they are the ones the
-//   network's code sees, so identity and instanceof hold. One bundle per distinct (replace, sourceRoot) and process.
+//   network's code sees, so identity and instanceof hold. One build per distinct (replace, sourceRoot) and process,
+//   one evaluation per environment.
 //   (`net` holds the exports' values: an override a setter changes is read through its module's namespace, such as
 //   net.solanaGating.TOKEN_GATING_ENABLED.)
 //   Entities is the real one; the entity classes it makes are stand-ins (`class {}`, as the old harness gave them)
 //   unless `replace` gives others: the real ones bring the client's modules (three's examples, which touch
 //   `document` at import when a test has put one in place) and no test of the network constructs them.
-// makeNetwork(t, { net, world, log, init }) → a network made by the real constructor and init(), on a stub world.
-//   world: fields the stub world has besides (or instead of) the ones below. init: what init() is given (db,
-//   tokenBalanceService, evmHoldings, tipWatcher, evmSignatureVerifier, maxUploadSize). log: where the network's own
-//   once-per-subject lines go (its logOnce, inbound gate and write ledger, made with that sink instead of the
-//   console). The test's end stops it (stopForFatal), which clears every timer the class keeps.
+// makeNetwork(t, { net, world, log, init, env }) → a network made by the real constructor and init(), on a stub
+//   world. world: fields the stub world has besides (or instead of) the ones below. init: what init() is given (db,
+//   tokenBalanceService, evmHoldings, tipWatcher, evmSignatureVerifier, maxUploadSize). env: values on top of the
+//   known environment and of net.env, for what the class reads when it runs (ADMIN_CODE, ASSETS_BASE_URL, …).
+//   log: where the network's own once-per-subject lines go (its logOnce, inbound gate and write ledger, made with
+//   that sink instead of the console). The test's end stops it (stopForFatal), which clears every timer the class
+//   keeps, and puts the environment back.
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import { ENV_TABLE } from './envTable.mjs'
 
 const ENTRY = `
   export { ServerNetwork } from './src/core/systems/ServerNetwork.js'
@@ -44,15 +54,67 @@ const STAND_IN_ENTITIES = {
   'src/core/entities/PlayerRemote.js': 'export class PlayerRemote {}',
 }
 
-export async function loadNetwork({ replace, env, sourceRoot = process.env.REAL_PHYSX_SOURCE_ROOT } = {}) {
+// the system's own, which the server reads too and the tests leave as they are (and the build's define keys)
+const KEPT = new Set(['PATH', 'HOME', 'TMPDIR', 'CLIENT', 'SERVER'])
+
+// every name the server reads, unset (null); a name of a family (EVM_RPC_URL_*) is listed where the environment
+// has one
+export function testEnvironment(ambient = process.env) {
+  const env = {}
+  for (const name of Object.keys(ENV_TABLE)) {
+    if (KEPT.has(name)) continue
+    if (!name.endsWith('*')) env[name] = null
+    else for (const key of Object.keys(ambient)) if (key.startsWith(name.slice(0, -1))) env[key] = null
+  }
+  return env
+}
+
+// undefined and null both mean unset; null is what survives a hand-off as JSON
+const known = (env = {}) =>
+  Object.fromEntries(Object.entries(env).map(([name, value]) => [name, value == null ? null : String(value)]))
+
+const setEnv = (name, value) => {
+  if (value == null) delete process.env[name]
+  else process.env[name] = value
+}
+
+export async function loadNetwork({ replace, env, sourceRoot } = {}) {
   // (imported here: a worker that only constructs from a bundle the main thread built never loads esbuild)
-  const { bundleServer } = await import('./serverBundle.mjs')
-  const bundle = await bundleServer(ENTRY, {
-    replace: { ...STAND_IN_ENTITIES, ...replace },
-    sourceRoot: sourceRoot || undefined,
-  })
-  const module = env ? await bundle.importWith(env) : bundle.module
-  return { ...module, url: bundle.url, destroy: bundle.destroy }
+  const { buildServer } = await import('./serverBundle.mjs')
+  const built = await buildServer(ENTRY, { replace: { ...STAND_IN_ENTITIES, ...replace }, sourceRoot })
+  const evaluation = { ...testEnvironment(), ...known(env) }
+  try {
+    const { module, url } = await built.evaluate(evaluation)
+    return { ...module, url, env: evaluation, destroy: built.destroy }
+  } catch (err) {
+    built.destroy()
+    throw err
+  }
+}
+
+// In a worker or a child process: the evaluation loadNetwork made in the test ({ url, env } of its result), with
+// its environment set first (a fresh process or worker starts from its own, which the query in the url does not
+// change). That environment stays: the worker or process is the test's.
+export async function importNetwork({ url, env }) {
+  for (const [name, value] of Object.entries(env)) setEnv(name, value)
+  return { ...(await import(url)), url, env }
+}
+
+// The environment of a test, from its first makeNetwork to its end: each name the test changes is put back to the
+// value it had before the first change
+const environments = new WeakMap()
+function testEnv(t, env) {
+  let saved = environments.get(t)
+  if (!saved) {
+    environments.set(t, (saved = new Map()))
+    t.after(() => {
+      for (const [name, value] of saved) setEnv(name, value)
+    })
+  }
+  for (const [name, value] of Object.entries(env)) {
+    if (!saved.has(name)) saved.set(name, Object.hasOwn(process.env, name) ? process.env[name] : null)
+    setEnv(name, value)
+  }
 }
 
 // The world the old harnesses gave the network (networkHarness.mjs's makeNetwork): the app event ledger and the
@@ -66,9 +128,10 @@ export function stubWorld(net, fields = {}) {
   }
 }
 
-// `net`: what loadNetwork returned, or the namespace of its bundle imported elsewhere (a worker)
-export function makeNetwork(t, { net, world: fields, log, init = {} } = {}) {
-  assert.ok(net?.ServerNetwork, 'makeNetwork: pass the bundle loadNetwork() gave as `net`')
+// `net`: what loadNetwork returned, or importNetwork in a worker or a child process
+export function makeNetwork(t, { net, world: fields, log, init = {}, env } = {}) {
+  assert.ok(net?.ServerNetwork && net.env, 'makeNetwork: pass what loadNetwork() or importNetwork() gave as `net`')
+  testEnv(t, { ...testEnvironment(), ...net.env, ...known(env) })
   const world = stubWorld(net, fields)
   const network = new net.ServerNetwork(world)
   world.network = network

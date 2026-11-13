@@ -1,7 +1,7 @@
 // Bundles server modules (whose imports omit the `.js` extension) into a temp ESM file that node:test can import,
 // with packages resolved from the repo's node_modules, as persistenceIntegration.test.js does for the server.
 //
-// bundleServer(contents, { replace, sourceRoot }) → { module, url, importWith(env), destroy }
+// buildServer(contents, { replace, sourceRoot }) → { url, evaluate(env), destroy }: the bundle built, not evaluated.
 // - `replace`: { 'src/…/module.js': source } — the module, wherever the bundle imports it, is that source instead
 //   (resolved from the module's own folder, so its relative imports read as in the original). In the source,
 //   `'real:'` is the real module: `export * from 'real:'` plus local `export let name = …` overrides keeps the rest
@@ -10,17 +10,22 @@
 //   importers see `let` exports as live bindings. A replaced module the bundle never imports is an error.
 // - `sourceRoot`: a checkout whose src/core and src/server files are read instead of this one's where they exist
 //   (REAL_PHYSX_SOURCE_ROOT, as in persistedStartup.test.js); `replace` wins over it.
-// - `importWith(env)`: the same bundle evaluated again with `env` in process.env, for constants a module computes
-//   from the environment at import (SAVE_INTERVAL, the gating flags). The values (undefined: unset) are put into
-//   process.env, the bundle is imported under a query naming them, and process.env is restored before this returns.
-//   A second call with the same values returns the same module instance. Every evaluation has its own classes, so
-//   a test takes Socket, the error classes, … from the module it constructs the network from.
-// Bundles are cached per (contents, replace, sourceRoot): a file whose tests ask for the same bundle builds it once
-// and gets one module instance. Each call is one reference; `destroy()` gives it up and the temp folder is removed
-// with the last one (or when the process exits).
+// - `evaluate(env)` → { module, url }: the bundle evaluated with `env` in process.env, for constants a module
+//   computes from the environment at import (SAVE_INTERVAL, the gating flags). The values (null or undefined: unset)
+//   are put into process.env, the bundle is imported under a query that names them (`url` is that evaluation's),
+//   and process.env is restored before this returns, whether the import succeeded or threw. Evaluations of every
+//   bundle of the process run one at a time, so none sees another's values. The same values give the same module
+//   instance; every evaluation has its own classes, so a test takes Socket, the error classes, … from the module it
+//   constructs the network from. Without `env` the bundle is evaluated with the environment as it is.
+// bundleServer(contents, options) → { module, url, evaluate, destroy }: built and evaluated with the environment as
+// it is (the bundles of cleanerTrash.test.js and assets.test.js).
+// Builds are cached per (contents, replace, sourceRoot): a file whose tests ask for the same bundle builds it once.
+// Each call is one reference; `destroy()` gives it up and the temp folder is removed with the last one (or when the
+// process exits). heldBundles(): how many builds are held, for the tests of this helper.
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import * as esbuild from 'esbuild'
 
@@ -103,15 +108,16 @@ async function build(contents, { replace, sourceRoot }) {
         if (!inputs.has(file)) throw new Error(`replace: ${path.relative(root, file)} is not imported by the bundle`)
       }
     }
-    const url = pathToFileURL(outfile).href
-    return { dir, url, module: await import(url) }
+    return { dir, url: pathToFileURL(outfile).href }
   } catch (err) {
     fs.rmSync(dir, { recursive: true, force: true })
     throw err
   }
 }
 
-export async function bundleServer(contents, { replace, sourceRoot } = {}) {
+export const heldBundles = () => cache.size
+
+export async function buildServer(contents, { replace, sourceRoot } = {}) {
   const key = JSON.stringify([contents, Object.entries(replace ?? {}).sort(), sourceRoot ?? null])
   let entry = cache.get(key)
   if (!entry) {
@@ -119,7 +125,7 @@ export async function bundleServer(contents, { replace, sourceRoot } = {}) {
     entry.ready = build(contents, { replace, sourceRoot }).then(
       built => Object.assign(entry, built),
       err => {
-        cache.delete(key)
+        if (cache.get(key) === entry) cache.delete(key)
         throw err
       }
     )
@@ -140,26 +146,46 @@ export async function bundleServer(contents, { replace, sourceRoot } = {}) {
     held = false
     throw err
   }
-  return {
-    module: entry.module,
-    url: entry.url,
-    importWith: env => importWith(entry.url, env),
-    destroy: release,
+  return { url: entry.url, evaluate: env => evaluate(entry.url, env), destroy: release }
+}
+
+export async function bundleServer(contents, options) {
+  const built = await buildServer(contents, options)
+  try {
+    const { module } = await built.evaluate()
+    return { module, url: built.url, evaluate: built.evaluate, destroy: built.destroy }
+  } catch (err) {
+    built.destroy()
+    throw err
   }
 }
 
-async function importWith(url, env) {
-  const names = Object.keys(env).sort()
-  const saved = new Map(names.map(name => [name, Object.hasOwn(process.env, name) ? process.env[name] : undefined]))
-  const set = (name, value) => {
-    if (value === undefined) delete process.env[name]
-    else process.env[name] = String(value)
-  }
-  try {
-    for (const name of names) set(name, env[name])
-    const query = new URLSearchParams(names.map(name => [name, env[name] === undefined ? '\0' : String(env[name])]))
-    return await import(`${url}?${query}`)
-  } finally {
-    for (const [name, value] of saved) set(name, value)
-  }
+// one evaluation at a time, process-wide: each sets process.env for its own import only
+let queue = Promise.resolve()
+function serially(task) {
+  const run = queue.then(task)
+  queue = run.catch(() => {})
+  return run
+}
+
+const setEnv = (name, value) => {
+  if (value === undefined || value === null) delete process.env[name]
+  else process.env[name] = String(value)
+}
+
+function evaluate(url, env = {}) {
+  return serially(async () => {
+    const names = Object.keys(env).sort()
+    const values = names.map(name => [name, env[name] === undefined || env[name] === null ? null : String(env[name])])
+    const at = names.length
+      ? `${url}?env=${createHash('sha256').update(JSON.stringify(values)).digest('hex').slice(0, 16)}`
+      : url
+    const saved = names.map(name => [name, Object.hasOwn(process.env, name) ? process.env[name] : undefined])
+    try {
+      for (const [name, value] of values) setEnv(name, value)
+      return { module: await import(at), url: at }
+    } finally {
+      for (const [name, value] of saved) setEnv(name, value)
+    }
+  })
 }

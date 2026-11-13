@@ -4,9 +4,15 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { EventEmitter } from 'node:events'
-import { database, fixture, load, Network, Settings, deferred } from './lib/persistenceHarness.mjs'
+import { load } from './lib/persistenceHarness.mjs'
+import { loadNetwork, makeNetwork } from './lib/network.mjs'
+import { database, deferred, fixture as persistenceFixture } from './lib/persistenceFixture.mjs'
 import { Storage } from '../src/server/Storage.js'
 import { installShutdown } from '../src/server/shutdown.js'
+
+const net = await loadNetwork()
+const { Settings } = net
+const fixture = (t, db) => persistenceFixture(t, { net, db })
 
 const ServerAI = load('core/systems/ServerAI.js', 'ServerAI', {
   fs: { readFileSync: () => '' },
@@ -297,30 +303,33 @@ for (const phase of ['spawn read', 'settings read', 'invalid settings', 'unchang
     const spawn = JSON.stringify({ position: [12, 3, 4], quaternion: [0, 0, 0, 1] })
     tables.config.set('settings', { key: 'settings', value: settings })
     tables.config.set('spawn', { key: 'spawn', value: spawn })
-    const world = { blueprints: { add() {} }, entities: { add() {} } }
-    const network = new Network(world)
-    world.network = network
-    world.settings = new Settings(world)
-    t.after(() => network.stopForFatal())
     const held = deferred()
     const started = deferred()
     t.after(() => held.resolve())
-    network.db = table =>
-      table !== 'config'
-        ? []
-        : {
-            ...db(table),
-            where: (key, id) => ({
-              first: async () => {
-                const row = tables.config.get(id)
-                if (phase === `${id} read`) {
-                  started.resolve()
-                  await held.promise
-                }
-                return row
+    const network = makeNetwork(t, {
+      net,
+      world: { blueprints: { add() {} }, entities: { add() {} } },
+      init: {
+        db: table =>
+          table !== 'config'
+            ? []
+            : {
+                ...db(table),
+                where: (key, id) => ({
+                  first: async () => {
+                    const row = tables.config.get(id)
+                    if (phase === `${id} read`) {
+                      started.resolve()
+                      await held.promise
+                    }
+                    return row
+                  },
+                }),
               },
-            }),
-          }
+      },
+    })
+    const world = network.world
+    world.settings = new Settings(world)
     const boot = network.start()
     if (phase.endsWith('read')) await started.promise
     else await boot
@@ -444,13 +453,16 @@ test('a stored settings row that cannot be parsed does not make every visitor an
   const { db, tables } = database()
   tables.config.set('settings', { key: 'settings', value: '{' })
   tables.config.set('spawn', { key: 'spawn', value: JSON.stringify({ position: [0, 0, 0], quaternion: [0, 0, 0, 1] }) })
-  const world = { blueprints: { add() {} }, entities: { add() {} } }
-  const network = new Network(world)
-  world.network = network
+  const network = makeNetwork(t, {
+    net,
+    world: { blueprints: { add() {} }, entities: { add() {} } },
+    init: {
+      db: table =>
+        table !== 'config' ? [] : { ...db(table), where: (_key, id) => ({ first: async () => tables.config.get(id) }) },
+    },
+  })
+  const world = network.world
   world.settings = new Settings(world)
-  t.after(() => network.stopForFatal())
-  network.db = table =>
-    table !== 'config' ? [] : { ...db(table), where: (_key, id) => ({ first: async () => tables.config.get(id) }) }
   await network.start()
   // "there is a code" was set only after a successful parse: left unset, the settings take everyone for an admin
   assert.equal(world.settings.hasAdminCode, true)

@@ -5,8 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'fs-extra'
 import { loadClient } from './lib/clientHarness.mjs'
-import { load } from './lib/persistenceHarness.mjs'
-import { writePacket } from '../src/core/packets.js'
+import { loadNetwork, makeNetwork } from './lib/network.mjs'
 import { GLTFLoader } from '../src/core/libs/gltfloader/GLTFLoader.js'
 import { anthropicEffort, anthropicRequest, readAnthropicText } from '../src/core/extras/anthropicRequest.js'
 import { ASSET_PROTOCOL, resolveReference } from '../src/core/extras/assetURL.js'
@@ -15,6 +14,11 @@ import { ASSET_PROTOCOL, resolveReference } from '../src/core/extras/assetURL.js
 // such as /etc/hosts or asset://../x was read from disk, and the AI edit/fix actions sent its text to the
 // provider. These tests use a real temporary assets directory with a file beside it (outside it) and spy on
 // every fs read the loader makes.
+
+// the real network and Blueprints, imported before any test puts the loader's globals in place (as the server
+// imports them before it makes its loader)
+const net = await loadNetwork()
+const { Blueprints } = net
 
 // World.resolveURL as the engine defines it (the loader's own mapping of asset:// and remote URLs)
 const worldSource = fs.readFileSync(new URL('../src/core/World.js', import.meta.url), 'utf8')
@@ -241,8 +245,6 @@ test('server ai: an asset:// script is read through the loader and edited', asyn
 })
 
 // start-up: persisted blueprints are loaded as they are, and the ones the loader now refuses are reported once
-const Blueprints = load('core/systems/Blueprints.js', 'Blueprints', { writePacket })
-const Network = load('core/systems/ServerNetwork.js', 'ServerNetwork', { writePacket })
 
 test('start-up: persisted model/script values the server refuses are reported once per blueprint and kept', async t => {
   reset()
@@ -254,16 +256,17 @@ test('start-up: persisted model/script values the server refuses are reported on
     { id: longId, version: 1, model: 'asset://../outside.glb', script: 'blob:nodedata:\n' + 'x'.repeat(100) },
   ]
   const rows = { blueprints: datas.map(data => ({ id: data.id, data: JSON.stringify(data) })), entities: [] }
-  const world = {
-    settings: { deserialize() {}, serialize: () => ({}), setHasAdminCode() {}, on() {} },
-    entities: { items: new Map(), add() {} },
-  }
-  world.network = new Network(world)
+  const { world } = makeNetwork(t, {
+    net,
+    world: {
+      settings: { deserialize() {}, serialize: () => ({}), setHasAdminCode() {}, on() {} },
+      entities: { items: new Map(), add() {} },
+    },
+    init: { db: table => (table === 'config' ? { where: () => ({ first: async () => undefined }) } : rows[table]) },
+  })
   world.network.send = () => {}
   world.blueprints = new Blueprints(world)
   world.loader = makeLoader()
-  world.network.db = table => (table === 'config' ? { where: () => ({ first: async () => undefined }) } : rows[table])
-  t.after(() => world.network.stopForFatal())
   const warnings = []
   t.mock.method(console, 'warn', line => warnings.push(line))
   t.mock.method(console, 'log', () => {})

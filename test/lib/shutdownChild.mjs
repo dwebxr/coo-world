@@ -9,16 +9,18 @@ const mode = process.argv[2]
 const say = line => process.stdout.write(`${line}\n`)
 const deadlineMs = Number(process.argv[3] || 3500)
 
+// the real network (test/lib/network.mjs) on `db`. No test ends here: the final save the signal starts stops it
+// (flushBeforeExit stops it for good first)
+async function realNetwork(db) {
+  const { loadNetwork, makeNetwork } = await import('./network.mjs')
+  const net = await loadNetwork()
+  return makeNetwork({ after() {} }, { net, world: { settings: { serialize: () => ({}) } }, init: { db } })
+}
+
 let network
 if (mode === 'slowconfig') {
   // 200 config writes queued (saveConfig), each blocking the thread for 50 ms
-  const { Network } = await import('./persistenceHarness.mjs')
-  const world = { settings: { serialize: () => ({}) } }
-  network = new Network(world)
-  world.network = network
-  network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
-  network.loadedConfig.set('spawn', JSON.stringify(network.spawn))
-  network.db = () => ({
+  network = await realNetwork(() => ({
     insert: () => ({
       onConflict: () => ({
         merge: async () => {
@@ -30,21 +32,19 @@ if (mode === 'slowconfig') {
         },
       }),
     }),
-  })
+  }))
+  network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
+  network.loadedConfig.set('spawn', JSON.stringify(network.spawn))
   for (let i = 1; i <= 200; i++) network.saveConfig('spawn', { position: [i, 0, 0], quaternion: [0, 0, 0, 1] })
   network.spawn = { position: [200, 0, 0], quaternion: [0, 0, 0, 1] }
 } else if (mode === 'slowdb') {
-  const { Network } = await import('./persistenceHarness.mjs')
-  const world = { settings: { serialize: () => ({}) } }
-  network = new Network(world)
-  world.network = network
   const block = ms => {
     const end = Date.now() + ms
     while (Date.now() < end) {
       // a synchronous write
     }
   }
-  network.db = () => ({
+  network = await realNetwork(() => ({
     insert: row => ({
       onConflict: () => ({
         merge: async () => {
@@ -53,7 +53,7 @@ if (mode === 'slowconfig') {
         },
       }),
     }),
-  })
+  }))
   for (let i = 0; i < 40; i++) network.markBlueprintDirty({ id: `bp${i}`, version: 0 })
 } else if (mode !== 'early') {
   network = {

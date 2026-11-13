@@ -3,33 +3,35 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { test } from 'node:test'
 import { writePacket, readPacket } from '../src/core/packets.js'
-import { load, appData } from './lib/persistenceHarness.mjs'
+import { loadNetwork, makeNetwork } from './lib/network.mjs'
+import { appData } from './lib/persistenceFixture.mjs'
 
 const policyUrl = process.env.REAL_PHYSX_SOURCE_ROOT
   ? pathToFileURL(path.join(process.env.REAL_PHYSX_SOURCE_ROOT, 'src/core/extras/entityModifyPolicy.js'))
   : new URL('../src/core/extras/entityModifyPolicy.js', import.meta.url)
 const policy = await import(policyUrl)
 const options = { blueprintExists: id => id === 'bp' }
-const Blueprints = load('core/systems/Blueprints.js', 'Blueprints', { writePacket })
-const Network = load('core/systems/ServerNetwork.js', 'ServerNetwork', { writePacket })
+const net = await loadNetwork()
+const { Blueprints } = net
 
 function fixture(t, blueprints = [], entities = [], extra = {}) {
-  const world = {
-    settings: { deserialize() {}, serialize: () => ({}), setHasAdminCode() {}, on() {} },
-    entities: {
-      items: new Map(),
-      add(data) {
-        this.items.set(data.id, { data })
+  const rows = { blueprints, entities }
+  const { world } = makeNetwork(t, {
+    net,
+    world: {
+      settings: { deserialize() {}, serialize: () => ({}), setHasAdminCode() {}, on() {} },
+      entities: {
+        items: new Map(),
+        add(data) {
+          this.items.set(data.id, { data })
+        },
       },
     },
-  }
-  world.network = new Network(world)
+    init: { db: table => (table === 'config' ? { where: () => ({ first: async () => undefined }) } : rows[table]) },
+  })
   world.network.send = () => {}
   world.blueprints = new Blueprints(world)
   Object.assign(world, extra)
-  const rows = { blueprints, entities }
-  world.network.db = table => (table === 'config' ? { where: () => ({ first: async () => undefined }) } : rows[table])
-  t.after(() => world.network.stopForFatal())
   const logs = []
   t.mock.method(console, 'log', line => logs.push(line))
   return { world, logs }

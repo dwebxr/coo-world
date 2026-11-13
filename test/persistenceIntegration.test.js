@@ -6,21 +6,29 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { before, after, test } from 'node:test'
 import * as esbuild from 'esbuild'
 import { bundleRealPhysx, runRealPhysx } from './lib/realPhysx.mjs'
+import { loadNetwork } from './lib/network.mjs'
 
 let bundle
+// the real network, bundled here: the worker imports it (it runs under lockdown, without esbuild)
+let net
 before(async () => {
   bundle = await bundleRealPhysx()
+  net = await loadNetwork()
 })
-after(() => bundle?.destroy())
+after(() => {
+  bundle?.destroy()
+  net?.destroy()
+})
 
 test('persistence: real static rigidbody proxy in discarded state cannot invoke native getters', async () => {
   await runRealPhysx(
     bundle,
-    async ({ body }, { harness }) => {
+    async ({ body }, { harness, networkUrl }) => {
       const { database, fixture } = await import(harness)
+      const net = await import(networkUrl)
       const cleanups = []
       const { db, tables } = database()
-      const { network, entity, socket } = fixture({ after: fn => cleanups.push(fn) }, db)
+      const { network, entity, socket } = fixture({ after: fn => cleanups.push(fn) }, { net, db })
       try {
         const proxy = body('RigidBody', { type: 'static' }).getProxy()
         assert.throws(() => proxy.sleeping, /isSleeping/)
@@ -32,7 +40,7 @@ test('persistence: real static rigidbody proxy in discarded state cannot invoke 
         for (const cleanup of cleanups) cleanup()
       }
     },
-    { harness: new URL('./lib/persistenceHarness.mjs', import.meta.url).href }
+    { harness: new URL('./lib/persistenceFixture.mjs', import.meta.url).href, networkUrl: net.url }
   )
 })
 

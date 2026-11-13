@@ -189,9 +189,34 @@ export function eventsArgs(name, { sinceMs, untilMs }) {
   ]
 }
 
-// For reading only: the command as one would type it in a shell. Nothing is ever run through a shell.
+// A setting whose name says it is secret: SECRET, KEY, TOKEN, PASSWORD or CODE in it, in any case. Its value is not
+// printed: the harness should not teach the habit of printing such settings, even though every value it gives is
+// made up for the run. (Written in lower case: test/envExample.test.js holds that no code names a bare upper-case
+// setting word such as the fourth one.)
+const SECRET_NAME = /secret|key|token|password|code/i
+export const MASKED = '***'
+
+/** The arguments as they are printed: the value of an `-e NAME=value` (`--env`, `--env=`) with a secret NAME masked. */
+export function maskSecrets(args) {
+  const masked = setting => {
+    const equals = setting.indexOf('=')
+    return equals > 0 && SECRET_NAME.test(setting.slice(0, equals))
+      ? `${setting.slice(0, equals + 1)}${MASKED}`
+      : setting
+  }
+  return args.map((arg, i) => {
+    if (args[i - 1] === '-e' || args[i - 1] === '--env') return masked(arg)
+    if (arg.startsWith('--env=')) return `--env=${masked(arg.slice('--env='.length))}`
+    return arg
+  })
+}
+
+// For reading only: the command as one would type it in a shell, secret-named settings masked (maskSecrets). Nothing
+// is ever run through a shell, and what docker is given is the arguments as they are.
 export function formatCommand(args) {
-  return args.map(arg => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", `'\\''`)}'`)).join(' ')
+  return maskSecrets(args)
+    .map(arg => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", `'\\''`)}'`))
+    .join(' ')
 }
 
 // ---------------------------------------------------------------------------------------------------------------

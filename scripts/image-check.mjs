@@ -73,8 +73,9 @@ const started = Date.now()
 const id = crypto.randomBytes(6).toString('hex')
 const names = runNames(id)
 const commitHash = `image-check-${id}`
-// Made up for this run, and named so in the value because the `docker run` lines of the output show it. It signs
-// nothing anybody can use: no port is published and the containers are removed.
+// Made up for this run, and named so in the value. The `docker run` lines of the output show it masked, like any
+// setting with a secret's name (maskSecrets in the library). It signs nothing anybody can use: no port is published
+// and the containers are removed.
 const env = containerEnv(`made-up-for-this-run-${crypto.randomBytes(16).toString('hex')}`)
 
 let interrupted = null // 'SIGINT' or 'SIGTERM' once one has arrived

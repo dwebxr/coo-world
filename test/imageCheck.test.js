@@ -26,6 +26,7 @@ import {
   eventsArgs,
   formatCommand,
   judgeStop,
+  maskSecrets,
   mergeLogs,
   modelFor,
   parseArgs,
@@ -835,6 +836,46 @@ test('a command is printed as one would type it', () => {
   assert.equal(formatCommand(['-e', "A=it's"]), `-e 'A=it'\\''s'`)
 })
 
+test('a printed command masks the value of a setting with a secret\u2019s name; docker gets the real one', () => {
+  const args = [
+    'run',
+    '-e',
+    'JWT_SECRET=made-up-for-this-run-0123abcd',
+    '-e',
+    'PORT=3000',
+    '-e',
+    'ADMIN_CODE=1234',
+    '-e',
+    'LIVEKIT_API_KEY=k',
+    '--env',
+    'GITHUB_TOKEN=t',
+    '--env=DB_PASSWORD=p',
+    '-e',
+    'jwt_secret=lower',
+    '-e',
+    'PUBLIC_API_URL=http://127.0.0.1:3000/api',
+    '-e',
+    'SECRET_WITHOUT_VALUE',
+    '--name',
+    'TOKEN=not-a-setting',
+    'image',
+  ]
+  const copy = [...args]
+  assert.equal(
+    formatCommand(args),
+    "run -e 'JWT_SECRET=***' -e PORT=3000 -e 'ADMIN_CODE=***' -e 'LIVEKIT_API_KEY=***' --env 'GITHUB_TOKEN=***' " +
+      "'--env=DB_PASSWORD=***' -e 'jwt_secret=***' -e PUBLIC_API_URL=http://127.0.0.1:3000/api -e SECRET_WITHOUT_VALUE " +
+      '--name TOKEN=not-a-setting image'
+  )
+  assert.deepEqual(args, copy, 'the arguments themselves are not changed')
+  assert.deepEqual(maskSecrets(['-e', 'JWT_SECRET=x']), ['-e', 'JWT_SECRET=***'])
+  // the build argument is not a setting of the container, and its name is no secret's
+  assert.equal(
+    formatCommand(['build', '--build-arg', 'COMMIT_HASH=image-check-1']),
+    'build --build-arg COMMIT_HASH=image-check-1'
+  )
+})
+
 // a run against the stand-in docker; `respond` changes single answers
 async function simulate(respond, options = {}) {
   const docker = simulatedDocker({ commitHash: HASH, respond })
@@ -1410,12 +1451,19 @@ test('the script against a fake docker: it passes, and writes the summary and th
     assert.match(fs.readFileSync(path.join(logs, 'sigterm.log'), 'utf8'), /\[network\] final save complete/)
     const calls = fake.calls()
     assert.equal(calls.length, 28)
-    // every command the output shows was given to docker with these very arguments
+    // every command the output shows was given to docker with these very arguments, but for the masked secret
     const shown = out.stdout.split('\n').filter(line => line.startsWith('[image-check] $ docker '))
     assert.deepEqual(
       shown.map(line => line.slice('[image-check] $ docker '.length)),
       calls.map(formatCommand)
     )
+    const secrets = calls
+      .filter(args => args[0] === 'run')
+      .map(args => args.find(arg => arg.startsWith('JWT_SECRET=')).slice('JWT_SECRET='.length))
+    assert.equal(secrets.length, 3)
+    assert.match(secrets[0], /^made-up-for-this-run-[0-9a-f]{32}$/, 'docker is given the value itself')
+    assert.ok(!`${out.stdout}${out.stderr}`.includes(secrets[0]), 'the value is not in the output')
+    assert.equal(shown.filter(line => line.includes(" -e 'JWT_SECRET=***' ")).length, 3)
     assert.deepEqual(calls[calls.length - 1].slice(0, 2), ['image', 'rm'])
   } finally {
     fs.rmSync(fake.dir, { recursive: true, force: true })

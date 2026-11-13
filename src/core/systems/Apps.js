@@ -228,14 +228,13 @@ export class Apps extends System {
         }
         // a broadcast reaches the others with the server's `via`, this visitor's player (ServerNetwork.onAppChat): this
         // visitor's own copy says the same. Before the local player is known (a script that runs while the snapshot
-        // is still being read: the joiner's own record comes last) its copy has none and shows as a line of the app
-        // alone; the others' copies have the server's all the same. A line that is not broadcast stays here and has
-        // none.
+        // is still being read: the joiner's own record comes last) its copy has none and shows without the suffix;
+        // the others' copies have the server's all the same. A line that is not broadcast stays here and has none.
         const player = broadcast ? world.entities.player : null
         if (player) message.via = { id: player.data.id, name: player.data.name }
         world.chat.add(message, false)
-        // a client script's broadcast goes to the server as the app's own line (appChat), never as this visitor's
-        // chat: the server names the app from its own blueprint and relays it as kind 'app'
+        // a client script's broadcast goes to the server as a line of this app (appChat), never as this visitor's chat:
+        // the server names the app from its blueprint record and relays it as kind 'app', naming this visitor's player
         if (broadcast) world.network.send('appChat', { id: entity.data.id, body: message.body, from: message.from })
       },
       getPlayer(entity, playerId) {

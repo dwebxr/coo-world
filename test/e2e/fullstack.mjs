@@ -1862,13 +1862,16 @@ async function probes(admin, watcher) {
       const from = bystander.mark()
       await installApp(page, { id: 'b-via', script: 'asset://chat-via-probe.js', model: 'asset://ai.glb' })
       const line = body =>
-        bystander.waitFor(m => m.method === 'onChatAdded' && m.data?.body === body, { from, timeout: 10000 })
+        bystander.waitFor(m => m.method === 'onChatAdded' && m.data?.body === body, {
+          from,
+          timeout: 10000 * TIMEOUT_SCALE,
+        })
       // what the others get: the client script's line names the browser's player (set by the server), the server
-      // script's names nobody
-      // (its app name is not asked: the line can reach the server before the server's own build of the app has
-      // loaded its script, and the server names the app from that build (App.blueprint), '' until then)
+      // script's names nobody. The client script speaks as soon as it starts, which can be before the server's own
+      // build of the app has loaded: the app's name is its blueprint record's all the same
       const client = (await line(`P_VIA_CLIENT ${me.id}`)).data
       eq(client.kind, 'app', 'an app line')
+      eq(client.app, 'b-via', "the app's name, from the server's blueprint record")
       eq(client.from, 'Clerk', 'the display name the script chose')
       eq(JSON.stringify(client.via), JSON.stringify({ id: me.id, name: me.name }), "the browser's player")
       const server = (await line('P_VIA_SERVER')).data
@@ -1897,18 +1900,19 @@ async function probes(admin, watcher) {
       const shown = body => waitUntil(() => row(body), { timeout: 10000, message: `the line ${body} in the chat` })
       const own = await shown(`P_VIA_CLIENT ${me.id}`)
       eq(own.via, `via ${me.name}`, "the browser's own copy names its player")
-      eq(own.title, `Sent from ${me.name}'s browser by this app's script`, 'the hint')
+      eq(own.title, `Relayed from ${me.name}'s connection (player id: ${me.id})`, 'the hint')
       eq(own.opacity, '0.6', 'quieter than the line')
       eq(own.order.join(' '), 'message-app message-from message-via message-body', 'after the app and [from]')
       const wire = await shown('P_VIA_WIRE')
       eq(wire.app, 'b-via', "the app's name, from the server's blueprint")
       eq(wire.from, '[Admin]', 'the display name the packet chose')
       eq(wire.via, `via ${bystanderName}`, "the wire client's player, not the via it claimed")
+      eq(wire.title, `Relayed from ${bystanderName}'s connection (player id: ${bystander.id})`, "the wire client's id")
       const serverRow = await shown('P_VIA_SERVER')
       eq(serverRow.via, null, "the server script's line shows the app alone")
       eq(serverRow.order.join(' '), 'message-app message-from message-body', 'as before')
       eq(errorLines().length + pageErrors.length - errorsBefore, 0, 'no errors')
-      return `the browser (${me.name}) and the wire client (${bystanderName}) each named on their line; the server script's line names nobody; the browser's line reached the others under the app name "${client.app}"`
+      return `the browser (${me.name}) and the wire client (${bystanderName}) each named on their line, with their ids in the hint; the server script's line names nobody`
     }
   )
 

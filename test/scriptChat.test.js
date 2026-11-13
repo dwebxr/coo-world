@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { loadClient, clientWorld } from './lib/clientHarness.mjs'
 import { loadNetwork, makeNetwork } from './lib/network.mjs'
 import { bundleClient, forgedElement, hostileValues, renderSafely } from './lib/renderHarness.mjs'
-import { chatEnvelope, scriptChatMessage } from '../src/core/extras/chatPolicy.js'
+import { CHAT_VIA_ID_MAX_LENGTH, chatEnvelope, scriptChatMessage } from '../src/core/extras/chatPolicy.js'
 import { NAME_MAX_LENGTH } from '../src/core/extras/entityModifyPolicy.js'
 import { strictDecode } from '../src/core/extras/strictDecode.js'
 import { packetNameById, readPacket, writePacket } from '../src/core/packets.js'
@@ -80,10 +80,13 @@ function appChatNetwork(t) {
   const logs = []
   network.logOnce = (_socket, key, line) => logs.push([key, line])
   network.world.chat = { add: (msg, broadcast) => stored.push({ msg, broadcast }) }
+  // an app whose data names its blueprint record (the record's name is the line's app name)
+  network.world.blueprints = new net.Blueprints(network.world)
+  network.world.blueprints.add({ id: 'bp-shop', version: 0, name: 'Shop' })
   network.world.entities = {
     get: id =>
       id === 'shop'
-        ? { isApp: true, blueprint: { name: 'Shop' } }
+        ? { isApp: true, data: { id: 'shop', blueprint: 'bp-shop' }, blueprint: { name: 'Shop' } }
         : id === 'bob'
           ? { isPlayer: true, data: { id: 'bob' } }
           : undefined,
@@ -113,6 +116,60 @@ test("appChat: a client script's broadcast reaches everyone as the app's line, n
   assert.equal(msg.fromId, null)
   assert.notEqual(msg.createdAt, 'forged')
   assert.deepEqual(relayed, [['chatAdded', msg, 'bob']], 'relayed to the others, not back to the sender')
+})
+
+test("appChat: the app's name is its blueprint record's when the line arrives, also before the app's build has loaded", async t => {
+  const network = makeNetwork(t, { net })
+  const world = network.world
+  world.blueprints = new net.Blueprints(world)
+  world.blueprints.add({ id: 'bp-shop', version: 0, name: 'Shop' })
+  // an app as the server's App holds it while its first build is loading: its data names the blueprint record, and
+  // the record the build will keep (App.blueprint) is not set yet
+  const builds = []
+  const shop = {
+    isApp: true,
+    data: { id: 'shop', blueprint: 'bp-shop' },
+    blueprint: undefined,
+    build() {
+      builds.push(this.data.blueprint)
+    },
+  }
+  world.entities = { items: new Map([['shop', shop]]), get: id => world.entities.items.get(id), stateEmptied() {} }
+  const stored = []
+  const relayed = []
+  world.chat = { add: msg => stored.push(msg) }
+  network.send = (name, data) => relayed.push(data)
+  const socket = { id: 'bob', player: { data: { id: 'bob', name: 'Bob' } } }
+  const say = body => network.onAppChat(socket, { id: 'shop', body })
+  // 1. the build has not loaded yet
+  await say('early')
+  // 2. built with the record, which is then modified (a new name) and rebuilds the app: the build still holds the
+  // old record while the line arrives
+  shop.blueprint = world.blueprints.get('bp-shop')
+  world.blueprints.modify({ id: 'bp-shop', version: 1, name: 'Shop 2' })
+  await say('renamed')
+  // 3. the app's data names another record (replaced) while its build still holds the first one
+  world.blueprints.add({ id: 'bp-cafe', version: 0, name: 'Cafe' })
+  shop.data.blueprint = 'bp-cafe'
+  await say('replaced')
+  // 4. a record that does not exist (any more): the name is '' (shown as "App"), as before
+  shop.data.blueprint = 'bp-gone'
+  await say('gone')
+  assert.deepEqual(builds, ['bp-shop'], 'the modify asked the app to build again')
+  assert.equal(shop.blueprint.name, 'Shop', "the app's build still holds the old record")
+  assert.deepEqual(
+    stored.map(msg => [msg.body, msg.app]),
+    [
+      ['early', 'Shop'],
+      ['renamed', 'Shop 2'],
+      ['replaced', 'Cafe'],
+      ['gone', ''],
+    ]
+  )
+  assert.deepEqual(
+    relayed.map(msg => msg.app),
+    ['Shop', 'Shop 2', 'Cafe', '']
+  )
 })
 
 test('appChat: an unknown or non-app entity, or a message that is not text, is dropped and logged once', async t => {
@@ -311,8 +368,10 @@ test('appChat: the stored line, the chat event and the snapshot carry the via; a
   const events = []
   const relayed = []
   network.world.events = { emit: (name, data) => events.push([name, data]) }
+  network.world.blueprints = new net.Blueprints(network.world)
+  network.world.blueprints.add({ id: 'bp-shop', version: 0, name: 'Shop' })
   network.world.entities = {
-    get: id => (id === 'shop' ? { isApp: true, blueprint: { name: 'Shop' } } : undefined),
+    get: id => (id === 'shop' ? { isApp: true, data: { id: 'shop', blueprint: 'bp-shop' } } : undefined),
     getPlayer: () => null,
   }
   network.world.chat = new Chat(network.world)
@@ -369,7 +428,7 @@ test("world.chat from a client script: the sender's own copy of a broadcast name
   assert.deepEqual(world.packets.map(decodePacket).at(-1), ['appChat', { id: 'app', body: 'early', from: null }])
 })
 
-test('Message: an app line a visitor sent says whose browser sent it; one without is drawn as before', () => {
+test("Message: an app line relayed from a visitor's connection says whose; one without is drawn as before", () => {
   const html = msg =>
     renderSafely(ui, ui.createElement(ui.Message, { msg })).replace(/<style[^]*?<\/style>|<!-- -->/g, '')
   // the class the component's style sheet is generated under
@@ -387,28 +446,59 @@ test('Message: an app line a visitor sent says whose browser sent it; one withou
     markup({ kind: 'app', body: 'no app name' }),
     '<div class="_  message app"><span class="message-app">App</span><span class="message-body">no app name</span></div>'
   )
-  // with one: after the app's name and the display name, before the text
-  const suffix = name =>
-    `<span class="message-via" title="Sent from ${name}&#x27;s browser by this app&#x27;s script">via ${name}</span>`
+  // with one: after the app's name and the display name, before the text; the title names the connection that
+  // relayed it and, when the via has a text id, the player id (two visitors of one name differ there)
+  const suffix = (name, id) =>
+    `<span class="message-via" title="Relayed from ${name}&#x27;s connection${id ? ` (player id: ${id})` : ''}">via ${name}</span>`
   assert.equal(
     markup({ kind: 'app', app: 'Shop', from: 'Clerk', body: 'Sale today', via: { id: 'bob', name: 'Bob' } }),
-    `<div class="_  message app"><span class="message-app">Shop</span><span class="message-from">[Clerk]</span>${suffix('Bob')}<span class="message-body">Sale today</span></div>`
+    `<div class="_  message app"><span class="message-app">Shop</span><span class="message-from">[Clerk]</span>${suffix('Bob', 'bob')}<span class="message-body">Sale today</span></div>`
   )
   assert.equal(
     markup({ kind: 'app', app: 'Shop', body: 'x', via: { id: 'bob', name: 'Bob' } }),
-    `<div class="_  message app"><span class="message-app">Shop</span>${suffix('Bob')}<span class="message-body">x</span></div>`
+    `<div class="_  message app"><span class="message-app">Shop</span>${suffix('Bob', 'bob')}<span class="message-body">x</span></div>`
   )
   // a name that is empty or not text is Anonymous (a boxed string, a forged element, an object whose toString throws,
   // a Proxy: none is converted); a long one is cut as a name is
   for (const name of ['', undefined, null, ['Bob'], ...Object.values(hostileValues())]) {
-    assert.ok(html({ kind: 'app', app: 'Shop', body: 'x', via: { id: 'b', name } }).includes(suffix('Anonymous')))
+    assert.ok(html({ kind: 'app', app: 'Shop', body: 'x', via: { id: 'b', name } }).includes(suffix('Anonymous', 'b')))
   }
-  assert.ok(html({ kind: 'app', body: 'x', via: {} }).includes(suffix('Anonymous')), 'a via without a name')
+  assert.ok(html({ kind: 'app', body: 'x', via: {} }).includes(suffix('Anonymous')), 'a via without a name or id')
   assert.ok(html({ kind: 'app', body: 'x', via: hostileValues().proxy }).includes(suffix('Anonymous')), 'a Proxy')
   const long = 'n'.repeat(100)
   assert.ok(
-    html({ kind: 'app', body: 'x', via: { id: 'b', name: long } }).includes(suffix('n'.repeat(NAME_MAX_LENGTH)))
+    html({ kind: 'app', body: 'x', via: { id: 'b', name: long } }).includes(suffix('n'.repeat(NAME_MAX_LENGTH), 'b'))
   )
+  // the id: cut to CHAT_VIA_ID_MAX_LENGTH; missing, empty or not text (a number, a boxed string, a forged element, an
+  // object whose toString throws, a Proxy): the title has no parenthesis
+  assert.ok(
+    html({ kind: 'app', body: 'x', via: { id: 'i'.repeat(100), name: 'Bob' } }).includes(
+      suffix('Bob', 'i'.repeat(CHAT_VIA_ID_MAX_LENGTH))
+    )
+  )
+  for (const id of [undefined, null, '', 7, ['bob'], ...Object.values(hostileValues())]) {
+    const line = html({ kind: 'app', body: 'x', via: { id, name: 'Bob' } })
+    assert.ok(line.includes(suffix('Bob')), String(typeof id))
+    assert.doesNotMatch(line, /player id/, String(typeof id))
+  }
+  // markup in an id is text in the attribute
+  assert.ok(
+    html({ kind: 'app', body: 'x', via: { id: '<b>"x"', name: 'Bob' } }).includes(
+      'title="Relayed from Bob&#x27;s connection (player id: &lt;b&gt;&quot;x&quot;)"'
+    )
+  )
+  // each read once
+  const reads = { name: 0, id: 0 }
+  const counted = {
+    get name() {
+      return reads.name++ === 0 ? 'Bob' : 'Admin'
+    },
+    get id() {
+      return reads.id++ === 0 ? 'bob' : 'admin'
+    },
+  }
+  assert.ok(html({ kind: 'app', body: 'x', via: counted }).includes(suffix('Bob', 'bob')))
+  assert.deepEqual(reads, { name: 1, id: 1 })
   // a via that is not an object, or on a line that is not an app's, shows nothing
   for (const via of ['Bob', 7, true, null]) {
     assert.doesNotMatch(html({ kind: 'app', body: 'x', via }), /message-via/, String(via))

@@ -176,7 +176,7 @@ export const PACKET_RULES = {
   appChat: [
     e2e(
       'app-line',
-      "a client script's world.chat(): relayed, if at all, as the line of an app that exists (kind app, no player id, the app's name from the server's blueprint), naming the sender's player in `via` (the server's, whatever the packet claimed), within the connection's budget. Not checked by anything, and the server cannot tell: which app's script sent it (CHANGELOG \"What remains\")",
+      "a client script's world.chat(): relayed, if at all, as the line of an app that exists (kind app, no player id, the app's name from the server's blueprint record), naming the sender's player in `via` (the server's, whatever the packet claimed), within the connection's budget. Not checked by anything, and the server cannot tell: which app's script sent it (CHANGELOG \"What remains\")",
       'app-chat'
     ),
   ],

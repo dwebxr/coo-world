@@ -38,13 +38,15 @@ export function sanitizeChatMessage(msg) {
 
 // Who produced a message, assigned by the host, never by a script or a client packet:
 // - player: a player's own chat (the server stamps it, with the sender's id and name, on every client packet)
-// - app: a script's world.chat(); never carries a player id, names the app it came from. Only an app line has `via`,
-//   and only one a visitor's client sent (a client script's broadcast): the server sets it on every such line it
-//   relays (ServerNetwork.onAppChat), from the connection, to the id and the name that visitor's player has on the
-//   server, never from the packet; the sender's own client sets the same on its own copy (Apps.js chat). A server
-//   script's line has none. It is an attribution, not an authentication: it says whose session relayed the line,
-//   not that the app's script wrote it (a modified client can send any text under any app's name), and the name
-//   is the one that visitor chose, as on their own chat lines
+// - app: a script's world.chat(), or what a connection sent as one (appChat); never carries a player id; names the
+//   app it was posted under (a relayed line: the name of that app's blueprint record when the server relayed it).
+//   Only an app line has `via`, and only one the server relayed from a visitor's connection (appChat, which a
+//   client script's broadcast sends): the server sets it on every such line (ServerNetwork.onAppChat), from the
+//   connection, to the id and the name that visitor's player has on the server, never from the packet; the
+//   sender's own client sets the same on its own copy of a broadcast (Apps.js chat). A server script's line has
+//   none. It is an attribution, not an authentication: it says whose connection relayed the line, not what wrote
+//   it (a modified client can send any text under any app's name), and the name is the one that visitor chose, as
+//   on their own chat lines
 // - system: a line the server or this client wrote (command replies, notices)
 // - tip: the server's confirmation of an on-chain tip
 // A message without a kind (an older server) shows as a plain line and never as a system or tip line.
@@ -55,7 +57,8 @@ export const CHAT_VIA_ID_MAX_LENGTH = 64
 // an app line's `via` as a message keeps it: a frozen { id, name } made of the two (each read once), the id text cut
 // to CHAT_VIA_ID_MAX_LENGTH, the name as a player's (sanitizeName; '' when it has none), nothing else; undefined for
 // anything without a text id. (Frozen: the `chat` event hands listeners a shallow copy of the message, so one
-// listener cannot change it for the next, or in the stored chat.)
+// listener cannot change it for the next, or in the stored chat. A copy a client decodes from its join snapshot is
+// a plain object again: Chat.deserialize keeps the snapshot's messages as they come.)
 export function chatVia(value) {
   let id
   let name

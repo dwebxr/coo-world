@@ -329,6 +329,25 @@ test('wallet cross-socket: another socket cannot use or sign the first socket ch
   assert.equal(b.wallet.verified, addressOf(keyB))
 })
 
+test('wallet challenge: the message names the world and the wallet that asked, and only that wallet can answer it', async t => {
+  const f = fixture(t)
+  const socket = await f.connect('admin', Ranks.ADMIN)
+  const proof = f.challenge(socket)
+  const { message } = socket.wallet.challenge
+  assert.ok(message.startsWith(`test.example wants you to sign in with your Solana account:\n${address}\n`), message)
+  clear(socket)
+  // another wallet signs that message and says it is the one signing in: its signature is good, its address is
+  // not the one the challenge was made for
+  await f.network.onRequestBuilderByToken(socket, {
+    ...proof,
+    walletAddress: addressOf(keyB),
+    signature: Buffer.from(nacl.sign.detached(new TextEncoder().encode(message), keyB.secretKey)).toString('base64'),
+  })
+  assert.equal(socket.wallet.verified, null)
+  assert.equal(socket.wallet.challenge, null)
+  assert.deepEqual(replies(socket, 'onWalletStatus'), [{ verified: false, attempt: 1 }])
+})
+
 for (const change of ['revoke', 'admin', 'nonce', 'close', 'stopping', 'fatal', 'player']) {
   test(`wallet liveness: ${change} during a pending grant drops all completion effects`, async t => {
     const pending = deferred()

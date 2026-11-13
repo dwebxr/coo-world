@@ -6,21 +6,30 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { before, after, test } from 'node:test'
 import * as esbuild from 'esbuild'
 import { bundleRealPhysx, runRealPhysx } from './lib/realPhysx.mjs'
+import { loadNetwork } from './lib/network.mjs'
 
 let bundle
+// the real network, bundled here: the worker imports it (it runs under lockdown, without esbuild)
+let net
 before(async () => {
   bundle = await bundleRealPhysx()
+  net = await loadNetwork({ sourceRoot: process.env.REAL_PHYSX_SOURCE_ROOT })
 })
-after(() => bundle?.destroy())
+after(() => {
+  bundle?.destroy()
+  net?.destroy()
+})
 
 test('persistence: real static rigidbody proxy in discarded state cannot invoke native getters', async () => {
   await runRealPhysx(
     bundle,
-    async ({ body }, { harness }) => {
+    async ({ body }, { harness, helper, network: evaluation }) => {
       const { database, fixture } = await import(harness)
+      const { importNetwork } = await import(helper)
+      const net = await importNetwork(evaluation)
       const cleanups = []
       const { db, tables } = database()
-      const { network, entity, socket } = fixture({ after: fn => cleanups.push(fn) }, db)
+      const { network, entity, socket } = fixture({ after: fn => cleanups.push(fn) }, { net, db })
       try {
         const proxy = body('RigidBody', { type: 'static' }).getProxy()
         assert.throws(() => proxy.sleeping, /isSleeping/)
@@ -32,7 +41,11 @@ test('persistence: real static rigidbody proxy in discarded state cannot invoke 
         for (const cleanup of cleanups) cleanup()
       }
     },
-    { harness: new URL('./lib/persistenceHarness.mjs', import.meta.url).href }
+    {
+      harness: new URL('./lib/persistenceFixture.mjs', import.meta.url).href,
+      helper: new URL('./lib/network.mjs', import.meta.url).href,
+      network: { url: net.url, env: net.env },
+    }
   )
 })
 
@@ -127,6 +140,9 @@ test('persistence: real server SQLite and PhysX world recover a just-acknowledge
         // The server's broadcast is the acknowledgement boundary, before native-capable modify.
         world.network.send = name => {
           assert.equal(name, 'entityModified')
+          // what is acknowledged is already recorded for the save
+          const dirty = world.network.dirtyApps.get(entity.data.id)
+          assert.deepEqual(JSON.parse(dirty.record.data).position, [12, 3, 4])
           world.fatal('test')
         }
         await world.network.onEntityModified(socket, { id: entity.data.id, position: [12, 3, 4] })

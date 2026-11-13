@@ -5,10 +5,12 @@ import { bundleProbe } from './lib/workerProbe.mjs'
 import { eventPayload } from '../src/core/extras/eventPayload.js'
 import { callEntry, callScript } from '../src/core/extras/callScript.js'
 import { loadClient } from './lib/clientHarness.mjs'
-import { makeNetwork } from './lib/networkHarness.mjs'
+import { loadNetwork, makeNetwork } from './lib/network.mjs'
 
 // Objects the engine used to hand to more than one app (or keep for itself while a script held them): each app
 // now gets its own copy, so one app's changes (or accessors) reach nobody else.
+const net = await loadNetwork()
+
 let m
 let bundle
 before(async () => {
@@ -508,7 +510,7 @@ function assertFrozenPayload([name, data], expectedName) {
   for (const value of Object.values(data)) if (value && typeof value === 'object') assert.ok(Object.isFrozen(value))
 }
 
-test('engine world events from their real producers: enter, leave, health and command are frozen', async () => {
+test('engine world events from their real producers: enter, leave, health and command are frozen', async t => {
   // enter, on a client, when a remote player is added
   const enter = capture()
   const Entities = loadClient('core/systems/Entities.js', 'Entities', {
@@ -552,7 +554,7 @@ test('engine world events from their real producers: enter, leave, health and co
   assertFrozenPayload(client.emitted[0], 'command')
   assert.deepEqual(client.emitted[0][1].args, ['dance', 'now'])
   // command, on the server, from a client's packet
-  const network = makeNetwork()
+  const network = makeNetwork(t, { net })
   const server = capture()
   network.world.events = server.events
   // (a list with something in it that is not a word is no command: nothing is emitted for it)

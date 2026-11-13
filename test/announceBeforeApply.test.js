@@ -1,4 +1,4 @@
-import { makeNetwork } from './lib/networkHarness.mjs'
+import { loadNetwork, makeNetwork } from './lib/network.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
@@ -7,6 +7,7 @@ import fs from 'node:fs'
 import { readInboundPacket } from '../src/server/inboundDecode.js'
 import { loadClient, clientWorld } from './lib/clientHarness.mjs'
 
+const net = await loadNetwork()
 const ServerAI = loadClient('core/systems/ServerAI.js', 'ServerAI', {
   fs: { readFileSync: () => '' },
   path,
@@ -17,10 +18,10 @@ const ServerAI = loadClient('core/systems/ServerAI.js', 'ServerAI', {
 })
 
 for (const action of ['create', 'edit', 'fix', 'classify']) {
-  test(`announce before apply: ServerAI ${action} broadcasts before modifying`, async () => {
+  test(`announce before apply: ServerAI ${action} broadcasts before modifying`, async t => {
     const calls = []
     const blueprint = { id: 'bp', version: 7, script: 'asset://old.js' }
-    const network = makeNetwork()
+    const network = makeNetwork(t, { net })
     network.send = (...args) => {
       assert.equal(JSON.parse(network.dirtyBlueprints.get('bp').record.data).version, 8)
       calls.push(args)

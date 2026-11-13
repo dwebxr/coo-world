@@ -4,9 +4,16 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { EventEmitter } from 'node:events'
-import { database, fixture, load, Network, Settings, deferred } from './lib/persistenceHarness.mjs'
+import { load } from './lib/persistenceHarness.mjs'
+import { loadNetwork, makeNetwork } from './lib/network.mjs'
+import { database, deferred, fixture as persistenceFixture } from './lib/persistenceFixture.mjs'
 import { Storage } from '../src/server/Storage.js'
 import { installShutdown } from '../src/server/shutdown.js'
+
+// (against the REAL_PHYSX_SOURCE_ROOT checkout when it is set, as persistenceHarness.mjs ran it)
+const net = await loadNetwork({ sourceRoot: process.env.REAL_PHYSX_SOURCE_ROOT })
+const { Settings } = net
+const fixture = (t, db) => persistenceFixture(t, { net, db })
 
 const ServerAI = load('core/systems/ServerAI.js', 'ServerAI', {
   fs: { readFileSync: () => '' },
@@ -75,7 +82,8 @@ test('persistence: concurrent save calls serialize and cannot overwrite a later 
   await held.started.promise
   await network.onEntityModified(socket, { id: 'app', position: [2, 0, 0] })
   const second = network.save()
-  await Promise.resolve()
+  // the turns a save takes before its first row (saveDirty yields one before each), with the first write still held
+  for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve))
   assert.equal(writes.length, 1, 'second save must wait for the first write')
   held.release.resolve()
   await Promise.all([first, second])
@@ -246,8 +254,10 @@ for (const phase of ['in-flight save', 'final save', 'config']) {
     t.mock.method(console, 'error', line => lines.push(line))
     t.mock.timers.enable({ apis: ['setTimeout'] })
     const { db, writes } = database()
-    const { network, socket, world, exits } = fixture(t, db)
+    const { network, socket, world, entity, exits } = fixture(t, db)
     await network.onEntityModified(socket, { id: 'app', position: [1, 0, 0] })
+    // a second row, behind the one whose write is held: the save comes to it once that write returns
+    network.markAppDirty({ ...entity.data, id: 'next' })
     const held = db.pause(phase === 'config' ? 'config' : 'entities')
     t.after(() => held.release.resolve())
     if (phase === 'in-flight save') {
@@ -270,7 +280,8 @@ for (const phase of ['in-flight save', 'final save', 'config']) {
     if (phase === 'config') assert.ok(lines.some(line => line.includes('config=["settings"]')))
     const count = writes.length
     held.release.resolve()
-    for (let i = 0; i < 20; i++) await Promise.resolve()
+    // the turns the row writer yields before the next row (saveDirty)
+    for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve))
     assert.equal(writes.length, count, 'expired flush must not start more writes after exit')
   })
 }
@@ -297,30 +308,33 @@ for (const phase of ['spawn read', 'settings read', 'invalid settings', 'unchang
     const spawn = JSON.stringify({ position: [12, 3, 4], quaternion: [0, 0, 0, 1] })
     tables.config.set('settings', { key: 'settings', value: settings })
     tables.config.set('spawn', { key: 'spawn', value: spawn })
-    const world = { blueprints: { add() {} }, entities: { add() {} } }
-    const network = new Network(world)
-    world.network = network
-    world.settings = new Settings(world)
-    t.after(() => network.stopForFatal())
     const held = deferred()
     const started = deferred()
     t.after(() => held.resolve())
-    network.db = table =>
-      table !== 'config'
-        ? []
-        : {
-            ...db(table),
-            where: (key, id) => ({
-              first: async () => {
-                const row = tables.config.get(id)
-                if (phase === `${id} read`) {
-                  started.resolve()
-                  await held.promise
-                }
-                return row
+    const network = makeNetwork(t, {
+      net,
+      world: { blueprints: { add() {} }, entities: { add() {} } },
+      init: {
+        db: table =>
+          table !== 'config'
+            ? []
+            : {
+                ...db(table),
+                where: (key, id) => ({
+                  first: async () => {
+                    const row = tables.config.get(id)
+                    if (phase === `${id} read`) {
+                      started.resolve()
+                      await held.promise
+                    }
+                    return row
+                  },
+                }),
               },
-            }),
-          }
+      },
+    })
+    const world = network.world
+    world.settings = new Settings(world)
     const boot = network.start()
     if (phase.endsWith('read')) await started.promise
     else await boot
@@ -435,22 +449,20 @@ test(
 
 test('a stored settings row that cannot be parsed does not make every visitor an admin', { timeout: 5000 }, async t => {
   t.mock.method(console, 'error', () => {})
-  const saved = process.env.ADMIN_CODE
-  process.env.ADMIN_CODE = 'a-code-for-this-test'
-  t.after(() => {
-    if (saved === undefined) delete process.env.ADMIN_CODE
-    else process.env.ADMIN_CODE = saved
-  })
   const { db, tables } = database()
   tables.config.set('settings', { key: 'settings', value: '{' })
   tables.config.set('spawn', { key: 'spawn', value: JSON.stringify({ position: [0, 0, 0], quaternion: [0, 0, 0, 1] }) })
-  const world = { blueprints: { add() {} }, entities: { add() {} } }
-  const network = new Network(world)
-  world.network = network
+  const network = makeNetwork(t, {
+    net,
+    env: { ADMIN_CODE: 'a-code-for-this-test' },
+    world: { blueprints: { add() {} }, entities: { add() {} } },
+    init: {
+      db: table =>
+        table !== 'config' ? [] : { ...db(table), where: (_key, id) => ({ first: async () => tables.config.get(id) }) },
+    },
+  })
+  const world = network.world
   world.settings = new Settings(world)
-  t.after(() => network.stopForFatal())
-  network.db = table =>
-    table !== 'config' ? [] : { ...db(table), where: (_key, id) => ({ first: async () => tables.config.get(id) }) }
   await network.start()
   // "there is a code" was set only after a successful parse: left unset, the settings take everyone for an admin
   assert.equal(world.settings.hasAdminCode, true)

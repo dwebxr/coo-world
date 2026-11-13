@@ -5,7 +5,7 @@ import nacl from 'tweetnacl'
 import { PublicKey } from '@solana/web3.js'
 import Fastify from 'fastify'
 import { uploadRoutes } from '../src/server/uploadRoutes.js'
-import { fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
+import { fakeWs, inside, loadNetwork, makeNetwork } from './lib/network.mjs'
 import { readPacket, writeClientPacket } from '../src/core/packets.js'
 import { Ranks } from '../src/core/extras/ranks.js'
 
@@ -190,7 +190,8 @@ test('wallet service: disabled gating ignores balance requests and constructs ne
     assert.equal(services, on ? 1 : 0)
     if (!on) {
       // No socket access, admission mutation, reply or service call when gating is disabled.
-      const socket = new Proxy({}, { get: () => assert.fail('disabled handler touched socket') })
+      // (inside(): a handler that catches what touching it throws still fails the test)
+      const socket = new Proxy({}, { get: () => inside(t, () => assert.fail('disabled handler touched socket')) })
       await production.onTokenBalanceRequest(socket, { id: 1 })
       await injected.onTokenBalanceRequest(socket, { id: 1 })
     }

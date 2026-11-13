@@ -23,6 +23,9 @@ import {
 } from './lib/packetAccess.mjs'
 
 const read = file => fs.readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')
+// The class as written, read as TEXT on purpose: what is asked of it here is static (which `on<Name>` members it
+// declares), and nothing of it is run from this text. Whether a packet reaches its method is asked of the real class
+// (the first test, through test/lib/joinFixture.mjs); what each handler does, of the handlers (packetRefusals).
 const source = read('src/core/systems/ServerNetwork.js')
 
 // the registry, through its own lookups: ids count up from 0 without a gap
@@ -31,7 +34,8 @@ for (let id = 0; packetNameById(id) !== undefined; id++)
   registry.push({ name: packetNameById(id), method: packetMethodById(id) })
 const names = registry.map(entry => entry.name)
 
-// a method of the ServerNetwork class, as written (the same cut test/lib/networkHarness.mjs makes)
+// a member of the ServerNetwork class, as written: from its declaration to the next line that closes a member (only
+// whether there is one is asked)
 const methodSource = method => source.match(new RegExp(`^  (?:async )?${method}(?:\\(| = )[^]*?^  }`, 'm'))?.[0] ?? null
 const handlers = registry.filter(entry => methodSource(entry.method)).map(entry => entry.name)
 

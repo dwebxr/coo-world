@@ -47,6 +47,7 @@ import {
 } from '../scripts/lib/imageCheck.mjs'
 import { serverStartEnv } from '../scripts/lib/startEnv.mjs'
 import { installShutdown } from '../src/server/shutdown.js'
+import { definitionsIn, findFunction, networkFiles } from './lib/networkSource.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const script = path.join(root, 'scripts/image-check.mjs')
@@ -436,23 +437,159 @@ test('stop: `during start-up, before the world was loaded` (shutdown.js:36) fail
   ])
 })
 
-// What the final save's path in ServerNetwork.js and Storage.js prints, as it prints it (made up: ids, codes): each
-// fails a stop that otherwise passed. (Its part of the source is held to the source below.)
-for (const [where, line] of [
+// The log calls of a function (a definition as findFunction gives it: its node, its file's tree and source), read
+// from the syntax tree: every call whose callee is a member named error, warn, log, info, debug, trace or logOnce, of
+// any object (`console`, a `log` handed in, `audit` where `const audit = console`), its key written or a computed
+// string (staticKey); every call of a name the file binds to such a member (`const { error } = console`,
+// ``const { [`warn`]: shout } = console``, `const report = console.error`, `= console.warn.bind(console)`) or named
+// logOnce; and such a member or name called through `.call`, `.apply`, `Reflect.apply` or a `.bind(…)` called at
+// once; and every direct call of a logger, `console` or a `{ log = console }` option inside the function whose
+// parameter it is (loggerScope, below, which loggerViolations asks as well), whatever the member's name
+// (`console.table(…)`, `log.table(…)`). The ways the stop path's own functions may not log are refused by
+// loggerViolations, below. -> [{ call, line }]: the call's text,
+// from its callee to its closing parenthesis, and the line it starts on. (What it does not see: the tripwire's
+// comment.)
+const LOG_MEMBERS = new Set(['error', 'warn', 'log', 'info', 'debug', 'trace', 'logOnce'])
+const FUNCTION_NODES = new Set([
+  'FunctionDeclaration',
+  'FunctionExpression',
+  'ArrowFunctionExpression',
+  'ObjectMethod',
+  'ClassMethod',
+])
+const isMember = node => node?.type === 'MemberExpression' || node?.type === 'OptionalMemberExpression'
+// the name a key is known by before the code runs, for a member (`x.error`, `x['error']`) and a destructured property
+// (`{ error }`, `{ ['error']: f }`, ``{ [`error`]: f }``) alike: a written name, a string or a number, or a computed
+// string or template without substitutions; null for a key computed at run time (`x[level]`, `{ [level]: f }`)
+const staticKey = (key, computed) => {
+  if (!computed && key.type === 'Identifier') return key.name
+  if (key.type === 'StringLiteral') return key.value
+  if (key.type === 'NumericLiteral') return String(key.value)
+  if (key.type === 'TemplateLiteral' && key.expressions.length === 0) return key.quasis[0].value.cooked
+  return null
+}
+const memberKey = node => staticKey(node.property, node.computed)
+const propertyKey = property => (property.type === 'ObjectProperty' ? staticKey(property.key, property.computed) : null)
+const isLogMember = node => isMember(node) && LOG_MEMBERS.has(memberKey(node))
+const children = node =>
+  Object.entries(node)
+    .filter(([key]) => !['loc', 'start', 'end', 'extra', 'leadingComments', 'trailingComments'].includes(key))
+    .flatMap(([, value]) => (Array.isArray(value) ? value : [value]))
+    .filter(child => child && typeof child.type === 'string')
+// the names a file binds to a log member
+const loggers = new WeakMap()
+function loggerNames(ast) {
+  if (loggers.has(ast)) return loggers.get(ast)
+  const names = new Set(['logOnce'])
+  const visit = node => {
+    if (node.type === 'ObjectPattern') {
+      for (const property of node.properties) {
+        if (LOG_MEMBERS.has(propertyKey(property)) && property.value?.type === 'Identifier') {
+          names.add(property.value.name)
+        }
+      }
+    }
+    if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier') {
+      const init = node.init
+      const bound = init?.type === 'CallExpression' && isMember(init.callee) && memberKey(init.callee) === 'bind'
+      if (isLogMember(init) || (bound && isLogMember(init.callee.object))) names.add(node.id.name)
+    }
+    children(node).forEach(visit)
+  }
+  visit(ast.program)
+  loggers.set(ast, names)
+  return names
+}
+const isCallNode = node => node?.type === 'CallExpression' || node?.type === 'OptionalCallExpression'
+function logCalls({ node, ast, source }) {
+  const names = loggerNames(ast)
+  const isLogger = at => isLogMember(at) || (at?.type === 'Identifier' && names.has(at.name))
+  // (and every direct call of a logger, `console` or a `{ log = console }` option where it is one, whatever the
+  // member's name: `console.table(…)`, `log.table(…)`; loggerScope says which, for loggerViolations too)
+  const scope = loggerScope(node)
+  const calls = []
+  const visit = (at, parents) => {
+    if (isCallNode(at)) {
+      const callee = at.callee
+      const key = isMember(callee) ? memberKey(callee) : null
+      const logs =
+        isLogger(callee) ||
+        (isMember(callee) &&
+          !callee.computed &&
+          callee.object.type === 'Identifier' &&
+          scope.isLogger(callee.object, parents)) ||
+        // console.warn.call(console, …), .apply(console, […])
+        (['call', 'apply'].includes(key) && isLogger(callee.object)) ||
+        // Reflect.apply(console.warn, console, […])
+        (key === 'apply' &&
+          callee.object.type === 'Identifier' &&
+          callee.object.name === 'Reflect' &&
+          isLogger(at.arguments[0])) ||
+        // console.warn.bind(console)(…)
+        (isCallNode(callee) &&
+          isMember(callee.callee) &&
+          memberKey(callee.callee) === 'bind' &&
+          isLogger(callee.callee.object))
+      if (logs) calls.push({ call: source.slice(at.start, at.end), line: at.loc.start.line })
+    }
+    for (const child of children(at)) visit(child, [...parents, at])
+  }
+  visit(node, [])
+  return calls
+}
+
+// where the function `name` logs a line with `part` in it: `<file name>:<line>, <name>`, or null
+function logSite(name, part, files) {
+  for (const definition of findFunction(name, files)) {
+    const site = logCalls(definition).find(({ call }) => call.includes(part))
+    if (site) return `${path.basename(definition.file)}:${site.line}, ${name}`
+  }
+  return null
+}
+
+// What the final save's path in the network and in Storage.js prints, as it prints it (made up: ids, codes): each
+// fails a stop that otherwise passed. Each is named by the function that prints it and a part of the call's text;
+// where that call is now (the test's name) is found by parsing (test/lib/networkSource.mjs), wherever the function
+// is written: for the network's, in the class or in a module of src/server/network/. (Its part of the source is held
+// to the source below.)
+const STORAGE = ['src/server/Storage.js']
+for (const [name, files, part, line] of [
   [
-    'ServerNetwork.js:773, flushBeforeExit',
+    'flushBeforeExit',
+    undefined,
+    '[network] not persisted: ',
     '[network] not persisted: blueprints=["a1"] apps=[] config=[] users=0 storage=saved',
   ],
-  ['ServerNetwork.js:703, saveDirty', '[network] error saving entities 3f9a: SqliteError: database is locked'],
-  ['ServerNetwork.js:805, saveConfig', '[network] error saving settings: SqliteError: database is locked'],
-  ['ServerNetwork.js:783, saveConfig', '[network] settings was not loaded; changes will not be saved'],
   [
-    'ServerNetwork.js:927, userRows',
+    'saveDirty',
+    undefined,
+    '[network] error saving ',
+    '[network] error saving entities 3f9a: SqliteError: database is locked',
+  ],
+  [
+    'saveConfig',
+    undefined,
+    '[network] error saving ',
+    '[network] error saving settings: SqliteError: database is locked',
+  ],
+  [
+    'saveConfig',
+    undefined,
+    ' was not loaded; changes will not be saved',
+    '[network] settings was not loaded; changes will not be saved',
+  ],
+  [
+    'userRows',
+    undefined,
+    ' not stored (kept in memory; ',
     "[network] rank of user u1 not stored (kept in memory; written again with that user's next change or at the final save): Error: timeout",
   ],
-  ['Storage.js:291, Storage.write', '[storage] failed to save storage.json (ENOSPC); retrying'],
+  ['Storage.write', STORAGE, '[storage] failed to save ', '[storage] failed to save storage.json (ENOSPC); retrying'],
 ]) {
+  const site = logSite(name, part, files)
+  const where = site ?? `${name}, which no longer prints it`
   test(`stop: ${JSON.stringify(line.slice(0, 40))}… (${where}) fails a stop that otherwise passed`, () => {
+    assert.ok(site, `${name} has no log call with ${JSON.stringify(part)} any more: update this list`)
     const verdict = stopOf(STOPS.sigterm, { log: `${savedLog('SIGTERM')}\n${line}` })
     assert.equal(verdict.ok, false)
     assert.deepEqual(verdict.reasons, [`the log says: ${line}`])
@@ -511,12 +648,12 @@ test('stop: the lines looked for are the ones the server prints', async () => {
       printed.join(' / ')
     )
   }
-  // the texts themselves, where they are written
-  const network = read('src/core/systems/ServerNetwork.js')
+  // the texts themselves, where they are written (the network's: in the class or the modules of src/server/network/)
+  const network = networkFiles().map(read).join('\n')
   assert.ok(network.includes("console.log('[network] final save complete')"))
   assert.ok(read('src/server/shutdown.js').includes('`[server] ${signal}: saving the world before exit'))
   // every forbidden part is in one of the files it is quoted from: none is left behind by a changed message
-  const sources = ['src/server/shutdown.js', 'src/core/systems/ServerNetwork.js', 'src/server/Storage.js'].map(read)
+  const sources = [read('src/server/shutdown.js'), network, read('src/server/Storage.js')]
   assert.deepEqual(stopExpectation(STOPS.sigterm).forbidden, NOT_STOPPED_OR_SAVED)
   for (const part of NOT_STOPPED_OR_SAVED)
     assert.ok(
@@ -530,59 +667,210 @@ test('stop: the lines looked for are the ones the server prints', async () => {
 // with the reason. A log call added to one of these functions later fails this test until it is sorted, so that a
 // new "not saved" message cannot slip past the image check unnoticed. Reading the source is right here because what
 // is asked is about the source (is every message accounted for), not about behaviour; the behaviour of each line is
-// tested above. It is kept to the named functions: the rest of ServerNetwork.js logs plenty that has nothing to do
-// with a stop. Its weak spot, said plainly: a message built elsewhere and logged through a variable is not seen.
+// tested above. It is kept to the named functions: the rest of the network logs plenty that has nothing to do with a
+// stop. Each is found by parsing (test/lib/networkSource.mjs) wherever it is written; the network's in all of its
+// files, the class and the modules of src/server/network/ that parts of it move to, every definition of the name (a
+// member of the class that hands its call on to a module's function is one too), and its log calls are read from the
+// syntax tree (logCalls, above; the parser is @babel/parser). In these functions a logger may only be called at once
+// by a written name (loggerViolations, above): `console`, a `{ log = console }` option (as written: not renamed,
+// not another name), and a member named error, warn, log, info, debug, trace or logOnce of anything else; any other
+// use (kept in a name, destructured by a written, string or template key, passed, called through `.call`, `.apply`,
+// `.bind` or `Reflect.apply`, a computed member) is a violation, reported and not followed, so the test fails on it.
+// A direct call of such a member on any object (`audit.error(…)`, `get().warn(…)`, `this.logOnce(…)`) is counted and
+// sorted as a log line, as is a call of a name the file binds to such a member outside these functions, and a direct
+// call of `console` or of an option, whatever the member (`log.table(…)`). What it cannot see, said plainly:
+// - a function the named ones call: a helper that logs (briefError, the user rows' own module, Storage's other
+//   methods) is not read, nor what it is handed (a destructured `error` passed on, as userRows does);
+// - a logger reached through another module or a call outside these functions and called by a plain name in them
+//   (`import { warn } from …`, `const f = pick(console)` at a module's top, then `f(…)`);
+// - a member of anything but `console` and the option reached, or destructured, by a key computed at run time
+//   (`audit[level](…)`, `const { [level]: f } = audit`): the key is not known to be a logging one;
+// - a logger given a name at a module's top otherwise than by its declaration's own value: assigned after it
+//   (`let report; report = console.error`) or through a destructuring default, and then called by that name;
+// - output by other means (`process.stderr.write`, `process.emitWarning`, `util.debuglog`);
+// - what a line says beyond its call's text: a call is sorted by the parts its text carries, so a message built
+//   elsewhere and passed in a variable is unsorted (and fails the test) unless the call's text carries a known part,
+//   and a call that carries a known part passes whatever else it says.
 const STOP_PATH_FUNCTIONS = [
   // the signal handler: stopWorld, closeServer, the final save, its deadline, a second signal
-  ['src/server/shutdown.js', '\nexport function installShutdown('],
+  ['installShutdown', ['src/server/shutdown.js']],
   // the final save, and what it calls that prints: save() -> saveDirty, saveSettings -> saveConfig, the users' rows
-  ['src/core/systems/ServerNetwork.js', '\n  async flushBeforeExit('],
-  ['src/core/systems/ServerNetwork.js', '\n  async saveDirty('],
-  ['src/core/systems/ServerNetwork.js', '\n  saveConfig('],
-  ['src/core/systems/ServerNetwork.js', '\n  userRows() {'],
+  ['flushBeforeExit'],
+  ['saveDirty'],
+  ['saveConfig'],
+  ['userRows'],
 ]
 const STOP_PATH_ALLOWED = [
-  // ServerNetwork.js:708 (saveDirty): the rows it did write. A row it could not write prints `[network] error
-  // saving` (forbidden) and stays dirty, and the final save then says `[network] not persisted` (forbidden)
+  // saveDirty: the rows it did write. A row it could not write prints `[network] error saving` (forbidden) and stays
+  // dirty, and the final save then says `[network] not persisted` (forbidden)
   { part: 'world saved (', reason: 'what was written, not what was not' },
 ]
 const STOP_PATH_REQUIRED = [': saving the world before exit', '[network] final save complete']
 
-// the text of each logging call in a function: from `console.error(` (`log.log(`, `this.logOnce(`, …) to its
-// closing parenthesis
-function logCallsIn(source, signature) {
-  const start = source.indexOf(signature)
-  assert.ok(start !== -1, `${signature.trim()} is not in the file any more: update STOP_PATH_FUNCTIONS`)
-  const indent = /\n( *)/.exec(signature)[1]
-  const end = source.indexOf(`\n${indent}}\n`, start + 1)
-  const body = source.slice(start, end)
-  const calls = []
-  for (const match of body.matchAll(/\b(?:console|log)\.(?:log|warn|error)\(|\blogOnce\(/g)) {
-    let depth = 0
-    let at = match.index + match[0].length - 1
-    for (; at < body.length && at - match.index < 800; at++) {
-      if (body[at] === '(') depth++
-      if (body[at] === ')' && --depth === 0) break
+// What the stop path logs that the verdict does not know, and how many log calls each function has, in a checkout
+// (`root`; this one by default)
+// What an inspected function may do with a logger, read whatever each name resolves to (no binding is followed):
+// - `console`, and a parameter that a function in it (its own, or a nested one) gives `console` as a default as a
+//   property of a destructured options parameter (`{ log = console } = {}`, installShutdown's; that shape only, not
+//   renamed, `{ log: audit = console }`, nor of another name; a logger inside the function whose parameter it is;
+//   loggerScope), only as the object of a direct call by a written name
+//   (`console.error(…)`, `log.log(…)`, optional ones included): any other use of either is a violation (used as a
+//   value: assigned, passed, returned, put into another name; a member not called at once: taken, destructured,
+//   `.call`, `.apply`, `.bind`, `Reflect.apply`; a computed member, `console[level](…)` and `console['warn'](…)`
+//   alike; the parameter given another value; either name bound again);
+// - a member named error, warn, log, info, debug, trace or logOnce of anything else (`this.logOnce`, `audit.error`),
+//   only called at once by its written name: taken into a name, destructured (by a written, string or template
+//   key, staticKey), passed, returned, called through `.call`, `.apply`, `.bind` or `Reflect.apply`, or reached by a
+//   computed key, it is a violation. One shape is
+//   accepted, for today's code: a property of such a name destructured into a function's parameter whose every use
+//   in the inspected function is as an argument of a call (userRows' `onFailure: ({ userId, columns, error })`, which
+//   hands `error` to briefError), since a value handed on is not a logger called there.
+// Violations are reported and not followed.
+function loggerParams(fn) {
+  const accepted = []
+  for (const param of fn.params ?? []) {
+    const pattern = param.type === 'AssignmentPattern' ? param.left : param
+    if (pattern.type !== 'ObjectPattern') continue
+    for (const property of pattern.properties) {
+      // `{ log = console }` as written: not renamed (`{ log: audit = console }`), not another name
+      const value = property.type === 'ObjectProperty' && property.shorthand ? property.value : null
+      if (
+        value?.type === 'AssignmentPattern' &&
+        value.left.type === 'Identifier' &&
+        value.left.name === 'log' &&
+        value.right.type === 'Identifier' &&
+        value.right.name === 'console'
+      ) {
+        accepted.push({ name: value.left.name, nodes: [value.left, value.right] })
+      }
     }
-    calls.push(body.slice(match.index, at + 1))
   }
-  return calls
+  return accepted
+}
+// Which names are loggers where, in a definition (`node`): `console`, and the `{ log = console }` option of each
+// function in it, inside that function. Both scans ask it (logCalls, which counts a direct call of either whatever the
+// member's name, and loggerViolations, which allows nothing else), so that they cannot differ on it.
+// -> { accepted: the option's own nodes, isLogger(identifier, parents) }
+function loggerScope(node) {
+  const options = new Map()
+  const collect = at => {
+    if (FUNCTION_NODES.has(at.type)) options.set(at, loggerParams(at))
+    children(at).forEach(collect)
+  }
+  collect(node)
+  return {
+    accepted: new Set([...options.values()].flat().flatMap(param => param.nodes)),
+    isLogger: (identifier, parents) =>
+      identifier.name === 'console' ||
+      parents.some(at => options.get(at)?.some(param => param.name === identifier.name)),
+  }
+}
+// A property named like a logging member, destructured into a parameter of a function (`({ error }) => …`), whose
+// every use in the inspected function is as an argument of a call: a value handed on, not a logger called or kept
+// (userRows' `onFailure: ({ userId, columns, error })`, which hands `error` to briefError). Any other use refuses it.
+function passedOnly(property, pattern, parents, definition) {
+  const value = property.value?.type === 'AssignmentPattern' ? property.value.left : property.value
+  if (value?.type !== 'Identifier') return false
+  const fn = parents.findLast(at => FUNCTION_NODES.has(at.type))
+  // (the pattern is a parameter, or a parameter's default-taking wrapper holds it)
+  const below = [...parents.slice(parents.indexOf(fn) + 1), pattern]
+  if (!fn?.params.some(param => param === below[0])) return false
+  let other = 0
+  const visit = (at, chain) => {
+    if (at.type === 'Identifier' && at.name === value.name && at !== value) {
+      const parent = chain.at(-1)
+      const isKey =
+        (isMember(parent) && parent.property === at && !parent.computed) ||
+        (parent?.type === 'ObjectProperty' && parent.key === at && !parent.computed && parent.value !== at)
+      if (!isKey && !(isCallNode(parent) && parent.arguments.includes(at))) other++
+    }
+    for (const child of children(at)) visit(child, [...chain, at])
+  }
+  visit(definition, [])
+  return other === 0
+}
+
+function loggerViolations({ node, source }, name) {
+  const { accepted, isLogger } = loggerScope(node)
+  const found = []
+  const say = (at, what) =>
+    found.push(`${name}, line ${at.loc.start.line}: ${what}: ${source.slice(at.start, at.end).replace(/\s+/g, ' ')}`)
+  const visit = (at, parents) => {
+    const parent = parents.at(-1)
+    const above = parents.at(-2)
+    if (at.type === 'Identifier' && !accepted.has(at) && isLogger(at, parents)) {
+      const isKey =
+        (isMember(parent) && parent.property === at && !parent.computed) ||
+        (['ObjectProperty', 'ObjectMethod', 'ClassProperty', 'ClassMethod'].includes(parent?.type) &&
+          parent.key === at &&
+          !parent.computed &&
+          parent.value !== at)
+      if (!isKey) {
+        if (isMember(parent) && parent.object === at) {
+          if (parent.computed) say(parent, 'a computed member of a logger')
+          else if (!(isCallNode(above) && above.callee === parent))
+            say(parent, 'a member of a logger not called at once')
+        } else if (parent?.type === 'AssignmentExpression' && parent.left === at)
+          say(parent, 'a logger given another value')
+        else if (
+          (parent?.type === 'VariableDeclarator' && parent.id === at) ||
+          ((parent?.type === 'FunctionDeclaration' || parent?.type === 'ClassDeclaration') && parent.id === at) ||
+          (FUNCTION_NODES.has(parent?.type) && parent.params.includes(at))
+        ) {
+          say(at, "a logger's name bound again")
+        } else say(parent ?? at, 'a logger used as a value')
+      }
+    }
+    // a logging member of anything else (`this.logOnce`, `audit.error`): only called at once, by its written name
+    if (
+      isMember(at) &&
+      LOG_MEMBERS.has(memberKey(at)) &&
+      !(at.object.type === 'Identifier' && isLogger(at.object, parents))
+    ) {
+      if (at.computed) say(at, 'a logging member reached by a computed key')
+      else if (!(isCallNode(parent) && parent.callee === at)) say(at, 'a logging member not called at once')
+    }
+    if (at.type === 'ObjectPattern') {
+      for (const property of at.properties) {
+        if (!LOG_MEMBERS.has(propertyKey(property))) continue
+        // (the accepted option itself: `{ log = console }`)
+        if (accepted.has(property.value?.left)) continue
+        if (passedOnly(property, at, parents, node)) continue
+        say(property, 'a logging member taken out by destructuring')
+      }
+    }
+    for (const child of children(at)) visit(child, [...parents, at])
+  }
+  visit(node, [])
+  return found
+}
+
+function stopPathProblems(functions = STOP_PATH_FUNCTIONS, root) {
+  const unsorted = []
+  const violations = []
+  const counts = {}
+  for (const [name, files] of functions) {
+    counts[name] = 0
+    for (const definition of findFunction(name, files, root)) {
+      violations.push(...loggerViolations(definition, `${definition.file} ${name}`))
+      const calls = logCalls(definition).map(({ call }) => call)
+      counts[name] += calls.length
+      for (const call of calls) {
+        const known =
+          NOT_STOPPED_OR_SAVED.some(part => call.includes(part)) ||
+          STOP_PATH_REQUIRED.some(part => call.includes(part)) ||
+          STOP_PATH_ALLOWED.some(({ part }) => call.includes(part))
+        if (!known) unsorted.push(`${definition.file} ${name}: ${call.replace(/\s+/g, ' ').slice(0, 200)}`)
+      }
+    }
+  }
+  return { unsorted, violations, counts }
 }
 
 test('stop: every log line of the stop and save paths is forbidden, required or allowed with a reason', () => {
-  const unsorted = []
-  const counts = {}
-  for (const [file, signature] of STOP_PATH_FUNCTIONS) {
-    const calls = logCallsIn(read(file), signature)
-    counts[signature.trim()] = calls.length
-    for (const call of calls) {
-      const known =
-        NOT_STOPPED_OR_SAVED.some(part => call.includes(part)) ||
-        STOP_PATH_REQUIRED.some(part => call.includes(part)) ||
-        STOP_PATH_ALLOWED.some(({ part }) => call.includes(part))
-      if (!known) unsorted.push(`${file} ${signature.trim()}: ${call.replace(/\s+/g, ' ').slice(0, 200)}`)
-    }
-  }
+  const { unsorted, violations, counts } = stopPathProblems()
+  // a logger used otherwise than called at once, by its written name: refused, not followed
+  assert.deepEqual(violations, [], 'a logger kept in a name or called indirectly in a stop-path function')
   assert.deepEqual(
     unsorted,
     [],
@@ -591,20 +879,235 @@ test('stop: every log line of the stop and save paths is forbidden, required or 
   )
   // the reading itself found what is there today (8 calls in the handler, 7 on the final save's path)
   assert.deepEqual(counts, {
-    'export function installShutdown(': 8,
-    'async flushBeforeExit(': 2,
-    'async saveDirty(': 2,
-    'saveConfig(': 2,
-    'userRows() {': 1,
+    installShutdown: 8,
+    flushBeforeExit: 2,
+    saveDirty: 2,
+    saveConfig: 2,
+    userRows: 1,
   })
-  // and it would see a new one
-  const added = logCallsIn(
-    '\n  async saveDirty() {\n    console.warn(`[network] row ${id} skipped (${why})`)\n  }\n',
-    '\n  async saveDirty('
+  // and it would see a new one, in the class or in a module that a move put the function in, however it is written
+  const line = '`[network] row ${id} skipped (${why})`'
+  for (const [shape, source] of [
+    ['a member of the class', `class ServerNetwork {\n  async saveDirty() {\n    console.warn(${line})\n  }\n}\n`],
+    ['a function of a module', `export async function saveDirty() {\n  console.warn(${line})\n}\n`],
+    ['a space before the parenthesis', `export async function saveDirty() {\n  console.error (${line})\n}\n`],
+    ['a renamed console', `const audit = console\nexport async function saveDirty() {\n  audit.error(${line})\n}\n`],
+    ['a destructured logger', `const { warn } = console\nexport async function saveDirty() {\n  warn(${line})\n}\n`],
+    [
+      'a renamed destructured logger',
+      `const { error: report } = console\nexport async function saveDirty() {\n  report(${line})\n}\n`,
+    ],
+    ['a logger taken out', `const report = console.error\nexport async function saveDirty() {\n  report(${line})\n}\n`],
+    [
+      'a bound logger',
+      `const shout = console.warn.bind(console)\nexport async function saveDirty() {\n  shout(${line})\n}\n`,
+    ],
+    ['a computed key', `export async function saveDirty(logger) {\n  logger['debug'](${line})\n}\n`],
+    ['another level', `export async function saveDirty() {\n  console.trace(${line})\n}\n`],
+    ['an optional call', `export async function saveDirty(log) {\n  log?.info(${line})\n}\n`],
+    ['through call', `export async function saveDirty() {\n  console.warn.call(console, ${line})\n}\n`],
+    ['through apply', `export async function saveDirty() {\n  console.error.apply(console, [${line}])\n}\n`],
+    [
+      'through Reflect.apply',
+      `export async function saveDirty() {\n  Reflect.apply(console.warn, console, [${line}])\n}\n`,
+    ],
+    ['bound and called at once', `export async function saveDirty() {\n  console.warn.bind(console)(${line})\n}\n`],
+    [
+      'a logger taken out, through call',
+      `const report = console.error\nexport async function saveDirty() {\n  report.call(console, ${line})\n}\n`,
+    ],
+    ['another method of console', `export async function saveDirty() {\n  console.table(${line})\n}\n`],
+    [
+      "another method of a nested function's option (Codex)",
+      `export async function saveDirty() {\n  function report({ log = console } = {}) {\n    log.table(${line})\n  }\n  report()\n}\n`,
+    ],
+    [
+      'a logger destructured by a template key',
+      `const { [\`warn\`]: shout } = console\nexport async function saveDirty() {\n  shout(${line})\n}\n`,
+    ],
+    [
+      'a logger destructured by a string key',
+      `const { ['error']: shout } = console\nexport async function saveDirty() {\n  shout(${line})\n}\n`,
+    ],
+  ]) {
+    const added = definitionsIn(source, 'saveDirty').flatMap(definition => logCalls(definition).map(at => at.call))
+    assert.equal(added.length, 1, `${shape}: ${added}`)
+    assert.ok(added[0].includes(line), shape)
+    assert.ok(!NOT_STOPPED_OR_SAVED.some(part => added[0].includes(part)))
+  }
+  // the loggers: what a stop-path function may do with `console`, with a `{ log = console }` option of its own or of a
+  // function in it, or with a logging member of anything else, is to call it at once by its written name; anything
+  // else is a violation, and is not followed
+  const violationsIn = (source, name) =>
+    definitionsIn(source, name).flatMap(definition => loggerViolations(definition, name))
+  const inSave = body => `export async function saveDirty() {\n${body}\n}\n`
+  const inShutdown = body => `export function installShutdown({ proc = process, log = console } = {}) {\n${body}\n}\n`
+  for (const [shape, source, name] of [
+    [
+      'a chain of local names (Codex)',
+      inSave("  const warning = console.warn\n  const report = warning\n  report('[network] row skipped')"),
+      'saveDirty',
+    ],
+    [
+      'a chain of three',
+      inSave("  const a = console.warn\n  const b = a\n  const report = b\n  report('x')"),
+      'saveDirty',
+    ],
+    [
+      'a choice between two',
+      inSave("  const report = flag ? console.warn : console.error\n  report('x')"),
+      'saveDirty',
+    ],
+    [
+      'an assignment (Codex)',
+      inSave("  let report\n  report = console.warn\n  report('[network] row skipped')"),
+      'saveDirty',
+    ],
+    [
+      'an assignment in a branch',
+      inSave("  let report = null\n  if (flag) report = console.error\n  report?.('x')"),
+      'saveDirty',
+    ],
+    ['a destructuring assignment', inSave("  let report\n  ;({ warn: report } = console)\n  report('x')"), 'saveDirty'],
+    ['through call', inSave("  console.warn.call(console, 'x')"), 'saveDirty'],
+    ['through Reflect.apply', inSave("  Reflect.apply(console.warn, console, ['x'])"), 'saveDirty'],
+    ['a computed level', inSave("  console[level]('x')"), 'saveDirty'],
+    ['a computed written name', inSave("  console['warn']('x')"), 'saveDirty'],
+    ['console handed on', inSave("  report(console, 'x')"), 'saveDirty'],
+    ['the parameter taken out', inShutdown("  const report = log.error\n  report('[server] x')"), 'installShutdown'],
+    [
+      'the parameter in a chain',
+      inShutdown("  const pick = log.error\n  const report = pick\n  report('[server] x')"),
+      'installShutdown',
+    ],
+    [
+      'the parameter given another value',
+      inShutdown("  log = makeLogger()\n  log.error('[server] x')"),
+      'installShutdown',
+    ],
+    ['a computed member of the parameter', inShutdown("  log[level]('[server] x')"), 'installShutdown'],
+    [
+      'a plain parameter defaulted to console',
+      "export function installShutdown(log = console) {\n  log.error('[server] x')\n}\n",
+      'installShutdown',
+    ],
+    [
+      'a logging member of another receiver kept in names (Codex)',
+      inSave(
+        "  const warning = this.logOnce\n  const report = warning\n  report(this, 'save', '[network] row skipped')"
+      ),
+      'saveDirty',
+    ],
+    ['the same destructured', inSave("  const { logOnce } = this\n  logOnce(this, 'save', 'x')"), 'saveDirty'],
+    ['the same bound', inSave("  const report = this.logOnce.bind(this)\n  report(this, 'save', 'x')"), 'saveDirty'],
+    ["another receiver's logger taken out", inSave("  const report = audit.error\n  report('x')"), 'saveDirty'],
+    ["another receiver's logger by a computed key", inSave("  audit['error']('x')"), 'saveDirty'],
+    [
+      'a destructured error parameter kept in another name',
+      inSave("  ;[1].forEach(({ error }) => {\n    const report = error\n    report('x')\n  })"),
+      'saveDirty',
+    ],
+    ['a destructured error parameter called', inSave("  ;[1].forEach(({ error }) => error('x'))"), 'saveDirty'],
+    [
+      'an option renamed',
+      inSave(
+        "  function report({ log: audit = console } = {}) {\n    audit.table([{ status: 'row not saved' }])\n  }\n  report()"
+      ),
+      'saveDirty',
+    ],
+    [
+      'an option of another name',
+      inSave("  function report({ logger = console } = {}) {\n    logger.error('x')\n  }\n  report()"),
+      'saveDirty',
+    ],
+    [
+      'a logging member destructured by a template key (Codex)',
+      inSave("  const { [`error`]: report } = audit\n  report('x')"),
+      'saveDirty',
+    ],
+    [
+      'the same by a string key',
+      inSave("  const { ['logOnce']: report } = this\n  report(this, 'save', 'x')"),
+      'saveDirty',
+    ],
+    [
+      "a nested function's option taken out",
+      inSave("  function helper({ log = console } = {}) {\n    const report = log.error\n    report('x')\n  }"),
+      'saveDirty',
+    ],
+  ]) {
+    assert.ok(violationsIn(source, name).length >= 1, `${shape}:\n${source}`)
+  }
+  // and what the stop path does today: none
+  assert.deepEqual(
+    violationsIn(
+      inSave(
+        "  console.error('[network] x')\n  console?.log('y')\n  console.warn?.('z')\n  this.logOnce(this, 'k', 'w')"
+      ),
+      'saveDirty'
+    ),
+    []
   )
-  assert.deepEqual(added, ['console.warn(`[network] row ${id} skipped (${why})`)'])
-  assert.ok(!NOT_STOPPED_OR_SAVED.some(part => added[0].includes(part)))
+  assert.deepEqual(
+    violationsIn(
+      inShutdown("  log.error('[server] x')\n  log.log('y')\n  Promise.resolve().catch(err => log.error(err))"),
+      'installShutdown'
+    ),
+    []
+  )
+  // a nested function's own option, and a destructured error value only handed on (userRows' onFailure)
+  assert.deepEqual(
+    violationsIn(inSave("  const helper = ({ log = console } = {}) => log.error('x')\n  helper()"), 'saveDirty'),
+    []
+  )
+  // (and a call of it, whatever the member, is a log call that has to be sorted: logCalls counts it, above)
+  assert.deepEqual(
+    violationsIn(
+      inSave(
+        "  function report({ log = console } = {}) {\n    log.table([{ status: 'row not saved' }])\n  }\n  report()"
+      ),
+      'saveDirty'
+    ),
+    []
+  )
+  assert.deepEqual(
+    violationsIn(
+      inSave("  function helper({ log = console } = {}) {\n    log.error('x')\n  }\n  helper()"),
+      'saveDirty'
+    ),
+    []
+  )
+  assert.deepEqual(
+    violationsIn(
+      inSave('  ;[1].forEach(({ userId, error }) => console.error(`${userId}: ${briefError(error)}`))'),
+      'saveDirty'
+    ),
+    []
+  )
   for (const { reason } of STOP_PATH_ALLOWED) assert.ok(reason.length > 10)
+})
+
+test('stop: a function moved into a module nested in src/server/network/ is found there, and its new line refused', t => {
+  // a checkout of its own: the class hands saveDirty on to a module two folders down, which logs a line nobody sorted
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'stop-path-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const put = (file, text) => {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true })
+    fs.writeFileSync(path.join(root, file), text)
+  }
+  put(
+    'src/core/systems/ServerNetwork.js',
+    "import { saveDirty } from '../../server/network/deep/save.js'\nexport class ServerNetwork {\n  saveDirty() {\n    return saveDirty.call(this)\n  }\n}\n"
+  )
+  put(
+    'src/server/network/deep/save.js',
+    "export async function saveDirty() {\n  console.error ('[network] a row was skipped')\n}\n"
+  )
+  const { unsorted, counts } = stopPathProblems([['saveDirty']], root)
+  assert.deepEqual(counts, { saveDirty: 1 })
+  assert.deepEqual(unsorted, [
+    "src/server/network/deep/save.js saveDirty: console.error ('[network] a row was skipped')",
+  ])
 })
 
 // --- how long a stop took, by Docker's clock ------------------------------------------------------------------

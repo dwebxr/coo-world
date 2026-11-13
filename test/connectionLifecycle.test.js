@@ -4,9 +4,10 @@ import { EventEmitter } from 'node:events'
 import { SNAPSHOT_CAP } from '../src/core/extras/writeLedger.js'
 import { readPacket } from '../src/core/packets.js'
 import { createConnectionLimits, readConnectionLimitsEnv } from '../src/server/connectionLimits.js'
-import { fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
-// (the route is still cut out of src/server/index.js's text: it moves to a module of its own later)
-import { loadRoute } from './lib/networkHarness.mjs'
+import { fakeWs, inside, loadNetwork, makeNetwork } from './lib/network.mjs'
+// (the route is still cut out of src/server/index.js's text, test/lib/wsRoute.mjs: it moves to a module of its own
+// later)
+import { loadRoute } from './lib/wsRoute.mjs'
 
 // The real network (test/lib/network.mjs), its own onConnection and onDisconnect. What the old harness injected
 // into the join is given per test through stand-in modules: the session tokens (each step of the join can be held,
@@ -47,13 +48,15 @@ function fixture(t, { pause, fail, existing = false, auth = { userId: 'player' }
     return Promise.resolve(value)
   }
   const user = { id: 'player', name: 'Saved', rank: 0 }
+  // (the checks of what the join hands its collaborators are made inside onConnection's own catch, which takes a
+  // throw for a failed join: inside() reports them at the end of the test as well)
   const db = table => {
-    assert.equal(table, 'users')
+    inside(t, () => assert.equal(table, 'users'))
     return {
       where(key, id) {
-        assert.equal(key, 'id')
+        inside(t, () => assert.equal(key, 'id'))
         if (lapsed && id === lapsed.id) return { first: () => step('lapsed lookup', lapsed) }
-        assert.equal(id, user.id)
+        inside(t, () => assert.equal(id, user.id))
         return { first: () => step('lookup', existing ? user : undefined) }
       },
       insert(row) {
@@ -91,8 +94,10 @@ function fixture(t, { pause, fail, existing = false, auth = { userId: 'player' }
         const player = {
           data,
           destroy(local) {
-            assert.equal(local, true)
-            assert.equal(this.destroyed, undefined, 'cleanup runs once, even when close follows a failure')
+            inside(t, () => {
+              assert.equal(local, true)
+              assert.equal(this.destroyed, undefined, 'cleanup runs once, even when close follows a failure')
+            })
             this.destroyed = true
             destroyed.push(player)
             players.delete(data.id)
@@ -113,9 +118,11 @@ function fixture(t, { pause, fail, existing = false, auth = { userId: 'player' }
     },
     events: {
       emit(name, data) {
-        assert.equal(name, 'enter')
-        assert.ok(Object.isFrozen(data), 'the enter payload every app sees is frozen')
-        assert.ok(network.sockets.has(data.playerId), 'socket is registered before enter')
+        inside(t, () => {
+          assert.equal(name, 'enter')
+          assert.ok(Object.isFrozen(data), 'the enter payload every app sees is frozen')
+          assert.ok(network.sockets.has(data.playerId), 'socket is registered before enter')
+        })
         // 'cleanup': a failure after the player was added, whose clean-up throws too
         if (fail === 'enter' || fail === 'cleanup') throw failure
         entered.push(data.playerId)
@@ -579,15 +586,17 @@ test('onConnection: arbitrary thrown values are never inspected or stringified',
   const f = fixture(t, { pause: 'createJWT' })
   const running = f.run()
   await f.reached.promise
+  // (read, if at all, inside catches of the class: briefError catches what reading an error throws. inside() reports
+  // each check at the end of the test as well)
   const error = {
     get message() {
-      return assert.fail('message getter')
+      return inside(t, () => assert.fail('message getter'))
     },
     toString() {
-      assert.fail('toString')
+      inside(t, () => assert.fail('toString'))
     },
     toJSON() {
-      assert.fail('toJSON')
+      inside(t, () => assert.fail('toJSON'))
     },
   }
   f.pending.reject(error)

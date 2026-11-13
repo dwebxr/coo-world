@@ -67,6 +67,38 @@ export function resolveWorldFolder({ world, appRoot = APP_ROOT, fs = nodeFs }) {
   const joined = trimmed(path.join(`${appRoot}/`, world))
   const refuse = (folder, why) => ({ ok: false, joined, reason: `${named} resolves to ${folder}: ${why}` })
 
+  // the image's code, as written and as resolved (in the image /app is no link; elsewhere it may be)
+  const roots = [appRoot]
+  try {
+    roots.push(fs.realpathSync(appRoot))
+  } catch {
+    // (no app root here: the written one is all there is)
+  }
+  const codeTrees = [...new Set(roots.flatMap(root => CODE_FOLDERS.map(name => path.join(root, name))))]
+  // what refuses a folder by its place alone; `shown` is the folder the reason names
+  const refusedByPlace = (candidate, shown) => {
+    if (candidate === '/') return refuse(shown, 'that is the root of the file system')
+    if (roots.includes(candidate)) return refuse(shown, `that is the app root, which holds the image's code`)
+    const code = codeTrees.find(tree => atOrUnder(candidate, tree))
+    if (code) return refuse(shown, `that is the image's own code (at or under ${code})`)
+    const holds = codeTrees.find(tree => ancestorOf(candidate, tree))
+    if (holds) return refuse(shown, `that folder holds the image's own code (${holds})`)
+    const system = SYSTEM_TREES.find(tree => atOrUnder(candidate, tree))
+    if (system) return refuse(shown, `that is a system folder (at or under ${system})`)
+    const above = SYSTEM_TREES.find(tree => ancestorOf(candidate, tree))
+    if (above) return refuse(shown, `that folder holds a system folder (${above})`)
+    if (SHARED_FOLDERS.includes(candidate)) {
+      return refuse(shown, `that folder is shared by every user of the container (a folder below it may be used)`)
+    }
+
+    return null
+  }
+  // First on the path as written, before anything is looked at: a place that is refused is refused whether or not
+  // this process may look into it (run by another user than root, /root cannot even be read: the answer is the
+  // same "system folder", not "cannot be looked at").
+  const byName = refusedByPlace(joined, joined)
+  if (byName) return byName
+
   // the deepest part of the path that exists, and the names after it that do not exist yet
   let existing = joined
   const rest = []
@@ -98,29 +130,9 @@ export function resolveWorldFolder({ world, appRoot = APP_ROOT, fs = nodeFs }) {
     return refuse(folder, rest.length ? `${real} is not a folder` : 'it is not a folder')
   }
 
-  // the image's code, as written and as resolved (in the image /app is no link; elsewhere it may be)
-  const roots = [appRoot]
-  try {
-    roots.push(fs.realpathSync(appRoot))
-  } catch {
-    // (no app root here: the written one is all there is)
-  }
-  const codeTrees = [...new Set(roots.flatMap(root => CODE_FOLDERS.map(name => path.join(root, name))))]
-  for (const candidate of [...new Set([joined, folder])]) {
-    if (candidate === '/') return refuse(folder, 'that is the root of the file system')
-    if (roots.includes(candidate)) return refuse(folder, `that is the app root, which holds the image's code`)
-    const code = codeTrees.find(tree => atOrUnder(candidate, tree))
-    if (code) return refuse(folder, `that is the image's own code (at or under ${code})`)
-    const holds = codeTrees.find(tree => ancestorOf(candidate, tree))
-    if (holds) return refuse(folder, `that folder holds the image's own code (${holds})`)
-    const system = SYSTEM_TREES.find(tree => atOrUnder(candidate, tree))
-    if (system) return refuse(folder, `that is a system folder (at or under ${system})`)
-    const above = SYSTEM_TREES.find(tree => ancestorOf(candidate, tree))
-    if (above) return refuse(folder, `that folder holds a system folder (${above})`)
-    if (SHARED_FOLDERS.includes(candidate)) {
-      return refuse(folder, `that folder is shared by every user of the container (a folder below it may be used)`)
-    }
-  }
+  // ... and on where it leads, links resolved
+  const byPlace = refusedByPlace(folder, folder)
+  if (byPlace) return byPlace
   for (const shared of SHARED_FOLDERS) {
     try {
       if (folder === fs.realpathSync(shared)) {

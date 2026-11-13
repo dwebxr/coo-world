@@ -237,11 +237,13 @@ for (const shell of SHELLS) {
         ['scripts', '/app/scripts'],
         ['scripts/lib', '/app/scripts/lib'],
         ['../app/build', '/app/build'],
-        ['../usr/local/bin', real('/usr/local/bin')],
-        ['../etc', real('/etc')],
-        ['../var/lib/world', path.join(real('/var'), 'lib/world')],
-        ['../home/world', null],
-        ['../tmp', real('/tmp')],
+        // (refused by their place as written, before anything is looked at: the folder named is the written one)
+        ['../usr/local/bin', '/usr/local/bin'],
+        ['../etc', '/etc'],
+        ['../var/lib/world', '/var/lib/world'],
+        ['../home/world', '/home/world'],
+        ['../tmp', '/tmp'],
+        // (refused by where a link leads: the folder named is the resolved one)
         [`..${viaLink}/link/bin`, real('/usr/local/bin')],
       ]
       for (const [world, dir] of refused) {

@@ -195,6 +195,28 @@ test('world folder: what cannot be looked at, and the belt, through a stand-in f
     resolveWorldFolder({ world: 'world', appRoot: '/app', fs: failing('EACCES') }).reason,
     'WORLD="world" resolves to /app/world: /app/world cannot be looked at (EACCES)'
   )
+  // A place that is refused is refused before anything is looked at: run by a user who cannot read /root (any but
+  // root: a CI runner), the answer for a world there is "a system folder", not "cannot be looked at". Here every
+  // question to the file system fails, and the answer is the same.
+  const untouchable = new Proxy(
+    {},
+    {
+      get: (_, name) => () => {
+        throw Object.assign(new Error(`${String(name)} was called`), { code: 'EACCES' })
+      },
+    }
+  )
+  for (const [world, why] of [
+    ['../root/world', 'that is a system folder (at or under /root)'],
+    ['../etc', 'that is a system folder (at or under /etc)'],
+    ['build/public', "that is the image's own code (at or under /app/build)"],
+    ['..', 'that is the root of the file system'],
+    ['.', "that is the app root, which holds the image's code"],
+  ]) {
+    const result = resolveWorldFolder({ world, appRoot: '/app', fs: untouchable })
+    assert.equal(result.ok, false, world)
+    assert.ok(result.reason.endsWith(`: ${why}`), `${world}: ${result.reason}`)
+  }
   // a realpath that does not resolve to itself (it cannot, on a real file system)
   const unstable = {
     lstatSync: () => ({}),

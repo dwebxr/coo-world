@@ -10,7 +10,7 @@
 //   d. the process tree (BusyBox `ps`), PID 1 from /proc/1/status and /proc/1/exe, GET /status from inside;
 //   e. THE STOP: `docker stop -t 10`. The container has to exit 0 by itself well before the 10 s, and its log has
 //      to hold the server's `[server] SIGTERM: saving the world before exit` and `[network] final save complete`
-//      and no line saying that something was not saved;
+//      and no line saying that something was not stopped or not saved (NOT_STOPPED_OR_SAVED in the library);
 //   f. a second container on the same volume, stopped with `docker stop --signal SIGINT -t 5` (Fly's documented
 //      default signal and timeout): the same, with SIGINT in the server's line;
 //   g. a third container on the same volume becomes healthy: the world the first two wrote loads;

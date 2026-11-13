@@ -370,10 +370,49 @@ export function tailOf(text, lines = 40, characters = 6000) {
 }
 
 /**
+ * The lines the server prints when something was not stopped or not saved, as parts of a line: any of them in a
+ * stopped container's log fails the stop, whatever the exit code (the handler still exits 0 after a failed
+ * stopWorld or close, and a failed write is retried before the final save gives up). Each is quoted from where it
+ * is printed. test/imageCheck.test.js holds every part to its source and fails on a log call in installShutdown
+ * or on the final save's path in ServerNetwork.js that this list neither forbids nor its own list allows.
+ */
+export const NOT_STOPPED_OR_SAVED = [
+  // src/server/shutdown.js:31   log.error(`[server] ${signal} again: exiting without waiting for the final save`)
+  'again: exiting without waiting for the final save',
+  // src/server/shutdown.js:36   log.log(`[server] ${signal} during start-up, before the world was loaded: nothing to save; exiting`)
+  'during start-up, before the world was loaded',
+  // src/server/shutdown.js:41   log.error('[server] the final save did not return in time; exiting')
+  '[server] the final save did not return in time',
+  // src/server/shutdown.js:49   log.error(`[server] stopping the world failed: ${briefError(err)}`)
+  '[server] stopping the world failed',
+  // src/server/shutdown.js:59   Promise.resolve(target.closeServer?.()).catch(err => log.error(`[server] close failed: ${briefError(err)}`))
+  // src/server/shutdown.js:61   log.error(`[server] close failed: ${briefError(err)}`)
+  '[server] close failed',
+  // src/server/shutdown.js:68   log.error(`[server] final save failed: ${briefError(err)}`)
+  '[server] final save failed',
+  // src/core/systems/ServerNetwork.js:773-774 (flushBeforeExit)
+  //   console.error(`[network] not persisted: blueprints=${…} apps=${…} config=${…} users=${…} storage=${…}`)
+  '[network] not persisted',
+  // src/core/systems/ServerNetwork.js:703 (saveDirty, a blueprint or app row)
+  //   console.error(`[network] error saving ${table} ${id}: ${briefError(err)}`)
+  // src/core/systems/ServerNetwork.js:805 (saveConfig, the settings or the spawn)
+  //   this.logOnce(this, `config:${key}`, `[network] error saving ${key}: ${briefError(err)}`)
+  '[network] error saving ',
+  // src/core/systems/ServerNetwork.js:783 (saveConfig: the row was never read, and nothing of it is saved from here)
+  //   this.logOnce(this, `config-unloaded:${key}`, `[network] ${key} was not loaded; changes will not be saved`)
+  'was not loaded; changes will not be saved',
+  // src/core/systems/ServerNetwork.js:927-928 (userRows' onFailure: a user's row the database refused)
+  //   console.error(`[network] ${columns.join(', ')} of user ${…} not stored (kept in memory; written again …`)
+  'not stored (kept in memory',
+  // src/server/Storage.js:291 (the script storage file, which flushBeforeExit flushes through Storage.flush)
+  //   console.error(`[storage] failed to save ${path.basename(this.file)} (${code}); retrying`)
+  '[storage] failed to save ',
+]
+
+/**
  * What a stop has to show, for a signal and the timeout `docker stop` was given.
  * The two required lines are the server's own (src/server/shutdown.js, ServerNetwork.flushBeforeExit); the forbidden
- * ones are what it prints when something was not saved, when the save ran out of time, when a second signal cut it
- * short, or when the signal found no world to save.
+ * ones are NOT_STOPPED_OR_SAVED.
  */
 export function stopExpectation({ signal, timeoutS }) {
   return {
@@ -381,13 +420,7 @@ export function stopExpectation({ signal, timeoutS }) {
     timeoutS,
     maxElapsedMs: Math.round(timeoutS * 1000 * STOP_ELAPSED_PART),
     required: [`[server] ${signal}: saving the world before exit`, '[network] final save complete'],
-    forbidden: [
-      '[network] not persisted',
-      '[server] the final save did not return in time',
-      '[server] final save failed',
-      'again: exiting without waiting for the final save',
-      'during start-up, before the world was loaded',
-    ],
+    forbidden: [...NOT_STOPPED_OR_SAVED],
   }
 }
 

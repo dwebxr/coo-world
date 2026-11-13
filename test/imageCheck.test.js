@@ -12,6 +12,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   MODELS,
+  NOT_STOPPED_OR_SAVED,
   SIGNAL_BUDGET,
   STOPS,
   UsageError,
@@ -322,22 +323,132 @@ test('stop: exit 0 without the final-save line is not a good stop', () => {
   assert.deepEqual(stopOf(STOPS.sigterm, { log: 'server listening on port 3000' }).reasons.length, 2)
 })
 
-test('stop: a `not persisted` line fails it, and so does every other line that says the save did not finish', () => {
-  const lost = '[network] not persisted: blueprints=["a1"] apps=[] config=[] users=0 storage=saved'
-  const verdict = stopOf(STOPS.sigterm, { log: `${savedLog('SIGTERM')}\n${lost}` })
-  assert.equal(verdict.ok, false)
-  assert.deepEqual(verdict.reasons, [`the log says: ${lost}`])
-  assert.deepEqual(verdict.unwanted, [lost])
-  for (const line of [
-    '[server] the final save did not return in time; exiting',
-    '[server] final save failed: save deadline exceeded',
-    '[server] SIGTERM again: exiting without waiting for the final save',
-    '[server] SIGTERM during start-up, before the world was loaded: nothing to save; exiting',
+// The real signal handler (src/server/shutdown.js) with stand-ins for what it stops: what it prints and the exit
+// codes it asks for, once it has asked for one (and the rejections it logs are in).
+async function shutdownRun({ network, stopWorld, closeServer, deadlineMs = 60_000, twice = false } = {}) {
+  const printed = []
+  const handlers = {}
+  const exits = []
+  let exited
+  const firstExit = new Promise(resolve => (exited = resolve))
+  installShutdown({
+    proc: {
+      on: (signal, handler) => (handlers[signal] = handler),
+      exit: code => {
+        exits.push(code)
+        exited()
+      },
+    },
+    network,
+    stopWorld,
+    closeServer,
+    deadlineMs,
+    log: { log: line => printed.push(line), error: line => printed.push(line) },
+  })
+  // (the handler's own deadline timer is unref'd: this one keeps the test's process up until the exit)
+  const alive = setTimeout(() => {}, 10_000)
+  handlers.SIGTERM('SIGTERM')
+  if (twice) handlers.SIGINT('SIGINT')
+  await firstExit
+  await new Promise(resolve => setImmediate(resolve))
+  clearTimeout(alive)
+  return { printed, exits, log: printed.join('\n') }
+}
+const savesAndSays = printed => ({
+  flushBeforeExit: async () => printed.push('[network] final save complete'),
+})
+const never = { flushBeforeExit: () => new Promise(() => {}) }
+const judged = (run, exitCode = run.exits[0]) => judgeStop({ ...STOPS.sigterm, exitCode, elapsedMs: 100, log: run.log })
+// a stand-in for the network that prints what ServerNetwork.flushBeforeExit prints when the save completes
+async function savingRun(options) {
+  const lines = []
+  const run = await shutdownRun({ network: savesAndSays(lines), ...options })
+  // (the network's line goes into the same log, after the handler's first)
+  return { ...run, log: [run.printed[0], ...lines, ...run.printed.slice(1)].join('\n') }
+}
+
+test('stop: `[server] stopping the world failed` (shutdown.js:49) fails a stop that saved and exited 0', async () => {
+  const run = await savingRun({
+    stopWorld: () => {
+      throw new Error('boom')
+    },
+  })
+  assert.deepEqual(run.exits, [0], 'the handler goes on to save and exits 0')
+  assert.deepEqual(judged(run).reasons, ['the log says: [server] stopping the world failed: boom'])
+})
+
+test('stop: `[server] close failed`, thrown (shutdown.js:61) or rejected (shutdown.js:59), fails it', async () => {
+  for (const closeServer of [
+    () => {
+      throw new Error('not listening')
+    },
+    async () => {
+      throw new Error('not listening')
+    },
   ]) {
-    const bad = stopOf(STOPS.sigterm, { log: `${savedLog('SIGTERM')}\n${line}` })
-    assert.deepEqual(bad.reasons, [`the log says: ${line}`], line)
+    const run = await savingRun({ closeServer })
+    assert.deepEqual(run.exits, [0])
+    assert.deepEqual(judged(run).reasons, ['the log says: [server] close failed: not listening'])
   }
 })
+
+test('stop: `[server] final save failed` (shutdown.js:68) fails it', async () => {
+  const run = await shutdownRun({ network: { flushBeforeExit: async () => Promise.reject(new Error('disk full')) } })
+  assert.deepEqual(run.exits, [1])
+  assert.ok(judged(run).reasons.includes('the log says: [server] final save failed: disk full'), run.log)
+  // with exit code 0 too: the line alone fails it
+  assert.ok(judged(run, 0).reasons.includes('the log says: [server] final save failed: disk full'))
+})
+
+test('stop: `[server] the final save did not return in time` (shutdown.js:41) fails it', async () => {
+  const run = await shutdownRun({ network: never, deadlineMs: 1 })
+  assert.deepEqual(run.exits, [1])
+  assert.ok(judged(run, 0).reasons.includes('the log says: [server] the final save did not return in time; exiting'))
+})
+
+test('stop: `again: exiting without waiting for the final save` (shutdown.js:31) fails it', async () => {
+  const run = await shutdownRun({ network: never, twice: true })
+  assert.deepEqual(run.exits, [1])
+  assert.ok(
+    judged(run, 0).reasons.includes('the log says: [server] SIGINT again: exiting without waiting for the final save')
+  )
+})
+
+test('stop: `during start-up, before the world was loaded` (shutdown.js:36) fails it, though it exits 0', async () => {
+  const run = await shutdownRun({ network: undefined })
+  assert.deepEqual(run.exits, [0])
+  assert.deepEqual(judged(run).reasons, [
+    'the log has no `[server] SIGTERM: saving the world before exit` line',
+    'the log has no `[network] final save complete` line',
+    'the log says: [server] SIGTERM during start-up, before the world was loaded: nothing to save; exiting',
+  ])
+})
+
+// What the final save's path in ServerNetwork.js and Storage.js prints, as it prints it (made up: ids, codes): each
+// fails a stop that otherwise passed. (Its part of the source is held to the source below.)
+for (const [where, line] of [
+  [
+    'ServerNetwork.js:773, flushBeforeExit',
+    '[network] not persisted: blueprints=["a1"] apps=[] config=[] users=0 storage=saved',
+  ],
+  ['ServerNetwork.js:703, saveDirty', '[network] error saving entities 3f9a: SqliteError: database is locked'],
+  ['ServerNetwork.js:805, saveConfig', '[network] error saving settings: SqliteError: database is locked'],
+  ['ServerNetwork.js:783, saveConfig', '[network] settings was not loaded; changes will not be saved'],
+  [
+    'ServerNetwork.js:927, userRows',
+    "[network] rank of user u1 not stored (kept in memory; written again with that user's next change or at the final save): Error: timeout",
+  ],
+  ['Storage.js:291, Storage.write', '[storage] failed to save storage.json (ENOSPC); retrying'],
+]) {
+  test(`stop: ${JSON.stringify(line.slice(0, 40))}… (${where}) fails a stop that otherwise passed`, () => {
+    const verdict = stopOf(STOPS.sigterm, { log: `${savedLog('SIGTERM')}\n${line}` })
+    assert.equal(verdict.ok, false)
+    assert.deepEqual(verdict.reasons, [`the log says: ${line}`])
+    assert.deepEqual(verdict.unwanted, [line])
+    // and with a timestamp before it, as `docker logs --timestamps` gives it
+    assert.equal(stopOf(STOPS.sigterm, { log: `2026-11-13T10:00:05.200000000Z ${line}` }).ok, false)
+  })
+}
 
 test('stop: with SIGINT the server has to name SIGINT, within 4 of the 5 seconds', () => {
   assert.deepEqual(stopExpectation(STOPS.sigint), {
@@ -390,12 +501,97 @@ test('stop: the lines looked for are the ones the server prints', async () => {
   // the texts themselves, where they are written
   const network = read('src/core/systems/ServerNetwork.js')
   assert.ok(network.includes("console.log('[network] final save complete')"))
-  assert.ok(network.includes('`[network] not persisted: '))
-  const shutdownSource = read('src/server/shutdown.js')
-  const { forbidden } = stopExpectation(STOPS.sigterm)
-  for (const part of forbidden.filter(part => part !== '[network] not persisted')) {
-    assert.ok(shutdownSource.includes(part.replace('[server] ', '')), part)
+  assert.ok(read('src/server/shutdown.js').includes('`[server] ${signal}: saving the world before exit'))
+  // every forbidden part is in one of the files it is quoted from: none is left behind by a changed message
+  const sources = ['src/server/shutdown.js', 'src/core/systems/ServerNetwork.js', 'src/server/Storage.js'].map(read)
+  assert.deepEqual(stopExpectation(STOPS.sigterm).forbidden, NOT_STOPPED_OR_SAVED)
+  for (const part of NOT_STOPPED_OR_SAVED)
+    assert.ok(
+      sources.some(source => source.includes(part)),
+      part
+    )
+})
+
+// A SOURCE-TEXT TRIPWIRE. The functions a stop runs through print what they did; the verdict on a stop has to know
+// every one of those lines: forbid it (NOT_STOPPED_OR_SAVED), require it (stopExpectation), or let it pass, here,
+// with the reason. A log call added to one of these functions later fails this test until it is sorted, so that a
+// new "not saved" message cannot slip past the image check unnoticed. Reading the source is right here because what
+// is asked is about the source (is every message accounted for), not about behaviour; the behaviour of each line is
+// tested above. It is kept to the named functions: the rest of ServerNetwork.js logs plenty that has nothing to do
+// with a stop. Its weak spot, said plainly: a message built elsewhere and logged through a variable is not seen.
+const STOP_PATH_FUNCTIONS = [
+  // the signal handler: stopWorld, closeServer, the final save, its deadline, a second signal
+  ['src/server/shutdown.js', '\nexport function installShutdown('],
+  // the final save, and what it calls that prints: save() -> saveDirty, saveSettings -> saveConfig, the users' rows
+  ['src/core/systems/ServerNetwork.js', '\n  async flushBeforeExit('],
+  ['src/core/systems/ServerNetwork.js', '\n  async saveDirty('],
+  ['src/core/systems/ServerNetwork.js', '\n  saveConfig('],
+  ['src/core/systems/ServerNetwork.js', '\n  userRows() {'],
+]
+const STOP_PATH_ALLOWED = [
+  // ServerNetwork.js:708 (saveDirty): the rows it did write. A row it could not write prints `[network] error
+  // saving` (forbidden) and stays dirty, and the final save then says `[network] not persisted` (forbidden)
+  { part: 'world saved (', reason: 'what was written, not what was not' },
+]
+const STOP_PATH_REQUIRED = [': saving the world before exit', '[network] final save complete']
+
+// the text of each logging call in a function: from `console.error(` (`log.log(`, `this.logOnce(`, …) to its
+// closing parenthesis
+function logCallsIn(source, signature) {
+  const start = source.indexOf(signature)
+  assert.ok(start !== -1, `${signature.trim()} is not in the file any more: update STOP_PATH_FUNCTIONS`)
+  const indent = /\n( *)/.exec(signature)[1]
+  const end = source.indexOf(`\n${indent}}\n`, start + 1)
+  const body = source.slice(start, end)
+  const calls = []
+  for (const match of body.matchAll(/\b(?:console|log)\.(?:log|warn|error)\(|\blogOnce\(/g)) {
+    let depth = 0
+    let at = match.index + match[0].length - 1
+    for (; at < body.length && at - match.index < 800; at++) {
+      if (body[at] === '(') depth++
+      if (body[at] === ')' && --depth === 0) break
+    }
+    calls.push(body.slice(match.index, at + 1))
   }
+  return calls
+}
+
+test('stop: every log line of the stop and save paths is forbidden, required or allowed with a reason', () => {
+  const unsorted = []
+  const counts = {}
+  for (const [file, signature] of STOP_PATH_FUNCTIONS) {
+    const calls = logCallsIn(read(file), signature)
+    counts[signature.trim()] = calls.length
+    for (const call of calls) {
+      const known =
+        NOT_STOPPED_OR_SAVED.some(part => call.includes(part)) ||
+        STOP_PATH_REQUIRED.some(part => call.includes(part)) ||
+        STOP_PATH_ALLOWED.some(({ part }) => call.includes(part))
+      if (!known) unsorted.push(`${file} ${signature.trim()}: ${call.replace(/\s+/g, ' ').slice(0, 200)}`)
+    }
+  }
+  assert.deepEqual(
+    unsorted,
+    [],
+    'a log line on the stop path that the image check does not know: add its part to NOT_STOPPED_OR_SAVED ' +
+      '(scripts/lib/imageCheck.mjs) if it says that something was not stopped or not saved, else to STOP_PATH_ALLOWED'
+  )
+  // the reading itself found what is there today (8 calls in the handler, 7 on the final save's path)
+  assert.deepEqual(counts, {
+    'export function installShutdown(': 8,
+    'async flushBeforeExit(': 2,
+    'async saveDirty(': 2,
+    'saveConfig(': 2,
+    'userRows() {': 1,
+  })
+  // and it would see a new one
+  const added = logCallsIn(
+    '\n  async saveDirty() {\n    console.warn(`[network] row ${id} skipped (${why})`)\n  }\n',
+    '\n  async saveDirty('
+  )
+  assert.deepEqual(added, ['console.warn(`[network] row ${id} skipped (${why})`)'])
+  assert.ok(!NOT_STOPPED_OR_SAVED.some(part => added[0].includes(part)))
+  for (const { reason } of STOP_PATH_ALLOWED) assert.ok(reason.length > 10)
 })
 
 // --- the commands ---------------------------------------------------------------------------------------------

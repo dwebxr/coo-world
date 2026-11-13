@@ -79,6 +79,8 @@ Replace `localhost:3000` in the three addresses with the host (and `wss://` / `h
 
 `.github/workflows/image.yml` builds this image on a GitHub runner and runs it there with `scripts/image-check.mjs`. This section says what that job checks, not what it found: the job's output and its `image-check` artifact say that for each run.
 
+What its first run found (2026-11-13, on the image as it was then): the container's first process is `npm run start`, run by `node`, as root; the server is its direct child, with no shell in between; both `SIGTERM` and `SIGINT` reached the server, which saved and left with exit code 0 about 0.2 s after `docker stop`.
+
 It runs for a pull request, or a push to `main`, that changes what the image is built from (`Dockerfile`, `.dockerignore`, `package.json`, `package-lock.json`, `.nvmrc`, `scripts/build*.mjs`, `scripts/lib/`), `src/server/`, the script or the workflow; once a week (the base image's tag can be pushed again with other contents); and by hand. It is not a required check: with a path filter it does not report on most pull requests. Nothing is pushed, no port is published to the runner, and every setting is made up.
 
 What the job asserts:

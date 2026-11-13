@@ -176,3 +176,39 @@ test('UI: an unmount drops a pending rebuild (it set a stray needRebuild); a mou
     },
     { browser: true }
   ))
+
+// The handle's pointer-callback getters checked `this.ctx`: `this` is the handle (which has no ctx), or whatever a
+// script read the getter through. The node's own getter makes the check (and more: a run that has ended).
+test("node: the handle's pointer-callback getters ask the node, not the object they are read through", () =>
+  runProbe(bundle, ({ createNode }) => {
+    const keys = ['onPointerEnter', 'onPointerLeave', 'onPointerDown', 'onPointerUp']
+    const node = createNode('group')
+    const handle = node.getProxy()
+    const callbacks = {}
+    for (const key of keys) handle[key] = callbacks[key] = () => key
+    let ctxReads = 0
+    const crashed = { entity: { crashed: true }, world: { fatalError: true } }
+    const inheritor = Object.create(handle, {
+      ctx: {
+        get() {
+          ctxReads++
+          return crashed
+        },
+      },
+    })
+    for (const key of keys) {
+      assert.equal(handle[key], callbacks[key], key)
+      // read through an object that inherits from the handle, or with another receiver: the node's callback
+      assert.equal(inheritor[key], callbacks[key], `${key} through Object.create(handle)`)
+      assert.equal(Reflect.get(handle, key, { ctx: crashed }), callbacks[key], `${key} with another receiver`)
+    }
+    assert.equal(ctxReads, 0, "the receiver's ctx is not read")
+    // the node's own context still decides, through the handle and through an inheritor alike
+    for (const ctx of [{ entity: { crashed: true } }, { entity: {}, world: { fatalError: true } }]) {
+      node.ctx = ctx
+      for (const key of keys) {
+        assert.equal(handle[key], null, key)
+        assert.equal(Object.create(handle)[key], null, key)
+      }
+    }
+  }))

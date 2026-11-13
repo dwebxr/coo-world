@@ -835,28 +835,28 @@ export class Node {
           return true
         },
         get onPointerEnter() {
-          if (this.ctx?.entity?.crashed || this.ctx?.world?.fatalError) return null
+          if (self.ctx?.entity?.crashed || self.ctx?.world?.fatalError) return null
           return self.onPointerEnter
         },
         set onPointerEnter(value) {
           self.onPointerEnter = value
         },
         get onPointerLeave() {
-          if (this.ctx?.entity?.crashed || this.ctx?.world?.fatalError) return null
+          if (self.ctx?.entity?.crashed || self.ctx?.world?.fatalError) return null
           return self.onPointerLeave
         },
         set onPointerLeave(value) {
           self.onPointerLeave = value
         },
         get onPointerDown() {
-          if (this.ctx?.entity?.crashed || this.ctx?.world?.fatalError) return null
+          if (self.ctx?.entity?.crashed || self.ctx?.world?.fatalError) return null
           return self.onPointerDown
         },
         set onPointerDown(value) {
           self.onPointerDown = value
         },
         get onPointerUp() {
-          if (this.ctx?.entity?.crashed || this.ctx?.world?.fatalError) return null
+          if (self.ctx?.entity?.crashed || self.ctx?.world?.fatalError) return null
           return self.onPointerUp
         },
         set onPointerUp(value) {

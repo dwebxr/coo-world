@@ -11,7 +11,7 @@ node position. This mount check does not provide general geometry/scalar validat
 
 ### `.radius`: Number
 
-The radius of the capsule. Defaults to `0.3` which is the same as the player capsule.
+The radius of the capsule. Defaults to `0.4` (the player's own capsule has a radius of `0.3`).
 
 ### `.height`: Number
 

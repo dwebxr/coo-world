@@ -16,11 +16,11 @@ Defaults to `flex`.
 
 ### `.width`: Number
 
-The width of the view in pixels. Defaults to `100`.
+The width of the view in pixels. Defaults to `null`: no fixed width, the layout sizes the view.
 
 ### `.height`: Number
 
-The height of the view in pixels. Defaults to `100`.
+The height of the view in pixels. Defaults to `null`: no fixed height, the layout sizes the view.
 
 ### `.backgroundColor`: String
 
@@ -70,17 +70,17 @@ Defaults to `stretch`.
 Options: `flex-start`, `flex-end`, `stretch`, `center`, `space-between`, `space-around`, `space-evenly`.
 Defaults to `flex-start`.
 
-### `.flexBasis`: Number
+### `.flexBasis`: Number|String
 
-Defaults to `null`.
+Defaults to `'auto'`.
 
 ### `.flexGrow`: Number
 
-Defaults to `null`.
+Defaults to `0`.
 
 ### `.flexShrink`: Number
 
-Defaults to `null`.
+Defaults to `1`.
 
 ### `.flexWrap`: String
 

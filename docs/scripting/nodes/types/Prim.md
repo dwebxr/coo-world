@@ -62,7 +62,7 @@ The opacity of the primitive, from 0.0 (fully transparent) to 1.0 (fully opaque)
 
 ### `.transparent`: Boolean
 
-Whether the primitive should be rendered with transparency. Must be `true` for opacity values less than 1 to take effect. Defaults to `false`.
+Deprecated, and it does nothing: reading it gives `undefined`, and setting it only logs `prim.transparent deprecated`. A prim is drawn with transparency when its `opacity` is below `1` (from the code).
 
 ### `.texture`: String | null
 

@@ -10,7 +10,7 @@ A url to a video file, or an asset url from a video prop.
 
 Currently only `mp4` and `m3u8` (HLS streams) are supported.
 
-### `.linked`: Number|String
+### `.linked`: Boolean|String
 
 By default, videos are not linked and each node spawns a new video player with its own state and control.
 
@@ -67,7 +67,7 @@ Whether the mesh material is lit (reacts to lighting) or not. Defaults to `false
 
 ### `.doubleside`: Boolean
 
-Whether the video should play on both sides of the plane. Does not apply to custom geometry. Defaults to `true`.
+Whether the video should play on both sides of the plane. Does not apply to custom geometry. Defaults to `false`.
 
 ### `.castShadow`: Boolean
 
@@ -97,11 +97,16 @@ Defaults to `contain`.
 
 ### `.width`: Number|null
 
-The fixed width of the plane when not using a custom geometry. Can be set to `null` to be automatic. When automatic, the width will match the `.ratio` value until the video begins playback and will then resize to match the video dimensions. Defaults to `null`.
+The fixed width of the plane when not using a custom geometry. Can be set to `null` to be automatic: the width is then
+`height` × `aspect` until the video's first frame has arrived, and `height` × the video's own width / height after that.
+Defaults to `null` (with the default `height` of `1` and `aspect` of `16 / 9`, a plane 1.78 wide before the first frame,
+1.33 wide for a 4:3 video after it). When `width` and `height` are both `null` the plane has no size.
 
 ### `.height`: Number|null
 
-The fixed height of the plane when not using a custom geometry. Can be set to `null` to be automatic. When automatic, the height will match the `.ratio` value until the video begins playback and will then resize to match the video dimensions. Defaults to `null`.
+The fixed height of the plane when not using a custom geometry. Can be set to `null` to be automatic: the height is
+then `width` / `aspect` until the video's first frame has arrived, and `width` / the video's own width / height after
+that. Defaults to `1`, so a `width` alone gives a fixed plane: set `height` to `null` for an automatic one.
 
 ### `.geometry`: Geometry
 

@@ -32,6 +32,10 @@
 //   is taken for the network's;
 // - a key computed at run time (`ws[name](…)`), a transport reached through a helper that takes it (`invoke(ws,
 //   'send')`, `Reflect.get(ws, 'send')`), and anything through `eval`, `Function` or `with`;
+// - a `send` or `ping` taken out by a QUOTED key in a destructuring pattern (`const { "send": raw } = ws; raw(…)`):
+//   the scan of extracted sends reads written and computed keys of such a pattern, not quoted ones;
+// - a transport put behind an expression that is allowed for another reason, by name: a local called `reply`
+//   (`const reply = ws; reply.send(…)`), or `this.world.network` given a transport's value before its `send`;
 // - files outside the ones read (src/server, core/Socket.js, the Server*/Apps systems).
 // (A transport kept in a property is not among them: `this.raw.send(…)` is a receiver that is not allowed, and
 // `socket = this.raw` an origin that is not on the list.)

@@ -685,6 +685,8 @@ test('stop: the lines looked for are the ones the server prints', async () => {
 //   (`import { warn } from …`, `const f = pick(console)` at a module's top, then `f(…)`);
 // - a member of anything but `console` and the option reached, or destructured, by a key computed at run time
 //   (`audit[level](…)`, `const { [level]: f } = audit`): the key is not known to be a logging one;
+// - a logger given a name at a module's top otherwise than by its declaration's own value: assigned after it
+//   (`let report; report = console.error`) or through a destructuring default, and then called by that name;
 // - output by other means (`process.stderr.write`, `process.emitWarning`, `util.debuglog`);
 // - what a line says beyond its call's text: a call is sorted by the parts its text carries, so a message built
 //   elsewhere and passed in a variable is unsorted (and fails the test) unless the call's text carries a known part,

@@ -4,10 +4,16 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { EventEmitter } from 'node:events'
-import * as entityPolicy from '../../src/core/extras/entityModifyPolicy.js'
-import * as blueprintPolicy from '../../src/core/extras/blueprintPolicy.js'
-import * as assetURL from '../../src/core/extras/assetURL.js'
-import * as aiBudget from '../../src/server/aiBudget.js'
+import { isPlainObject } from '../../src/core/extras/entityModifyPolicy.js'
+import { sanitizeBlueprintAdd } from '../../src/core/extras/blueprintPolicy.js'
+import {
+  assetName,
+  assetRefusal,
+  assetsUrlProblem,
+  previewValue,
+  scriptSource,
+} from '../../src/core/extras/assetURL.js'
+import { AI_REFUSALS, createAiBudget, readAiAction, readAiLimitsEnv } from '../../src/server/aiBudget.js'
 
 class System extends EventEmitter {
   constructor(world) {
@@ -26,13 +32,21 @@ function source(file) {
 }
 
 export function load(file, name, extra = {}) {
-  // the names the files evaluated here import from these modules (System: ServerAI.js); a test gives the rest
+  // the names the files evaluated here (cleaner.js, ServerAI.js) import from the project's modules; a test gives the
+  // rest (fs, path, assets, collections, hashFile, …), and what neither gives is undefined there
   const dependencies = {
     System,
-    ...aiBudget,
-    ...entityPolicy,
-    ...blueprintPolicy,
-    ...assetURL,
+    AI_REFUSALS,
+    createAiBudget,
+    readAiAction,
+    readAiLimitsEnv,
+    isPlainObject,
+    sanitizeBlueprintAdd,
+    assetName,
+    assetRefusal,
+    assetsUrlProblem,
+    previewValue,
+    scriptSource,
     ...extra,
   }
   const code = source(file)

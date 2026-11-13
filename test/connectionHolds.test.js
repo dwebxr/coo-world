@@ -491,7 +491,7 @@ test('kept places, playerLimit: the world rank setting and the session are not a
 })
 
 test('kept places: a connection let in on one whose row is not ranked, or gone, is refused before any user is made; said once', async t => {
-  const f = kept(t, { rows: { admin: 2, demoted: 0 } })
+  const f = kept(t, { rows: { admin: 2, demoted: 0, other: 2 } })
   // the list says admin for `demoted` (a database edit the server did not see) and for `gone` (a row deleted)
   f.network.storedRanks.set('demoted', 2)
   f.network.storedRanks.set('gone', 2)
@@ -506,6 +506,11 @@ test('kept places: a connection let in on one whose row is not ranked, or gone, 
     assert.equal((await f.join({}, undefined, undefined, { rankedUser: 'admin' })).snapshot, 'player_limit')
     assert.equal(
       (await f.join({ authToken: 'demoted' }, undefined, undefined, { rankedUser: 'admin' })).snapshot,
+      'player_limit'
+    )
+    // nor the token of another admin: the place was given to that user, not to the rank
+    assert.equal(
+      (await f.join({ authToken: 'other' }, undefined, undefined, { rankedUser: 'admin' })).snapshot,
       'player_limit'
     )
   }

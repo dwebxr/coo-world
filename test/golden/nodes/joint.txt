@@ -1,0 +1,239 @@
+# the 'joint' node type, written by test/lib/nodeGolden.mjs (legend: test/nodeGolden.test.js)
+== a. the proxy: own keys in order, descriptors, functions shared by two instances
+a proxy: prototype Object.prototype, extensible true, frozen false, 43 keys, getNodeRef(proxy) is the node: true
+a 1 type: get+set enum conf get:"get type"/0 per-instance set:"set"/1 shared
+a 2 body0: get+set enum conf get:"get body0"/0 per-instance set:"set"/1 shared
+a 3 offset0: get enum conf get:"get offset0"/0 per-instance
+a 4 quaternion0: get enum conf get:"get quaternion0"/0 per-instance
+a 5 rotation0: get enum conf get:"get rotation0"/0 per-instance
+a 6 body1: get+set enum conf get:"get body1"/0 per-instance set:"set"/1 shared
+a 7 offset1: get enum conf get:"get offset1"/0 per-instance
+a 8 quaternion1: get enum conf get:"get quaternion1"/0 per-instance
+a 9 rotation1: get enum conf get:"get rotation1"/0 per-instance
+a 10 breakForce: get+set enum conf get:"get breakForce"/0 per-instance set:"set"/1 shared
+a 11 breakTorque: get+set enum conf get:"get breakTorque"/0 per-instance set:"set"/1 shared
+a 12 limitY: get+set enum conf get:"get limitY"/0 per-instance set:"set"/1 shared
+a 13 axis: get enum conf get:"get axis"/0 per-instance
+a 14 limitZ: get+set enum conf get:"get limitZ"/0 per-instance set:"set"/1 shared
+a 15 limitMin: get+set enum conf get:"get limitMin"/0 per-instance set:"set"/1 shared
+a 16 limitMax: get+set enum conf get:"get limitMax"/0 per-instance set:"set"/1 shared
+a 17 limitStiffness: get+set enum conf get:"get limitStiffness"/0 per-instance set:"set"/1 shared
+a 18 limitDamping: get+set enum conf get:"get limitDamping"/0 per-instance set:"set"/1 shared
+a 19 collide: get+set enum conf get:"get collide"/0 per-instance set:"set"/1 shared
+a node keys: 24 at 20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43; order as on node; descriptors as on node
+== b. a stopped run (ctx.run is not its entity's deadHook), a live run, and receivers
+b set throws Error: "[app] this app has stopped": type body0 body1 breakForce breakTorque limitY limitZ limitMin limitMax limitStiffness limitDamping collide id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b method throws Error: "[app] this app has stopped": get getWorldMatrix add remove traverse clone clean
+b get reads "fixed": type
+b get reads null: body0 body1 limitY limitZ limitMin limitMax limitStiffness limitDamping _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
+b get reads view:V3(0,0,0)S: offset0 offset1
+b get reads view:Q(0,0,0,1)S: quaternion0 quaternion1
+b get reads view:E(0,0,0,YXZ)S: rotation0 rotation1
+b get reads Infinity: breakForce breakTorque
+b get reads view:V3(0,1,0)S: axis
+b get reads false: collide
+b get reads <auto id>: id
+b get reads "joint": name
+b get reads V3(0,0,0)S: position
+b get reads Q(0,0,0,1)S: quaternion
+b get reads E(0,0,0,YXZ)S: rotation
+b get reads V3(1,1,1)S: scale
+b get reads view:M4(I)S: matrixWorld
+b get reads true: active _isRef
+b get reads undefined: parent cursor
+b get reads []: children
+b through _created set throws Error: "[app] this app has stopped": all 24
+b through _created method throws Error: "[app] this app has stopped": all 7
+b through a parent set throws Error: "[app] this app has stopped": all 24
+b through a parent method throws Error: "[app] this app has stopped": all 7
+b a live run: each setter with a sample value takes it
+b receiver Object.create(proxy): as through the proxy: 24 of 24
+b receiver a plain object: throws TypeError: "[node] not a node": all 24
+b receiver no receiver: throws TypeError: "[node] not a node": all 24
+b receiver a group's proxy: throws TypeError: "[node] a group node has no <key> to set": type body0 body1 breakForce breakTorque limitY limitZ limitMin limitMax limitStiffness limitDamping collide
+b receiver a group's proxy: throws Error: "Setting ID not currently supported": id
+b receiver a group's proxy: throws Error: "Cannot replace node <key>": position quaternion rotation scale
+b receiver a group's proxy: runs: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b receiver a group's proxy: throws Error: "Cannot set <key> directly": parent
+b receiver another type's proxy with the key: throws Error: "[collider] invalid type:": type(collider)
+== c. one set on a fresh unmounted node: pc the proxy and the class alike, p the proxy, c the class
+c type pc read $in <- 'fixed'
+c type p throw Error: "[joint] invalid type: <in>" <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 'x' true false {} [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn 1n 'bogus'
+c type p throw Error: "[joint] invalid type: " <- '' []
+c type p throw Error: "[joint] invalid type: <in>" traps[get:@Symbol.toPrimitive,get:toString,get:join,get:length,get:0,get:1,get:2] <- Proxy[1,2,3]
+c type p throw TypeError: "Cannot convert a Symbol value to a string" <- Symbol
+c type p throw Error: "toString called" <- {toString throws}
+c type p read $in Δ{type:$in needsRebuild:true} calls[setDirty] <- 'socket' 'hinge' 'distance'
+c type c read $in Δ{type:$in} <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} 'socket' 'hinge' 'distance' 'bogus'
+c body0 pc read $in <- null
+c body0 p read null <- undefined
+c body0 p throw Error: "[joint] body0 must be a rigidbody" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws} proxy:mesh node:rigidbody
+c body0 p throw Error: "[joint] body0 must be a rigidbody" traps[gopd:_ref] <- Proxy[1,2,3]
+c body0 p read $in Δ{body0:node:rigidbody needsRebuild:true} calls[setDirty] <- proxy:rigidbody
+c body0 c read $in Δ{body0:$in} <- undefined NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} proxy:rigidbody proxy:mesh node:rigidbody
+c body1 pc read $in <- null
+c body1 p read null <- undefined
+c body1 p throw Error: "[joint] body1 must be a rigidbody" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws} proxy:mesh node:rigidbody
+c body1 p throw Error: "[joint] body1 must be a rigidbody" traps[gopd:_ref] <- Proxy[1,2,3]
+c body1 p read $in Δ{body1:node:rigidbody needsRebuild:true} calls[setDirty] <- proxy:rigidbody
+c body1 c read $in Δ{body1:$in} <- undefined NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} proxy:rigidbody proxy:mesh node:rigidbody
+c breakForce pc read $in <- Infinity
+c breakForce p read Infinity <- undefined null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c breakForce p read $in Δ{breakForce:$in needsRebuild:true} calls[setDirty] <- NaN -Infinity -1 -0 0 0.5 1 1e9
+c breakForce c read $in Δ{breakForce:$in} <- undefined null NaN -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c breakTorque pc read $in <- Infinity
+c breakTorque p read Infinity <- undefined null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c breakTorque p read $in Δ{breakTorque:$in needsRebuild:true} calls[setDirty] <- NaN -Infinity -1 -0 0 0.5 1 1e9
+c breakTorque c read $in Δ{breakTorque:$in} <- undefined null NaN -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c limitY pc read $in <- null
+c limitY p read $in Δ{limitY:$in needsRebuild:true} calls[setDirty] <- undefined NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false Symbol 1n
+c limitY p throw Error: "[joint] limitY must be a number, a boolean or null" <- {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn {toString throws}
+c limitY c read $in Δ{limitY:$in} <- undefined NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c limitZ pc read $in <- null
+c limitZ p read $in Δ{limitZ:$in needsRebuild:true} calls[setDirty] <- undefined NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false Symbol 1n
+c limitZ p throw Error: "[joint] limitZ must be a number, a boolean or null" <- {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn {toString throws}
+c limitZ c read $in Δ{limitZ:$in} <- undefined NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c limitMin pc read $in <- null
+c limitMin p read $in Δ{limitMin:$in needsRebuild:true} calls[setDirty] <- undefined NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false Symbol 1n
+c limitMin p throw Error: "[joint] limitMin must be a number, a boolean or null" <- {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn {toString throws}
+c limitMin c read $in Δ{limitMin:$in} <- undefined NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c limitMax pc read $in <- null
+c limitMax p read $in Δ{limitMax:$in needsRebuild:true} calls[setDirty] <- undefined NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false Symbol 1n
+c limitMax p throw Error: "[joint] limitMax must be a number, a boolean or null" <- {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn {toString throws}
+c limitMax c read $in Δ{limitMax:$in} <- undefined NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c limitStiffness pc read $in <- null
+c limitStiffness p read $in Δ{limitStiffness:$in needsRebuild:true} calls[setDirty] <- undefined NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false Symbol 1n
+c limitStiffness p throw Error: "[joint] limitStiffness must be a number, a boolean or null" <- {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn {toString throws}
+c limitStiffness c read $in Δ{limitStiffness:$in} <- undefined NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c limitDamping pc read $in <- null
+c limitDamping p read $in Δ{limitDamping:$in needsRebuild:true} calls[setDirty] <- undefined NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false Symbol 1n
+c limitDamping p throw Error: "[joint] limitDamping must be a number, a boolean or null" <- {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn {toString throws}
+c limitDamping c read $in Δ{limitDamping:$in} <- undefined NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c collide pc read $in <- false
+c collide p read $in Δ{collide:$in needsRebuild:true} calls[setDirty] <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true Symbol 1n
+c collide p throw Error: "[joint] collide must be a number, a boolean or null" <- {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn {toString throws}
+c collide c read $in Δ{collide:$in} <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
+d type same: - | NaN,NaN: first throws Error: "[joint] invalid type: NaN" | 0,-0: first throws Error: "[joint] invalid type: 0"
+d body0 same: - | copy: Δ{body0:node:rigidbody needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[joint] body0 must be a rigidbody" | 0,-0: first throws Error: "[joint] body0 must be a rigidbody"
+d body1 same: - | copy: Δ{body1:node:rigidbody needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[joint] body1 must be a rigidbody" | 0,-0: first throws Error: "[joint] body1 must be a rigidbody"
+d breakForce same: - | NaN,NaN: Δ{needsRebuild:true} calls[setDirty] | 0,-0: read 0
+d breakTorque same: - | NaN,NaN: Δ{needsRebuild:true} calls[setDirty] | 0,-0: read 0
+d limitY same: - | NaN,NaN: Δ{needsRebuild:true} calls[setDirty] | 0,-0: read 0
+d limitZ same: - | NaN,NaN: Δ{needsRebuild:true} calls[setDirty] | 0,-0: read 0
+d limitMin same: - | NaN,NaN: Δ{needsRebuild:true} calls[setDirty] | 0,-0: read 0
+d limitMax same: - | NaN,NaN: Δ{needsRebuild:true} calls[setDirty] | 0,-0: read 0
+d limitStiffness same: - | NaN,NaN: Δ{needsRebuild:true} calls[setDirty] | 0,-0: read 0
+d limitDamping same: - | NaN,NaN: Δ{needsRebuild:true} calls[setDirty] | 0,-0: read 0
+d collide same: - | NaN,NaN: Δ{needsRebuild:true} calls[setDirty] | 0,-0: read 0
+== f. the constructor: defaults (read through the proxy); each key given through data
+f default type = "fixed"
+f default body0 = null
+f default offset0 = view:V3(0,0,0)S
+f default quaternion0 = view:Q(0,0,0,1)S
+f default rotation0 = view:E(0,0,0,YXZ)S
+f default body1 = null
+f default offset1 = view:V3(0,0,0)S
+f default quaternion1 = view:Q(0,0,0,1)S
+f default rotation1 = view:E(0,0,0,YXZ)S
+f default breakForce = Infinity
+f default breakTorque = Infinity
+f default limitY = null
+f default axis = view:V3(0,1,0)S
+f default limitZ = null
+f default limitMin = null
+f default limitMax = null
+f default limitStiffness = null
+f default limitDamping = null
+f default collide = false
+f default name = "joint"
+f defaults as on node: id position quaternion rotation scale matrixWorld active parent children _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+f type data "fixed" <- undefined null NaN -0 0 '' false
+f type data $in <- Infinity -Infinity -1 0.5 1 1e9 'x' true {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} 'fixed' 'socket' 'hinge' 'distance' 'bogus'
+f body0 data null <- undefined NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} proxy:rigidbody proxy:mesh node:rigidbody
+f body0 data $in <- null
+f body1 data null <- undefined NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} proxy:rigidbody proxy:mesh node:rigidbody
+f body1 data $in <- null
+f breakForce data Infinity <- undefined null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f breakForce data $in <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+f breakTorque data Infinity <- undefined null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f breakTorque data $in <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+f limitY data null <- undefined '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f limitY data $in <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+f limitZ data null <- undefined '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f limitZ data $in <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+f limitMin data null <- undefined '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f limitMin data $in <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+f limitMax data null <- undefined '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f limitMax data $in <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+f limitStiffness data null <- undefined '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f limitStiffness data $in <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+f limitDamping data null <- undefined '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f limitDamping data $in <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+f collide data false <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f collide data $in <- true false
+f as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== g. own fields after construction, and what clone() and clone(true) make of them
+g field name = "joint"
+g field type = "fixed"
+g field body0 = null
+g field offset0 = V3(0,0,0)S
+g field quaternion0 = Q(0,0,0,1)S
+g field rotation0 = E(0,0,0,YXZ)S
+g field body1 = null
+g field offset1 = V3(0,0,0)S
+g field quaternion1 = Q(0,0,0,1)S
+g field rotation1 = E(0,0,0,YXZ)S
+g field breakForce = Infinity
+g field breakTorque = Infinity
+g field axis = V3(0,1,0)S
+g field limitY = null
+g field limitZ = null
+g field limitMin = null
+g field limitMax = null
+g field limitStiffness = null
+g field limitDamping = null
+g field collide = false
+g field attachedBodies = []
+g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
+g full: 18 properties set (type body0 body1 breakForce breakTorque limitY limitZ limitMin limitMax limitStiffness limitDamping collide active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
+g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
+g full fields unlike a new node's: children=[node:node#child(below)] position=V3(1,2,3)S rotation=E(-0,1.2870022175865687,0,YXZ)S quaternion=Q(0,0.6,0,0.8)S scale=V3(2,3,4)S _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _created=owner#full type="socket" body0=node:rigidbody offset0=V3(1,2,3)S quaternion0=Q(0,0.6,0,0.8)S rotation0=E(-0,1.2870022175865687,0,YXZ)S body1=node:rigidbody offset1=V3(4,5,6)S quaternion1=Q(0.6,0,0,0.8)S rotation1=E(1.2870022175865685,0,0,YXZ)S breakForce=0.5 breakTorque=0.5 axis=V3(0,0,1)S limitY=false limitZ=false limitMin=false limitMax=false limitStiffness=false limitDamping=false collide=true needsRebuild=true
+g full fields at a new node's value: name parent ctx matrix matrixWorld isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting attachedBodies
+g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created type body0 body1 breakForce breakTorque limitY limitZ limitMin limitMax limitStiffness limitDamping collide
+g full clone(false) copy: position rotation quaternion scale matrix matrixWorld offset0 quaternion0 rotation0 offset1 quaternion1 rotation1 axis attachedBodies
+g full clone(false) differs: children([node:node#child(below)] -> [])
+g full clone(false) source only: _proxy needsRebuild
+g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created type body0 body1 breakForce breakTorque limitY limitZ limitMin limitMax limitStiffness limitDamping collide
+g full clone(true) copy: children position rotation quaternion scale matrix matrixWorld offset0 quaternion0 rotation0 offset1 quaternion1 rotation1 axis attachedBodies
+g full clone(true) source only: _proxy needsRebuild
+g full clone(true) children: node#child -> node#child
+g a clone reads as its source, each sample property alone (36 clones): yes
+== h. two instances alive at once, their proxies kept: each write and read reaches its own node only
+h each write and read reached its own node only: type body0 body1 breakForce breakTorque limitY limitZ limitMin limitMax limitStiffness limitDamping collide id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+h no value accepted (each write throws, on both nodes): id position quaternion rotation scale parent
+h each read of a key no script sets reached its own node only: offset0 quaternion0 rotation0 offset1 quaternion1 rotation1 axis id name position quaternion rotation scale matrixWorld parent children _ref _isRef
+h the same in both states (a constant): name _ref _isRef
+== i. every getter on a node whose backing values are distinct
+i type = "fixed"
+i body0 = null
+i offset0 = view:V3(11,12,13)S
+i quaternion0 = view:Q(0.19866933079506122,0,0,0.9800665778412416)S
+i rotation0 = view:E(0.4,0,0,YXZ)S
+i body1 = null
+i offset1 = view:V3(14,15,16)S
+i quaternion1 = view:Q(0,0.24740395925452294,0,0.9689124217106447)S
+i rotation1 = view:E(0,0.5,0,YXZ)S
+i breakForce = Infinity
+i breakTorque = Infinity
+i limitY = null
+i axis = view:V3(0,0,1)S
+i limitZ = null
+i limitMin = null
+i limitMax = null
+i limitStiffness = null
+i limitDamping = null
+i collide = false
+i name = "joint"
+i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor

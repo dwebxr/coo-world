@@ -1,0 +1,465 @@
+# the 'particles' node type, written by test/lib/nodeGolden.mjs (legend: test/nodeGolden.test.js)
+== a. the proxy: own keys in order, descriptors, functions shared by two instances
+a proxy: prototype Object.prototype, extensible true, frozen false, 57 keys, getNodeRef(proxy) is the node: true
+a 1 emitting: get+set enum conf get:"get emitting"/0 per-instance set:"set"/1 shared
+a 2 shape: get+set enum conf get:"get shape"/0 per-instance set:"set"/1 shared
+a 3 direction: get+set enum conf get:"get direction"/0 per-instance set:"set"/1 shared
+a 4 rate: get+set enum conf get:"get rate"/0 per-instance set:"set"/1 shared
+a 5 bursts: get+set enum conf get:"get bursts"/0 per-instance set:"set"/1 shared
+a 6 duration: get+set enum conf get:"get duration"/0 per-instance set:"set"/1 shared
+a 7 loop: get+set enum conf get:"get loop"/0 per-instance set:"set"/1 shared
+a 8 max: get+set enum conf get:"get max"/0 per-instance set:"set"/1 shared
+a 9 timescale: get+set enum conf get:"get timescale"/0 per-instance set:"set"/1 shared
+a 10 life: get+set enum conf get:"get life"/0 per-instance set:"set"/1 shared
+a 11 speed: get+set enum conf get:"get speed"/0 per-instance set:"set"/1 shared
+a 12 size: get+set enum conf get:"get size"/0 per-instance set:"set"/1 shared
+a 13 rotate: get+set enum conf get:"get rotate"/0 per-instance set:"set"/1 shared
+a 14 color: get+set enum conf get:"get color"/0 per-instance set:"set"/1 shared
+a 15 alpha: get+set enum conf get:"get alpha"/0 per-instance set:"set"/1 shared
+a 16 emissive: get+set enum conf get:"get emissive"/0 per-instance set:"set"/1 shared
+a 17 image: get+set enum conf get:"get image"/0 per-instance set:"set"/1 shared
+a 18 spritesheet: get+set enum conf get:"get spritesheet"/0 per-instance set:"set"/1 shared
+a 19 blending: get+set enum conf get:"get blending"/0 per-instance set:"set"/1 shared
+a 20 lit: get+set enum conf get:"get lit"/0 per-instance set:"set"/1 shared
+a 21 billboard: get+set enum conf get:"get billboard"/0 per-instance set:"set"/1 shared
+a 22 space: get+set enum conf get:"get space"/0 per-instance set:"set"/1 shared
+a 23 force: get+set enum conf get:"get force"/0 per-instance set:"set"/1 shared
+a 24 velocityLinear: get+set enum conf get:"get velocityLinear"/0 per-instance set:"set"/1 shared
+a 25 velocityOrbital: get+set enum conf get:"get velocityOrbital"/0 per-instance set:"set"/1 shared
+a 26 velocityRadial: get+set enum conf get:"get velocityRadial"/0 per-instance set:"set"/1 shared
+a 27 rateOverDistance: get+set enum conf get:"get rateOverDistance"/0 per-instance set:"set"/1 shared
+a 28 sizeOverLife: get+set enum conf get:"get sizeOverLife"/0 per-instance set:"set"/1 shared
+a 29 rotateOverLife: get+set enum conf get:"get rotateOverLife"/0 per-instance set:"set"/1 shared
+a 30 colorOverLife: get+set enum conf get:"get colorOverLife"/0 per-instance set:"set"/1 shared
+a 31 alphaOverLife: get+set enum conf get:"get alphaOverLife"/0 per-instance set:"set"/1 shared
+a 32 emissiveOverLife: get+set enum conf get:"get emissiveOverLife"/0 per-instance set:"set"/1 shared
+a 33 onEnd: get+set enum conf get:"get onEnd"/0 per-instance set:"set"/1 shared
+a node keys: 24 at 34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57; order as on node; descriptors as on node
+== b. a stopped run (ctx.run is not its entity's deadHook), a live run, and receivers
+b set throws Error: "[app] this app has stopped": emitting shape direction rate bursts duration loop max timescale life speed size rotate color alpha emissive image spritesheet blending lit billboard space force velocityLinear velocityOrbital velocityRadial rateOverDistance sizeOverLife rotateOverLife colorOverLife alphaOverLife emissiveOverLife onEnd id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b method throws Error: "[app] this app has stopped": get getWorldMatrix add remove traverse clone clean
+b get reads true: emitting loop active _isRef
+b get reads ["cone",1,1,25]F: shape
+b get reads 0: direction rateOverDistance
+b get reads 10: rate
+b get reads []F: bursts
+b get reads 5: duration
+b get reads 1000: max
+b get reads 1: timescale
+b get reads "5": life
+b get reads "1": speed size alpha emissive
+b get reads "0": rotate
+b get reads "white": color
+b get reads "/particle.png": image
+b get reads null: spritesheet force velocityLinear velocityOrbital velocityRadial sizeOverLife rotateOverLife colorOverLife alphaOverLife emissiveOverLife onEnd _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
+b get reads "normal": blending
+b get reads false: lit
+b get reads "full": billboard
+b get reads "world": space
+b get reads <auto id>: id
+b get reads "particles": name
+b get reads V3(0,0,0)S: position
+b get reads Q(0,0,0,1)S: quaternion
+b get reads E(0,0,0,YXZ)S: rotation
+b get reads V3(1,1,1)S: scale
+b get reads view:M4(I)S: matrixWorld
+b get reads undefined: parent cursor
+b get reads []: children
+b through _created set throws Error: "[app] this app has stopped": all 45
+b through _created method throws Error: "[app] this app has stopped": all 7
+b through a parent set throws Error: "[app] this app has stopped": all 45
+b through a parent method throws Error: "[app] this app has stopped": all 7
+b a live run: each setter with a sample value takes it
+b receiver Object.create(proxy): as through the proxy: 45 of 45
+b receiver a plain object: throws TypeError: "[node] not a node": all 45
+b receiver no receiver: throws TypeError: "[node] not a node": all 45
+b receiver a group's proxy: throws TypeError: "[node] a group node has no <key> to set": emitting shape direction rate bursts duration loop max timescale life speed size rotate color alpha emissive image spritesheet blending lit billboard space force velocityLinear velocityOrbital velocityRadial rateOverDistance sizeOverLife rotateOverLife colorOverLife alphaOverLife emissiveOverLife onEnd
+b receiver a group's proxy: throws Error: "Setting ID not currently supported": id
+b receiver a group's proxy: throws Error: "Cannot replace node <key>": position quaternion rotation scale
+b receiver a group's proxy: runs: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b receiver a group's proxy: throws Error: "Cannot set <key> directly": parent
+b receiver another type's proxy with the key: leaves that node as it was: duration(action) loop(audio)
+b receiver another type's proxy with the key: throws Error: "[prim] size must be an array of finite numbers": size(prim)
+b receiver another type's proxy with the key: sets that node: color(image) emissive(prim) lit(image) billboard(ui)
+b receiver another type's proxy with the key: throws Error: "[ui] space not valid": space(ui)
+== c. one set on a fresh unmounted node: pc the proxy and the class alike, p the proxy, c the class
+c emitting pc read true <- undefined
+c emitting pc throw Error: "[particles] emitting not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c emitting pc read $in <- true
+c emitting pc read $in Δ{_emitting:$in} <- false
+c shape pc read ["cone",1,1,25]F Δ{_shape:["cone",1,1,25]F needsRebuild:true} calls[setDirty] <- undefined
+c shape pc throw Error: "[particles] shape invalid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws} ["bogus"] ["box",{}]
+c shape pc throw Error: "[particles] shape invalid" traps[get:@Symbol.iterator,get:length,get:0,get:length,get:1,get:length,get:2,get:length] <- Proxy[1,2,3]
+c shape pc read ["sphere",2,0.5]F Δ{_shape:["sphere",2,0.5]F needsRebuild:true} calls[setDirty] <- ["sphere",2,0.5]
+c shape pc read ["point"]F Δ{_shape:["point"]F needsRebuild:true} calls[setDirty] <- ["point"]
+c direction pc read 0 Δ{needsRebuild:true} calls[setDirty] <- undefined NaN
+c direction pc throw Error: "[particles] direction not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c direction pc read 3.4028234663852886e+38 Δ{needsRebuild:true _direction:3.4028234663852886e+38} calls[setDirty] <- Infinity
+c direction pc read -3.4028234663852886e+38 Δ{needsRebuild:true _direction:-3.4028234663852886e+38} calls[setDirty] <- -Infinity
+c direction pc read $in Δ{needsRebuild:true _direction:$in} calls[setDirty] <- -1 -0 0.5 1 1e9
+c direction pc read $in Δ{needsRebuild:true} calls[setDirty] <- 0
+c rate pc read 10 Δ{needsRebuild:true} calls[setDirty] <- undefined NaN
+c rate pc throw Error: "[particles] rate not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c rate pc read 100000 Δ{needsRebuild:true _rate:100000} calls[setDirty] <- Infinity 1e9
+c rate pc read 0 Δ{needsRebuild:true _rate:0} calls[setDirty] <- -Infinity -1
+c rate pc read $in Δ{needsRebuild:true _rate:$in} calls[setDirty] <- -0 0 0.5 1
+c bursts pc read []F Δ{needsRebuild:true _bursts:[]F} calls[setDirty] <- undefined []
+c bursts pc throw Error: "[particles] bursts invalid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws} [{time:"1",count:5}]
+c bursts pc throw Error: "[particles] bursts invalid" traps[get:length,get:0,get:1,get:2] <- Proxy[1,2,3]
+c bursts pc read [{time:1,count:5}F]F Δ{needsRebuild:true _bursts:[{time:1,count:5}F]F} calls[setDirty] <- [{time:1,count:5}]
+c bursts pc read [{time:1000000,count:20000}F]F Δ{needsRebuild:true _bursts:[{time:1000000,count:20000}F]F} calls[setDirty] <- [{time:2000000,count:1000000000}]
+c bursts pc read [{time:0,count:1}F,{time:1,count:1}F,{time:2,count:1}F,…,{time:63,count:1}F](len 64 #dc3ae0cec63a)F Δ{needsRebuild:true _bursts:[{time:0,count:1}F,{time:1,count:1}F,{time:2,count:1}F,…,{time:63,count:1}F](len 64 #dc3ae0cec63a)F} calls[setDirty] <- [{time:0,count:1},{time:1,count:1},{time:2,count:1},…,{time:64,count:1}](len 65 #004413850301)
+c duration pc read 5 Δ{needsRebuild:true} calls[setDirty] <- undefined NaN
+c duration pc throw Error: "[particles] duration not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c duration pc read 1000000 Δ{needsRebuild:true _duration:1000000} calls[setDirty] <- Infinity 1e9
+c duration pc read 0.01 Δ{needsRebuild:true _duration:0.01} calls[setDirty] <- -Infinity -1 -0 0
+c duration pc read $in Δ{needsRebuild:true _duration:$in} calls[setDirty] <- 0.5 1
+c loop pc read true Δ{needsRebuild:true} calls[setDirty] <- undefined
+c loop pc throw Error: "[particles] loop not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c loop pc read $in Δ{needsRebuild:true} calls[setDirty] <- true
+c loop pc read $in Δ{needsRebuild:true _loop:$in} calls[setDirty] <- false
+c max pc read 1000 Δ{needsRebuild:true} calls[setDirty] <- undefined NaN
+c max pc throw Error: "[particles] max not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c max pc read 20000 Δ{needsRebuild:true _max:20000} calls[setDirty] <- Infinity 1e9
+c max pc read 0 Δ{needsRebuild:true _max:0} calls[setDirty] <- -Infinity -1 0.5
+c max pc read $in Δ{needsRebuild:true _max:$in} calls[setDirty] <- -0 0 1
+c timescale pc read 1 Δ{needsRebuild:true} calls[setDirty] <- undefined NaN
+c timescale pc throw Error: "[particles] timescale not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c timescale pc read 100 Δ{needsRebuild:true _timescale:100} calls[setDirty] <- Infinity 1e9
+c timescale pc read 0 Δ{needsRebuild:true _timescale:0} calls[setDirty] <- -Infinity -1
+c timescale pc read $in Δ{needsRebuild:true _timescale:$in} calls[setDirty] <- -0 0 0.5
+c timescale pc read $in Δ{needsRebuild:true} calls[setDirty] <- 1
+c life pc read "5" Δ{needsRebuild:true} calls[setDirty] <- undefined
+c life pc throw Error: "[particles] life invalid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c life pc read $in Δ{needsRebuild:true _life:$in} calls[setDirty] <- '' 'x' '1~3'
+c life pc read "wwwwwwww…"(len 256 #38bc2286bb38) Δ{needsRebuild:true _life:"wwwwwwww…"(len 256 #38bc2286bb38)} calls[setDirty] <- "wwwwwwww…"(len 257 #c46ff51985ea)
+c speed pc read "1" Δ{needsRebuild:true} calls[setDirty] <- undefined
+c speed pc throw Error: "[particles] speed invalid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c speed pc read $in Δ{needsRebuild:true _speed:$in} calls[setDirty] <- '' 'x' '1-3'
+c size pc read "1" Δ{needsRebuild:true} calls[setDirty] <- undefined
+c size pc throw Error: "[particles] size invalid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c size pc read $in Δ{needsRebuild:true _size:$in} calls[setDirty] <- '' 'x'
+c rotate pc read "0" Δ{needsRebuild:true} calls[setDirty] <- undefined
+c rotate pc throw Error: "[particles] rotate invalid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c rotate pc read $in Δ{needsRebuild:true _rotate:$in} calls[setDirty] <- '' 'x'
+c color pc read "white" Δ{needsRebuild:true} calls[setDirty] <- undefined
+c color pc throw Error: "[particles] color invalid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c color pc read $in Δ{needsRebuild:true _color:$in} calls[setDirty] <- '' 'x' 'red'
+c alpha pc read "1" Δ{needsRebuild:true} calls[setDirty] <- undefined
+c alpha pc throw Error: "[particles] alpha invalid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c alpha pc read $in Δ{needsRebuild:true _alpha:$in} calls[setDirty] <- '' 'x'
+c emissive pc read "1" Δ{needsRebuild:true} calls[setDirty] <- undefined
+c emissive pc throw Error: "[particles] emissive invalid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c emissive pc read $in Δ{needsRebuild:true _emissive:$in} calls[setDirty] <- '' 'x'
+c image pc read "/particle.png" Δ{needsRebuild:true} calls[setDirty] <- undefined
+c image pc throw Error: "[particles] image not a string" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c image pc read $in Δ{needsRebuild:true _image:$in} calls[setDirty] <- '' 'x' 'asset://p.png'
+c spritesheet pc read null Δ{needsRebuild:true} calls[setDirty] <- undefined
+c spritesheet pc read $in Δ{needsRebuild:true} calls[setDirty] <- null
+c spritesheet pc throw Error: "[particles] spritesheet invalid" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws} [2,2,10] [2,{},10,10]
+c spritesheet pc throw Error: "[particles] spritesheet invalid" traps[get:@Symbol.iterator,get:length,get:0,get:length,get:1,get:length,get:2,get:length] <- Proxy[1,2,3]
+c spritesheet pc read [2,2,10,10]F Δ{needsRebuild:true _spritesheet:[2,2,10,10]F} calls[setDirty] <- [2,2,10,10]
+c blending pc read "normal" Δ{needsRebuild:true} calls[setDirty] <- undefined
+c blending pc throw Error: "[particles] blending invalid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c blending pc read $in Δ{needsRebuild:true _blending:$in} calls[setDirty] <- 'additive'
+c blending pc read $in Δ{needsRebuild:true} calls[setDirty] <- 'normal'
+c lit pc read false Δ{needsRebuild:true} calls[setDirty] <- undefined
+c lit pc throw Error: "[particles] lit not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c lit pc read $in Δ{needsRebuild:true _lit:$in} calls[setDirty] <- true
+c lit pc read $in Δ{needsRebuild:true} calls[setDirty] <- false
+c billboard pc read "full" Δ{needsRebuild:true} calls[setDirty] <- undefined
+c billboard pc throw Error: "[particles] billboard invalid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c billboard pc read $in Δ{needsRebuild:true} calls[setDirty] <- 'full'
+c billboard pc read $in Δ{needsRebuild:true _billboard:$in} calls[setDirty] <- 'y' 'direction'
+c space pc read "world" Δ{needsRebuild:true} calls[setDirty] <- undefined
+c space pc read $in Δ{needsRebuild:true _space:$in} calls[setDirty] <- null 'local'
+c space pc throw Error: "[particles] space invalid" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c space pc read $in Δ{needsRebuild:true} calls[setDirty] <- 'world'
+c force pc read null Δ{needsRebuild:true} calls[setDirty] <- undefined
+c force pc read $in Δ{needsRebuild:true} calls[setDirty] <- null
+c force pc throw Error: "[particles] force not a Vector3" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws}
+c force pc throw Error: "[particles] force not a Vector3" traps[get:isVector3] <- Proxy[1,2,3]
+c force p read view:V3(1,2,3)S Δ{needsRebuild:true _force:V3(1,2,3)S} calls[setDirty] <- V3(1,2,3)
+c force c read V3(1,2,3)S Δ{needsRebuild:true _force:V3(1,2,3)S} calls[setDirty] <- V3(1,2,3)
+c velocityLinear pc read null Δ{needsRebuild:true} calls[setDirty] <- undefined
+c velocityLinear pc read $in Δ{needsRebuild:true} calls[setDirty] <- null
+c velocityLinear pc throw Error: "[particles] velocityLinear not a Vector3" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws}
+c velocityLinear pc throw Error: "[particles] velocityLinear not a Vector3" traps[get:isVector3] <- Proxy[1,2,3]
+c velocityLinear p read view:V3(1,2,3)S Δ{needsRebuild:true _velocityLinear:V3(1,2,3)S} calls[setDirty] <- V3(1,2,3)
+c velocityLinear c read V3(1,2,3)S Δ{needsRebuild:true _velocityLinear:V3(1,2,3)S} calls[setDirty] <- V3(1,2,3)
+c velocityOrbital pc read null Δ{needsRebuild:true} calls[setDirty] <- undefined
+c velocityOrbital pc read $in Δ{needsRebuild:true} calls[setDirty] <- null
+c velocityOrbital pc throw Error: "[particles] velocityOrbital not a Vector3" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws}
+c velocityOrbital pc throw Error: "[particles] velocityOrbital not a Vector3" traps[get:isVector3] <- Proxy[1,2,3]
+c velocityOrbital p read view:V3(1,2,3)S Δ{needsRebuild:true _velocityOrbital:V3(1,2,3)S} calls[setDirty] <- V3(1,2,3)
+c velocityOrbital c read V3(1,2,3)S Δ{needsRebuild:true _velocityOrbital:V3(1,2,3)S} calls[setDirty] <- V3(1,2,3)
+c velocityRadial pc read null Δ{needsRebuild:true} calls[setDirty] <- undefined NaN
+c velocityRadial pc read $in Δ{needsRebuild:true} calls[setDirty] <- null
+c velocityRadial pc read 3.4028234663852886e+38 Δ{needsRebuild:true _velocityRadial:3.4028234663852886e+38} calls[setDirty] <- Infinity
+c velocityRadial pc read -3.4028234663852886e+38 Δ{needsRebuild:true _velocityRadial:-3.4028234663852886e+38} calls[setDirty] <- -Infinity
+c velocityRadial pc read $in Δ{needsRebuild:true _velocityRadial:$in} calls[setDirty] <- -1 -0 0 0.5 1 1e9
+c velocityRadial pc throw Error: "[particles] velocityRadial not a number" <- '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c rateOverDistance pc read 0 Δ{needsRebuild:true} calls[setDirty] <- undefined
+c rateOverDistance pc read 0 <- null NaN Infinity -Infinity -1 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c rateOverDistance pc read $in Δ{needsRebuild:true _rateOverDistance:$in} calls[setDirty] <- -0 0.5 1 1e9
+c rateOverDistance pc read $in Δ{needsRebuild:true} calls[setDirty] <- 0
+c sizeOverLife pc read null Δ{needsRebuild:true} calls[setDirty] <- undefined
+c sizeOverLife pc read $in Δ{needsRebuild:true} calls[setDirty] <- null
+c sizeOverLife pc throw Error: "[particles] sizeOverLife invalid" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c sizeOverLife pc read $in Δ{needsRebuild:true _sizeOverLife:$in} calls[setDirty] <- '' 'x' '0,1|1,0'
+c sizeOverLife pc read "wwwwwwww…"(len 4096 #7b962f03e77f) Δ{needsRebuild:true _sizeOverLife:"wwwwwwww…"(len 4096 #7b962f03e77f)} calls[setDirty] <- "wwwwwwww…"(len 4097 #0f1a87133411)
+c rotateOverLife pc read null Δ{needsRebuild:true} calls[setDirty] <- undefined
+c rotateOverLife pc read $in Δ{needsRebuild:true} calls[setDirty] <- null
+c rotateOverLife pc throw Error: "[particles] rotateOverLife invalid" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c rotateOverLife pc read $in Δ{needsRebuild:true _rotateOverLife:$in} calls[setDirty] <- '' 'x'
+c colorOverLife pc read null Δ{needsRebuild:true} calls[setDirty] <- undefined
+c colorOverLife pc read $in Δ{needsRebuild:true} calls[setDirty] <- null
+c colorOverLife pc throw Error: "[particles] colorOverLife invalid" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c colorOverLife pc read $in Δ{needsRebuild:true _colorOverLife:$in} calls[setDirty] <- '' 'x'
+c alphaOverLife pc read null Δ{needsRebuild:true} calls[setDirty] <- undefined
+c alphaOverLife pc read $in Δ{needsRebuild:true} calls[setDirty] <- null
+c alphaOverLife pc throw Error: "[particles] alphaOverLife invalid" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c alphaOverLife pc read $in Δ{needsRebuild:true _alphaOverLife:$in} calls[setDirty] <- '' 'x'
+c emissiveOverLife pc read null Δ{needsRebuild:true} calls[setDirty] <- undefined
+c emissiveOverLife pc read $in Δ{needsRebuild:true} calls[setDirty] <- null
+c emissiveOverLife pc throw Error: "[particles] emissiveOverLife invalid" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c emissiveOverLife pc read $in Δ{needsRebuild:true _emissiveOverLife:$in} calls[setDirty] <- '' 'x'
+c onEnd pc read null Δ{needsRebuild:true} calls[setDirty] <- undefined
+c onEnd pc read $in Δ{needsRebuild:true} calls[setDirty] <- null
+c onEnd pc read $in Δ{needsRebuild:true _onEnd:$in} calls[setDirty] <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
+d emitting same: - | NaN,NaN: first throws Error: "[particles] emitting not a boolean" | 0,-0: first throws Error: "[particles] emitting not a boolean"
+d shape same: read ["sphere",2,0.5]F Δ{_shape:["sphere",2,0.5]F needsRebuild:true} calls[setDirty] | copy: read ["sphere",2,0.5]F Δ{_shape:["sphere",2,0.5]F needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] shape invalid" | 0,-0: first throws Error: "[particles] shape invalid"
+d direction same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 0 Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _direction:$in} calls[setDirty]
+d rate same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 10 Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _rate:$in} calls[setDirty]
+d bursts same: read [{time:1,count:5}F]F Δ{needsRebuild:true _bursts:[{time:1,count:5}F]F} calls[setDirty] | copy: read [{time:1,count:5}F]F Δ{needsRebuild:true _bursts:[{time:1,count:5}F]F} calls[setDirty] | NaN,NaN: first throws Error: "[particles] bursts invalid" | 0,-0: first throws Error: "[particles] bursts invalid"
+d duration same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 5 Δ{needsRebuild:true} calls[setDirty] | 0,-0: read 0.01 Δ{needsRebuild:true} calls[setDirty]
+d loop same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] loop not a boolean" | 0,-0: first throws Error: "[particles] loop not a boolean"
+d max same: read 0 Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 1000 Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _max:$in} calls[setDirty]
+d timescale same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 1 Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _timescale:$in} calls[setDirty]
+d life same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] life invalid" | 0,-0: first throws Error: "[particles] life invalid"
+d speed same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] speed invalid" | 0,-0: first throws Error: "[particles] speed invalid"
+d size same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] size invalid" | 0,-0: first throws Error: "[particles] size invalid"
+d rotate same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] rotate invalid" | 0,-0: first throws Error: "[particles] rotate invalid"
+d color same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] color invalid" | 0,-0: first throws Error: "[particles] color invalid"
+d alpha same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] alpha invalid" | 0,-0: first throws Error: "[particles] alpha invalid"
+d emissive same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] emissive invalid" | 0,-0: first throws Error: "[particles] emissive invalid"
+d image same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] image not a string" | 0,-0: first throws Error: "[particles] image not a string"
+d spritesheet same: read [2,2,10,10]F Δ{needsRebuild:true _spritesheet:[2,2,10,10]F} calls[setDirty] | copy: read [2,2,10,10]F Δ{needsRebuild:true _spritesheet:[2,2,10,10]F} calls[setDirty] | NaN,NaN: first throws Error: "[particles] spritesheet invalid" | 0,-0: first throws Error: "[particles] spritesheet invalid"
+d blending same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] blending invalid" | 0,-0: first throws Error: "[particles] blending invalid"
+d lit same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] lit not a boolean" | 0,-0: first throws Error: "[particles] lit not a boolean"
+d billboard same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] billboard invalid" | 0,-0: first throws Error: "[particles] billboard invalid"
+d space same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] space invalid" | 0,-0: first throws Error: "[particles] space invalid"
+d force same: read view:V3(1,2,3)S Δ{needsRebuild:true _force:V3(1,2,3)S} calls[setDirty] | copy: read view:V3(1,2,3)S Δ{needsRebuild:true _force:V3(1,2,3)S} calls[setDirty] | NaN,NaN: first throws Error: "[particles] force not a Vector3" | 0,-0: first throws Error: "[particles] force not a Vector3"
+d velocityLinear same: read view:V3(1,2,3)S Δ{needsRebuild:true _velocityLinear:V3(1,2,3)S} calls[setDirty] | copy: read view:V3(1,2,3)S Δ{needsRebuild:true _velocityLinear:V3(1,2,3)S} calls[setDirty] | NaN,NaN: first throws Error: "[particles] velocityLinear not a Vector3" | 0,-0: first throws Error: "[particles] velocityLinear not a Vector3"
+d velocityOrbital same: read view:V3(1,2,3)S Δ{needsRebuild:true _velocityOrbital:V3(1,2,3)S} calls[setDirty] | copy: read view:V3(1,2,3)S Δ{needsRebuild:true _velocityOrbital:V3(1,2,3)S} calls[setDirty] | NaN,NaN: first throws Error: "[particles] velocityOrbital not a Vector3" | 0,-0: first throws Error: "[particles] velocityOrbital not a Vector3"
+d velocityRadial same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read null Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _velocityRadial:$in} calls[setDirty]
+d rateOverDistance same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 0 | 0,-0: Δ{needsRebuild:true _rateOverDistance:$in} calls[setDirty]
+d sizeOverLife same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] sizeOverLife invalid" | 0,-0: first throws Error: "[particles] sizeOverLife invalid"
+d rotateOverLife same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] rotateOverLife invalid" | 0,-0: first throws Error: "[particles] rotateOverLife invalid"
+d colorOverLife same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] colorOverLife invalid" | 0,-0: first throws Error: "[particles] colorOverLife invalid"
+d alphaOverLife same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] alphaOverLife invalid" | 0,-0: first throws Error: "[particles] alphaOverLife invalid"
+d emissiveOverLife same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] emissiveOverLife invalid" | 0,-0: first throws Error: "[particles] emissiveOverLife invalid"
+d onEnd same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _onEnd:$in} calls[setDirty]
+d emitting [mounted (emitter)] same: - | NaN,NaN: first throws Error: "[particles] emitting not a boolean" | 0,-0: first throws Error: "[particles] emitting not a boolean"
+d shape [mounted (emitter)] same: read ["sphere",2,0.5]F Δ{_shape:["sphere",2,0.5]F needsRebuild:true} calls[setDirty] | copy: read ["sphere",2,0.5]F Δ{_shape:["sphere",2,0.5]F needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] shape invalid" | 0,-0: first throws Error: "[particles] shape invalid"
+d direction [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 0 Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _direction:$in} calls[setDirty]
+d rate [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 10 Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _rate:$in} calls[setDirty]
+d bursts [mounted (emitter)] same: read [{time:1,count:5}F]F Δ{needsRebuild:true _bursts:[{time:1,count:5}F]F} calls[setDirty] | copy: read [{time:1,count:5}F]F Δ{needsRebuild:true _bursts:[{time:1,count:5}F]F} calls[setDirty] | NaN,NaN: first throws Error: "[particles] bursts invalid" | 0,-0: first throws Error: "[particles] bursts invalid"
+d duration [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 5 Δ{needsRebuild:true} calls[setDirty] | 0,-0: read 0.01 Δ{needsRebuild:true} calls[setDirty]
+d loop [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] loop not a boolean" | 0,-0: first throws Error: "[particles] loop not a boolean"
+d max [mounted (emitter)] same: read 0 Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 1000 Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _max:$in} calls[setDirty]
+d timescale [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 1 Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _timescale:$in} calls[setDirty]
+d life [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] life invalid" | 0,-0: first throws Error: "[particles] life invalid"
+d speed [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] speed invalid" | 0,-0: first throws Error: "[particles] speed invalid"
+d size [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] size invalid" | 0,-0: first throws Error: "[particles] size invalid"
+d rotate [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] rotate invalid" | 0,-0: first throws Error: "[particles] rotate invalid"
+d color [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] color invalid" | 0,-0: first throws Error: "[particles] color invalid"
+d alpha [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] alpha invalid" | 0,-0: first throws Error: "[particles] alpha invalid"
+d emissive [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] emissive invalid" | 0,-0: first throws Error: "[particles] emissive invalid"
+d image [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] image not a string" | 0,-0: first throws Error: "[particles] image not a string"
+d spritesheet [mounted (emitter)] same: read [2,2,10,10]F Δ{needsRebuild:true _spritesheet:[2,2,10,10]F} calls[setDirty] | copy: read [2,2,10,10]F Δ{needsRebuild:true _spritesheet:[2,2,10,10]F} calls[setDirty] | NaN,NaN: first throws Error: "[particles] spritesheet invalid" | 0,-0: first throws Error: "[particles] spritesheet invalid"
+d blending [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] blending invalid" | 0,-0: first throws Error: "[particles] blending invalid"
+d lit [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] lit not a boolean" | 0,-0: first throws Error: "[particles] lit not a boolean"
+d billboard [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] billboard invalid" | 0,-0: first throws Error: "[particles] billboard invalid"
+d space [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] space invalid" | 0,-0: first throws Error: "[particles] space invalid"
+d force [mounted (emitter)] same: read view:V3(1,2,3)S Δ{needsRebuild:true _force:V3(1,2,3)S} calls[setDirty] | copy: read view:V3(1,2,3)S Δ{needsRebuild:true _force:V3(1,2,3)S} calls[setDirty] | NaN,NaN: first throws Error: "[particles] force not a Vector3" | 0,-0: first throws Error: "[particles] force not a Vector3"
+d velocityLinear [mounted (emitter)] same: read view:V3(1,2,3)S Δ{needsRebuild:true _velocityLinear:V3(1,2,3)S} calls[setDirty] | copy: read view:V3(1,2,3)S Δ{needsRebuild:true _velocityLinear:V3(1,2,3)S} calls[setDirty] | NaN,NaN: first throws Error: "[particles] velocityLinear not a Vector3" | 0,-0: first throws Error: "[particles] velocityLinear not a Vector3"
+d velocityOrbital [mounted (emitter)] same: read view:V3(1,2,3)S Δ{needsRebuild:true _velocityOrbital:V3(1,2,3)S} calls[setDirty] | copy: read view:V3(1,2,3)S Δ{needsRebuild:true _velocityOrbital:V3(1,2,3)S} calls[setDirty] | NaN,NaN: first throws Error: "[particles] velocityOrbital not a Vector3" | 0,-0: first throws Error: "[particles] velocityOrbital not a Vector3"
+d velocityRadial [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read null Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _velocityRadial:$in} calls[setDirty]
+d rateOverDistance [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 0 | 0,-0: Δ{needsRebuild:true _rateOverDistance:$in} calls[setDirty]
+d sizeOverLife [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] sizeOverLife invalid" | 0,-0: first throws Error: "[particles] sizeOverLife invalid"
+d rotateOverLife [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] rotateOverLife invalid" | 0,-0: first throws Error: "[particles] rotateOverLife invalid"
+d colorOverLife [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] colorOverLife invalid" | 0,-0: first throws Error: "[particles] colorOverLife invalid"
+d alphaOverLife [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] alphaOverLife invalid" | 0,-0: first throws Error: "[particles] alphaOverLife invalid"
+d emissiveOverLife [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] emissiveOverLife invalid" | 0,-0: first throws Error: "[particles] emissiveOverLife invalid"
+d onEnd [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _onEnd:$in} calls[setDirty]
+== e. the sets of c in a mounted-like state (stubs record what is done to them): what differs from c
+e [mounted (emitter)]
+e emitting pc read $in Δ{_emitting:$in} stub[emitter.setEmitting(false)] <- false
+e emitting: the other 26 as in c
+e as in c: shape direction rate bursts duration loop max timescale life speed size rotate color alpha emissive image spritesheet blending lit billboard space force velocityLinear velocityOrbital velocityRadial rateOverDistance sizeOverLife rotateOverLife colorOverLife alphaOverLife emissiveOverLife onEnd
+== f. the constructor: defaults (read through the proxy); each key given through data
+f default emitting = true
+f default shape = ["cone",1,1,25]F
+f default direction = 0
+f default rate = 10
+f default bursts = []F
+f default duration = 5
+f default loop = true
+f default max = 1000
+f default timescale = 1
+f default life = "5"
+f default speed = "1"
+f default size = "1"
+f default rotate = "0"
+f default color = "white"
+f default alpha = "1"
+f default emissive = "1"
+f default image = "/particle.png"
+f default spritesheet = null
+f default blending = "normal"
+f default lit = false
+f default billboard = "full"
+f default space = "world"
+f default force = null
+f default velocityLinear = null
+f default velocityOrbital = null
+f default velocityRadial = null
+f default rateOverDistance = 0
+f default sizeOverLife = null
+f default rotateOverLife = null
+f default colorOverLife = null
+f default alphaOverLife = null
+f default emissiveOverLife = null
+f default onEnd = null
+f default name = "particles"
+f defaults as on node: id position quaternion rotation scale matrixWorld active parent children _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+f emitting: through data as through the class (all 27)
+f shape: through data as through the class (all 31)
+f direction: through data as through the class (all 27)
+f rate: through data as through the class (all 27)
+f bursts: through data as through the class (all 31)
+f duration: through data as through the class (all 27)
+f loop: through data as through the class (all 27)
+f max: through data as through the class (all 27)
+f timescale: through data as through the class (all 27)
+f life: through data as through the class (all 29)
+f speed: through data as through the class (all 28)
+f size: through data as through the class (all 27)
+f rotate: through data as through the class (all 27)
+f color: through data as through the class (all 28)
+f alpha: through data as through the class (all 27)
+f emissive: through data as through the class (all 27)
+f image: through data as through the class (all 28)
+f spritesheet: through data as through the class (all 30)
+f blending: through data as through the class (all 29)
+f lit: through data as through the class (all 27)
+f billboard: through data as through the class (all 30)
+f space: through data as through the class (all 29)
+f force: through data as through the class (all 28)
+f velocityLinear: through data as through the class (all 28)
+f velocityOrbital: through data as through the class (all 28)
+f velocityRadial: through data as through the class (all 27)
+f rateOverDistance data 0 <- undefined
+f rateOverDistance data undefined <- null NaN Infinity -Infinity -1 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f rateOverDistance data $in <- -0 0 0.5 1 1e9
+f sizeOverLife: through data as through the class (all 29)
+f rotateOverLife: through data as through the class (all 27)
+f colorOverLife: through data as through the class (all 27)
+f alphaOverLife: through data as through the class (all 27)
+f emissiveOverLife: through data as through the class (all 27)
+f onEnd: through data as through the class (all 27)
+f as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== g. own fields after construction, and what clone() and clone(true) make of them
+g field name = "particles"
+g field _emitting = true
+g field _shape = ["cone",1,1,25]F
+g field needsRebuild = true
+g field _direction = 0
+g field _rate = 10
+g field _bursts = []F
+g field _duration = 5
+g field _loop = true
+g field _max = 1000
+g field _timescale = 1
+g field _life = "5"
+g field _speed = "1"
+g field _size = "1"
+g field _rotate = "0"
+g field _color = "white"
+g field _alpha = "1"
+g field _emissive = "1"
+g field _image = "/particle.png"
+g field _spritesheet = null
+g field _blending = "normal"
+g field _lit = false
+g field _billboard = "full"
+g field _space = "world"
+g field _force = null
+g field _velocityLinear = null
+g field _velocityOrbital = null
+g field _velocityRadial = null
+g field _rateOverDistance = 0
+g field _sizeOverLife = null
+g field _rotateOverLife = null
+g field _colorOverLife = null
+g field _alphaOverLife = null
+g field _emissiveOverLife = null
+g field _onEnd = null
+g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
+g full: 39 properties set (emitting shape direction rate bursts duration loop max timescale life speed size rotate color alpha emissive image spritesheet blending lit billboard space force velocityLinear velocityOrbital velocityRadial rateOverDistance sizeOverLife rotateOverLife colorOverLife alphaOverLife emissiveOverLife onEnd active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
+g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
+g full fields unlike a new node's: children=[node:node#child(below)] position=V3(1,2,3)S rotation=E(-0,1.2870022175865687,0,YXZ)S quaternion=Q(0,0.6,0,0.8)S scale=V3(2,3,4)S _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _created=owner#full _emitting=false _shape=["sphere",2,0.5]F _direction=0.5 _rate=0.5 _bursts=[{time:1,count:5}F]F _duration=0.5 _loop=false _max=0 _timescale=0.5 _life="1~3" _speed="1-3" _size="x" _rotate="x" _color="red" _alpha="x" _emissive="x" _image="asset://p.png" _spritesheet=[2,2,10,10]F _blending="additive" _lit=true _billboard="y" _space="local" _force=V3(1,2,3)S _velocityLinear=V3(1,2,3)S _velocityOrbital=V3(1,2,3)S _velocityRadial=0.5 _rateOverDistance=0.5 _sizeOverLife="0,1|1,0" _rotateOverLife="x" _colorOverLife="x" _alphaOverLife="x" _emissiveOverLife="x" _onEnd=fn:hostileFn
+g full fields at a new node's value: name parent ctx matrix matrixWorld isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting needsRebuild
+g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _emitting needsRebuild _direction _rate _duration _loop _max _timescale _life _speed _size _rotate _color _alpha _emissive _image _spritesheet _blending _lit _billboard _space _velocityRadial _rateOverDistance _sizeOverLife _rotateOverLife _colorOverLife _alphaOverLife _emissiveOverLife _onEnd
+g full clone(false) copy: position rotation quaternion scale matrix matrixWorld _shape _bursts _force _velocityLinear _velocityOrbital
+g full clone(false) differs: children([node:node#child(below)] -> [])
+g full clone(false) source only: _proxy
+g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _emitting needsRebuild _direction _rate _duration _loop _max _timescale _life _speed _size _rotate _color _alpha _emissive _image _spritesheet _blending _lit _billboard _space _velocityRadial _rateOverDistance _sizeOverLife _rotateOverLife _colorOverLife _alphaOverLife _emissiveOverLife _onEnd
+g full clone(true) copy: children position rotation quaternion scale matrix matrixWorld _shape _bursts _force _velocityLinear _velocityOrbital
+g full clone(true) source only: _proxy
+g full clone(true) children: node#child -> node#child
+g a clone reads as its source, each sample property alone (78 clones): yes
+== h. two instances alive at once, their proxies kept: each write and read reaches its own node only
+h each write and read reached its own node only: emitting shape direction rate bursts duration loop max timescale life speed size rotate color alpha emissive image spritesheet blending lit billboard space force velocityLinear velocityOrbital velocityRadial rateOverDistance sizeOverLife rotateOverLife colorOverLife alphaOverLife emissiveOverLife onEnd id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+h no value accepted (each write throws, on both nodes): id position quaternion rotation scale parent
+h each read of a key no script sets reached its own node only: id name position quaternion rotation scale matrixWorld parent children _ref _isRef
+h the same in both states (a constant): name _ref _isRef
+== i. every getter on a node whose backing values are distinct
+i emitting = true
+i shape = ["cone",1,1,25]F
+i direction = 0
+i rate = 10
+i bursts = []F
+i duration = 5
+i loop = true
+i max = 1000
+i timescale = 1
+i life = "5"
+i speed = "1"
+i size = "1"
+i rotate = "0"
+i color = "white"
+i alpha = "1"
+i emissive = "1"
+i image = "/particle.png"
+i spritesheet = null
+i blending = "normal"
+i lit = false
+i billboard = "full"
+i space = "world"
+i force = null
+i velocityLinear = null
+i velocityOrbital = null
+i velocityRadial = null
+i rateOverDistance = 0
+i sizeOverLife = null
+i rotateOverLife = null
+i colorOverLife = null
+i alphaOverLife = null
+i emissiveOverLife = null
+i onEnd = null
+i name = "particles"
+i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor

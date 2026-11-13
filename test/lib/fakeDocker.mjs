@@ -2,6 +2,7 @@
 // wrapper the test writes) and runs its real code against it: the spawns, the output it keeps, the files it writes,
 // its signal handling. It answers like the library's simulatedDocker (every step goes well), keeps what has to last
 // from one command to the next in FAKE_DOCKER_DIR/state.json, and appends each command to FAKE_DOCKER_DIR/calls.jsonl.
+// FAKE_DOCKER_MODEL is the model the answers are those of ('current' or 'nonroot'; simulatedDocker's `model`).
 // FAKE_DOCKER_MODE changes one thing:
 //   killed      the first container does not end on SIGTERM: exit code 137, no line of the final save, and
 //               Docker's events say SIGTERM, then SIGKILL 10 s later, and the die with 137
@@ -43,6 +44,7 @@ const stopped = new Map(saved.stopped)
 const name = args[args.length - 1]
 const docker = simulatedDocker({
   commitHash: saved.commitHash,
+  model: process.env.FAKE_DOCKER_MODEL || 'current',
   stopped,
   respond(command) {
     const target = command[0] === 'events' ? command.find(arg => arg.startsWith('container='))?.slice(10) : name

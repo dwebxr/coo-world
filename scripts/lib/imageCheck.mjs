@@ -7,8 +7,28 @@ import { serverStartEnv } from './startEnv.mjs'
 // `WORLD` is joined to the directory above build/ (src/server/index.js): /app in the image
 export const WORLD_NAME = 'world'
 export const WORLD_PATH = `/app/${WORLD_NAME}`
-// the Dockerfile's HEALTHCHECK asks port 3000 whatever PORT is
+// the port the containers listen on. The current image's HEALTHCHECK asks port 3000 whatever PORT is; the nonroot
+// image's asks PORT, and one container of that model listens on OTHER_PORT to show it
 export const CONTAINER_PORT = 3000
+export const OTHER_PORT = 3100
+
+// --model=nonroot: the uid and gid the entrypoint (scripts/coo-entrypoint.sh) gives the world folder to and runs the
+// server as; a user of no account in the image, for a container started with `docker run --user`; and a WORLD the
+// entrypoint refuses (it names /app/build)
+export const SERVICE_ID = 1001
+export const OTHER_USER = '2000:2000'
+export const REFUSED_WORLD = 'build'
+// The lines --model=nonroot looks for, as parts of a line. test/imageCheck.test.js holds each to its source.
+export const ENTRYPOINT_LINES = {
+  // scripts/coo-entrypoint.sh: say "entries given to 1001:1001 under $dir: ${#before}"
+  given: '[entrypoint] entries given to 1001:1001 under ',
+  // scripts/coo-entrypoint.sh: say "started as uid $uid, not as root: nothing under $dir changes owner, …"
+  notRoot: '[entrypoint] started as uid ',
+  // scripts/coo-entrypoint.sh: die "refused: WORLD names $dir. The world folder is given to 1001:1001, …"
+  refused: '[entrypoint] refused: WORLD names ',
+}
+// src/server/startupExit.js: proc.stderr.write(`[server] start-up failed; exiting with code 1: ${describe(err)}\n`, …)
+export const STARTUP_FAILED = '[server] start-up failed; exiting with code 1: '
 
 // `docker stop -t 10` is Docker's own default; SIGINT with 5 s is what Fly documents as its defaults (kill_signal,
 // kill_timeout)
@@ -95,20 +115,46 @@ export const MODELS = {
       return tree.server ? [] : ['no `node build/index.js` process is running in the container']
     },
   },
-  // ---------------------------------------------------------------------------------------------------------------
-  // `--model=nonroot` GOES HERE (the pull request that makes the image start as its own user). Its treeProblems get
-  // the same `{ tree, pid1 }` and add what that image must show: PID 1 is the server itself (tree.serverIsPid1, and
-  // `pid1.exe` is node), `pid1.status.uid` is 1001 and not 0, no process of the chain runs as root. Its runs on a
-  // volume written by root, with mixed ownership, with `--user` and with another PORT are further steps of
-  // runImageCheck, added there under the same name. Until then the name is refused (modelFor).
-  // ---------------------------------------------------------------------------------------------------------------
+  // The image with scripts/coo-entrypoint.sh as its ENTRYPOINT and `node build/index.js` as its CMD: the entrypoint
+  // starts as root, gives the world folder to 1001:1001 and replaces itself with the server through `su-exec`. Must
+  // hold: PID 1 is the server itself (`node build/index.js`, its executable node: no npm, no shell between), and its
+  // real, effective, saved and file-system uid and gid are all 1001. The further runs of this model (a volume
+  // written by root, mixed ownership, a second start, another PORT, another user, a refused WORLD) are in
+  // runImageCheck.
+  nonroot: {
+    name: 'nonroot',
+    // readlink /proc/1/exe needs ptrace access to PID 1, and root in a container has no CAP_SYS_PTRACE (not among
+    // Docker's default capabilities): PID 1's own user may read it, so it is asked as that user
+    pid1User: `${SERVICE_ID}:${SERVICE_ID}`,
+    treeProblems({ tree, pid1 }) {
+      const problems = []
+      if (!tree.server) problems.push('no `node build/index.js` process is running in the container')
+      const command = tree.pid1 ? tree.pid1.args.replace(/^\{[^}]*\}\s+/, '') : null
+      if (command !== 'node build/index.js') {
+        problems.push(
+          `PID 1 is not \`node build/index.js\`: ${command === null ? 'no PID 1 in the listing' : `it is \`${command}\``}`
+        )
+      }
+      const exe = pid1?.exe ?? null
+      if (exe === null || baseName(exe) !== 'node') problems.push(`PID 1's executable is ${exe ?? 'unknown'}, not node`)
+      for (const key of ['uid', 'gid']) {
+        const ids = pid1?.status?.[key] ?? null
+        if (ids === null) {
+          problems.push(`PID 1's ${key} could not be read from /proc/1/status`)
+        } else if (Object.values(ids).some(id => id !== SERVICE_ID)) {
+          problems.push(
+            `PID 1's ${key} is ${Object.values(ids).join(' ')} (real, effective, saved, file system), not ${SERVICE_ID} in all four`
+          )
+        }
+      }
+      return problems
+    },
+  },
 }
 
 export function modelFor(name) {
   if (Object.hasOwn(MODELS, name)) return MODELS[name]
-  const known = `known: ${Object.keys(MODELS).join(', ')}`
-  if (name === 'nonroot') throw new UsageError(`--model=nonroot is not implemented yet (${known})`)
-  throw new UsageError(`unknown model ${JSON.stringify(name)} (${known})`)
+  throw new UsageError(`unknown model ${JSON.stringify(name)} (known: ${Object.keys(MODELS).join(', ')})`)
 }
 
 export function parseArgs(argv) {
@@ -131,14 +177,17 @@ export function parseArgs(argv) {
   return options
 }
 
-// Everything a run creates carries the run's own id: the cleanup removes these names and nothing else.
+// Everything a run creates carries the run's own id: the cleanup removes these names and nothing else. The current
+// model uses the first three containers and the first volume; --model=nonroot all of them.
 export function runNames(id) {
   const prefix = `image-check-${id}`
+  const roles = ['sigterm', 'sigint', 'restart', 'legacy', 'chown', 'port', 'otheruser', 'refused', 'imagefiles']
   return {
     prefix,
     image: `${prefix}:check`,
     volume: `${prefix}-world`,
-    containers: { sigterm: `${prefix}-sigterm`, sigint: `${prefix}-sigint`, restart: `${prefix}-restart` },
+    freshVolume: `${prefix}-fresh`,
+    containers: Object.fromEntries(roles.map(role => [role, `${prefix}-${role}`])),
   }
 }
 
@@ -146,12 +195,33 @@ export function containerEnv(jwtSecret) {
   return serverStartEnv({ world: WORLD_NAME, port: CONTAINER_PORT, jwtSecret })
 }
 
+/** The same settings for a server on another port: PORT and the three addresses a browser would use. */
+export function envOnPort(env, port) {
+  return { ...env, ...serverStartEnv({ world: env.WORLD, port, jwtSecret: env.JWT_SECRET }) }
+}
+
 // `docker run` the way the image starts by itself: its ENTRYPOINT and CMD, its user, no init added, and no port
-// published to the host (the server is reached from inside the container)
-export function buildRunArgs({ name, image, volume, worldPath = WORLD_PATH, env }) {
-  const args = ['run', '-d', '--name', name, '-v', `${volume}:${worldPath}`]
+// published to the host (the server is reached from inside the container). --model=nonroot also starts it otherwise:
+// `user` (--user), `entrypoint` (--entrypoint, which also drops the image's CMD: `command` is then all the
+// arguments), without a volume (`volume: null`), and in the foreground (`detach: false`: the command returns when
+// the container has ended, with its exit code and output).
+export function buildRunArgs({
+  name,
+  image,
+  volume = null,
+  worldPath = WORLD_PATH,
+  env = {},
+  user = null,
+  entrypoint = null,
+  command = [],
+  detach = true,
+}) {
+  const args = ['run', ...(detach ? ['-d'] : []), '--name', name]
+  if (user !== null) args.push('--user', user)
+  if (entrypoint !== null) args.push('--entrypoint', entrypoint)
+  if (volume !== null) args.push('-v', `${volume}:${worldPath}`)
   for (const [key, value] of Object.entries(env)) args.push('-e', `${key}=${value}`)
-  args.push(image)
+  args.push(image, ...command)
   return args
 }
 
@@ -506,6 +576,33 @@ export function mergeLogs(stdout, stderr) {
   return entries.map(entry => entry.line).join('\n')
 }
 
+/**
+ * The entrypoint's lines saying how many entries it gave to 1001:1001 (scripts/coo-entrypoint.sh prints one on each
+ * start as root, 0 included): `{ dir, count }` for each, in the order of the log.
+ */
+export function entrypointCounts(log) {
+  const counts = []
+  for (const line of String(log ?? '').split('\n')) {
+    const at = line.indexOf(ENTRYPOINT_LINES.given)
+    if (at === -1) continue
+    const match = /^(.*): (\d+)\s*$/.exec(line.slice(at + ENTRYPOINT_LINES.given.length))
+    if (match) counts.push({ dir: match[1], count: Number(match[2]) })
+  }
+  return counts
+}
+
+/** The lines of `docker diff` (`C /app`, `A /app/world`, …) that name a path at or under `folder`. */
+export function changedUnder(diff, folder) {
+  const prefix = folder.endsWith('/') ? folder : `${folder}/`
+  return String(diff ?? '')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => {
+      const match = /^[ACD] (.+)$/.exec(line)
+      return match && (match[1] === folder || match[1].startsWith(prefix))
+    })
+}
+
 export function tailOf(text, lines = 40, characters = 6000) {
   return String(text ?? '')
     .trim()
@@ -652,6 +749,35 @@ export const SIMULATED_STATUS = [
   'SigCgt:\t0000000188004a03',
 ].join('\n')
 
+// --model=nonroot: the server is PID 1, as nodeuser
+export const SIMULATED_PS_NONROOT = [
+  'PID   PPID  USER     COMMAND',
+  '    1     0 nodeuser node build/index.js',
+  '   40     0 root     ps -o pid,ppid,user,args',
+].join('\n')
+
+export const SIMULATED_STATUS_NONROOT = [
+  'Name:\tnode',
+  'Pid:\t1',
+  'PPid:\t0',
+  'Uid:\t1001\t1001\t1001\t1001',
+  'Gid:\t1001\t1001\t1001\t1001',
+  'SigIgn:\t0000000000001000',
+  'SigCgt:\t0000000188004a03',
+].join('\n')
+
+const SIMULATED_CONFIG = {
+  current: { User: '', Entrypoint: ['docker-entrypoint.sh'], Cmd: ['npm', 'run', 'start'] },
+  nonroot: {
+    User: '',
+    Entrypoint: ['/usr/local/bin/coo-entrypoint.sh'],
+    Cmd: ['node', 'build/index.js'],
+    Healthcheck: { Test: ['CMD-SHELL', 'curl -fsS "http://127.0.0.1:${PORT:-3000}/health" || exit 1'] },
+  },
+}
+// --model=nonroot: how many entries the entrypoint of each container gives to 1001:1001, in a run that goes well
+const SIMULATED_GIVEN = { sigterm: 23, sigint: 1, restart: 0, port: 1 }
+
 /**
  * The lines `docker events --format '{{json .}}'` prints for a stop, in the shape of the Engine API's EventMessage
  * (with the fields the CLI has long printed beside it: status, id, from): a kill with the signal's number, a second
@@ -679,19 +805,48 @@ export function simulatedStopEvents({ name, signal, killAtMs, exitAfterMs, exitC
   return lines.join('\n')
 }
 
-export function simulatedDocker({ commitHash = 'simulated', respond = () => undefined, stopped = new Map() } = {}) {
+export function simulatedDocker({
+  commitHash = 'simulated',
+  model = 'current',
+  respond = () => undefined,
+  stopped = new Map(),
+} = {}) {
   const calls = []
   // which containers were stopped, and with which signal
   const state = { stopped }
+  const nonroot = model === 'nonroot'
   const ok = (stdout = '', ms = 0) => ({ code: 0, stdout, stderr: '', ms })
+  // a container's role is the last part of its name (runNames): `image-check-<id>-<role>`
+  const roleOf = name => String(name ?? '').slice(String(name ?? '').lastIndexOf('-') + 1)
+  // --model=nonroot: the containers that end by themselves, with exit code 1
+  const exits = name => nonroot && ['otheruser', 'refused'].includes(roleOf(name))
+  const nonrootLog = role => {
+    if (role === 'otheruser') {
+      return [
+        `${ENTRYPOINT_LINES.notRoot}2000, not as root: nothing under ${WORLD_PATH} changes owner, and the command runs as that user`,
+        `${STARTUP_FAILED}Error: EACCES: permission denied, mkdir '${WORLD_PATH}/assets'`,
+      ]
+    }
+    if (role === 'refused') {
+      return [
+        `${ENTRYPOINT_LINES.refused}/app/build. The world folder is given to 1001:1001, so it must not be /, /app, or at or under /app/build, /app/node_modules, /app/src or /app/scripts`,
+      ]
+    }
+    const port = role === 'port' ? OTHER_PORT : CONTAINER_PORT
+    if (role === 'legacy') return [`server listening on port ${port}`]
+    return [`${ENTRYPOINT_LINES.given}${WORLD_PATH}: ${SIMULATED_GIVEN[role] ?? 0}`, `server listening on port ${port}`]
+  }
   const answer = args => {
     const name = args[args.length - 1]
     const [first, second] = args
     if (first === 'version') return ok('simulated simulated')
-    if (first === 'image' && second === 'inspect') {
-      return ok(JSON.stringify({ User: '', Entrypoint: ['docker-entrypoint.sh'], Cmd: ['npm', 'run', 'start'] }))
-    }
+    if (first === 'image' && second === 'inspect') return ok(JSON.stringify(SIMULATED_CONFIG[model]))
     if (first === 'container' && second === 'inspect') {
+      if (exits(name)) {
+        return ok(
+          JSON.stringify({ Status: 'exited', Running: false, ExitCode: 1, Health: { Status: 'starting', Log: [] } })
+        )
+      }
       const running = !state.stopped.has(name)
       return ok(
         JSON.stringify({
@@ -704,9 +859,10 @@ export function simulatedDocker({ commitHash = 'simulated', respond = () => unde
       )
     }
     if (first === 'exec') {
-      const command = args.slice(2)
-      if (command[0] === 'ps') return ok(SIMULATED_PS)
-      if (command[0] === 'cat') return ok(SIMULATED_STATUS)
+      // `exec [--user u:g] <name> <command…>`
+      const command = args.slice(second === '--user' ? 4 : 2)
+      if (command[0] === 'ps') return ok(nonroot ? SIMULATED_PS_NONROOT : SIMULATED_PS)
+      if (command[0] === 'cat') return ok(nonroot ? SIMULATED_STATUS_NONROOT : SIMULATED_STATUS)
       if (command[0] === 'readlink') return ok('/usr/local/bin/node')
       if (command[0] === 'curl') return ok(JSON.stringify({ commitHash, connectedUsers: 0 }))
       return ok()
@@ -726,7 +882,7 @@ export function simulatedDocker({ commitHash = 'simulated', respond = () => unde
     }
     if (first === 'logs') {
       const signal = state.stopped.get(name)
-      const lines = ['server listening on port 3000']
+      const lines = nonroot ? nonrootLog(roleOf(name)) : ['server listening on port 3000']
       if (signal) {
         lines.push(
           `[server] ${signal}: saving the world before exit (deadline 3500 ms)`,
@@ -752,8 +908,9 @@ export function simulatedDocker({ commitHash = 'simulated', respond = () => unde
 // ---------------------------------------------------------------------------------------------------------------
 
 /**
- * Builds the image, runs it three times on one volume and stops it. Resolves with the summary (`ok`, `failures` and
- * what was seen); it does not throw for a failed step. Whatever happens, what it created is removed at the end.
+ * Builds the image, runs it three times on one volume and stops it (--model=nonroot: the runs of runNonroot below).
+ * Resolves with the summary (`ok`, `failures` and what was seen); it does not throw for a failed step. Whatever
+ * happens, what it created is removed at the end.
  *
  *   docker(args, { timeoutMs, inherit }) -> { code, stdout, stderr, ms }
  *     the docker CLI. It may throw: an error with `interrupted` set (the signal's name) ends the run without
@@ -786,11 +943,13 @@ export async function runImageCheck({
     docker: null,
     image: null,
     containers: [],
+    // --model=nonroot: the containers that only run one command in the foreground (chown, find)
+    throwaway: [],
     failures: [],
     cleanup: [],
   }
   // 'maybe': the command that creates it was started; 'yes': it succeeded
-  const created = { image: null, volume: null, containers: new Map() }
+  const created = { image: null, volumes: new Map(), containers: new Map() }
   const logs = new Map()
   const seconds = since => ((now() - since) / 1000).toFixed(1)
   const fail = reason => {
@@ -839,13 +998,17 @@ export async function runImageCheck({
     indented(tailOf(text) || '(empty)')
   }
 
-  async function startAndWait(role) {
+  // `how`: what the output says of a container started otherwise than the image starts, with `runOptions` for
+  // buildRunArgs (another user, entry point, volume or settings)
+  async function startAndWait(role, { how = null, ...runOptions } = {}) {
     const name = names.containers[role]
     const record = { role, name, healthy: null }
     summary.containers.push(record)
-    report.info(`${role}: a container of ${names.image} on the volume ${names.volume}, started as the image starts`)
+    report.info(
+      `${role}: a container of ${names.image} ${how ?? `on the volume ${names.volume}, started as the image starts`}`
+    )
     created.containers.set(name, 'maybe')
-    await must(buildRunArgs({ name, image: names.image, volume: names.volume, env }))
+    await must(buildRunArgs({ name, image: names.image, volume: names.volume, env, ...runOptions }))
     created.containers.set(name, 'yes')
     const started = now()
     const inspect = stateArgs(name)
@@ -894,7 +1057,8 @@ export async function runImageCheck({
     for (const line of describeTree(tree)) report.info(`  ${line}`)
 
     const status = await look(['exec', name, 'cat', '/proc/1/status'])
-    const exe = await look(['exec', name, 'readlink', '/proc/1/exe'])
+    const as = model.pid1User ? ['--user', model.pid1User] : []
+    const exe = await look(['exec', ...as, name, 'readlink', '/proc/1/exe'])
     const pid1 = { exe, status: status ? parseProcStatus(status) : null }
     record.pid1 = pid1
     const handlers = caught =>
@@ -982,8 +1146,9 @@ export async function runImageCheck({
       return
     }
     for (const reason of verdict.reasons) fail(`${role} (${signal}, ${timeoutS} s): ${reason}`)
-    // (what was read from /proc/1/status in the first container: every container of the image starts the same way)
-    const caught = summary.containers[0]?.pid1?.status?.caught
+    // (what was read from /proc/1/status in the first container looked at: every container of the image that is
+    // started as the image starts does so the same way)
+    const caught = summary.containers.find(container => container.pid1)?.pid1?.status?.caught
     if (caught && caught[signal] === false) {
       report.info(
         `  note: PID 1 has no handler for ${signal}, and the kernel delivers no signal to PID 1 that it has no handler for`
@@ -1016,11 +1181,218 @@ export async function runImageCheck({
       // (a container that was never stopped here: its log is taken before it goes)
       await collectLog(record).catch(() => {})
     }
+    const allCertain = map => ([...map.values()].every(state => state === 'yes') ? 'yes' : 'maybe')
     const containers = [...created.containers.keys()]
-    const certain = [...created.containers.values()].every(state => state === 'yes') ? 'yes' : 'maybe'
-    if (containers.length) await remove('the containers', ['rm', '-f', ...containers], certain)
-    if (created.volume) await remove('the volume', ['volume', 'rm', names.volume], created.volume)
+    if (containers.length) await remove('the containers', ['rm', '-f', ...containers], allCertain(created.containers))
+    // (one command for every volume: the cleanup's three removals are what SIGNAL_BUDGET counts)
+    const volumes = [...created.volumes.keys()]
+    const what = volumes.length > 1 ? 'the volumes' : 'the volume'
+    if (volumes.length) await remove(what, ['volume', 'rm', ...volumes], allCertain(created.volumes))
     if (created.image) await remove('the image tag', ['image', 'rm', names.image], created.image)
+  }
+
+  // A volume of this run (the cleanup removes it)
+  async function createVolume(volume) {
+    created.volumes.set(volume, 'maybe')
+    await must(['volume', 'create', volume])
+    created.volumes.set(volume, 'yes')
+  }
+
+  // ------------------------------------------------------------------------------------------------------------
+  // --model=nonroot
+  // ------------------------------------------------------------------------------------------------------------
+
+  // The entrypoint's line in the log of a container started as root: exactly one, about the world folder, and how
+  // many entries it gave to 1001:1001. `atLeast` / `exactly` (with `why`) is what this start must say.
+  async function entrypointCount(record, { atLeast = null, exactly = null, why = '' } = {}) {
+    const counts = entrypointCounts(await collectLog(record))
+    record.entrypoint = counts
+    if (counts.length !== 1) {
+      fail(
+        `${record.role}: ${counts.length || 'no'} \`${ENTRYPOINT_LINES.given}…\` line(s) in the log, expected one (the entrypoint prints it on every start as root)`
+      )
+      return
+    }
+    const [{ dir, count }] = counts
+    report.info(`  the entrypoint gave ${count} entr${count === 1 ? 'y' : 'ies'} under ${dir} to 1001:1001`)
+    if (dir !== WORLD_PATH) fail(`${record.role}: the entrypoint looked at ${dir}, not at ${WORLD_PATH}`)
+    if (atLeast !== null && !(count >= atLeast)) {
+      fail(`${record.role}: the entrypoint gave ${count} entries to 1001:1001, expected at least ${atLeast} (${why})`)
+    }
+    if (exactly !== null && count !== exactly) {
+      fail(`${record.role}: the entrypoint gave ${count} entries to 1001:1001, expected ${exactly} (${why})`)
+    }
+  }
+
+  // Nothing under the world folder, on its file system, that is not 1001's, as root sees it from inside
+  async function ownership(record) {
+    record.ownership = {}
+    for (const [key, test] of [
+      ['user', '-user'],
+      ['group', '-group'],
+    ]) {
+      const args = ['exec', record.name, 'find', WORLD_PATH, '-xdev', '!', test, String(SERVICE_ID)]
+      const result = await run(args)
+      const listed = result.stdout.trim()
+      record.ownership[key] = { code: result.code, listed }
+      if (result.code !== 0) {
+        fail(`${record.role}: \`docker ${formatCommand(args)}\` exited ${result.code}: ${said(result)}`)
+      } else if (listed) {
+        fail(
+          `${record.role}: under ${WORLD_PATH}, not ${SERVICE_ID}'s (${key}): ${tailOf(listed, 5, 600).replaceAll('\n', ', ')}`
+        )
+      }
+    }
+    if (Object.values(record.ownership).every(found => found.code === 0 && !found.listed)) {
+      report.info(`  everything under ${WORLD_PATH} is ${SERVICE_ID}:${SERVICE_ID}'s`)
+    }
+  }
+
+  // A container that only runs one command in the foreground: its exit code and output. It keeps its name, and the
+  // cleanup removes it with the others.
+  async function throwaway(role, runOptions) {
+    const name = names.containers[role]
+    created.containers.set(name, 'maybe')
+    const result = await run(buildRunArgs({ name, image: names.image, detach: false, ...runOptions }))
+    // (125: docker itself failed, and the container may not exist)
+    created.containers.set(name, result.code === 125 ? 'maybe' : 'yes')
+    summary.throwaway.push({ role, name, code: result.code, stdout: tailOf(result.stdout, 20, 2000) })
+    return result
+  }
+
+  // A container that has to end by itself during its start-up, with `exitCode` and a log that has, for each entry of
+  // `lines`, a line holding all of its parts. Becoming healthy, or still running at the end of the wait, fails it.
+  async function startAndExpectExit(role, { how, exitCode, lines, ...runOptions }) {
+    const name = names.containers[role]
+    const record = { role, name, healthy: null, exit: null }
+    summary.containers.push(record)
+    report.info(`${role}: a container of ${names.image} ${how}`)
+    created.containers.set(name, 'maybe')
+    await must(buildRunArgs({ name, image: names.image, env, ...runOptions }))
+    created.containers.set(name, 'yes')
+    const started = now()
+    let state = null
+    for (let poll = 0; poll < HEALTH_POLLS; poll++) {
+      state = parseState((await must(stateArgs(name), { quiet: poll > 0 })).stdout)
+      if (!state.running || state.health === 'healthy') break
+      await sleep(HEALTH_INTERVAL_MS)
+    }
+    const log = await collectLog(record, { final: !state.running })
+    if (state.running) {
+      const seen = state.health === 'healthy' ? 'became healthy' : `is still running after ${seconds(started)} s`
+      fail(`${role}: ${name} ${seen}; expected it to end by itself with exit code ${exitCode}`)
+      showTail(record, log)
+      return record
+    }
+    record.exit = { exitCode: state.exitCode, seconds: Number(seconds(started)) }
+    report.info(`  it ended by itself after ${seconds(started)} s with exit code ${state.exitCode}`)
+    const problems = []
+    if (state.exitCode !== exitCode) problems.push(`exit code ${state.exitCode}, expected ${exitCode}`)
+    const logLines = log.split('\n')
+    for (const parts of lines) {
+      const line = logLines.find(candidate => parts.every(part => candidate.includes(part)))
+      if (line) report.info(`  ${line.trim().slice(0, 300)}`)
+      else problems.push(`the log has no line with ${parts.map(part => `\`${part}\``).join(' and ')}`)
+    }
+    for (const problem of problems) fail(`${role}: ${problem}`)
+    if (problems.length) showTail(record, log)
+    return record
+  }
+
+  async function runNonroot() {
+    // 1. the volume as production has it today: written by the same image run the old way, npm as root
+    await createVolume(names.volume)
+    const legacy = await startAndWait('legacy', {
+      how: `on the volume ${names.volume}, started the old way: \`--user 0 --entrypoint npm … run start\``,
+      user: '0',
+      entrypoint: 'npm',
+      command: ['run', 'start'],
+    })
+    await must(stopArgs(STOPS.sigterm, legacy.name), { timeoutMs: (STOPS.sigterm.timeoutS + 30) * 1000 })
+    const legacyState = parseState((await must(stateArgs(legacy.name))).stdout)
+    await collectLog(legacy, { final: !legacyState.running })
+    if (legacyState.running) throw new StepFailed(`${legacy.name} is still running after \`docker stop\``)
+    legacy.stopped = { exitCode: legacyState.exitCode }
+    report.info(`legacy: stopped (exit code ${legacyState.exitCode}); what it wrote on the volume is root's`)
+
+    // 2. the image as it starts, on that volume: it takes the volume over, the server is PID 1 as 1001:1001, and a
+    // stop with Docker's defaults saves
+    const first = await startAndWait('sigterm')
+    await observe(first)
+    await entrypointCount(first, { atLeast: 1, why: 'the volume was written by root' })
+    await ownership(first)
+    await stop(first, STOPS.sigterm)
+
+    // 3. one file root's again (a root shell, a restore), through a container of its own; then the next start gives
+    // it back, and a stop the way Fly stops by default saves
+    const chown = await throwaway('chown', {
+      user: '0',
+      entrypoint: 'chown',
+      volume: names.volume,
+      command: ['0:0', `${WORLD_PATH}/db.sqlite`],
+    })
+    if (chown.code !== 0) {
+      throw new StepFailed(`the chown of ${WORLD_PATH}/db.sqlite to root exited ${chown.code}: ${said(chown)}`)
+    }
+    const second = await startAndWait('sigint')
+    await entrypointCount(second, { atLeast: 1, why: 'db.sqlite was made root’s before this start' })
+    await ownership(second)
+    await stop(second, STOPS.sigint)
+
+    // 4. a start on a volume that is all 1001's already changes nothing (left running: the cleanup removes it)
+    const third = await startAndWait('restart')
+    await entrypointCount(third, { exactly: 0, why: 'nothing was written as root since the last start' })
+    await ownership(third)
+
+    // 5. another PORT: the image's own health check follows it. No volume: the entrypoint makes the world folder
+    const port = await startAndWait('port', {
+      how: `with PORT=${OTHER_PORT} (and the three addresses on it), no volume`,
+      volume: null,
+      env: envOnPort(env, OTHER_PORT),
+    })
+    report.info(`port: healthy on ${OTHER_PORT} by the image's own health check after ${port.healthy.seconds} s`)
+    await entrypointCount(port)
+
+    // 6. started as another user, on a fresh volume (root's): nothing can be given away, and the server's start-up
+    // says that it cannot write, and ends with 1
+    await createVolume(names.freshVolume)
+    await startAndExpectExit('otheruser', {
+      how: `started with --user ${OTHER_USER} on the fresh volume ${names.freshVolume}`,
+      user: OTHER_USER,
+      volume: names.freshVolume,
+      exitCode: 1,
+      lines: [[`${ENTRYPOINT_LINES.notRoot}2000, not as root`], [STARTUP_FAILED, 'EACCES']],
+    })
+
+    // 7. a WORLD the entrypoint refuses: exit 1 before anything changes owner
+    const refused = await startAndExpectExit('refused', {
+      how: `with WORLD=${REFUSED_WORLD}, no volume`,
+      env: { ...env, WORLD: REFUSED_WORLD },
+      exitCode: 1,
+      lines: [[`${ENTRYPOINT_LINES.refused}/app/${REFUSED_WORLD}. `]],
+    })
+    // what that container changed in its own file system (a chown shows as `C`): nothing under /app/build
+    const diffArgs = ['diff', refused.name]
+    const diff = await run(diffArgs)
+    refused.diff = tailOf(diff.stdout, 40, 4000)
+    if (diff.code !== 0) {
+      fail(`refused: \`docker ${formatCommand(diffArgs)}\` exited ${diff.code}: ${said(diff)}`)
+    } else {
+      const changed = changedUnder(diff.stdout, `/app/${REFUSED_WORLD}`)
+      if (changed.length)
+        fail(`refused: the container changed /app/${REFUSED_WORLD}: ${changed.slice(0, 5).join(', ')}`)
+      else report.info(`  \`docker diff\`: nothing at or under /app/${REFUSED_WORLD} changed`)
+    }
+    // and in the image itself, as a fresh container of it sees it, everything under /app/build is root's
+    const files = await throwaway('imagefiles', {
+      user: '0',
+      entrypoint: 'find',
+      command: [`/app/${REFUSED_WORLD}`, '!', '-user', '0'],
+    })
+    if (files.code !== 0) fail(`imagefiles: the find exited ${files.code}: ${said(files)}`)
+    else if (files.stdout.trim()) {
+      fail(`imagefiles: not root's under /app/${REFUSED_WORLD}: ${tailOf(files.stdout, 5, 600).replaceAll('\n', ', ')}`)
+    } else report.info(`imagefiles: everything under /app/${REFUSED_WORLD} in the image is root's`)
   }
 
   try {
@@ -1055,23 +1427,25 @@ export async function runImageCheck({
       report.info('  (the image configuration was not readable as JSON)')
     }
 
-    // b. one volume for the world, kept from container to container
-    created.volume = 'maybe'
-    await must(['volume', 'create', names.volume])
-    created.volume = 'yes'
+    if (model.name === 'nonroot') {
+      await runNonroot()
+    } else {
+      // b. one volume for the world, kept from container to container
+      await createVolume(names.volume)
 
-    // b–e. the first container: healthy, the process tree, a stop with Docker's defaults
-    const first = await startAndWait('sigterm')
-    await observe(first)
-    await stop(first, STOPS.sigterm)
+      // b–e. the first container: healthy, the process tree, a stop with Docker's defaults
+      const first = await startAndWait('sigterm')
+      await observe(first)
+      await stop(first, STOPS.sigterm)
 
-    // f. a fresh container on the same volume, stopped the way Fly stops by default
-    const second = await startAndWait('sigint')
-    await stop(second, STOPS.sigint)
+      // f. a fresh container on the same volume, stopped the way Fly stops by default
+      const second = await startAndWait('sigint')
+      await stop(second, STOPS.sigint)
 
-    // g. a third start on the same volume becomes healthy (nothing was changed in the world: that is all it shows)
-    const third = await startAndWait('restart')
-    report.info(`restart: healthy after ${third.healthy.seconds} s on the volume of the two stopped runs`)
+      // g. a third start on the same volume becomes healthy (nothing was changed in the world: that is all it shows)
+      const third = await startAndWait('restart')
+      report.info(`restart: healthy after ${third.healthy.seconds} s on the volume of the two stopped runs`)
+    }
   } catch (err) {
     if (err?.interrupted) {
       summary.interrupted = err.interrupted

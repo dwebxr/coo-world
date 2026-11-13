@@ -10,8 +10,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import { bundleServer, heldBundles } from './lib/serverBundle.mjs'
-import { fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
+import { entityClasses, fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
 import { readPacket, writeClientPacket } from '../src/core/packets.js'
+import { readKickEnv } from '../src/server/kickList.js'
 
 const net = await loadNetwork()
 const timers = () => process.getActiveResourcesInfo().filter(name => name === 'Timeout').length
@@ -139,6 +140,233 @@ test('network helper: replace keeps the real module and overrides one export, ch
   assert.equal(gated.solanaGating.REQUIRED_TOKEN_AMOUNT, net.solanaGating.REQUIRED_TOKEN_AMOUNT)
 })
 
+test('network helper: a stand-in reads each export from the object the test gives, each time the code uses it', async t => {
+  const SOLANA = 'src/server/solana-gating.js'
+  const swapped = await loadNetwork({ standIns: [SOLANA] })
+  t.after(swapped.destroy)
+  // none given: the real module (this test makes its own networks after its subtest's: one test at a time)
+  assert.equal(swapped.solanaGating.REQUIRED_TOKEN_AMOUNT, net.solanaGating.REQUIRED_TOKEN_AMOUNT)
+  const reads = []
+  const gate = new Proxy(
+    { TOKEN_GATING_ENABLED: true, WALLET_HOST: 'stand-in.example' },
+    { get: (target, name) => (reads.push(name), target[name]) }
+  )
+  const service = { get: () => ({ known: true, balance: 0 }) }
+  await t.test('a test that gives one', t => {
+    const network = makeNetwork(t, {
+      net: swapped,
+      init: { tokenBalanceService: service },
+      modules: { [SOLANA]: gate },
+    })
+    // init read the switch from it, once
+    assert.equal(network.tokenBalanceService, service)
+    assert.deepEqual(reads, ['TOKEN_GATING_ENABLED'])
+    // a name it lacks is the real module's (and was not asked of it)
+    assert.equal(swapped.solanaGating.REQUIRED_TOKEN_AMOUNT, net.solanaGating.REQUIRED_TOKEN_AMOUNT)
+    assert.deepEqual(reads, ['TOKEN_GATING_ENABLED'])
+    // another module of the bundle that imports it reads it too (evm-gating.js re-exports the host)
+    assert.equal(swapped.evmGating.WALLET_HOST, 'stand-in.example')
+    // the last one given is the one read, by every network
+    makeNetwork(t, { net: swapped, modules: { [SOLANA]: { TOKEN_GATING_ENABLED: false } } })
+    assert.equal(swapped.solanaGating.TOKEN_GATING_ENABLED, false)
+    assert.equal(network.tokenBalanceService, service, 'what init made stays')
+  })
+  // the test's end gives the real module back
+  assert.equal(swapped.solanaGating.TOKEN_GATING_ENABLED, false)
+  assert.equal(swapped.evmGating.WALLET_HOST, net.evmGating.WALLET_HOST)
+  assert.equal(makeNetwork(t, { net: swapped, init: { tokenBalanceService: service } }).tokenBalanceService, null)
+  // a module that is no stand-in of the bundle is refused, and so is one both replaced and a stand-in
+  assert.throws(() => makeNetwork(t, { net, modules: { [SOLANA]: gate } }), /not a stand-in of this bundle/)
+  await assert.rejects(
+    loadNetwork({ replace: { [SOLANA]: `export * from 'real:'` }, standIns: [SOLANA] }),
+    /both replaced and a stand-in/
+  )
+})
+
+test('server bundle: a CommonJS replacement is read by property each time an export is used', async t => {
+  const counted = await bundleServer(
+    `import { readKickEnv } from './src/server/kickList.js'
+    export const use = () => readKickEnv
+    export * as kickList from './src/server/kickList.js'`,
+    {
+      replace: {
+        'src/server/kickList.js': {
+          commonjs: `
+            const real = require('real:')
+            let reads = 0
+            module.exports = {
+              get readKickEnv() {
+                reads++
+                return real.readKickEnv
+              },
+              get reads() {
+                return reads
+              },
+            }
+          `,
+        },
+      },
+    }
+  )
+  t.after(counted.destroy)
+  const { use, kickList } = counted.module
+  const before = kickList.reads
+  // the real module behind it, read again at each use (an ES module's import would be one binding)
+  assert.deepEqual(use()({ KICK_MINUTES: '5' }), readKickEnv({ KICK_MINUTES: '5' }))
+  use()
+  assert.equal(kickList.reads, before + 2)
+  await assert.rejects(
+    bundleServer(`export * from './src/server/kickList.js'`, {
+      replace: { 'src/server/kickList.js': `export * from 'commonjs:'` },
+    }),
+    /only for a CommonJS replacement/
+  )
+})
+
+test('network helper: entityClasses gives Entities the classes a file of the tests exports', async t => {
+  const own = await loadNetwork({ replace: entityClasses(new URL('./lib/joinEntities.mjs', import.meta.url)) })
+  t.after(own.destroy)
+  // (a world that hears of its own player: the local one)
+  const world = makeNetwork(t, { net: own, world: { emit() {} } }).world
+  world.entities = new own.Entities(world)
+  const app = world.entities.add({ id: 'app', type: 'app', blueprint: 'bp', state: {} })
+  const player = world.entities.add({ id: 'player', type: 'player', owner: 'someone', rank: 1 })
+  assert.equal(app.constructor.name, 'FakeApp')
+  assert.equal(player.constructor.name, 'FakePlayer')
+  assert.equal(player.isBuilder(), true)
+  // the local player is the same class, from one copy of the file in the bundle
+  world.network.id = 'me'
+  const local = world.entities.add({ id: 'me', type: 'player', owner: 'me', rank: 0 })
+  assert.equal(local.constructor, player.constructor)
+})
+
+// A test context as node:test hands it to the helper, whose hooks the test runs itself with `end()`: in order, and,
+// as node:test runs them, none after one that threw. -> { context, end }; end() -> { threw, error }. (The real
+// test's end runs them, where the test failed before.)
+function handedContext(t) {
+  const hooks = []
+  // (the signal node:test aborts when a test is over, whatever its hooks did)
+  const over = new AbortController()
+  const context = { after: hook => hooks.push(hook), mock: t.mock, signal: over.signal }
+  const end = async () => {
+    try {
+      for (const hook of hooks.splice(0)) {
+        try {
+          await hook()
+        } catch (error) {
+          return { threw: true, error }
+        }
+      }
+      return { threw: false }
+    } finally {
+      over.abort()
+    }
+  }
+  t.after(end)
+  return { context, end }
+}
+
+test('network helper: every network of a test is stopped at its end, whatever one of them throws while it stops', async t => {
+  const SOLANA = 'src/server/solana-gating.js'
+  const swapped = await loadNetwork({ standIns: [SOLANA] })
+  t.after(swapped.destroy)
+  const saved = process.env.ADMIN_CODE
+  const before = timers()
+  const { context, end } = handedContext(t)
+  const first = makeNetwork(context, { net: swapped, env: { ADMIN_CODE: 'during' } })
+  first.tipWatcher = {
+    stop() {
+      throw new Error('a stand-in that fails when it is touched')
+    },
+  }
+  // a tip announcement waiting (announceTip's timer), which stopForFatal clears after the tip watcher's stop
+  first.tipAnnounce.timer = setTimeout(() => assert.fail('a tip announcement outlived the test'), 60_000)
+  const second = makeNetwork(context, { net: swapped, modules: { [SOLANA]: { TOKEN_GATING_ENABLED: true } } })
+  assert.equal(timers(), before + 3)
+  const ended = await end()
+  assert.equal(ended.threw, true)
+  assert.match(ended.error?.message ?? '', /fails when it is touched/)
+  assert.equal(first.stopping && second.stopping, true)
+  assert.equal(timers(), before, 'the timers of both, the one whose stop threw included')
+  assert.equal(process.env.ADMIN_CODE, saved)
+  assert.equal(swapped.solanaGating.TOKEN_GATING_ENABLED, false)
+})
+
+test('network helper: a stop that throws a falsy value fails the end of the test as well', async t => {
+  const before = timers()
+  const { context, end } = handedContext(t)
+  const network = makeNetwork(context, { net })
+  network.tipWatcher = {
+    stop() {
+      throw 0
+    },
+  }
+  const ended = await end()
+  assert.deepEqual(ended, { threw: true, error: 0 })
+  assert.equal(timers(), before)
+})
+
+test('network helper: a test that makes a network while another one holds the helper is refused', async t => {
+  const first = handedContext(t)
+  const second = handedContext(t)
+  makeNetwork(first.context, { net, env: { ADMIN_CODE: 'first' } })
+  assert.throws(
+    () => makeNetwork(second.context, { net, env: { ADMIN_CODE: 'second' } }),
+    /the network helper holds process-wide state: tests that use it must not run concurrently/
+  )
+  // nothing of the second was put in place, and the first's end gives the helper back
+  assert.equal(process.env.ADMIN_CODE, 'first')
+  assert.deepEqual(await first.end(), { threw: false })
+  makeNetwork(second.context, { net, env: { ADMIN_CODE: 'second' } })
+  assert.equal(process.env.ADMIN_CODE, 'second')
+  assert.deepEqual(await second.end(), { threw: false })
+})
+
+test("network helper: a hook that throws before the helper's own does not leave the helper held", async t => {
+  const saved = process.env.ADMIN_CODE
+  const before = timers()
+  const failing = handedContext(t)
+  // registered first, so it runs first; node:test then runs none of the test's later hooks
+  failing.context.after(() => {
+    throw new Error('the test’s own hook')
+  })
+  const network = makeNetwork(failing.context, { net, env: { ADMIN_CODE: 'during' } })
+  assert.ok(network.socketIntervalId)
+  const ended = await failing.end()
+  assert.equal(ended.threw, true)
+  assert.equal(ended.error.message, 'the test’s own hook')
+  // the end of the test did what the skipped hook would have: timers, environment, and the helper is free
+  assert.deepEqual(timers(), before)
+  assert.equal(process.env.ADMIN_CODE, saved)
+  const next = handedContext(t)
+  makeNetwork(next.context, { net })
+  assert.deepEqual(await next.end(), { threw: false })
+})
+
+test('network helper: a network cannot be made for a test that is over', async t => {
+  const done = handedContext(t)
+  makeNetwork(done.context, { net })
+  assert.deepEqual(await done.end(), { threw: false })
+  // (from a hook registered late, say: it would be left running, with the environment it set)
+  const before = timers()
+  assert.throws(() => makeNetwork(done.context, { net, env: { ADMIN_CODE: 'late' } }), /after the end of its test/)
+  assert.deepEqual(timers(), before)
+  assert.notEqual(process.env.ADMIN_CODE, 'late')
+  // and the helper is not held by it
+  const next = handedContext(t)
+  makeNetwork(next.context, { net })
+  assert.deepEqual(await next.end(), { threw: false })
+  // nor for one that was over before it made its first (a body that timed out and goes on running)
+  const late = handedContext(t)
+  assert.deepEqual(await late.end(), { threw: false })
+  assert.throws(() => makeNetwork(late.context, { net, env: { ADMIN_CODE: 'late' } }), /after the end of its test/)
+  assert.deepEqual(timers(), before)
+  assert.notEqual(process.env.ADMIN_CODE, 'late')
+  const after = handedContext(t)
+  makeNetwork(after.context, { net })
+  assert.deepEqual(await after.end(), { threw: false })
+})
+
 test('network helper: env varies a constant read at import, in one call that restores the environment', async t => {
   const saved = process.env.SAVE_INTERVAL
   const sockets = process.env.WS_MAX_SOCKETS
@@ -255,13 +483,28 @@ test('network helper: settings of the environment the tests run in change nothin
 
 test('network helper: the ported files pass with those settings in their environment', { timeout: 120000 }, async t => {
   const files = [
+    'actionBudgetHandlers',
+    'adminCommand',
+    'aiBudget',
     'announceBeforeApply',
     'blueprintEnforcement',
+    'connectionHolds',
+    'eventBudget',
+    'externalAvatarUrls',
+    'joinAdmission',
+    'joinBudget',
+    'moderation',
+    'networkTransforms',
+    'packetAccess',
+    'packetRefusals',
     'persistence',
     'persistedHydration',
+    'playerCoalescing',
     'scriptChat',
     'serverFileRead',
     'sharedObjects',
+    'userRowsNetwork',
+    'writeLedger',
   ].map(name => fileURLToPath(new URL(`./${name}.test.js`, import.meta.url)))
   const { PATH, HOME, TMPDIR } = process.env
   // (the reporter is named: with its output piped, Node 22 would print TAP and Node 24 the spec lines read below)

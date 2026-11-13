@@ -35,13 +35,13 @@ const names = registry.map(entry => entry.name)
 const methodSource = method => source.match(new RegExp(`^  (?:async )?${method}(?:\\(| = )[^]*?^  }`, 'm'))?.[0] ?? null
 const handlers = registry.filter(entry => methodSource(entry.method)).map(entry => entry.name)
 
-test('the registry was read, and a packet goes to the method of its name and nowhere else', async () => {
+test('the registry was read, and a packet goes to the method of its name and nowhere else', async t => {
   assert.equal(names.length, 41, 'a packet was added or removed: give it a rule in test/lib/packetAccess.mjs')
   assert.equal(new Set(names).size, names.length)
   assert.ok(handlers.length > 25, `handlers found (${handlers.length})`)
   // so a name is handled exactly when the server has its `on<Name>`: each name, sent by a builder (whom the inbound
   // gate lets through), reaches the method the registry gives it
-  const f = fixture()
+  const f = fixture(t)
   const reached = []
   for (const { name, method } of registry) f.network[method] = () => reached.push(name)
   for (const name of names) f.send(name, null)

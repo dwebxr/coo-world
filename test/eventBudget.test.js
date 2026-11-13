@@ -25,8 +25,8 @@ const root = () => ({
 // The real network handlers (joinFixture) with the real App entity and Apps system in their world: an admin and two
 // visitors, `a` and `b`. An app's script listens for the event names its blueprint's props give (`listen`) and
 // records what it gets in `seen`.
-async function stage() {
-  const f = fixture()
+async function stage(t) {
+  const f = fixture(t)
   const world = f.world
   world.settings.setHasAdminCode(true)
   world.settings.rank = Ranks.VISITOR
@@ -94,8 +94,8 @@ async function stage() {
   return { f, world, admin, a, b, got, appLogs, seen, addApp, event, over }
 }
 
-test('a flood of events from one visitor: the script gets 1280 at once and then 320 a second; the rest are counted', async () => {
-  const s = await stage()
+test('a flood of events from one visitor: the script gets 1280 at once and then 320 a second; the rest are counted', async t => {
+  const s = await stage(t)
   const game = s.addApp('game')
   const other = s.addApp('other')
   for (let i = 0; i < 3000; i++) s.event(s.a, 10_000, { data: i })
@@ -136,7 +136,7 @@ test('a flood of events from one visitor: the script gets 1280 at once and then 
 })
 
 test('two apps sending every frame at 144 Hz for a minute lose nothing, through the real admission; a third makes it too many', async t => {
-  const s = await stage()
+  const s = await stage(t)
   const apps = ['one', 'two', 'three'].map(id => s.addApp(id))
   let clock = 50_000
   t.mock.method(performance, 'now', () => clock)
@@ -182,8 +182,8 @@ test('two apps sending every frame at 144 Hz for a minute lose nothing, through 
   assert.equal(s.a.ws.readyState, 1)
 })
 
-test('an event the app does not take uses no budget', async () => {
-  const s = await stage()
+test('an event the app does not take uses no budget', async t => {
+  const s = await stage(t)
   const game = s.addApp('game')
   s.world.blueprints.add({ id: 'off', version: 0, model: 'cached.glb', script: 'cached.js', disabled: true, props: {} })
   const off = s.addApp('off', 'off')
@@ -206,8 +206,8 @@ test('an event the app does not take uses no budget', async () => {
   assert.equal(s.over(game), 0)
 })
 
-test('an event for an app whose script has crashed uses no budget: its listeners are still there, and are not called', async () => {
-  const s = await stage()
+test('an event for an app whose script has crashed uses no budget: its listeners are still there, and are not called', async t => {
+  const s = await stage(t)
   const broken = s.addApp('game')
   const healthy = s.addApp('other')
   // as crash() leaves it until the crash is cleared up: the flag set, the listeners still installed
@@ -223,8 +223,8 @@ test('an event for an app whose script has crashed uses no budget: its listeners
   assert.equal(s.over(healthy), 0)
 })
 
-test('an event the app keeps while it builds uses the budget, whatever the old script listened for', async () => {
-  const s = await stage()
+test('an event the app keeps while it builds uses the budget, whatever the old script listened for', async t => {
+  const s = await stage(t)
   const game = s.addApp('game')
   // a rebuild that waits for its model: the script of version 0 is still the one running
   const cached = s.world.loader.get
@@ -247,8 +247,8 @@ test('an event the app keeps while it builds uses the budget, whatever the old s
   )
 })
 
-test("a builder's event for the next version of the blueprint is kept and uses the budget", async () => {
-  const s = await stage()
+test("a builder's event for the next version of the blueprint is kept and uses the budget", async t => {
+  const s = await stage(t)
   const game = s.addApp('game')
   assert.equal(game.building, false)
   for (let i = 0; i < 2000; i++) s.event(s.admin, 1000, { version: 1, name: 'later', data: i, builder: true })
@@ -263,7 +263,7 @@ test("a builder's event for the next version of the blueprint is kept and uses t
 })
 
 test('the arrival time of the packet is what is counted, through the real admission', async t => {
-  const s = await stage()
+  const s = await stage(t)
   s.addApp('game')
   const asked = []
   s.f.network.actionBudgets = { spend: (socket, action, at) => (asked.push([socket.id, action, at]), { ok: true }) }

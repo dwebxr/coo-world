@@ -1,11 +1,12 @@
-// `/admin <code>` in the real ServerNetwork.onCommand (test/lib/networkHarness.mjs): who becomes admin, what a wrong
+// `/admin <code>` in the real ServerNetwork.onCommand (test/lib/network.mjs): who becomes admin, what a wrong
 // code does, and what the world tells clients about its admin mode. The brake itself is in test/adminCode.test.js.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { fakeWs, makeNetwork } from './lib/networkHarness.mjs'
+import { fakeWs, makeNetwork } from './lib/network.mjs'
 import { clientWorld, loadClient } from './lib/clientHarness.mjs'
-import { fixture as joinFixture, sentTo } from './lib/joinFixture.mjs'
+import { fixture as joinFixture, net, sentTo } from './lib/joinFixture.mjs'
+import { deferred } from './lib/persistenceFixture.mjs'
 import { Ranks } from '../src/core/extras/ranks.js'
 import { packetNodeLimit } from '../src/core/extras/inboundPolicy.js'
 import { readInboundPacket } from '../src/server/inboundDecode.js'
@@ -14,18 +15,34 @@ import { CHAT_BODY_MAX_LENGTH } from '../src/core/extras/chatPolicy.js'
 
 const CODE = 'a-long-random-admin-code'
 
-function fixture(env = { ADMIN_CODE: CODE }) {
+function fixture(t, env = { ADMIN_CODE: CODE }) {
   const writes = []
+  const rows = new Map()
+  let hold = null
   const broadcasts = []
   const commands = []
-  const network = makeNetwork(() => {}, { context: { process: { env } } })
-  network.db = () => ({
-    where: (_column, id) => ({
-      update: async patch => writes.push({ id, ...patch }),
-    }),
+  const network = makeNetwork(t, {
+    net,
+    log: () => {},
+    env,
+    world: { events: { emit: (name, payload) => commands.push([name, payload]) } },
+    init: {
+      db: () => ({
+        where: (_column, id) => ({
+          // a user row's UPDATE: in `writes` when it starts, in `rows` when it lands; `holdNext(promise)` makes the
+          // next one wait for that promise before it lands
+          update: async patch => {
+            writes.push({ id, ...patch })
+            const held = hold
+            hold = null
+            if (held) await held
+            rows.set(id, { ...rows.get(id), ...patch })
+          },
+        }),
+      }),
+    },
   })
   network.send = (name, data) => broadcasts.push([name, data])
-  network.world.events = { emit: (name, payload) => commands.push([name, payload]) }
   let sockets = 0
   // a connected player: `user` is the user id (a socket's id is its user's), `address` its address key
   const connect = ({
@@ -55,15 +72,16 @@ function fixture(env = { ADMIN_CODE: CODE }) {
   }
   const admin = (socket, ...args) => network.onCommand(socket, { args: ['admin', ...args] })
   const said = socket => socket.sent.filter(([name]) => name === 'chatAdded').map(([, line]) => line.body)
-  return { network, writes, broadcasts, commands, connect, admin, said }
+  const holdNext = promise => (hold = promise)
+  return { network, writes, rows, holdNext, broadcasts, commands, connect, admin, said }
 }
 
-test('the right code makes a visitor admin, stored; entered again it takes admin away', async () => {
-  const f = fixture()
+test('the right code makes a visitor admin, stored; entered again it takes admin away', async t => {
+  const f = fixture(t)
   const socket = f.connect()
   await f.admin(socket, CODE)
   assert.equal(socket.player.data.rank, Ranks.ADMIN)
-  // (compared as JSON: the handler's objects come from the harness's own realm)
+  // (compared as JSON, as when the handler's objects came from the old harness's own realm)
   assert.equal(JSON.stringify(f.broadcasts), JSON.stringify([['entityModified', { id: socket.id, rank: Ranks.ADMIN }]]))
   assert.deepEqual(f.writes, [{ id: socket.id, rank: Ranks.ADMIN }])
   assert.deepEqual(f.said(socket), ['Admin granted!'])
@@ -73,8 +91,8 @@ test('the right code makes a visitor admin, stored; entered again it takes admin
   assert.deepEqual(f.said(socket), ['Admin granted!', 'Admin revoked!'])
 })
 
-test('a wrong, missing or malformed code changes nothing and is answered to that player only', async () => {
-  const f = fixture()
+test('a wrong, missing or malformed code changes nothing and is answered to that player only', async t => {
+  const f = fixture(t)
   const socket = f.connect()
   for (const candidate of ['wrong', undefined, 7, { toString: () => CODE }, CODE + ' ']) {
     await f.admin(f.connect({ address: `203.0.113.${50 + f.writes.length}` }), candidate)
@@ -87,15 +105,30 @@ test('a wrong, missing or malformed code changes nothing and is answered to that
   assert.equal(socket.closed, false)
 })
 
-test('the admin command is never handed on as a command event, in any letter case; other commands are', async () => {
-  const f = fixture()
+test('the admin command is never handed on as a command event, in any letter case; other commands are', async t => {
+  const f = fixture(t)
   const socket = f.connect()
   for (const cmd of ['admin', 'Admin', 'ADMIN', 'aDmIn']) {
     await f.network.onCommand(socket, { args: [cmd, CODE] })
   }
   assert.deepEqual(f.commands, [], 'the code never reaches a script')
-  // and each of those spellings is the admin command: four right codes toggle admin four times
-  assert.equal(f.writes.length, 4)
+  // and each of those spellings is the admin command: four right codes toggle admin four times, and the row is left
+  // with the rank of the fourth
+  assert.deepEqual(f.said(socket), ['Admin granted!', 'Admin revoked!', 'Admin granted!', 'Admin revoked!'])
+  assert.equal(socket.player.data.rank, Ranks.VISITOR)
+  await f.network.userRows().idle()
+  assert.deepEqual(f.writes.at(-1), { id: socket.id, rank: Ranks.VISITOR })
+  assert.deepEqual(f.rows.get(socket.id), { rank: Ranks.VISITOR })
+  assert.equal(f.network.userRows().unstored(), 0)
+  // Was 4 statements, exactly. A user's row has one writer (userRows.js): a rank decided while its statement is
+  // under way goes out with the next statement, and one replaced before its turn is not written; how many toggles
+  // meet a statement under way depends on how fast the database answers (these immediate mocks give 3; under the old
+  // harness each `await` of a handler's promise from the vm's realm took turns enough for every statement to land
+  // first). What holds whatever the database: at least 2 statements, the first toggle's (the writer starts with it at
+  // once) and the fourth's (nothing decided is left unwritten, above), and at most one per toggle. A writer that wrote
+  // every toggle at once, without merging, is within these bounds too: that is allowed here (the next test holds a
+  // statement to show the merging).
+  assert.ok(f.writes.length >= 2 && f.writes.length <= 4, `${f.writes.length} statements`)
   await f.network.onCommand(socket, { args: ['dance', 'now'] })
   assert.equal(f.commands.length, 1)
   assert.equal(f.commands[0][0], 'command')
@@ -109,8 +142,33 @@ test('the admin command is never handed on as a command event, in any letter cas
   })
 })
 
-test('a command packet is a list of words: anything else is not handed to scripts', async () => {
-  const f = fixture()
+test('/admin: toggles decided while a statement of the row is held go out as one more statement, the rank of the last', async t => {
+  const f = fixture(t)
+  const socket = f.connect()
+  const release = deferred()
+  f.holdNext(release.promise)
+  await f.admin(socket, CODE)
+  // (under way is not stored: the change counts as unwritten until its statement has come back)
+  assert.equal(f.network.userRows().unstored(), 1)
+  // decided while that statement (admin) is under way: visitor, admin, visitor
+  for (let i = 0; i < 3; i++) await f.admin(socket, CODE)
+  assert.deepEqual(f.writes, [{ id: socket.id, rank: Ranks.ADMIN }])
+  assert.equal(f.rows.get(socket.id), undefined, 'nothing has landed')
+  // released, with no further toggle: the rank decided last is written, by one more statement; the two between never
+  release.resolve()
+  await f.network.userRows().idle()
+  assert.deepEqual(f.writes, [
+    { id: socket.id, rank: Ranks.ADMIN },
+    { id: socket.id, rank: Ranks.VISITOR },
+  ])
+  assert.deepEqual(f.rows.get(socket.id), { rank: Ranks.VISITOR })
+  assert.equal(socket.player.data.rank, Ranks.VISITOR)
+  assert.equal(f.network.userRows().unstored(), 0)
+  assert.deepEqual(f.said(socket), ['Admin granted!', 'Admin revoked!', 'Admin granted!', 'Admin revoked!'])
+})
+
+test('a command packet is a list of words: anything else is not handed to scripts', async t => {
+  const f = fixture(t)
   const socket = f.connect()
   // a client is free to put anything in the list; scripts were handed it
   for (const args of [
@@ -191,8 +249,8 @@ test('command packets: cmd and value are the client’s when they are the text o
   }
 })
 
-test('the third wrong code starts a wait: the right code is refused during it, unread, and said once', async () => {
-  const f = fixture()
+test('the third wrong code starts a wait: the right code is refused during it, unread, and said once', async t => {
+  const f = fixture(t)
   const socket = f.connect()
   for (let i = 0; i < 3; i++) await f.admin(socket, 'guess')
   await f.admin(socket, CODE)
@@ -216,7 +274,7 @@ test('the third wrong code starts a wait: the right code is refused during it, u
   assert.equal(elsewhere.player.data.rank, Ranks.ADMIN)
 })
 
-test('a line is the admin command on the client exactly when it is on the server: then no side hands it to scripts', async () => {
+test('a line is the admin command on the client exactly when it is on the server: then no side hands it to scripts', async t => {
   // the real Chat.command on a client, its packet as the server decodes it, and the real onCommand
   const Chat = loadClient('core/systems/Chat.js', 'Chat')
   const lines = [
@@ -247,7 +305,7 @@ test('a line is the admin command on the client exactly when it is on the server
     assert.equal(world.packets.length, 1, `${JSON.stringify(text)}: sent to the server`)
     const [method, data] = readInboundPacket(world.packets[0], { maxNodes: packetNodeLimit('command') })
     assert.equal(method, 'onCommand')
-    const f = fixture()
+    const f = fixture(t)
     const gate = f.network.admin().gate
     const looked = []
     const attempt = gate.attempt
@@ -265,7 +323,7 @@ test('a line is the admin command on the client exactly when it is on the server
   }
   // a client of someone's own making may send the first word untrimmed: it is the admin command all the same
   for (const first of [' admin', 'ADMIN\t', '\u00a0Admin\u00a0']) {
-    const f = fixture()
+    const f = fixture(t)
     const socket = f.connect()
     await f.network.onCommand(socket, { args: [first, CODE] })
     assert.equal(socket.player.data.rank, Ranks.ADMIN, JSON.stringify(first))
@@ -274,7 +332,7 @@ test('a line is the admin command on the client exactly when it is on the server
   // a first word that is not text: not the admin command on the server either, and not a command at all (a list
   // with something in it that is not a word is handed to no script). No words at all is a command with none.
   for (const args of [[7, CODE], [['admin'], CODE], [{ toString: () => 'admin' }, CODE], [null, CODE], []]) {
-    const f = fixture()
+    const f = fixture(t)
     const socket = f.connect()
     await f.network.onCommand(socket, { args })
     assert.equal(socket.player.data.rank, Ranks.VISITOR)
@@ -295,9 +353,9 @@ test('the admin command is not handed to a command bound on the client under tha
   assert.equal(world.packets.length, 3, 'each went to the server')
 })
 
-test('connections get their address keys on joining: two from one address share its wait, one from another does not', async () => {
+test('connections get their address keys on joining: two from one address share its wait, one from another does not', async t => {
   // the real onConnection, given the address keys the /ws route hands it
-  const f = joinFixture({ env: { ADMIN_CODE: CODE } })
+  const f = joinFixture(t, { env: { ADMIN_CODE: CODE } })
   const connect = async origin => {
     const ws = fakeWs()
     await f.network.onConnection(ws, {}, origin)
@@ -336,8 +394,8 @@ test('connections get their address keys on joining: two from one address share 
   assert.deepEqual(said(outside), ['Wrong admin code.'])
 })
 
-test('a socket that keeps trying is closed with a reason; a reconnect of the same user is still held by the wait', async () => {
-  const f = fixture()
+test('a socket that keeps trying is closed with a reason; a reconnect of the same user is still held by the wait', async t => {
+  const f = fixture(t)
   const socket = f.connect({ user: 'mallory' })
   for (let i = 0; i < 20; i++) await f.admin(socket, 'guess')
   assert.equal(socket.closed, false)
@@ -349,7 +407,7 @@ test('a socket that keeps trying is closed with a reason; a reconnect of the sam
   assert.equal(again.player.data.rank, Ranks.VISITOR, 'the user id is still waiting')
 })
 
-test('modes: without a code the command does nothing; clients are told there is a code unless the world is open', async () => {
+test('modes: without a code the command does nothing; clients are told there is a code unless the world is open', async t => {
   const snapshot = network => {
     Object.assign(network.world, {
       settings: { serialize: () => ({}) },
@@ -368,7 +426,7 @@ test('modes: without a code the command does nothing; clients are told there is 
     [{ NODE_ENV: 'production' }, 'locked', true],
     [{ ADMIN_CODE: '', NODE_ENV: 'production' }, 'locked', true],
   ]) {
-    const f = fixture(env)
+    const f = fixture(t, env)
     assert.equal(f.network.admin().mode, mode, JSON.stringify(env))
     assert.equal(snapshot(f.network).hasAdminCode, hasAdminCode, `${mode}: what a joining client is told`)
     if (mode === 'code') continue
@@ -380,8 +438,8 @@ test('modes: without a code the command does nothing; clients are told there is 
   }
 })
 
-test('an address nobody could work out is not one shared key: visitors behind a hiding proxy do not hold each other', async () => {
-  const f = fixture()
+test('an address nobody could work out is not one shared key: visitors behind a hiding proxy do not hold each other', async t => {
+  const f = fixture(t)
   for (let i = 0; i < 12; i++) await f.admin(f.connect({ address: 'unknown' }), 'guess')
   const admin = f.connect({ address: 'unknown' })
   await f.admin(admin, CODE)

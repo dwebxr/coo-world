@@ -16,7 +16,7 @@ import {
 } from '../src/core/extras/joinBudget.js'
 import { WORLD_BLUEPRINT_BYTES } from '../src/core/extras/blueprintPolicy.js'
 import { loadClient } from './lib/clientHarness.mjs'
-import { fakeWs } from './lib/networkHarness.mjs'
+import { fakeWs } from './lib/network.mjs'
 import { app, apps, fillTo, fixture, long, nextId, sentTo, settle } from './lib/joinFixture.mjs'
 import { Entity } from '../src/core/entities/Entity.js'
 import { createEventQueue } from '../src/core/extras/appEventQueue.js'
@@ -40,8 +40,8 @@ const stubRoot = () => ({
 // The world, its accounting and the join helper are test/lib/joinFixture.mjs; the admission rules (who may join
 // when) are joinAdmission.test.js.
 
-test('join budget: 36 apps with 30,000-character ids are refused, and a new client still joins', async () => {
-  const f = fixture()
+test('join budget: 36 apps with 30,000-character ids are refused, and a new client still joins', async t => {
+  const f = fixture(t)
   const ids = Array.from({ length: 36 }, (_, i) => 'x'.repeat(30000) + i)
   // what the reproduction did without the id rule: those records alone are over the snapshot cap
   assert.ok(writePacket('snapshot', { entities: ids.map(id => app(id)) }).length > SNAPSHOT_CAP)
@@ -54,8 +54,8 @@ test('join budget: 36 apps with 30,000-character ids are refused, and a new clie
   assert.ok(joined.bytes < 10000)
 })
 
-test('join budget: about 9,200 plain apps are refused before the snapshot is over its cap, and a new client joins', async () => {
-  const f = fixture()
+test('join budget: about 9,200 plain apps are refused before the snapshot is over its cap, and a new client joins', async t => {
+  const f = fixture(t)
   const count = 9200
   // the LARP-04 reproduction (7,275 apps of 144 bytes): these, with float transforms and a short blueprint id,
   // encode at 116 bytes each, so it takes 9,200 of them with nothing refused to be over the cap (encoded once)
@@ -104,8 +104,8 @@ test('join budget: about 9,200 plain apps are refused before the snapshot is ove
   assert.equal(apps(f.world).length, accepted)
 })
 
-test('join budget: a client-set app state counts, a larger one is refused at the limit, and the record stays exact', () => {
-  const f = fixture()
+test('join budget: a client-set app state counts, a larger one is refused at the limit, and the record stays exact', t => {
+  const f = fixture(t)
   const state = { notes: 'n'.repeat(8000) }
   for (let i = 0; i < 40; i++) f.network.onEntityAdded(f.builder, app(`s${i}`, 'bp', { state }))
   assert.equal(f.world.entities.appSizes.get('s0').state, stateBytes(state))
@@ -126,8 +126,8 @@ test('join budget: a client-set app state counts, a larger one is refused at the
   assert.equal(joinStateBytes(f.world), full - stateBytes(state) + stateBytes({ notes: 'short' }))
 })
 
-test('join budget: a blueprint change that rebuilds its apps releases their state bytes and is admitted with them', () => {
-  const f = fixture()
+test('join budget: a blueprint change that rebuilds its apps releases their state bytes and is admitted with them', t => {
+  const f = fixture(t)
   f.world.blueprints.add({ id: 'big', version: 0, props: { text: '' } })
   const state = { notes: 'n'.repeat(8000) }
   for (let i = 0; i < 3; i++) f.network.onEntityAdded(f.builder, app(`r${i}`, 'big', { state }))
@@ -152,8 +152,8 @@ test('join budget: a blueprint change that rebuilds its apps releases their stat
   assert.deepEqual(sentTo(f.builder), [['onBlueprintModified', f.world.blueprints.get('big')]])
 })
 
-test('join budget: settings are measured before they change; growth past the limit is refused and reverted', () => {
-  const f = fixture()
+test('join budget: settings are measured before they change; growth past the limit is refused and reverted', t => {
+  const f = fixture(t)
   f.network.onSettingsModified(f.builder, { key: 'voice', value: 'spatial' })
   assert.equal(f.network.settingsBytes, writePacket('settingsModified', f.world.settings.serialize()).length)
   fillTo(f, 200)
@@ -171,8 +171,8 @@ test('join budget: settings are measured before they change; growth past the lim
   assert.ok(joinStateBytes(f.world) <= WORLD_JOIN_BYTES)
 })
 
-test('join budget: duplicate entity ids, a present player id and any known user id are refused for a new app', async () => {
-  const f = fixture()
+test('join budget: duplicate entity ids, a present player id and any known user id are refused for a new app', async t => {
+  const f = fixture(t)
   f.network.onEntityAdded(f.builder, app('dup'))
   const first = f.world.entities.get('dup')
   f.network.onEntityAdded(f.builder, app('dup', 'bp', { position: [9, 9, 9] }))
@@ -199,8 +199,8 @@ test('join budget: duplicate entity ids, a present player id and any known user 
   assert.deepEqual([...f.network.dirtyApps.keys()], ['dup'])
 })
 
-test('join budget: start-up reads every user id, so an app cannot take the id of someone away', async () => {
-  const f = fixture()
+test('join budget: start-up reads every user id, so an app cannot take the id of someone away', async t => {
+  const f = fixture(t)
   const rows = [{ id: 'stored0001' }, { id: 'stored0002' }]
   f.network.db = table =>
     table === 'users'
@@ -215,8 +215,8 @@ test('join budget: start-up reads every user id, so an app cannot take the id of
   assert.equal(f.world.entities.get('stored0002'), undefined)
 })
 
-test('join budget: a blueprintAdded for an existing id is refused, reverted to the sender, and its entity removed', () => {
-  const f = fixture()
+test('join budget: a blueprintAdded for an existing id is refused, reverted to the sender, and its entity removed', t => {
+  const f = fixture(t)
   const stored = f.world.blueprints.get('bp')
   f.send('blueprintAdded', { id: 'bp', version: 5, name: 'Replaced', props: { secret: 1 } })
   f.send('entityAdded', app('rides-on-it'))
@@ -230,8 +230,8 @@ test('join budget: a blueprintAdded for an existing id is refused, reverted to t
   assert.equal(f.network.dirtyBlueprints.size, 0)
 })
 
-test('join budget: an app that holds a joining user id moves to a new id; the player joins; it happens once', async () => {
-  const f = fixture()
+test('join budget: an app that holds a joining user id moves to a new id; the player joins; it happens once', async t => {
+  const f = fixture(t)
   const watcher = await f.join()
   f.users.set('legacyUser', { id: 'legacyUser', name: 'Returning', rank: 0 })
   // stored before app ids were kept apart from user ids
@@ -247,7 +247,7 @@ test('join budget: an app that holds a joining user id moves to a new id; the pl
   const moved = apps(f.world).find(entity => entity.data.blueprint === 'bp')
   assert.notEqual(moved.data.id, 'legacyUser')
   assert.match(moved.data.id, /^[A-Za-z0-9_-]{1,64}$/)
-  // (the record was built in the harness's VM realm: compared as JSON)
+  // (compared as JSON, as when the record was built in the old harness's VM realm)
   const kept = {
     blueprint: moved.data.blueprint,
     position: moved.data.position,
@@ -291,9 +291,37 @@ test('join budget: an app that holds a joining user id moves to a new id; the pl
   assert.equal(f.logs.length, logs + 1)
 })
 
+test('join budget: the new id of a moved app is drawn again while an entity or a known user has it', async t => {
+  // the ids the network draws here: an app's that is in the world, a user's the world knows, then a free one
+  const ids = ['otherApp', 'awayUser', 'freshApp']
+  const f = fixture(t, { uuid: () => ids.shift() ?? nextId() })
+  const other = f.world.entities.add(app('otherApp', 'bp', { position: [7, 8, 9] }), true)
+  const away = { id: 'awayUser', name: 'Away', rank: 0 }
+  f.users.set('awayUser', { ...away })
+  f.network.userIds.add('awayUser')
+  f.users.set('legacyUser', { id: 'legacyUser', name: 'Returning', rank: 0 })
+  f.world.entities.add(app('legacyUser', 'bp', { position: [1, 2, 3] }), true)
+  f.network.dirtyApps.clear()
+  const joined = await f.join({ authToken: 'legacyUser' })
+  assert.equal(joined.method, 'onSnapshot')
+  assert.deepEqual(ids, [], 'three ids drawn')
+  // the app moved to the third, with its record
+  const moved = f.world.entities.get('freshApp')
+  assert.equal(moved?.isApp, true)
+  assert.deepEqual(moved.data.position, [1, 2, 3])
+  assert.equal(f.world.entities.get('legacyUser').isPlayer, true)
+  // the app that had the first is as it was, and nothing took the away user's id, in the world or in the store
+  assert.equal(f.world.entities.get('otherApp'), other)
+  assert.deepEqual(other.data.position, [7, 8, 9])
+  assert.equal(f.world.entities.get('awayUser'), undefined)
+  assert.deepEqual(f.users.get('awayUser'), away)
+  // and what is to be stored is the move, under the third alone (a row that replaces the old one: rekeyApp)
+  assert.deepEqual([...f.network.dirtyApps.keys()], ['freshApp'])
+})
+
 // a re-keyed app under its old id in the database, the save interrupted after `hangAfter` writes
-async function interruptedRekey({ hangAfter, transactions, teardown = () => {}, pending = false }) {
-  const f = fixture()
+async function interruptedRekey(t, { hangAfter, transactions, teardown = () => {}, pending = false }) {
+  const f = fixture(t)
   f.users.set('legacyUser', { id: 'legacyUser', name: 'Returning', rank: 0 })
   const stored = { ...app('legacyUser', 'bp', { position: [1, 2, 3] }), state: null }
   f.store.rows.set('legacyUser', stored)
@@ -320,7 +348,7 @@ test('join budget: a re-keyed app is never lost, wherever the save stops (with a
   for (const transactions of [false, true]) {
     for (let hangAfter = 0; hangAfter <= 3; hangAfter++) {
       for (const pending of [false, true]) {
-        const { rows, moved } = await interruptedRekey({ hangAfter, transactions, pending })
+        const { rows, moved } = await interruptedRekey(t, { hangAfter, transactions, pending })
         const label = `transactions=${transactions} stopped after ${hangAfter} writes pending=${pending}`
         assert.ok(rows.has('legacyUser') || rows.has(moved.data.id), label)
         const kept = rows.get(moved.data.id) || rows.get('legacyUser')
@@ -333,7 +361,7 @@ test('join budget: a re-keyed app is never lost, wherever the save stops (with a
   }
   // a replacement write that fails leaves the old row and stays queued; the next save completes the move
   for (const transactions of [false, true]) {
-    const f = fixture()
+    const f = fixture(t)
     f.users.set('legacyUser', { id: 'legacyUser', name: 'Returning', rank: 0 })
     f.store.rows.set('legacyUser', { ...app('legacyUser'), state: null })
     f.world.entities.add(app('legacyUser'), true)
@@ -348,10 +376,10 @@ test('join budget: a re-keyed app is never lost, wherever the save stops (with a
     assert.deepEqual([...f.store.rows.keys()], [moved.data.id], `transactions=${transactions}`)
   }
   // a save that runs to the end leaves exactly the new row
-  const { rows, moved } = await interruptedRekey({ hangAfter: Infinity, transactions: false })
+  const { rows, moved } = await interruptedRekey(t, { hangAfter: Infinity, transactions: false })
   assert.deepEqual([...rows.keys()], [moved.data.id])
   // and an edit to the moved app before the save still takes the old row away with it
-  const edited = await interruptedRekey({ hangAfter: 0, transactions: false })
+  const edited = await interruptedRekey(t, { hangAfter: 0, transactions: false })
   edited.f.network.markAppDirty(edited.moved.data, { pinned: true })
   edited.f.store.hangAfter = Infinity
   edited.f.store.writes = 0
@@ -362,7 +390,7 @@ test('join budget: a re-keyed app is never lost, wherever the save stops (with a
 
 test('join budget: a throwing app teardown does not stop the re-key or the join', async t => {
   t.mock.method(console, 'error', () => {})
-  const { f, rows, moved } = await interruptedRekey({
+  const { f, rows, moved } = await interruptedRekey(t, {
     hangAfter: Infinity,
     transactions: true,
     teardown: () => {
@@ -375,7 +403,7 @@ test('join budget: a throwing app teardown does not stop the re-key or the join'
   assert.ok(f.logs.some(line => line.includes('app teardown failed while moving it: destroy handler failed')))
 })
 
-test('join budget: script state that cannot be read (a throwing getter, a Proxy) never stops the re-key or the join', async () => {
+test('join budget: script state that cannot be read (a throwing getter, a Proxy) never stops the re-key or the join', async t => {
   for (const state of [
     {
       get boom() {
@@ -394,7 +422,7 @@ test('join budget: script state that cannot be read (a throwing getter, a Proxy)
       }
     ),
   ]) {
-    const f = fixture()
+    const f = fixture(t)
     f.users.set('legacyUser', { id: 'legacyUser', name: 'Returning', rank: 0 })
     f.world.entities.add(app('legacyUser'), true)
     // what a server script assigned (app.state = ...)
@@ -409,7 +437,7 @@ test('join budget: script state that cannot be read (a throwing getter, a Proxy)
 
 test('join budget: nothing is taken before the network has loaded; a join cancelled after its user row still reserves the id', async t => {
   t.mock.method(console, 'log', () => {})
-  const f = fixture()
+  const f = fixture(t)
   let release
   const held = new Promise(resolve => (release = resolve))
   const db = f.network.db
@@ -476,7 +504,7 @@ test('join budget: the start-up report says what is counted over the cap, not th
 })
 
 test('join budget: a world stored over the budget boots whole, reports, refuses growth and accepts a delete', async t => {
-  const f = fixture()
+  const f = fixture(t)
   const warnings = []
   t.mock.method(console, 'warn', line => warnings.push(line))
   t.mock.method(console, 'error', () => {})
@@ -582,8 +610,8 @@ test('join budget: the per-player and fixed bounds hold for the worst records, a
   assert.equal(Math.floor((SNAPSHOT_CAP - WORLD_JOIN_BYTES - SNAPSHOT_FIXED_BYTES) / SNAPSHOT_PLAYER_BYTES), 231)
 })
 
-test("join budget: Codex's worst case (blueprints and apps at the budget, 64 players at their limits, full chat) joins", async () => {
-  const f = fixture()
+test("join budget: Codex's worst case (blueprints and apps at the budget, 64 players at their limits, full chat) joins", async t => {
+  const f = fixture(t)
   for (let i = 0; i < 8; i++)
     f.send('blueprintAdded', { id: `big${i}`, version: 0, props: { notes: 'n'.repeat(60000) } })
   assert.equal(f.world.blueprints.items.size, 9)
@@ -632,8 +660,8 @@ test("join budget: Codex's worst case (blueprints and apps at the budget, 64 pla
   assert.equal(joined.snapshot.livekit.muted.has('player0001'), true, 'a present player stays muted')
 })
 
-test('join budget: a world grown while few are here still leaves room for 64 players', async () => {
-  const f = fixture()
+test('join budget: a world grown while few are here still leaves room for 64 players', async t => {
+  const f = fixture(t)
   for (let i = 0; i < 8; i++) f.world.blueprints.add({ id: `big${i}`, version: 0, props: { notes: 'n'.repeat(60000) } })
   // fill the rest of the budget with apps while nobody is here
   for (let i = 0; f.world.entities.canFitApp(`a${i}`, app(`a${i}`)); i++)
@@ -717,7 +745,7 @@ test('join budget: each step is taken only when the ones before it were not enou
 })
 
 test('join budget: an AI change that would grow a full world is not applied', async t => {
-  const f = fixture()
+  const f = fixture(t)
   f.world.blueprints.add({ id: 'ai-bp', version: 0, script: 'asset://ai.js' })
   fillTo(f, 200)
   const warnings = []
@@ -741,8 +769,8 @@ test('join budget: an AI change that would grow a full world is not applied', as
   ])
 })
 
-test('join budget: a server script that grows its props does not change the blueprint size in the join snapshot', async () => {
-  const f = fixture()
+test('join budget: a server script that grows its props does not change the blueprint size in the join snapshot', async t => {
+  const f = fixture(t)
   const { world } = f
   // the real App and Apps (the instance's props copy is App.build's, the props handle Apps'), running a stand-in
   // script that grows every props it is given

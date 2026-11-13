@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import { readPacket } from '../src/core/packets.js'
 import { SNAPSHOT_CAP } from '../src/core/extras/writeLedger.js'
 import {
@@ -13,8 +14,9 @@ import {
   visitorShortfall,
 } from '../src/core/extras/joinBudget.js'
 import { Ranks } from '../src/core/extras/ranks.js'
-import { serverSource } from './lib/networkHarness.mjs'
 import { app, apps, fillTo, fixture, long, nextId } from './lib/joinFixture.mjs'
+
+const serverSource = fs.readFileSync(new URL('../src/server/index.js', import.meta.url), 'utf8')
 
 // Who may join when (joinBudget.js, ServerNetwork.onConnection): the real snapshot after its steps must fit its cap,
 // for everyone; a visitor must also leave the bound room for ranked users and growth; the fixed part the bound
@@ -52,7 +54,7 @@ test('join budget: the fixed part is measured from the real fields; a long voice
   t.mock.method(console, 'warn', line => warnings.push(line))
   // every environment value at the length index.js allows
   const env = { ASSETS_BASE_URL: `https://${long(1016)}`, PUBLIC_API_URL: `https://${long(1016)}`, ADMIN_CODE: 'x' }
-  const f = fixture({ env })
+  const f = fixture(t, { env })
   f.network.maxUploadSize = 12
   f.world.ai = { serialize: () => ({ enabled: true, provider: long(128), model: long(128), effort: long(128) }) }
   f.world.livekit.state = voice('j'.repeat(2048))
@@ -84,8 +86,8 @@ test('join budget: the fixed part is measured from the real fields; a long voice
   assert.equal((await f.join()).method, 'onKick')
 })
 
-test("join budget: growth counts the measured fixed part; a visitor's join counts its own when it is larger", () => {
-  const f = fixture()
+test("join budget: growth counts the measured fixed part; a visitor's join counts its own when it is larger", t => {
+  const f = fixture(t)
   fillTo(f, 50000)
   for (let i = 0; i < 200; i++) f.world.entities.add(crowd(i))
   // with 200 here: room for an app with the expected 24 KiB, none once the measured part is 110,000 bytes
@@ -100,9 +102,9 @@ test("join budget: growth counts the measured fixed part; a visitor's join count
   assert.equal(visitorShortfall(f.world, 300000), 'world')
 })
 
-test('join budget: the snapshot carries the upload size the server parsed, never the text (Codex: 260,000 zeros)', async () => {
+test('join budget: the snapshot carries the upload size the server parsed, never the text (Codex: 260,000 zeros)', async t => {
   const padded = `${'0'.repeat(260000)}12`
-  const f = fixture({ env: { PUBLIC_MAX_UPLOAD_SIZE: padded } })
+  const f = fixture(t, { env: { PUBLIC_MAX_UPLOAD_SIZE: padded } })
   f.network.init({ db: f.network.db, maxUploadSize: Number(padded) })
   const joined = await f.join()
   assert.equal(joined.method, 'onSnapshot')
@@ -125,8 +127,8 @@ test('join budget: the snapshot carries the upload size the server parsed, never
 // write is still landing, the in-world rank that write stores). The world's rank setting (free build, or every
 // player an admin without ADMIN_CODE: Settings.effectiveRank) and a session-only token grant (rankGrants.js) are
 // effective ranks, not stored ones, so they do not skip it.
-test('join budget: the visitor rule reads the stored rank, not a free-build world rank or a token grant', async () => {
-  const f = fixture()
+test('join budget: the visitor rule reads the stored rank, not a free-build world rank or a token grant', async t => {
+  const f = fixture(t)
   fillTo(f, 0)
   // a wallet holder who came in early and was made builder by token: player.data only, the row keeps rank 0
   f.users.set('wallet1', { id: 'wallet1', name: 'w', avatar: null, rank: Ranks.VISITOR })
@@ -156,8 +158,8 @@ test('join budget: the visitor rule reads the stored rank, not a free-build worl
   assert.equal((await f.join({ authToken: 'wallet1' })).method, 'onSnapshot')
 })
 
-test('join budget: visitors stop where ranked users and growth keep their room; a stored rank always gets in', async () => {
-  const f = fixture()
+test('join budget: visitors stop where ranked users and growth keep their room; a stored rank always gets in', async t => {
+  const f = fixture(t)
   fillTo(f, 0)
   // the number joinBudget.js states for a full 768 KiB world
   const limit = visitorLimit(f.world)
@@ -198,8 +200,8 @@ test('join budget: visitors stop where ranked users and growth keep their room; 
   assert.equal(f.world.entities.get('grows'), undefined)
 })
 
-test('join budget: in a nearly empty world visitors stop short of the bound, and building goes on (Codex: 998 visitors)', async () => {
-  const f = fixture()
+test('join budget: in a nearly empty world visitors stop short of the bound, and building goes on (Codex: 998 visitors)', async t => {
+  const f = fixture(t)
   const limit = visitorLimit(f.world)
   assert.ok(limit > 900 && limit < 998, `${limit}`)
   let count = 0
@@ -215,8 +217,8 @@ test('join budget: in a nearly empty world visitors stop short of the bound, and
   assert.equal((await ranked(f, 'admin')).method, 'onSnapshot')
 })
 
-test('join budget: a world stored far over its budget (5,100 apps) takes a stored admin, not visitors, and refuses growth', async () => {
-  const f = fixture()
+test('join budget: a world stored far over its budget (5,100 apps) takes a stored admin, not visitors, and refuses growth', async t => {
+  const f = fixture(t)
   // loaded at start-up as stored: nothing is refused or dropped
   for (let i = 0; i < 5100; i++) f.world.entities.add(app(`legacy${String(i).padStart(4, '0')}`))
   const counted = joinStateBytes(f.world)

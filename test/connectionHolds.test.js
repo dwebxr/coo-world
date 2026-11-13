@@ -8,8 +8,8 @@ const packets = ws => ws.packets.map(readPacket)
 
 // --- the player limit while joins are still being set up ---
 
-test('player limit: joins that arrive together are counted together', async () => {
-  const f = fixture()
+test('player limit: joins that arrive together are counted together', async t => {
+  const f = fixture(t)
   f.world.settings.playerLimit = 2
   // five new visitors connect in the same instant: each waits on the database before it is registered
   const joined = await Promise.all(Array.from({ length: 5 }, () => f.join()))
@@ -51,8 +51,8 @@ function holdDatabase(f, call, id, times = 1) {
 const visitor = id => ({ id, name: id, avatar: null, rank: Ranks.VISITOR })
 const placesHeld = network => [network.arriving ?? 0, network.joining?.size ?? 0]
 
-test('player limit: a join whose connection closes while it waits gives its place back at once', async () => {
-  const f = fixture()
+test('player limit: a join whose connection closes while it waits gives its place back at once', async t => {
+  const f = fixture(t)
   f.world.settings.playerLimit = 1
   // the first insert does not answer until the end of the test (a database that hangs)
   const insert = holdDatabase(f, 'insert')
@@ -79,7 +79,7 @@ test('player limit: a join whose connection closes while it waits gives its plac
   assert.equal(f.network.playersPresent(), 1)
   assert.equal((await f.join()).snapshot, 'player_limit', 'the one place is taken')
   // a refused join (the id is listed as kicked) gives its place back too
-  const g = fixture()
+  const g = fixture(t)
   g.world.settings.playerLimit = 3
   g.users.set('u1', visitor('u1'))
   g.network.kicks().add({ userId: 'u1' })
@@ -87,8 +87,8 @@ test('player limit: a join whose connection closes while it waits gives its plac
   assert.deepEqual(placesHeld(g.network), [0, 0])
 })
 
-test('player limit: a player who is here and connects again shares their place while their row is read', async () => {
-  const f = fixture()
+test('player limit: a player who is here and connects again shares their place while their row is read', async t => {
+  const f = fixture(t)
   f.world.settings.playerLimit = 2
   f.users.set('u1', visitor('u1'))
   assert.equal((await f.join({ authToken: 'u1' })).method, 'onSnapshot')
@@ -108,8 +108,8 @@ test('player limit: a player who is here and connects again shares their place w
   assert.deepEqual(placesHeld(f.network), [0, 0])
 })
 
-test('player limit: in a full world, a player who connects again keeps their place when the old connection closes', async () => {
-  const f = fixture()
+test('player limit: in a full world, a player who connects again keeps their place when the old connection closes', async t => {
+  const f = fixture(t)
   f.world.settings.playerLimit = 1
   f.users.set('u1', visitor('u1'))
   assert.equal((await f.join({ authToken: 'u1' })).method, 'onSnapshot')
@@ -130,8 +130,8 @@ test('player limit: in a full world, a player who connects again keeps their pla
   assert.deepEqual(placesHeld(f.network), [0, 0])
 })
 
-test('player limit: two connections of one player hold one place, until the last of them ends', async () => {
-  const f = fixture()
+test('player limit: two connections of one player hold one place, until the last of them ends', async t => {
+  const f = fixture(t)
   f.world.settings.playerLimit = 1
   f.users.set('u1', visitor('u1'))
   assert.equal((await f.join({ authToken: 'u1' })).method, 'onSnapshot')
@@ -162,9 +162,9 @@ test('player limit: two connections of one player hold one place, until the last
   assert.deepEqual(placesHeld(f.network), [0, 0])
 })
 
-test('player limit: a token whose user row is gone is a new user, who needs a place of its own', async () => {
+test('player limit: a token whose user row is gone is a new user, who needs a place of its own', async t => {
   for (const limit of [1, 2]) {
-    const f = fixture()
+    const f = fixture(t)
     f.world.settings.playerLimit = limit
     f.users.set('u1', visitor('u1'))
     assert.equal((await f.join({ authToken: 'u1' })).method, 'onSnapshot')
@@ -182,8 +182,8 @@ test('player limit: a token whose user row is gone is a new user, who needs a pl
   }
 })
 
-test('player limit: a limit lowered while joins are being set up does not turn away those that hold a place', async () => {
-  const f = fixture()
+test('player limit: a limit lowered while joins are being set up does not turn away those that hold a place', async t => {
+  const f = fixture(t)
   f.world.settings.playerLimit = 2
   const insert = holdDatabase(f, 'insert')
   const first = f.join()
@@ -199,8 +199,8 @@ test('player limit: a limit lowered while joins are being set up does not turn a
   assert.equal(f.network.sockets.size, 2)
 })
 
-test('a join that closed gives back its user id once: a later join of the same user keeps it', async () => {
-  const f = fixture()
+test('a join that closed gives back its user id once: a later join of the same user keeps it', async t => {
+  const f = fixture(t)
   f.users.set('u1', visitor('u1'))
   // the voice token of the first two joins waits until `waiting[n]()`
   const waiting = []
@@ -228,8 +228,8 @@ test('a join that closed gives back its user id once: a later join of the same u
   assert.deepEqual(placesHeld(f.network), [0, 0])
 })
 
-test('no player limit: nothing is refused, and the count still returns to zero', async () => {
-  const f = fixture()
+test('no player limit: nothing is refused, and the count still returns to zero', async t => {
+  const f = fixture(t)
   const joined = await Promise.all(Array.from({ length: 4 }, () => f.join()))
   assert.ok(joined.every(j => j.method === 'onSnapshot'))
   assert.equal(f.network.arriving, 0)
@@ -237,8 +237,8 @@ test('no player limit: nothing is refused, and the count still returns to zero',
 
 // --- what a connection that is gone was holding ---
 
-async function builders() {
-  const f = fixture()
+async function builders(t) {
+  const f = fixture(t)
   f.world.settings.setHasAdminCode(true)
   const enter = async id => {
     f.users.set(id, { id, name: id, avatar: null, rank: Ranks.BUILDER })
@@ -250,8 +250,8 @@ async function builders() {
   return { f, one, two }
 }
 
-test('a builder who leaves in the middle of a move: the app is let go where it is, said to everyone and saved', async () => {
-  const { f, one, two } = await builders()
+test('a builder who leaves in the middle of a move: the app is let go where it is, said to everyone and saved', async t => {
+  const { f, one, two } = await builders(t)
   f.world.entities.add(app('moving', 'bp', { mover: 'one' }))
   f.world.entities.add(app('other', 'bp', { mover: 'two' }))
   f.world.entities.add(app('still', 'bp'))
@@ -270,8 +270,8 @@ test('a builder who leaves in the middle of a move: the app is let go where it i
   assert.ok(f.network.dirtyApps.get('moving').record, 'a record to write, not a removal')
 })
 
-test('a builder who leaves in the middle of an upload: the app that never finished loading is removed', async () => {
-  const { f, one, two } = await builders()
+test('a builder who leaves in the middle of an upload: the app that never finished loading is removed', async t => {
+  const { f, one, two } = await builders(t)
   f.world.entities.add(app('loading', 'bp', { uploader: 'one' }))
   f.world.entities.add(app('theirs', 'bp', { uploader: 'two' }))
   f.network.dirtyApps.clear()
@@ -290,8 +290,8 @@ test('a builder who leaves in the middle of an upload: the app that never finish
   )
 })
 
-test('a connection that another of the same user has replaced releases nothing', async () => {
-  const { f, one } = await builders()
+test('a connection that another of the same user has replaced releases nothing', async t => {
+  const { f, one } = await builders(t)
   // the old connection of `one` is silent; the same user connects again and takes over
   f.network.takeoverPingMs = 1
   f.network.takeoverCloseMs = 1
@@ -314,8 +314,8 @@ test('a connection that another of the same user has replaced releases nothing',
   assert.equal(f.world.entities.get('loading'), undefined)
 })
 
-test('while the server is stopping nothing is released (the world is saved as it is)', async () => {
-  const { f, one } = await builders()
+test('while the server is stopping nothing is released (the world is saved as it is)', async t => {
+  const { f, one } = await builders(t)
   f.world.entities.add(app('moving', 'bp', { mover: 'one' }))
   f.world.entities.add(app('loading', 'bp', { uploader: 'one' }))
   f.network.stopping = true

@@ -2,7 +2,7 @@ import { handlePhysicsFailure } from '../extras/physicsFailure.js'
 import * as THREE from '../extras/three'
 import { vec3ToPxPos, quatToPxRot, warnOnce } from '../extras/physxConvert.js'
 import { isArray, isEqual } from 'lodash-es'
-import { isBoolean, isNumber, isString } from '../extras/scriptPrimitives.js'
+import { isBoolean, isString } from '../extras/scriptPrimitives.js'
 
 import { Node } from './Node'
 import { Layers } from '../extras/Layers'
@@ -808,7 +808,9 @@ export class Prim extends Node {
   }
 
   set emissiveIntensity(value = defaults.emissiveIntensity) {
-    if (!isNumber(value) || value < 0) {
+    // finite as a float32, as the damping setters check: the value is written to a Float32Array the shader reads
+    // (Stage's instanceEmissiveIntensity), where a number past the float32 range (1e39) is Infinity as well
+    if (!finiteNumber(value) || value < 0) {
       throw new Error('[prim] emissiveIntensity must be positive number')
     }
     if (this._emissiveIntensity === value) return

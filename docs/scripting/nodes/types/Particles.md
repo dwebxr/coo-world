@@ -46,6 +46,8 @@ Adds randomization to the initial direction of the particle emitted from a shape
 
 This is useful to add minor variation to particle directions with smaller values like `0.2`.
 
+A value above `1` randomizes more and one of `0` or below not at all. `NaN` becomes the default, and a value past the largest float32 (about ±3.4e38), `Infinity` included, becomes that bound. Reading the property back gives what was kept.
+
 Defaults to `0`.
 
 ### `.rate`: Number
@@ -207,7 +209,7 @@ Orbital velocity constantly applied to particles on specific axis. This can be u
 
 ### `.velocityRadial`: Number|null
 
-Radial velocity helps push particles away from the center. Optional.
+Radial velocity helps push particles away from the center. Optional. `NaN` becomes the default (`null`), and a value past the largest float32 (about ±3.4e38), `Infinity` included, becomes that bound. Reading the property back gives what was kept.
 
 ### `.rateOverDistance`: Number
 

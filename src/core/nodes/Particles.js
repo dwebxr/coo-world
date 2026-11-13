@@ -56,6 +56,11 @@ export const PARTICLES_MAX_TIMESCALE = 100
 // twice, a comma and a bar), so 64 of them fit; what is past the limit is cut.
 export const PARTICLES_MAX_START_LENGTH = 256
 export const PARTICLES_MAX_CURVE_LENGTH = 4096
+// `direction` and `velocityRadial`, which the worker multiplies by, are kept within the largest float32 (the most its
+// Float32Array buffers hold), so Infinity becomes this number and not a NaN in the worker. A direction of this size
+// randomizes completely (above about 1e32 the shape's own direction is lost in the rounding); a speed of this size
+// takes the particles out of view.
+export const PARTICLES_MAX_FACTOR = 3.4028234663852886e38
 
 // prettier-ignore
 const defaults = {
@@ -293,7 +298,7 @@ export class Particles extends Node {
     if (!isNumber(value)) {
       throw new Error('[particles] direction not a number')
     }
-    this._direction = value
+    this._direction = boundedNumber(value, defaults.direction, -PARTICLES_MAX_FACTOR, PARTICLES_MAX_FACTOR)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -611,7 +616,8 @@ export class Particles extends Node {
     if (value !== null && !isNumber(value)) {
       throw new Error('[particles] velocityRadial not a number')
     }
-    this._velocityRadial = value
+    this._velocityRadial =
+      value === null ? null : boundedNumber(value, defaults.velocityRadial, -PARTICLES_MAX_FACTOR, PARTICLES_MAX_FACTOR)
     this.needsRebuild = true
     this.setDirty()
   }

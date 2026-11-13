@@ -1,7 +1,8 @@
 // Bundles server modules (whose imports omit the `.js` extension) into a temp ESM file that node:test can import,
 // with packages resolved from the repo's node_modules, as persistenceIntegration.test.js does for the server.
 //
-// buildServer(contents, { replace, sourceRoot }) → { url, evaluate(env), destroy }: the bundle built, not evaluated.
+// buildServer(contents, { replace, prepend, sourceRoot }) → { url, evaluate(env), destroy }: the bundle built, not
+// evaluated.
 // - `replace`: { 'src/…/module.js': source } — the module, wherever the bundle imports it, is that source instead
 //   (resolved from the module's own folder, so its relative imports read as in the original). In the source,
 //   `'real:'` is the real module: `export * from 'real:'` plus local `export let name = …` overrides keeps the rest
@@ -14,8 +15,13 @@
 //   every such use that is left in the bundle (esbuild removes a read of an export whose value is not used). (A file
 //   of this package is an ES module by its package.json: the CommonJS source is a module of its own, which the
 //   module in the file's place re-exports, without a default export.)
+// - `prepend`: { 'src/…/module.js': text } — the text goes before the module's own source, on its first line (the
+//   module's line numbers stay): an import there of a module of the tests (by absolute path) gives that one module
+//   bindings that shadow the globals of the same names, which the rest of the bundle still reads
+//   (network.mjs: the timers of ServerNetwork.js). The module must be part of the bundle and not replaced.
 // - `sourceRoot`: a checkout whose src/core and src/server files are read instead of this one's where they exist
-//   (REAL_PHYSX_SOURCE_ROOT, as in persistedStartup.test.js); `replace` wins over it.
+//   (REAL_PHYSX_SOURCE_ROOT, as in persistedStartup.test.js); `replace` wins over it, and `prepend` goes before the
+//   baseline's source.
 // - `evaluate(env)` → { module, url }: the bundle evaluated with `env` in process.env, for constants a module
 //   computes from the environment at import (SAVE_INTERVAL, the gating flags). The values (null or undefined: unset)
 //   are put into process.env, the bundle is imported under a query that names them (`url` is that evaluation's),
@@ -25,7 +31,8 @@
 //   constructs the network from. Without `env` the bundle is evaluated with the environment as it is.
 // bundleServer(contents, options) → { module, url, evaluate, destroy }: built and evaluated with the environment as
 // it is (the bundles of cleanerTrash.test.js and assets.test.js).
-// Builds are cached per (contents, replace, sourceRoot): a file whose tests ask for the same bundle builds it once.
+// Builds are cached per (contents, replace, prepend, sourceRoot): a file whose tests ask for the same bundle builds
+// it once.
 // Each call is one reference; `destroy()` gives it up and the temp folder is removed with the last one (or when the
 // process exits). heldBundles(): how many builds are held, for the tests of this helper.
 import fs from 'node:fs'
@@ -58,7 +65,22 @@ function replacements(replace = {}) {
   return map
 }
 
-function plugin(replaced, sourceRoot) {
+// prepend: repository-relative path → absolute path of the module (which must exist, and not be replaced) → text
+function prefixes(prepend = {}, replaced) {
+  const map = new Map()
+  for (const [file, text] of Object.entries(prepend)) {
+    if (typeof text !== 'string' || text.includes('\n')) {
+      throw new TypeError(`prepend: the text for ${file} is not one line`)
+    }
+    const absolute = path.resolve(root, file)
+    if (!fs.existsSync(absolute)) throw new Error(`prepend: ${file} is not a file of this repository`)
+    if (replaced.has(absolute)) throw new Error(`prepend: ${file} is replaced`)
+    map.set(absolute, text)
+  }
+  return map
+}
+
+function plugin(replaced, prefixed, sourceRoot) {
   // what the bundle reads for a file of src/core or src/server: the baseline checkout's where it has one
   const read = file => {
     if (sourceRoot && /\/src\/(core|server)\/.*\.js$/.test(file)) {
@@ -98,14 +120,18 @@ function plugin(replaced, sourceRoot) {
           return { contents, resolveDir: path.dirname(args.path), loader: 'js' }
         }
         const contents = read(args.path)
+        if (prefixed.has(args.path)) {
+          return { contents: prefixed.get(args.path) + (contents ?? fs.readFileSync(args.path, 'utf8')), loader: 'js' }
+        }
         if (contents !== null) return { contents, loader: 'js' }
       })
     },
   }
 }
 
-async function build(contents, { replace, sourceRoot }) {
+async function build(contents, { replace, prepend, sourceRoot }) {
   const replaced = replacements(replace)
+  const prefixed = prefixes(prepend, replaced)
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'server-bundle-'))
   try {
     fs.symlinkSync(path.join(root, 'node_modules'), path.join(dir, 'node_modules'), 'dir')
@@ -120,13 +146,19 @@ async function build(contents, { replace, sourceRoot }) {
       packages: 'external',
       define: { 'process.env.CLIENT': 'false', 'process.env.SERVER': 'true' },
       logLevel: 'silent',
-      metafile: replaced.size > 0,
-      plugins: replaced.size || sourceRoot ? [plugin(replaced, sourceRoot)] : [],
+      metafile: replaced.size + prefixed.size > 0,
+      plugins: replaced.size || prefixed.size || sourceRoot ? [plugin(replaced, prefixed, sourceRoot)] : [],
     })
-    if (replaced.size) {
+    if (replaced.size + prefixed.size) {
       const inputs = new Set(Object.keys(result.metafile.inputs).map(input => path.resolve(root, input)))
-      for (const file of replaced.keys()) {
-        if (!inputs.has(file)) throw new Error(`replace: ${path.relative(root, file)} is not imported by the bundle`)
+      for (const [option, files] of [
+        ['replace', replaced],
+        ['prepend', prefixed],
+      ]) {
+        for (const file of files.keys()) {
+          if (!inputs.has(file))
+            throw new Error(`${option}: ${path.relative(root, file)} is not imported by the bundle`)
+        }
       }
     }
     return { dir, url: pathToFileURL(outfile).href }
@@ -138,12 +170,17 @@ async function build(contents, { replace, sourceRoot }) {
 
 export const heldBundles = () => cache.size
 
-export async function buildServer(contents, { replace, sourceRoot } = {}) {
-  const key = JSON.stringify([contents, Object.entries(replace ?? {}).sort(), sourceRoot ?? null])
+export async function buildServer(contents, { replace, prepend, sourceRoot } = {}) {
+  const key = JSON.stringify([
+    contents,
+    Object.entries(replace ?? {}).sort(),
+    Object.entries(prepend ?? {}).sort(),
+    sourceRoot ?? null,
+  ])
   let entry = cache.get(key)
   if (!entry) {
     entry = { refs: 0, dir: null }
-    entry.ready = build(contents, { replace, sourceRoot }).then(
+    entry.ready = build(contents, { replace, prepend, sourceRoot }).then(
       built => Object.assign(entry, built),
       err => {
         if (cache.get(key) === entry) cache.delete(key)

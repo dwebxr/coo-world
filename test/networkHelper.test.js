@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import { bundleServer, heldBundles } from './lib/serverBundle.mjs'
 import { entityClasses, fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
+import * as classTimers from './lib/networkTimers.mjs'
 import { readPacket, writeClientPacket } from '../src/core/packets.js'
 import { readKickEnv } from '../src/server/kickList.js'
 
@@ -223,6 +224,92 @@ test('server bundle: a CommonJS replacement is read by property each time an exp
   )
 })
 
+test("network helper: timers a test gives are the class's own; its imports, and a name not given, call the globals", async t => {
+  // a module the class imports, replaced by one that hands out the setTimeout it sees
+  const own = await loadNetwork({
+    replace: {
+      'src/server/kickList.js': `
+        import { createKickList as real } from 'real:'
+        export * from 'real:'
+        export const createKickList = config => Object.assign(real(config), { setTimeout })
+      `,
+    },
+  })
+  t.after(own.destroy)
+  const before = timers()
+  const calls = []
+  const fake = {
+    setTimeout: (fn, ms) => (calls.push(['setTimeout', ms]), { fn, ms }),
+    clearTimeout: timer => calls.push(['clearTimeout', timer?.ms ?? timer]),
+  }
+  const pinged = (network, ms) => {
+    const socket = new own.Socket({ id: 'p', ws: fakeWs(), network })
+    network.sockets.set('p', socket)
+    return { socket, answered: network.answersPing(socket, ms) }
+  }
+  await t.test('a test that gives them', async t => {
+    assert.throws(() => makeNetwork(t, { net: own, timers: { setImmediate() {} } }), /timers is an object with any of/)
+    const network = makeNetwork(t, { net: own, timers: fake })
+    // the constructor's socket check: no setInterval given, so the global one
+    assert.equal(timers(), before + 1)
+    // a takeover's ping: its deadline is the class's own setTimeout
+    const { socket, answered } = pinged(network, 1234)
+    assert.deepEqual(calls, [['setTimeout', 1234]])
+    socket.ws.emit('pong')
+    assert.equal(await answered, true)
+    assert.equal(timers(), before + 1)
+    // a module the class imports calls the global one
+    assert.equal(network.kicks().setTimeout, globalThis.setTimeout)
+    // a tip announcement waiting when the test ends
+    network.tipAnnounce.timer = { ms: 'announcement' }
+    calls.length = 0
+  })
+  // the end stopped the network with them (stopForFatal: the save timer, none here, and the announcement), and
+  // cleared the global socket check
+  assert.deepEqual(calls, [
+    ['clearTimeout', null],
+    ['clearTimeout', 'announcement'],
+  ])
+  assert.equal(timers(), before)
+  // then put the globals back: a network of the next test calls them (its socket check, and the ping's deadline,
+  // which ends the wait unanswered)
+  const { answered } = pinged(makeNetwork(t, { net: own }), 5)
+  assert.equal(timers(), before + 2)
+  assert.equal(await answered, false)
+  assert.equal(calls.length, 2)
+})
+
+test('server bundle: prepend puts a line before one module of the bundle', async t => {
+  const seen = (globalThis.prependedLines = [])
+  t.after(() => delete globalThis.prependedLines)
+  const bundle = await bundleServer(`export { readKickEnv } from './src/server/kickList.js'`, {
+    prepend: { 'src/server/kickList.js': `globalThis.prependedLines.push(typeof readKickEnv);` },
+  })
+  t.after(bundle.destroy)
+  // run once, in the module's own scope: it sees the module's function
+  assert.deepEqual(seen, ['function'])
+  assert.equal(typeof bundle.module.readKickEnv, 'function')
+  await assert.rejects(
+    bundleServer(`export { readKickEnv } from './src/server/kickList.js'`, {
+      prepend: { 'src/server/cleaner.js': ';' },
+    }),
+    /prepend: src\/server\/cleaner.js is not imported by the bundle/
+  )
+  await assert.rejects(
+    bundleServer(`export { readKickEnv } from './src/server/kickList.js'`, {
+      replace: { 'src/server/kickList.js': `export * from 'real:'` },
+      prepend: { 'src/server/kickList.js': ';' },
+    }),
+    /prepend: src\/server\/kickList.js is replaced/
+  )
+  await assert.rejects(
+    bundleServer(`export { readKickEnv } from './src/server/kickList.js'`, {
+      prepend: { 'src/server/kickList.js': ';\n;' },
+    }),
+    /not one line/
+  )
+})
+
 test('network helper: entityClasses gives Entities the classes a file of the tests exports', async t => {
   const own = await loadNetwork({ replace: entityClasses(new URL('./lib/joinEntities.mjs', import.meta.url)) })
   t.after(own.destroy)
@@ -290,6 +377,99 @@ test('network helper: every network of a test is stopped at its end, whatever on
   assert.equal(timers(), before, 'the timers of both, the one whose stop threw included')
   assert.equal(process.env.ADMIN_CODE, saved)
   assert.equal(swapped.solanaGating.TOKEN_GATING_ENABLED, false)
+})
+
+test('network helper: a stop that throws half way still cancels with the timers the test gave', async t => {
+  const before = timers()
+  const pending = new Set()
+  const cleared = []
+  const fake = {
+    setTimeout: fn => {
+      const handle = { fn }
+      pending.add(handle)
+      return handle
+    },
+    clearTimeout: handle => {
+      cleared.push(handle)
+      pending.delete(handle)
+    },
+  }
+  const { context, end } = handedContext(t)
+  const network = makeNetwork(context, { net, timers: fake })
+  network.tipWatcher = {
+    stop() {
+      throw new Error('a stand-in that fails when it is touched')
+    },
+  }
+  // a tip announcement waiting on the test's own timer: stopForFatal cancels it after the tip watcher's stop, which
+  // it never gets past here
+  const announcement = (network.tipAnnounce.timer = fake.setTimeout(() => {}))
+  assert.equal(pending.size, 1)
+  const ended = await end()
+  assert.match(ended.error?.message ?? '', /fails when it is touched/)
+  assert.equal(pending.size, 0, "the announcement was cancelled with the test's clearTimeout")
+  assert.equal(cleared.at(-1), announcement)
+  // (the socket check, for which the test gave no timer, is the global one)
+  assert.equal(timers(), before)
+  // a cancellation of the test's that throws as well changes neither what is reported nor what is put back
+  const second = handedContext(t)
+  const other = makeNetwork(second.context, {
+    net,
+    timers: {
+      clearTimeout() {
+        throw new Error('a clearTimeout that fails')
+      },
+    },
+  })
+  assert.match((await second.end()).error?.message ?? '', /a clearTimeout that fails/)
+  assert.equal(other.stopping, true)
+  assert.equal(timers(), before)
+  makeNetwork(t, { net })
+})
+
+test('network helper: with two objects of timers in a test, each timer is cancelled by the one that made it', async t => {
+  const before = timers()
+  const fake = () => {
+    const pending = new Set()
+    const make = fn => {
+      const handle = { fn }
+      pending.add(handle)
+      return handle
+    }
+    const drop = handle => pending.delete(handle)
+    return { pending, setTimeout: make, clearTimeout: drop, setInterval: make, clearInterval: drop }
+  }
+  for (const throwing of [false, true]) {
+    const [a, b] = [fake(), fake()]
+    const { context, end } = handedContext(t)
+    const first = makeNetwork(context, { net, timers: a })
+    // a tip announcement that waits, set as the class sets it (the table holds `a`)
+    first.tipAnnounce.timer = classTimers.setTimeout(() => {}, 1000)
+    if (throwing) {
+      first.tipWatcher = {
+        stop() {
+          throw new Error('a stand-in that fails when it is touched')
+        },
+      }
+    }
+    // (the constructor's socket check, and the announcement)
+    assert.equal(a.pending.size, 2)
+    const second = makeNetwork(context, { net, timers: b })
+    second.tipAnnounce.timer = classTimers.setTimeout(() => {}, 1000)
+    assert.deepEqual([a.pending.size, b.pending.size], [2, 2])
+    assert.equal((await end()).threw, throwing)
+    assert.deepEqual([a.pending.size, b.pending.size], [0, 0], `a stop that ${throwing ? 'throws' : 'ends'}`)
+  }
+  assert.equal(timers(), before)
+  // and a timer the global function made, for an object without that name, is the global's to cancel: the socket
+  // check here, which the object's clearInterval never sees
+  const seen = []
+  await t.test('an object with clearInterval alone', t => {
+    makeNetwork(t, { net, timers: { clearInterval: handle => seen.push(handle) } })
+    assert.equal(timers(), before + 1)
+  })
+  assert.deepEqual(seen, [])
+  assert.equal(timers(), before)
 })
 
 test('network helper: a stop that throws a falsy value fails the end of the test as well', async t => {
@@ -489,6 +669,7 @@ test('network helper: the ported files pass with those settings in their environ
     'announceBeforeApply',
     'blueprintEnforcement',
     'connectionHolds',
+    'connectionLifecycle',
     'eventBudget',
     'externalAvatarUrls',
     'joinAdmission',
@@ -501,7 +682,9 @@ test('network helper: the ported files pass with those settings in their environ
     'persistedHydration',
     'playerCoalescing',
     'scriptChat',
+    'serverEvmWallet',
     'serverFileRead',
+    'serverWallet',
     'sharedObjects',
     'userRowsNetwork',
     'writeLedger',

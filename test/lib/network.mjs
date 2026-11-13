@@ -33,12 +33,24 @@
 //   unless `replace` gives others (entityClasses(url): those a file of the tests exports): the real ones bring the
 //   client's modules (three's examples, which touch `document` at import when a test has put one in place) and no
 //   test of the network constructs them.
-// makeNetwork(t, { net, world, log, init, env, modules }) → a network made by the real constructor and init(), on a
-//   stub world. world: fields the stub world has besides (or instead of) the ones below. init: what init() is given
-//   (db, tokenBalanceService, evmHoldings, tipWatcher, evmSignatureVerifier, maxUploadSize). env: values on top of the
-//   known environment and of net.env, for what the class reads when it runs (ADMIN_CODE, ASSETS_BASE_URL, …).
+// makeNetwork(t, { net, world, log, init, env, modules, timers }) → a network made by the real constructor and
+//   init(), on a stub world. world: fields the stub world has besides (or instead of) the ones below. init: what
+//   init() is given (db, tokenBalanceService, evmHoldings, tipWatcher, evmSignatureVerifier, maxUploadSize). env:
+//   values on top of the known environment and of net.env, for what the class reads when it runs (ADMIN_CODE,
+//   ASSETS_BASE_URL, …).
 //   modules: { path: object } for stand-ins of `net` (loadNetwork's standIns), set before the constructor runs and
 //   kept until the test ends (null: the real module again); every network of the test sees the last one given.
+//   timers: an object with any of setTimeout, clearTimeout, setInterval and clearInterval, which the class's own
+//   calls of those names use (the names it lacks are the global functions, read at each call), as the old harness
+//   injected them into the class: test/lib/networkTimers.mjs is imported on the first line of the bundle's
+//   ServerNetwork.js (serverBundle.mjs `prepend`). Only that file's calls: the modules it imports (a tip watcher,
+//   the admin code's brake) call the globals. Set before the constructor runs (its socket check is a setInterval)
+//   and kept until the test ends, after its networks are stopped (stopForFatal clears with it); every network of
+//   the test makes its timers with the last one given (there is one table for the process). A timer whose handle
+//   is an object or a function is cancelled by the object that made it, whichever is the last one by then (a test
+//   with two networks, each with its own fake); a handle that is a number, or one the class did not make through
+//   here, is cancelled by the last one given: two fakes that hand out numbers leave the first one's timers.
+//   (Date is the global one: node:test's mock timers reach it in this realm.)
 //   log: where the network's own once-per-subject lines go: the console its constructor wires them to is `log`
 //   (console.warn while the constructor runs, which its logOnce, inbound gate and relay drop keep; console.error for
 //   the rest of the test, which its write ledger calls, as does every other line the class writes there, whichever
@@ -49,6 +61,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { ENV_TABLE } from './envTable.mjs'
+import * as classTimers from './networkTimers.mjs'
 
 const ENTRY = `
   export { ServerNetwork } from './src/core/systems/ServerNetwork.js'
@@ -62,6 +75,14 @@ const ENTRY = `
   export * as solanaGating from './src/server/solana-gating.js'
   export * as evmGating from './src/server/evm-gating.js'
 `
+
+// the class's own timers go through test/lib/networkTimers.mjs (makeNetwork's `timers`)
+const NETWORK = 'src/core/systems/ServerNetwork.js'
+const TIMER_NAMES = ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval']
+const PREPEND = {
+  [NETWORK]: `import { ${TIMER_NAMES.join(', ')} } from ${JSON.stringify(fileURLToPath(new URL('./networkTimers.mjs', import.meta.url)))};`,
+}
+const timerTable = (globalThis[Symbol.for('test/lib/network.mjs: timers')] ??= { current: null })
 
 const STAND_IN_ENTITIES = {
   'src/core/entities/App.js': 'export class App {}',
@@ -131,7 +152,11 @@ export async function loadNetwork({ replace, env, sourceRoot, standIns = [] } = 
   const { buildServer } = await import('./serverBundle.mjs')
   for (const file of standIns) assert.ok(!replace?.[file], `loadNetwork: ${file} is both replaced and a stand-in`)
   const forwarded = Object.fromEntries(standIns.map(file => [file, { commonjs: standInSource(file) }]))
-  const built = await buildServer(ENTRY, { replace: { ...STAND_IN_ENTITIES, ...replace, ...forwarded }, sourceRoot })
+  const built = await buildServer(ENTRY, {
+    replace: { ...STAND_IN_ENTITIES, ...replace, ...forwarded },
+    prepend: PREPEND,
+    sourceRoot,
+  })
   const evaluation = { ...testEnvironment(), ...known(env) }
   try {
     const { module, url } = await built.evaluate(evaluation)
@@ -154,10 +179,10 @@ export async function importNetwork({ url, env }) {
 // that threw): each network it made is stopped (stopForFatal), whatever another one's stop threw (a test's stand-in
 // that fails when it is touched); the timers the class keeps in its fields (the socket check, a save timer, a tip
 // announcement) are cleared even where its stop threw part way (a collaborator's own, such as those of a tip watcher
-// whose stop threw, are not); then each stand-in's object and each name of the environment the test changed is what
-// it was before the test's first change of it. The hook throws what the first stop that failed threw (`throw 0`
-// included), once all that is done.
-// That state is the process's (process.env, and the objects the stand-ins read): one test holds it, from its first
+// whose stop threw, are not); then the class's timers, each stand-in's object and each name of the environment the
+// test changed are what they were before the test's first change of them. The hook throws what the first stop that
+// failed threw (`throw 0` included), once all that is done.
+// That state is the process's (process.env, the objects the stand-ins read, the class's timers): one test holds it, from its first
 // makeNetwork to its end, and a makeNetwork of another test meanwhile throws. node:test runs a file's tests one after
 // another unless they ask for concurrency; a test whose subtest makes networks makes its own after that subtest.
 const CONCURRENT = 'the network helper holds process-wide state: tests that use it must not run concurrently'
@@ -171,7 +196,15 @@ function testState(t) {
   if (state?.ended || t.signal?.aborted) throw new Error(ENDED)
   if (state) return state
   if (holder) throw new Error(CONCURRENT)
-  state = { networks: [], modules: new Map(), env: new Map(), ended: false, threw: false, failure: undefined }
+  state = {
+    networks: [],
+    modules: new Map(),
+    env: new Map(),
+    timers: null, // { saved }: what the class's timers were before the test's first `timers`
+    ended: false,
+    threw: false,
+    failure: undefined,
+  }
   tests.set(t, state)
   holder = t
   // the end, once
@@ -184,12 +217,27 @@ function testState(t) {
       } catch (err) {
         if (!state.threw) state.failure = err
         state.threw = true
+        // the stop ended half way: what it had not reached is cancelled as the class would have, with the timers
+        // the test gave (each by the object that made it, or by the one in the table, still the test's here; a
+        // handle of the test's own means nothing to the global functions below).
+        for (const cancel of [
+          () => classTimers.clearTimeout(network.saveTimerId),
+          () => classTimers.clearInterval(network.socketIntervalId),
+          () => network.tipAnnounce?.timer && classTimers.clearTimeout(network.tipAnnounce.timer),
+        ]) {
+          try {
+            cancel()
+          } catch {
+            // not reported: the stop's own error is
+          }
+        }
       } finally {
         clearTimeout(network.saveTimerId)
         clearInterval(network.socketIntervalId)
         if (network.tipAnnounce?.timer) clearTimeout(network.tipAnnounce.timer)
       }
     }
+    if (state.timers) timerTable.current = state.timers.saved
     for (const [file, object] of state.modules) {
       if (object === undefined) given.delete(file)
       else given.set(file, object)
@@ -236,6 +284,18 @@ function testModules(t, net, modules) {
   }
 }
 
+// The class's timers (makeNetwork's `timers`) during a test
+function testTimers(t, timers) {
+  // (other names an object has, a fake's own record of its timers, say, are not read)
+  assert.ok(
+    typeof timers === 'object' && TIMER_NAMES.some(name => typeof timers[name] === 'function'),
+    `makeNetwork: timers is an object with any of ${TIMER_NAMES.join(', ')}`
+  )
+  const state = testState(t)
+  state.timers ??= { saved: timerTable.current }
+  timerTable.current = timers
+}
+
 // The world the old harnesses gave the network (networkHarness.mjs's makeNetwork): the app event ledger and the
 // voice system the disconnect path and the socket check touch, and no entities unless a test brings its own
 export function stubWorld(net, fields = {}) {
@@ -260,10 +320,11 @@ function constructedWithWarn(warn, construct) {
 }
 
 // `net`: what loadNetwork returned, or importNetwork in a worker or a child process
-export function makeNetwork(t, { net, world: fields, log, init = {}, env, modules } = {}) {
+export function makeNetwork(t, { net, world: fields, log, init = {}, env, modules, timers } = {}) {
   assert.ok(net?.ServerNetwork && net.env, 'makeNetwork: pass what loadNetwork() or importNetwork() gave as `net`')
   testEnv(t, { ...testEnvironment(), ...net.env, ...known(env) })
   if (modules) testModules(t, net, modules)
+  if (timers) testTimers(t, timers)
   const world = stubWorld(net, fields)
   if (log) t.mock.method(console, 'error', log)
   const network = log ? constructedWithWarn(log, () => new net.ServerNetwork(world)) : new net.ServerNetwork(world)

@@ -1,7 +1,7 @@
 // The network system for tests: the REAL ServerNetwork (src/core/systems/ServerNetwork.js), bundled with its real
 // imports (serverBundle.mjs) and run in the test's own realm, as the server runs it. It replaces the cutting of the
-// class out of its source text (networkHarness.mjs, persistenceHarness.mjs), which ran it in another realm with
-// injected names.
+// class out of its source text (by networkHarness.mjs, since removed, and persistenceHarness.mjs), which ran it in
+// another realm with injected names.
 //
 // The environment is a known one. testEnvironment(): every name the server reads (envTable.mjs), but the system's
 // PATH, HOME and TMPDIR, unset, as the old harness gave the class (`process: { env: {} }`); the defaults the code
@@ -57,7 +57,32 @@
 //   network writes it: a later makeNetwork's `log` takes it over). The constructor's own wiring is what runs.
 //   The test's end stops every network it made (stopForFatal), which clears every timer the class keeps, and puts
 //   the environment and the stand-ins' objects back.
+// inside(t, check) → what `check` returns: for an assertion a test makes in code the network calls and catches (a
+//   handler the flush dispatches, a collaborator of a join, the write ledger's ping), which the class takes for a
+//   failure of its own and only logs or works around, so that the test would not fail on it. `check` runs as it is,
+//   and so does reading what it returns (a `then` getter); what either throws is thrown on, as before, and is reported
+//   again: by the end of test `t` while that test holds the helper and its end has not reported yet (a check that fails
+//   while the end stops the networks is reported by it, after everything is put back, unless a stop failed there
+//   first); otherwise (a test that never made a network, or whose end has reported, as for a check in a later hook of
+//   it) it is thrown from a turn of its own, scheduled from the async context this module was evaluated in, where
+//   node:test reports it as an uncaught exception of the file and charges no test with it (not the one that happens
+//   to run then). A check is synchronous: one that returns a thenable is refused with a TypeError, reported the same
+//   way, and a rejection of it is handled (not an unhandled rejection besides). fakeWs's own check of a ping is made
+//   this way, for the test that held the helper when the fake was made.
+//   What it does not do, said plainly:
+//   - it sees only the checks written through it: an assertion in a stub that a catch hides, without it, stays hidden;
+//   - a failure that nothing catches on its way (it reaches the test) is reported twice: where it is thrown, and again
+//     by the end or as an uncaught exception;
+//   - the end reports the first failure it recorded, not every one;
+//   - a check that must wait is refused, not awaited: such a check is made after the act;
+//   - a failure thrown outside every test fails the file and names no test: which one caused it is in its stack;
+//   - it is per process: a check in a worker or a child process reports in that process only;
+//   - a fake connection made while no test holds the helper (at a file's top, in a `before` hook) has no owner: its
+//     failing check is an uncaught exception of the file;
+//   - it counts on this module being evaluated outside every test (a test file imports it at its top): imported for
+//     the first time from within a test, its throws outside would be charged to that test.
 import assert from 'node:assert/strict'
+import { AsyncResource } from 'node:async_hooks'
 import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { ENV_TABLE } from './envTable.mjs'
@@ -204,6 +229,8 @@ function testState(t) {
     ended: false,
     threw: false,
     failure: undefined,
+    inside: [], // what a check made inside the class's own catch threw (inside())
+    reported: false, // the end has reported (or, after an earlier hook threw, cannot): inside() throws outside then
   }
   tests.set(t, state)
   holder = t
@@ -247,14 +274,22 @@ function testState(t) {
   }
   t.after(() => {
     end()
+    state.reported = true
     if (state.threw) throw state.failure
+    if (state.inside.length) throw state.inside[0]
   })
   // node:test runs no later hook of a test once one has thrown: a hook registered BEFORE the first makeNetwork that
   // throws would leave all of this standing, and the next test would be refused as concurrent. The test's signal
   // is aborted when the test is over, whatever its hooks did; what a stop threw is then no longer reported (the
   // test has failed already, with the hook's own error). (A stand-in context without a signal, as a child process
   // that makes one network and exits hands in, has no later test to protect.)
-  t.signal?.addEventListener('abort', end)
+  t.signal?.addEventListener('abort', () => {
+    end()
+    // (the hook above did not run: a check that failed meanwhile is thrown outside, as one after the end is)
+    if (state.reported) return
+    state.reported = true
+    for (const err of state.inside) throwOutside(err)
+  })
   return state
 }
 
@@ -296,7 +331,7 @@ function testTimers(t, timers) {
   timerTable.current = timers
 }
 
-// The world the old harnesses gave the network (networkHarness.mjs's makeNetwork): the app event ledger and the
+// The world the old harnesses gave the network (the removed networkHarness.mjs's makeNetwork): the app event ledger and the
 // voice system the disconnect path and the socket check touch, and no entities unless a test brings its own
 export function stubWorld(net, fields = {}) {
   return {
@@ -334,9 +369,52 @@ export function makeNetwork(t, { net, world: fields, log, init = {}, env, module
   return network
 }
 
+// See the top
+const SYNCHRONOUS =
+  'inside(): the check must be synchronous; it returned a thenable, whose failure would come after the catch it is for'
+export function inside(t, check) {
+  try {
+    const result = check()
+    // (inside the try: reading `then` runs a getter, which can fail as the check does)
+    const then = result?.then
+    if (typeof then === 'function') {
+      // a refused promise that rejects would surface as an unhandled rejection as well: it is handled here
+      try {
+        then.call(result, undefined, () => {})
+      } catch {
+        // (a thenable whose `then` throws: refused all the same)
+      }
+      throw new TypeError(SYNCHRONOUS)
+    }
+    return result
+  } catch (err) {
+    report(t, err)
+    throw err
+  }
+}
+
+// a failure inside() saw: to the end of the test that holds the helper and has not reported, else out of every catch.
+// The throw is scheduled from the async context this module was evaluated in (a test file imports it at its top, outside
+// every test): scheduled from the caller's, it would be charged by node:test to whatever test that context belongs to,
+// a later test that pinged an earlier test's connection, say.
+const outsideTests = new AsyncResource('network.mjs: outside every test')
+function throwOutside(err) {
+  outsideTests.runInAsyncScope(() =>
+    setImmediate(() => {
+      throw err
+    })
+  )
+}
+function report(t, err) {
+  const state = t ? tests.get(t) : undefined
+  if (state && !state.reported) state.inside.push(err)
+  else throwOutside(err)
+}
+
 // a connection as the ws library gives it: what is written stays in `packets`, its write callbacks in `pending`
-// until `drain()`, and `terminate()` closes it as the transport would
-export function fakeWs() {
+// until `drain()`, and `terminate()` closes it as the transport would. It belongs to `owner`: by default the test that
+// holds the helper when it is made (none: a fake made outside such a test), whose end reports what its checks find
+export function fakeWs(owner = holder) {
   const ws = new EventEmitter()
   ws.readyState = 1
   ws.pending = []
@@ -346,9 +424,13 @@ export function fakeWs() {
     ws.packets.push(packet)
     ws.pending.push(cb)
   }
+  // (the write ledger catches a ping that throws and takes the connection for a dead one: the check is reported for
+  // the fake's own test, or thrown outside the class: inside())
   ws.ping = (data, mask, cb) => {
-    assert.equal(data, undefined)
-    assert.equal(mask, false)
+    inside(owner, () => {
+      assert.equal(data, undefined)
+      assert.equal(mask, false)
+    })
     ws.pending.push(cb)
   }
   ws.terminate = () => {

@@ -344,11 +344,14 @@ test('a line is the admin command on the client exactly when it is on the server
 test('the admin command is not handed to a command bound on the client under that name either', () => {
   const Chat = loadClient('core/systems/Chat.js', 'Chat')
   const world = clientWorld()
-  world.events = { emit: () => assert.fail('no command event') }
+  // (no command event: recorded and asserted after, as a throw in the chat's handling could be caught there)
+  const emitted = []
+  world.events = { emit: (...args) => emitted.push(args) }
   const chat = new Chat(world)
   const called = []
   for (const name of ['admin', 'Admin', ' Admin']) chat.bindCommand(name, action => called.push(action))
   for (const line of ['/admin CODE', '/Admin CODE', '/ Admin CODE']) chat.command(line)
+  assert.deepEqual(emitted, [], 'no command event')
   assert.deepEqual(called, [])
   assert.equal(world.packets.length, 3, 'each went to the server')
 })

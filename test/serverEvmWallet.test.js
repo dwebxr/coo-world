@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import nacl from 'tweetnacl'
 import { PublicKey } from '@solana/web3.js'
 import { privateKeyToAccount } from 'viem/accounts'
-import { fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
+import { fakeWs, inside, loadNetwork, makeNetwork } from './lib/network.mjs'
 import { readPacket } from '../src/core/packets.js'
 import { Ranks } from '../src/core/extras/ranks.js'
 import { parseTipTokens } from '../src/core/extras/evmTokens.js'
@@ -356,7 +356,8 @@ test('evm wallet: Solana and EVM verifications never cancel each other', async t
 
 test('evm wallet: disabled EVM ignores every packet without touching the socket', async t => {
   const f = fixture(t, { evmGating: { ...evmEnabled, EVM_ENABLED: false } })
-  const socket = new Proxy({}, { get: () => assert.fail('disabled handler touched socket') })
+  // (inside(): a handler that catches what touching it throws still fails the test)
+  const socket = new Proxy({}, { get: () => inside(t, () => assert.fail('disabled handler touched socket')) })
   f.network.onRequestEvmNonce(socket, { address: account.address, attempt: 1 })
   await f.network.onRequestEvmVerify(socket, {
     address: account.address,

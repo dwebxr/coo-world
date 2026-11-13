@@ -119,14 +119,17 @@ g full clone(true) copy: children position rotation quaternion scale matrix matr
 g full clone(true) source only: _proxy
 g full clone(true) children: node#child -> node#child
 g a clone reads as its source, each sample property alone (24 clones): yes
-== h. two instances alive at once, a write through each in turn: each write reaches its own node only
-h each write reached its own node only: label distance duration onStart onTrigger onCancel active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== h. two instances alive at once, their proxies kept: each write and read reaches its own node only
+h each write and read reached its own node only: label distance duration onStart onTrigger onCancel id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+h no value accepted (each write throws, on both nodes): id position quaternion rotation scale parent
+h each read of a key no script sets reached its own node only: id name position quaternion rotation scale matrixWorld parent children _ref _isRef
+h the same in both states (a constant): name _ref _isRef
 == i. every getter on a node whose backing values are distinct
 i label = "Interact"
 i distance = 3
 i duration = 0.5
-i onStart = fn:<anon>F
-i onTrigger = fn:<anon>F
-i onCancel = fn:<anon>F
+i onStart = fn:onStart
+i onTrigger = fn:onTrigger
+i onCancel = fn:onCancel
 i name = "action"
 i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor

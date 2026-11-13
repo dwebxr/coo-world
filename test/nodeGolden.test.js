@@ -25,7 +25,17 @@
 //   after the first other than the four pairs of row d.
 // - a once-only warning after its first time. Each node type starts from a fresh evaluation of the bundle and runs in
 //   a fixed order, so such a warning is written once: in the case that says it first, or, when the generator's own
-//   probing (sample values, set-up) says it first, in row x, and in no case after that.
+//   probing (sample values, set-up, the bundle's evaluation) says it first, in row x, and in no case after that.
+// - a getter called with another receiver (on Object.create(proxy), through Reflect.get with a receiver, taken off the
+//   proxy and called on another object): only setters are called that way (row b).
+// - writes through an object a getter returns (`node.position.x = 1`, a returned array changed): only whether a getter
+//   returns a new object on every read is recorded, not whether the object is the node's own.
+// - a proxy getter that reads the node's private field where the class getter only returns that field (both read the
+//   same today), and a getter or setter that calls the class one more than once without a visible effect.
+// - a mistake that shows on a third node only (rows h pair two), or state shared between nodes of two types through
+//   something other than a key both have.
+// - of a thrown error, more than its class name and message (not its identity, stack or cause); of an accessor, more
+//   than its name, length, descriptor and sharing (not its source text); memory held and speed.
 //
 // The rows of each file (in the proxy's key order within a row):
 //   a  the proxy: its own keys in order; for each its kind (get+set, get, set, method), enumerable, configurable,
@@ -55,13 +65,23 @@
 //      clone() and clone(true) (`same` value, an equal `copy`, `differs`); and whether a clone reads as its source for
 //      each sample property set alone (this test also asserts that one). The sources have their own transform (and a
 //      joint its frames), and `g full fields at a new node's value` lists what a dropped copy() line would not change.
-//   h  two nodes of the type alive at once: a write through the first one's proxy, then one through the second one's,
-//      each read back through both proxies; the keys where each write reached its own node only, any other written out.
+//   h  two nodes of the type alive at once, their proxies kept: a write through the first one's, then through the
+//      second one's (a second value that reads otherwise: a callback of another name, or the default), each read back
+//      through both kept proxies, again after each node's getProxy() is asked once more, and the other node's own
+//      fields compared before and after; a key that takes a value only on a mounted node (audio currentTime, video
+//      time and currentTime) paired with a stateful stand-in of its own on each node (`[mounted]`). Then the get-only
+//      keys, and those no script can set, read through the kept proxies of two nodes in distinct states. The keys
+//      where everything reached its own node are listed; any other is written out, and so are the keys with no value
+//      accepted or no second value.
 //   i  every getter, through the proxy (and the class's where it reads otherwise), on a node whose backing values are
 //      distinct: under a positioned parent (its matrix is not its matrixWorld), with two children, its own transform
 //      and callbacks, and the type's computed state (a playing audio source, a video instance with its own playback
-//      fields, a joint's frames, ...); get-only keys that read the same value are listed.
-//   x  the console outside the cases (the generator's own probing for sample values, a case's set-up), by row.
+//      fields, a joint's frames apart from the node's transform, ...). Two getters that read the same object, or two
+//      get-only getters (or ones no script sets) that read the same value, fail the test unless they are an alias
+//      listed in the generator (ALIASES); each alias is read again with its target redefined on the proxy, and must
+//      still reach the node. (Constant getters, name, _ref, _isRef and prim's transparent, are left out.)
+//   x  the console outside the cases, by row: the generator's own probing for sample values and a case's set-up;
+//      `setup`: what was said while the bundle was evaluated and the generator's fixtures were made.
 // An outcome:
 //   throw Ctor: "message"         the set threw (`<in>`: the message ends with the value given)
 //   read v [fresh]                the value read back the same way (`fresh`: a new object on every read)
@@ -125,6 +145,9 @@ test('UPDATE_GOLDEN=1 is refused when CI is set', () => {
   assert.equal(updateMode({ UPDATE_GOLDEN: '0', CI: 'true' }), false)
   assert.throws(() => updateMode({ UPDATE_GOLDEN: '1', CI: 'true' }), /refused when CI is set/)
   assert.throws(() => updateMode({ UPDATE_GOLDEN: '1', CI: '1' }), /refused when CI is set/)
+  // (present, even empty)
+  assert.throws(() => updateMode({ UPDATE_GOLDEN: '1', CI: '' }), /refused when CI is set/)
+  assert.equal(updateMode({ CI: '' }), false)
 })
 
 // a shard run with both set fails at once, and writes nothing

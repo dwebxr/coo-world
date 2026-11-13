@@ -210,18 +210,21 @@ g full clone(true) copy: children position rotation quaternion scale matrix matr
 g full clone(true) source only: _proxy needsRebuild
 g full clone(true) children: node#child -> node#child
 g a clone reads as its source, each sample property alone (36 clones): yes
-== h. two instances alive at once, a write through each in turn: each write reaches its own node only
-h each write reached its own node only: type body0 body1 breakForce breakTorque limitY limitZ limitMin limitMax limitStiffness limitDamping collide active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== h. two instances alive at once, their proxies kept: each write and read reaches its own node only
+h each write and read reached its own node only: type body0 body1 breakForce breakTorque limitY limitZ limitMin limitMax limitStiffness limitDamping collide id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+h no value accepted (each write throws, on both nodes): id position quaternion rotation scale parent
+h each read of a key no script sets reached its own node only: offset0 quaternion0 rotation0 offset1 quaternion1 rotation1 axis id name position quaternion rotation scale matrixWorld parent children _ref _isRef
+h the same in both states (a constant): name _ref _isRef
 == i. every getter on a node whose backing values are distinct
 i type = "fixed"
 i body0 = null
-i offset0 = view:V3(1,2,3)S
-i quaternion0 = view:Q(0.04997916927067833,0,0,0.9987502603949663)S
-i rotation0 = view:E(0.1,0,0,YXZ)S
+i offset0 = view:V3(11,12,13)S
+i quaternion0 = view:Q(0.19866933079506122,0,0,0.9800665778412416)S
+i rotation0 = view:E(0.4,0,0,YXZ)S
 i body1 = null
-i offset1 = view:V3(4,5,6)S
-i quaternion1 = view:Q(0,0.09983341664682815,0,0.9950041652780257)S
-i rotation1 = view:E(0,0.2,0,YXZ)S
+i offset1 = view:V3(14,15,16)S
+i quaternion1 = view:Q(0,0.24740395925452294,0,0.9689124217106447)S
+i rotation1 = view:E(0,0.5,0,YXZ)S
 i breakForce = Infinity
 i breakTorque = Infinity
 i limitY = null

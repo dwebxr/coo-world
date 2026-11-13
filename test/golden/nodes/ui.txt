@@ -122,7 +122,9 @@ c pivot pc read $in <- 'center'
 c offset pc throw Error: "[ui] offset invalid" <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws}
 c offset pc throw Error: "[ui] offset invalid" traps[get:isVector3] <- Proxy[1,2,3]
 c offset p read view:V3(1,2,3)S Δ{needsRebuild:true needsRedraw:true _offset:V3(1,2,3)S} calls[rebuild,setDirty,rebuild,setDirty] <- V3(1,2,3)
+c offset p read view:V3(4,5,6)S Δ{needsRebuild:true needsRedraw:true _offset:V3(4,5,6)S} calls[rebuild,setDirty,rebuild,setDirty] <- V3(4,5,6)
 c offset c read V3(1,2,3)S Δ{needsRebuild:true needsRedraw:true _offset:V3(1,2,3)S} calls[rebuild,setDirty,rebuild,setDirty] <- V3(1,2,3)
+c offset c read V3(4,5,6)S Δ{needsRebuild:true needsRedraw:true _offset:V3(4,5,6)S} calls[rebuild,setDirty,rebuild,setDirty] <- V3(4,5,6)
 c scaler pc read null Δ{needsRebuild:true needsRedraw:true} calls[rebuild,setDirty] <- undefined
 c scaler pc read $in Δ{needsRebuild:true needsRedraw:true} calls[rebuild,setDirty] <- null
 c scaler pc throw Error: "[ui] scaler invalid" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws} [1,"x"] [1,10,{}]
@@ -369,7 +371,7 @@ f doubleside: through data as through the class (all 27)
 f billboard: through data as through the class (all 30)
 f pivot: through data as through the class (all 36)
 f offset data V3(0,0,0)S <- undefined null NaN -0 0 '' false
-f offset data V3(NaN,NaN,NaN)S <- Infinity -Infinity -1 0.5 1 1e9 'x' true {} [] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws} V3(1,2,3)
+f offset data V3(NaN,NaN,NaN)S <- Infinity -Infinity -1 0.5 1 1e9 'x' true {} [] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws} V3(1,2,3) V3(4,5,6)
 f offset data V3(1,2,3)S <- [1,2,3] Proxy[1,2,3]
 f scaler: through data as through the class (all 31)
 f pointerEvents: through data as through the class (all 27)
@@ -438,8 +440,11 @@ g full clone(true) copy: children position rotation quaternion scale matrix matr
 g full clone(true) source only: _proxy
 g full clone(true) children: node#child -> node#child
 g a clone reads as its source, each sample property alone (60 clones): yes
-== h. two instances alive at once, a write through each in turn: each write reaches its own node only
-h each write reached its own node only: space width height size res lit doubleside billboard pivot offset scaler pointerEvents transparent backgroundColor borderWidth borderColor borderRadius padding flexDirection justifyContent alignItems alignContent flexWrap gap active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== h. two instances alive at once, their proxies kept: each write and read reaches its own node only
+h each write and read reached its own node only: space width height size res lit doubleside billboard pivot offset scaler pointerEvents transparent backgroundColor borderWidth borderColor borderRadius padding flexDirection justifyContent alignItems alignContent flexWrap gap id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+h no value accepted (each write throws, on both nodes): id position quaternion rotation scale parent
+h each read of a key no script sets reached its own node only: id name position quaternion rotation scale matrixWorld parent children _ref _isRef
+h the same in both states (a constant): name _ref _isRef
 == i. every getter on a node whose backing values are distinct
 i space = "world"
 i width = 100

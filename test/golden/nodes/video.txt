@@ -499,8 +499,12 @@ g host video (onLoad) clone(true) copy: children position quaternion scale matri
 g host video (onLoad) clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
 g host video (onLoad) clone(true) children: -
 g a clone reads as its source, each sample property alone (66 clones): yes
-== h. two instances alive at once, a write through each in turn: each write reaches its own node only
-h each write reached its own node only: screenId src linked loop visible color lit doubleside castShadow receiveShadow aspect fit width height pivot geometry volume group spatial distanceModel refDistance maxDistance rolloffFactor coneInnerAngle coneOuterAngle coneOuterGain onLoad active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== h. two instances alive at once, their proxies kept: each write and read reaches its own node only
+h each write and read reached its own node only: screenId src linked loop visible color lit doubleside castShadow receiveShadow aspect fit width height pivot geometry volume group spatial distanceModel refDistance maxDistance rolloffFactor coneInnerAngle coneOuterAngle coneOuterGain time currentTime material onLoad id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor time[mounted] currentTime[mounted]
+h no value accepted (each write throws, on both nodes): material id position quaternion rotation scale parent
+h no second value that reads otherwise (the first is written twice): time currentTime
+h each read of a key no script sets reached its own node only: loading duration playing isPlaying time currentTime material id name position quaternion rotation scale matrixWorld parent children _ref _isRef
+h the same in both states (a constant): name _ref _isRef
 == i. every getter on a node whose backing values are distinct
 i screenId = null
 i src = null
@@ -538,6 +542,10 @@ i material = {textureX:<accessor>,textureY:<accessor>}F reads{textureX=0.25 text
 i onLoad = undefined
 i name = "video"
 i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
-i the same value: playing isPlaying = true
+i the same value (an alias): playing isPlaying = true
+i the same value (an alias): time currentTime = 3
+i alias isPlaying with playing redefined on the proxy: reads true
+i alias currentTime with time redefined on the proxy: reads 3; written: the node reads 0
 == x. the console outside the cases (the generator's own probing and set-up), by row
 x d: error:"[video] geometry invalid"×4
+x h: error:"[video] geometry invalid"

@@ -303,7 +303,7 @@ const VALID = {
     space: strs('world', 'screen'),
     billboard: strs('none', 'full', 'y'),
     pivot: strs(...PIVOTS),
-    offset: [v3(1, 2, 3)],
+    offset: [v3(1, 2, 3), v3(4, 5, 6)],
     scaler: [() => [1, 10], () => [1, 10, 2], () => [1, 'x'], () => [1, 10, {}]],
     backgroundColor: strs('red'),
     borderColor: strs('red'),
@@ -339,6 +339,23 @@ const VALID = {
 }
 // a property kept in a field of another name (its own field for `$in`)
 const OWN_FIELDS = { audio: { currentTime: 'offset' } }
+// the keys that take a value only on a node whose parts are there (row h pairs them with a stateful stand-in each)
+const MOUNTED_PAIRS = {
+  audio: { currentTime: node => (node.ctx = { world: { audio: { ctx: { currentTime: 10 } } } }) },
+  video: {
+    time: node => (node.instance = { currentTime: 0 }),
+    currentTime: node => (node.instance = { currentTime: 0 }),
+  },
+}
+// getters that read another key by design (row i reads each with the other redefined on the proxy)
+const ALIASES = {
+  video: [
+    ['isPlaying', 'playing'],
+    ['currentTime', 'time'],
+  ],
+}
+// getters that read the same in every state (row i does not compare them with the others)
+const CONSTANT_GETTERS = ['name', '_ref', '_isRef', 'transparent']
 const HOST_CTOR_KEYS = {
   skinnedmesh: { object3d: '_object3d', animations: '_animations' },
   avatar: { factory: 'factory', hooks: 'hooks' },
@@ -605,6 +622,8 @@ const MAX_STRING = 40
 const MAX_TRAPS = 24
 const MAX_ITEMS = 16
 const NO_ERROR = Symbol('no error')
+// a callback's second value: a function of another name than the hostile list's
+const SECOND_FN = () => function secondFn() {}
 
 // the order in which the hostile values are tried for a property's sample value (rows b, d, g), after its own list:
 // a callback before a flag before a number before nothing
@@ -669,6 +688,7 @@ class Characterization {
     this.cloneValues = new Map()
     this.baseTexts = new Map()
     this.secondValues = new Map()
+    this.violations = []
     // what the console said outside a case: [row, entry]
     this.outside = []
     this.row = '-'
@@ -823,6 +843,9 @@ class Characterization {
 
   // a plain object: a node's proxy, a value ref (what it resolves to), or its own properties
   plain(value, flags, depth, seen) {
+    // (the case's node's own proxy by identity: getNodeRef asks the node's getProxy(), which must not be called while a
+    // case reads its node, row h)
+    if (this.current?.node && value === this.current.node._proxy) return 'proxy:self'
     const node = this.m.getNodeRef(value)
     if (node) return node === this.current?.node ? 'proxy:self' : `proxy:${node.name}${idTag(node)}`
     const ref = this.m.resolveValueRef(value)
@@ -1058,53 +1081,60 @@ class Characterization {
   // the property's sample value: the first of its own values, then of the hostile list (PREFERENCE first), that the
   // proxy accepts and that reads back otherwise than the default
   cloneValue(key) {
-    if (this.cloneValues.has(key)) return this.cloneValues.get(key)
-    const hostile = [...HOSTILE].sort((a, b) => rank(a[0]) - rank(b[0]))
-    const fallback = this.readKey(new this.Type(), key)
-    let chosen = null
-    for (const make of [...this.validOf(key), ...hostile.map(([, make]) => make)]) {
-      const node = new this.Type()
+    if (!this.cloneValues.has(key)) {
+      const fallback = this.readKey(this.withSetup(new this.Type(), null), key)
+      this.cloneValues.set(key, this.pickValue(key, null, [fallback], false))
+    }
+    return this.cloneValues.get(key)
+  }
+
+  // a second value of the key, accepted and reading otherwise than the first sample (the default may be it; a callback
+  // gets a function of another name)
+  secondValue(key, setup = null) {
+    const id = `${keyName(key)}|${setup ? 'mounted' : ''}`
+    if (!this.secondValues.has(id)) {
+      const first = setup ? this.mountedValue(key, setup) : this.cloneValue(key)
+      let chosen = null
+      if (first) {
+        const node = this.withSetup(new this.Type(), setup)
+        node.getProxy()[key] = first(this.fx)
+        chosen = this.pickValue(key, setup, [this.readKey(node, key)], true)
+      }
+      this.secondValues.set(id, chosen)
+    }
+    return this.secondValues.get(id)
+  }
+
+  // the first sample of a key that takes a value only in the state `setup` makes
+  mountedValue(key, setup) {
+    const id = `${keyName(key)}|mounted`
+    if (!this.cloneValues.has(id)) {
+      const fallback = this.readKey(this.withSetup(new this.Type(), setup), key)
+      this.cloneValues.set(id, this.pickValue(key, setup, [fallback], false))
+    }
+    return this.cloneValues.get(id)
+  }
+
+  // the first value (a callback of another name first, when `second`), of the key's own list, then of the hostile list,
+  // that the proxy accepts on a node in the state `setup` makes, and that reads otherwise than each of `avoid`
+  pickValue(key, setup, avoid, second) {
+    const hostile = [...HOSTILE].sort((a, b) => rank(a[0]) - rank(b[0])).map(([, make]) => make)
+    const candidates = [...(second ? [SECOND_FN] : []), ...this.validOf(key), ...hostile]
+    for (const make of candidates) {
+      const node = this.withSetup(new this.Type(), setup)
       try {
         node.getProxy()[key] = make(this.fx)
       } catch {
         continue
       }
-      if (this.readKey(node, key) !== fallback) {
-        chosen = make
-        break
-      }
+      if (!avoid.includes(this.readKey(node, key))) return make
     }
-    this.cloneValues.set(key, chosen)
-    return chosen
+    return null
   }
 
-  // another value of the key's list, accepted, reading otherwise than the default and than the first sample
-  secondValue(key) {
-    if (this.secondValues.has(key)) return this.secondValues.get(key)
-    const first = this.cloneValue(key)
-    let chosen = null
-    if (first) {
-      const hostile = [...HOSTILE].sort((a, b) => rank(a[0]) - rank(b[0]))
-      const fallback = this.readKey(new this.Type(), key)
-      const taken = new this.Type()
-      taken.getProxy()[key] = first(this.fx)
-      const firstText = this.readKey(taken, key)
-      for (const make of [...this.validOf(key), ...hostile.map(([, make]) => make)]) {
-        const node = new this.Type()
-        try {
-          node.getProxy()[key] = make(this.fx)
-        } catch {
-          continue
-        }
-        const text = this.readKey(node, key)
-        if (text !== fallback && text !== firstText) {
-          chosen = make
-          break
-        }
-      }
-    }
-    this.secondValues.set(key, chosen)
-    return chosen
+  withSetup(node, setup) {
+    if (setup) setup(node)
+    return node
   }
 
   readProxy(proxy, key) {
@@ -1659,59 +1689,188 @@ class Characterization {
     } finally {
       this.loose = false
     }
-    this.violations = violations
+    this.violations.push(...violations)
     this.line(
       `g a clone reads as its source, each sample property alone (${checked} clones): ${violations.length ? 'no' : 'yes'}`
     )
     for (const v of violations) this.line(`g clone differs: ${v}`)
   }
 
-  // h. two nodes of the type alive at once: a write through the first one's proxy, then (the first one's getProxy()
-  // called again) through the second one's, each read back through both. Each write must reach its own node only:
-  // the keys where it does are listed, any other is written out with what each node read
+  // h. two nodes of the type alive at once, their proxies kept: a write through the first one's, then through the second
+  // one's (a second value that reads otherwise), each read back through both kept proxies (and again after each node's
+  // getProxy() was asked once more), and the other node's own fields compared before and after. A key that takes a
+  // value only on a mounted node is paired in that state, with a stand-in of its own for each node. Then the get-only
+  // keys, and those no script can set, read through both kept proxies of two nodes in distinct states.
   rowH() {
-    this.line('== h. two instances alive at once, a write through each in turn: each write reaches its own node only')
+    this.line('== h. two instances alive at once, their proxies kept: each write and read reaches its own node only')
     const fine = []
-    for (const key of this.setters) {
-      const first = this.cloneValue(key)
-      if (!first) continue
-      const second = this.secondValue(key)
-      const alone = make => {
-        const node = new this.Type()
+    const noSecond = []
+    const noValue = []
+    const keys = [...this.setters.map(key => [key, null])]
+    for (const [key, setup] of Object.entries(MOUNTED_PAIRS[this.type] || {})) keys.push([key, setup])
+    for (const [key, setup] of keys) {
+      const name = setup ? `${keyName(key)}[mounted]` : keyName(key)
+      const first = (setup ? this.mountedValue(key, setup) : this.cloneValue(key)) ?? this.acceptedValue(key, setup)
+      const second = this.secondValue(key, setup)
+      if (!first) noValue.push(name)
+      else if (!second) noSecond.push(name)
+      const text = this.pairWrites(key, setup, first ?? (() => 1), second ?? first ?? (() => 1))
+      if (text === null) fine.push(name)
+      else this.line(`h ${name}: ${text}`)
+    }
+    this.line(`h each write and read reached its own node only: ${fine.join(' ') || '-'}`)
+    if (noValue.length) this.line(`h no value accepted (each write throws, on both nodes): ${noValue.join(' ')}`)
+    if (noSecond.length)
+      this.line(`h no second value that reads otherwise (the first is written twice): ${noSecond.join(' ')}`)
+    this.pairReads()
+  }
+
+  // the first value the proxy accepts for a key at all (a key whose every accepted value reads as the default)
+  acceptedValue(key, setup) {
+    for (const make of [...this.validOf(key), ...HOSTILE.map(([, make]) => make)]) {
+      const node = this.withSetup(new this.Type(), setup)
+      try {
         node.getProxy()[key] = make(this.fx)
-        return this.readKey(node, key)
-      }
-      const fallback = this.readKey(new this.Type(), key)
-      const want1 = alone(first)
-      const want2 = second ? alone(second) : want1
-      const a = new this.Type()
-      const b = new this.Type()
-      const pa = a.getProxy()
-      const pb = b.getProxy()
-      const attempt = fn => {
-        try {
-          fn()
-          return ''
-        } catch (err) {
-          return ` (throws ${errorText(err)})`
-        }
-      }
-      const e1 = attempt(() => (pa[key] = first(this.fx)))
-      const after1 = [this.readKey(a, key), this.readKey(b, key)]
-      a.getProxy()
-      const e2 = attempt(() => (pb[key] = (second ?? first)(this.fx)))
-      const after2 = [this.readKey(a, key), this.readKey(b, key)]
-      const ok =
-        !e1 && !e2 && after1[0] === want1 && after1[1] === fallback && after2[0] === want1 && after2[1] === want2
-      if (ok) fine.push(keyName(key))
-      else {
-        this.line(
-          `h ${keyName(key)}: through a${e1}: a ${after1[0]}, b ${after1[1]}; then through b${e2}: ` +
-            `a ${after2[0]}, b ${after2[1]} (each alone: ${want1}, ${want2}; a new node: ${fallback})`
-        )
+        return make
+      } catch {
+        // (refused: the next)
       }
     }
-    this.line(`h each write reached its own node only: ${fine.join(' ') || '-'}`)
+    return null
+  }
+
+  // a key read through a kept proxy (or through the class, where the proxy has no getter for it), with what the getters
+  // of a plain object it returns read (a script's material); no getProxy() call
+  readKept(node, proxy, key) {
+    const target = Reflect.getOwnPropertyDescriptor(proxy, key)?.get ? proxy : node
+    // (the node is the case's, so that its automatic id reads as one)
+    return this.withNode(node, () => {
+      try {
+        return this.deep(target[key])
+      } catch (err) {
+        return `read throws ${errorText(err)}`
+      }
+    })
+  }
+
+  // one write through a kept proxy: what it threw, the own fields it changed, the watched calls (no console: a
+  // once-only warning is said by the first write only)
+  pairWrite(node, proxy, key, make) {
+    const value = make(this.fx)
+    const current = this.begin(node)
+    const before = this.snapshot(node)
+    let text = 'runs'
+    try {
+      proxy[key] = value
+    } catch (err) {
+      text = `throws ${errorText(err)}`
+    }
+    const delta = this.delta(before, this.snapshot(node))
+    if (delta.length) text += ` Δ{${delta.join(' ')}}`
+    if (current.calls.length) text += ` calls[${current.calls.join(',')}]`
+    this.end()
+    return text
+  }
+
+  // the own fields of `node` that changed since `before` (another node's write must change none)
+  untouched(node, before) {
+    this.begin(node)
+    const delta = this.delta(before, this.snapshot(node))
+    this.end()
+    return delta.length ? `Δ{${delta.join(' ')}}` : ''
+  }
+
+  // the pair of writes of row h for one key: null when each write and read reached its own node only, else what did not
+  pairWrites(key, setup, first, second) {
+    const fresh = () => {
+      const node = this.withSetup(new this.Type(), setup)
+      return [node, node.getProxy()]
+    }
+    // (what each write does, and reads, on a node of its own; all made before the pair, which is made last)
+    const [x, px] = fresh()
+    const alone1 = this.pairWrite(x, px, key, first)
+    const read1 = this.readKept(x, px, key)
+    const [y, py] = fresh()
+    const alone2 = this.pairWrite(y, py, key, second)
+    const read2 = this.readKept(y, py, key)
+    const [z, pz] = fresh()
+    const fallback = this.readKept(z, pz, key)
+    const [a, pa] = fresh()
+    const [b, pb] = fresh()
+    const reads = () => [this.readKept(a, pa, key), this.readKept(b, pb, key)]
+    const snap = node => this.withNode(node, () => this.snapshot(node))
+    const bBefore = snap(b)
+    const w1 = this.pairWrite(a, pa, key, first)
+    const b1 = this.untouched(b, bBefore)
+    const r1 = reads()
+    a.getProxy()
+    const r1again = reads()
+    const aBefore = snap(a)
+    const w2 = this.pairWrite(b, pb, key, second)
+    const a2 = this.untouched(a, aBefore)
+    const r2 = reads()
+    b.getProxy()
+    const r2again = reads()
+    const want1 = [read1, fallback]
+    const want2 = [read1, read2]
+    const same = (got, want) => got[0] === want[0] && got[1] === want[1]
+    const ok =
+      w1 === alone1 &&
+      !b1 &&
+      same(r1, want1) &&
+      same(r1again, want1) &&
+      w2 === alone2 &&
+      !a2 &&
+      same(r2, want2) &&
+      same(r2again, want2)
+    if (ok) return null
+    return (
+      `through a: ${w1}${b1 ? `, b ${b1}` : ''}; read a ${r1[0]}, b ${r1[1]}; after a.getProxy() a ${r1again[0]}, ` +
+      `b ${r1again[1]}; through b: ${w2}${a2 ? `, a ${a2}` : ''}; read a ${r2[0]}, b ${r2[1]}; after b.getProxy() ` +
+      `a ${r2again[0]}, b ${r2again[1]} (alone: ${alone1} reads ${read1}; ${alone2} reads ${read2}; new ${fallback})`
+    )
+  }
+
+  // the get-only keys, and those whose setter takes no value, read through the kept proxies of two nodes in distinct
+  // states (the states of row i, the second one's values all otherwise), against each state on a node of its own
+  pairReads() {
+    const readOnly = this.getters.filter(key => !this.setters.includes(key) || !this.cloneValue(key))
+    const restores = []
+    const node = variant => {
+      const n = new this.Type()
+      const proxy = n.getProxy()
+      restores.push(this.distinct(n, variant))
+      return [n, proxy]
+    }
+    const fine = []
+    const constant = []
+    try {
+      const [x, px] = node(0)
+      const [y, py] = node(1)
+      const alone = new Map(readOnly.map(key => [key, [this.readKept(x, px, key), this.readKept(y, py, key)]]))
+      const [a, pa] = node(0)
+      const [b, pb] = node(1)
+      const rounds = [[], [], []]
+      for (const key of readOnly) rounds[0].push([this.readKept(a, pa, key), this.readKept(b, pb, key)])
+      a.getProxy()
+      for (const key of readOnly) rounds[1].push([this.readKept(a, pa, key), this.readKept(b, pb, key)])
+      b.getProxy()
+      for (const key of readOnly) rounds[2].push([this.readKept(a, pa, key), this.readKept(b, pb, key)])
+      readOnly.forEach((key, i) => {
+        const want = alone.get(key)
+        if (want[0] === want[1]) constant.push(keyName(key))
+        const ok = rounds.every(([...round]) => round[i][0] === want[0] && round[i][1] === want[1])
+        if (ok) fine.push(keyName(key))
+        else {
+          const got = rounds.map(round => `a ${round[i][0]}, b ${round[i][1]}`).join('; ')
+          this.line(`h read ${keyName(key)}: ${got} (alone: a ${want[0]}, b ${want[1]})`)
+        }
+      })
+    } finally {
+      for (const restore of restores.reverse()) restore()
+    }
+    this.line(`h each read of a key no script sets reached its own node only: ${fine.join(' ') || '-'}`)
+    if (constant.length) this.line(`h the same in both states (a constant): ${constant.join(' ')}`)
   }
 
   // i. every getter of the proxy (and the class's, where it reads otherwise) on a node whose backing values are
@@ -1722,15 +1881,18 @@ class Characterization {
     this.line('== i. every getter on a node whose backing values are distinct')
     const node = new this.Type()
     const proxy = node.getProxy()
-    const restore = this.distinct(node)
+    const restore = this.distinct(node, 0)
     const same = []
     const texts = new Map()
+    this.objects = new Set()
     try {
       for (const key of this.getters) {
         this.begin(node)
         let text
         try {
-          text = this.deep(proxy[key])
+          const value = proxy[key]
+          if (value !== null && (typeof value === 'object' || typeof value === 'function')) this.objects.add(key)
+          text = this.deep(value)
         } catch (err) {
           text = `read throws ${errorText(err)}`
         }
@@ -1753,15 +1915,73 @@ class Characterization {
       restore()
     }
     if (same.length) this.line(`i as on node: ${same.join(' ')}`)
-    // get-only keys that read the same value (an alias by design, or a state that does not tell them apart)
-    const getOnly = this.getters.filter(key => !this.setters.includes(key) && key !== '_ref' && key !== '_isRef')
+    // Two getters that read the same object, or two get-only getters (or ones no script can set) that read the same
+    // value, could be reading each other's field: none may, but an alias listed in ALIASES (a constant is left out).
+    // (A getter of a key a script sets is read back after its own set in row c.)
+    const aliases = (ALIASES[this.type] || []).map(pair => [...pair].sort().join(' '))
+    const compared = this.getters.filter(key => {
+      if (CONSTANT_GETTERS.includes(key)) return false
+      if (!this.setters.includes(key) || !this.cloneValue(key)) return true
+      return this.objects.has(key)
+    })
     const byText = new Map()
-    for (const key of getOnly) {
+    for (const key of compared) {
       const text = texts.get(key)
       if (!byText.has(text)) byText.set(text, [])
       byText.get(text).push(keyName(key))
     }
-    for (const [text, keys] of byText) if (keys.length > 1) this.line(`i the same value: ${keys.join(' ')} = ${text}`)
+    for (const [text, keys] of byText) {
+      if (keys.length < 2) continue
+      const alias = aliases.includes([...keys].sort().join(' '))
+      this.line(`i the same value${alias ? ' (an alias)' : ''}: ${keys.join(' ')} = ${text}`)
+      if (!alias) this.violations.push(`row i: ${keys.join(' ')} read the same value ${text}`)
+    }
+    this.aliasProbe(texts)
+  }
+
+  // each alias read (and, where it has a setter, written) with its target key redefined on the proxy: it must still
+  // reach the node, not the proxy's own key
+  aliasProbe(texts) {
+    for (const [alias, target] of ALIASES[this.type] || []) {
+      const node = new this.Type()
+      const proxy = node.getProxy()
+      const restore = this.distinct(node, 0)
+      const desc = Reflect.getOwnPropertyDescriptor(proxy, target)
+      try {
+        Object.defineProperty(proxy, target, {
+          get: () => 'the proxy',
+          set: () => {},
+          enumerable: true,
+          configurable: true,
+        })
+        this.begin(node)
+        let text
+        try {
+          text = this.deep(proxy[alias])
+        } catch (err) {
+          text = `read throws ${errorText(err)}`
+        }
+        let written = ''
+        // (a value that reads otherwise than the state's own: the second one)
+        const make = this.secondValue(alias, MOUNTED_PAIRS[this.type]?.[alias]) ?? this.cloneValue(alias)
+        if (Reflect.getOwnPropertyDescriptor(proxy, alias).set && make) {
+          try {
+            proxy[alias] = make(this.fx)
+            written = `; written: the node reads ${this.canon(node[target] ?? node.instance?.currentTime)}`
+          } catch (err) {
+            written = `; written: throws ${errorText(err)}`
+          }
+        }
+        this.end()
+        const want = texts.get(alias)?.replace(/ \(class: .*$/, '')
+        this.line(`i alias ${keyName(alias)} with ${keyName(target)} redefined on the proxy: reads ${text}${written}`)
+        if (text !== want)
+          this.violations.push(`row i: alias ${alias} read ${text} with ${target} redefined, not ${want}`)
+      } finally {
+        Object.defineProperty(proxy, target, desc)
+        restore()
+      }
+    }
   }
 
   // the getter a node class defines for a key, if any (a prototype accessor; an own field is no getter)
@@ -1773,45 +1993,62 @@ class Characterization {
     return null
   }
 
-  // the distinct state of row i; returns what puts back anything set outside the node (a PHYSX stand-in)
-  distinct(node) {
+  // the distinct state of row i (variant 0), or a second one whose every value is otherwise (variant 1, row h); returns
+  // what puts back anything set outside the node (a PHYSX stand-in)
+  distinct(node, variant) {
     const { Node } = this.m
-    const parent = new Node({ id: 'parent', position: [10, 20, 30] })
-    node.id = 'node-i'
-    node.position.set(1, 2, 3)
-    node.rotation.set(0.1, 0.2, 0.3)
-    node.scale.set(2, 3, 4)
+    const v = variant
+    const parent = new Node({ id: v ? 'parent-b' : 'parent', position: [10 + 100 * v, 20 + 100 * v, 30 + 100 * v] })
+    node.id = v ? 'node-b' : 'node-i'
+    node.position.set(1 + 100 * v, 2 + 100 * v, 3 + 100 * v)
+    node.rotation.set(0.1 + 0.3 * v, 0.2 + 0.3 * v, 0.3 + 0.3 * v)
+    node.scale.set(2 + v, 3 + v, 4 + v)
     parent.add(node)
-    node.add(new Node({ id: 'child-a' }))
-    node.add(new Node({ id: 'child-b' }))
+    node.add(new Node({ id: v ? 'child-c' : 'child-a' }))
+    node.add(new Node({ id: v ? 'child-d' : 'child-b' }))
     parent.updateTransform()
     node.updateTransform()
-    node._active = false
-    node._cursor = 'pointer'
-    node._onPointerEnter = function enter() {}
-    node._onPointerLeave = function leave() {}
-    node._onPointerDown = function down() {}
-    node._onPointerUp = function up() {}
+    node._active = !!v
+    node._cursor = v ? 'grab' : 'pointer'
+    node._onPointerEnter = v ? function enterB() {} : function enter() {}
+    node._onPointerLeave = v ? function leaveB() {} : function leave() {}
+    node._onPointerDown = v ? function downB() {} : function down() {}
+    node._onPointerUp = v ? function upB() {} : function up() {}
     const liveRun = () => {
       const run = {}
       return { run, entity: { deadHook: run } }
     }
+    // the type's own keys that read a function (a default callback) get one named after the key
+    const proxy = node.getProxy()
+    const isFunction = key => {
+      try {
+        return typeof proxy[key] === 'function'
+      } catch {
+        return false // (a getter that needs the state set below: audio's currentTime)
+      }
+    }
+    for (const key of this.setters) {
+      if (this.nodeKeys.has(key) || !isFunction(key)) continue
+      const name = `${keyName(key)}${v ? 'B' : ''}`
+      proxy[key] = { [name]: function () {} }[name]
+    }
     switch (this.type) {
       case 'anchor':
-        node.anchorId = 'anchor-i'
+        node.anchorId = v ? 'anchor-b' : 'anchor-i'
         break
       case 'audio':
         node.ctx = { world: { audio: { ctx: { currentTime: 10 } } } }
-        node.source = {}
-        node.sourceStarted = true
+        // (the second: no source, so its time is its offset)
+        node.source = v ? null : {}
+        node.sourceStarted = !v
         node.startTime = 4
-        node.offset = 2
+        node.offset = 2 + v
         break
       case 'avatar':
-        node.instance = { height: 1.7, headToHeight: 0.3 }
+        node.instance = { height: 1.7 + v / 10, headToHeight: 0.3 }
         break
       case 'controller': {
-        node.moveFlags = { isSet: flag => flag === 1 }
+        node.moveFlags = { isSet: flag => flag === 1 + v }
         const had = Object.hasOwn(globalThis, 'PHYSX')
         const was = globalThis.PHYSX
         globalThis.PHYSX = { PxControllerCollisionFlagEnum: { eCOLLISION_DOWN: 1, eCOLLISION_UP: 2 } }
@@ -1821,29 +2058,32 @@ class Characterization {
         }
       }
       case 'joint':
-        node.offset0.set(1, 2, 3)
-        node.offset1.set(4, 5, 6)
-        node.rotation0.set(0.1, 0, 0)
-        node.rotation1.set(0, 0.2, 0)
-        node.axis.set(0, 0, 1)
+        // (apart from the node's own transform and from each other)
+        node.offset0.set(11 + 100 * v, 12 + 100 * v, 13 + 100 * v)
+        node.offset1.set(14 + 100 * v, 15 + 100 * v, 16 + 100 * v)
+        node.rotation0.set(0.4 + 0.3 * v, 0, 0)
+        node.rotation1.set(0, 0.5 + 0.3 * v, 0)
+        node.axis.set(v, 0, 1 - v)
         break
       case 'mesh': {
-        const facade = { opacity: 0.5 }
-        this.registry.set(facade, 'facade#mesh')
+        const facade = { opacity: v ? 0.25 : 0.5 }
+        this.registry.set(facade, v ? 'facade#mesh-b' : 'facade#mesh')
         node.handle = { material: facade }
         node.ctx = liveRun()
         break
       }
       case 'rigidbody':
-        node.actor = { isSleeping: () => true }
+        node.actor = { isSleeping: () => !v }
         break
       case 'skinnedmesh':
-        node.animNames = ['walk', 'run']
+        node.animNames = v ? ['jump'] : ['walk', 'run']
         break
       case 'video':
-        node.instance = { duration: 12, isPlaying: true, currentTime: 3 }
-        node._loading = false
-        node.mesh = { material: { uniforms: { uOffset: { value: { x: 0.25, y: 0.75 } } } } }
+        node.instance = v
+          ? { duration: 24, isPlaying: false, currentTime: 7 }
+          : { duration: 12, isPlaying: true, currentTime: 3 }
+        node._loading = !!v
+        node.mesh = { material: { uniforms: { uOffset: { value: v ? { x: 0.5, y: 0.125 } : { x: 0.25, y: 0.75 } } } } }
         node.ctx = liveRun()
         break
     }
@@ -2026,17 +2266,25 @@ function rank(label) {
   return i === -1 ? PREFERENCE.length : i
 }
 
-// the console of the bundle's code goes to the case being run
-function captureConsole(characterization, late) {
+// The console, from before the bundle is evaluated (code that keeps a console function at import gets this one): to the
+// case being run; outside a case to row x; before the characterization exists (the evaluation, the fixtures) to row x
+// as `setup`; once the cases are over to `late`
+function captureConsole(sink, late) {
   const saved = {}
   for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
     saved[level] = console[level]
     console[level] = (...args) => {
-      const text = args.map(arg => (typeof arg === 'string' ? JSON.stringify(arg) : characterization.canon(arg)))
+      const characterization = sink.characterization
+      const text = args.map(arg =>
+        typeof arg === 'string'
+          ? JSON.stringify(arg)
+          : characterization
+            ? characterization.canon(arg)
+            : `<${typeof arg}>`
+      )
       const entry = `${level}:${text.join(',')}`
-      // (outside a case: the generator's own probing and set-up, kept by row for row x; once the cases are over, what a
-      // promise of one finished later)
-      if (characterization.current) characterization.current.console.push(entry)
+      if (!characterization) sink.early.push(entry)
+      else if (characterization.current) characterization.current.console.push(entry)
       else if (characterization.settling) late.push(entry)
       else characterization.outside.push([characterization.row, entry])
     }
@@ -2047,18 +2295,22 @@ function captureConsole(characterization, late) {
 // the text of one node type, from its own evaluation of the bundle at `url`; `reference` is the node type's blocks
 // (null while generating the node type itself)
 async function generateType(url, type, reference) {
-  const m = await import(`${url}?golden=${type}`)
   const late = []
-  const characterization = new Characterization(m, type, reference)
-  const restore = captureConsole(characterization, late)
+  const sink = { characterization: null, early: [] }
+  const restore = captureConsole(sink, late)
+  let characterization
   try {
+    const m = await import(`${url}?golden=${type}`)
+    characterization = new Characterization(m, type, reference)
+    characterization.outside.push(...sink.early.map(entry => ['setup', entry]))
+    sink.characterization = characterization
     try {
       characterization.run()
     } catch (err) {
       // (a type that cannot be characterized, a constructor that throws: said where its text stops)
       characterization.end()
       characterization.line(`generation stopped: ${errorText(err)}`)
-      characterization.violations ??= [`generation stopped: ${errorText(err)}`]
+      characterization.violations.push(`generation stopped: ${errorText(err)}`)
     }
     // what a case started and a promise finished later
     characterization.settling = true
@@ -2114,7 +2366,8 @@ export function firstDifferences(expected, actual, shown = 10) {
 // diff read
 export function updateMode(env) {
   if (env.UPDATE_GOLDEN !== '1') return false
-  if (env.CI) {
+  // (present at all, an empty value included)
+  if (Object.prototype.hasOwnProperty.call(env, 'CI')) {
     throw new Error(
       'UPDATE_GOLDEN=1 is refused when CI is set: the golden files are rewritten by hand, and their diff read, never by a CI run'
     )

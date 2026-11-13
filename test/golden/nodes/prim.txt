@@ -380,8 +380,12 @@ g full clone(true) copy: children position rotation quaternion scale matrix matr
 g full clone(true) source only: _proxy
 g full clone(true) children: node#child -> node#child
 g a clone reads as its source, each sample property alone (64 clones): yes
-== h. two instances alive at once, a write through each in turn: each write reaches its own node only
-h each write reached its own node only: type size color emissive emissiveIntensity metalness roughness opacity texture castShadow receiveShadow physics mass linearDamping angularDamping staticFriction dynamicFriction restitution layer trigger tag onContactStart onContactEnd onTriggerEnter onTriggerLeave doubleside active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== h. two instances alive at once, their proxies kept: each write and read reaches its own node only
+h each write and read reached its own node only: type size color emissive emissiveIntensity metalness roughness opacity transparent texture castShadow receiveShadow physics mass linearDamping angularDamping staticFriction dynamicFriction restitution layer trigger tag onContactStart onContactEnd onTriggerEnter onTriggerLeave doubleside id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+h no value accepted (each write throws, on both nodes): id position quaternion rotation scale parent
+h no second value that reads otherwise (the first is written twice): transparent
+h each read of a key no script sets reached its own node only: transparent id name position quaternion rotation scale matrixWorld parent children _ref _isRef
+h the same in both states (a constant): transparent name _ref _isRef
 == i. every getter on a node whose backing values are distinct
 i type = "box"
 i size = [1,1,1]
@@ -415,3 +419,4 @@ i as on node: id position quaternion rotation scale matrixWorld active parent ch
 == x. the console outside the cases (the generator's own probing and set-up), by row
 x b: warn:"prim.transparent deprecated"×29
 x d: warn:"prim.transparent deprecated"×4
+x h: warn:"prim.transparent deprecated"

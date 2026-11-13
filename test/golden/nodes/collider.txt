@@ -284,8 +284,11 @@ g glb glbCollider clone(true) copy: children position rotation quaternion scale 
 g glb glbCollider clone(true) differs: parent(node:rigidbody#glbBody -> null)
 g glb glbCollider clone(true) children: -
 g a clone reads as its source, each sample property alone (36 clones): yes
-== h. two instances alive at once, a write through each in turn: each write reaches its own node only
-h each write reached its own node only: type width height depth radius geometry convex trigger layer staticFriction dynamicFriction restitution active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== h. two instances alive at once, their proxies kept: each write and read reaches its own node only
+h each write and read reached its own node only: type width height depth radius geometry convex trigger layer staticFriction dynamicFriction restitution id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+h no value accepted (each write throws, on both nodes): id position quaternion rotation scale parent
+h each read of a key no script sets reached its own node only: id name position quaternion rotation scale matrixWorld parent children _ref _isRef
+h the same in both states (a constant): name _ref _isRef
 == i. every getter on a node whose backing values are distinct
 i type = "box"
 i width = 1
@@ -303,3 +306,4 @@ i name = "collider"
 i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
 == x. the console outside the cases (the generator's own probing and set-up), by row
 x d: error:"[collider] geometry invalid"×4
+x h: error:"[collider] geometry invalid"

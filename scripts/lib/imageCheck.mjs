@@ -25,6 +25,8 @@ export const STOPS = {
 const STOP_ELAPSED_PART = 0.8
 // `docker events --since` is this much before the `docker stop` is started (the daemon's clock is this machine's)
 const EVENTS_SINCE_MARGIN_MS = 1000
+// `docker events` with an --until in the past prints what the daemon holds and ends: this is long for that
+export const EVENTS_TIMEOUT_MS = 15 * 1000
 
 export const HEALTH_POLLS = 120
 export const HEALTH_INTERVAL_MS = 1000
@@ -811,8 +813,8 @@ export async function runImageCheck({
     return result
   }
   // a command whose answer is only recorded: null (and a line saying so) when it fails
-  const look = async args => {
-    const result = await run(args)
+  const look = async (args, options) => {
+    const result = await run(args, options)
     if (result.code === 0) return result.stdout.trim()
     report.info(`  (not available: exited ${result.code}: ${said(result)})`)
     return null
@@ -942,16 +944,22 @@ export async function runImageCheck({
     const stopped = await must(stopArgs(expectation, name), { timeoutMs: (timeoutS + 30) * 1000 })
     const state = parseState((await must(stateArgs(name))).stdout)
     const log = await collectLog(record, { final: !state.running })
-    // what Docker itself recorded of the stop, on its own clock: the kill it sent and the container's exit
-    const eventLines = await look(eventsArgs(name, { sinceMs, untilMs: now() }))
+    // What Docker itself recorded of the stop, on its own clock: the kill it sent and the container's exit. A
+    // `docker events` that fails, hangs or runs out of time is not a failed step: the stop is then judged on the
+    // CLI's time (stopTiming says so). A signal to the script still ends the run.
+    let eventLines = null
+    let unavailable = null
+    try {
+      eventLines = await look(eventsArgs(name, { sinceMs, untilMs: now() }), { timeoutMs: EVENTS_TIMEOUT_MS })
+      if (eventLines === null) unavailable = '`docker events` failed'
+    } catch (err) {
+      if (err?.interrupted) throw err
+      unavailable = `\`docker events\` failed: ${err?.message ?? err}`
+      report.info(`  (${unavailable})`)
+    }
     const events = parseEvents(eventLines)
     if (events.unreadable) report.info(`  (${events.unreadable} line(s) of \`docker events\` were not read as events)`)
-    const timing = stopTiming({
-      events: events.events,
-      finishedAt: state.finishedAt,
-      cliMs: stopped.ms,
-      unavailable: eventLines === null ? '`docker events` failed' : null,
-    })
+    const timing = stopTiming({ events: events.events, finishedAt: state.finishedAt, cliMs: stopped.ms, unavailable })
     const verdict = judgeStop({
       signal,
       timeoutS,

@@ -11,6 +11,7 @@ import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
+  EVENTS_TIMEOUT_MS,
   MODELS,
   NOT_STOPPED_OR_SAVED,
   SIGNAL_BUDGET,
@@ -1068,6 +1069,18 @@ test('when `docker events` fails, the stop is judged on the CLI\u2019s time agai
   assert.equal(summary.containers[0].stop.elapsedFrom, 'cli')
   assert.ok(said.some(line => line.includes('not available: exited 1: Error response from daemon: unsupported')))
   assert.ok(said.some(line => line.includes("Docker's own times not read (`docker events` failed)")))
+  // a `docker events` that throws (it ran out of time) is no failed step either
+  const hung = await simulate(args => {
+    if (args[0] === 'events') throw new Error('`docker events …` was not done within 15 s')
+    return undefined
+  })
+  assert.equal(hung.summary.ok, true, hung.summary.failures.join('; '))
+  assert.equal(
+    hung.summary.containers[1].stop.timing.why,
+    '`docker events` failed: `docker events …` was not done within 15 s'
+  )
+  // its time is bounded, well under the one of a command that may take a minute
+  assert.ok(EVENTS_TIMEOUT_MS <= 15_000)
   // and a CLI that took 5 s for SIGINT's 5 s timeout fails it
   const slow = await simulate(args => {
     if (args[0] === 'events') return { code: 1, stderr: 'no' }

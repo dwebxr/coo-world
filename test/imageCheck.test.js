@@ -650,6 +650,8 @@ test('stop: the lines looked for are the ones the server prints', async () => {
 // syntax tree (logCalls, above; the parser is @babel/parser). What it cannot see, said plainly:
 // - a function the named ones call: a helper that logs (briefError, the user rows' own module, Storage's other
 //   methods) is not read;
+// - a logger given a second local name, or by an assignment (`const warning = console.warn; const report = warning`,
+//   `let report; report = console.warn`): only a name a declaration binds to a log member directly is followed;
 // - a logger reached through a call or another module (`const f = pick(console); f(…)`, `import { warn } from …`),
 //   a level computed at run time (`console[level](…)`), console methods outside the set (`dir`, `table`, `assert`,
 //   `count`, `timeLog`), and output by other means (`process.stderr.write`, `process.emitWarning`, `util.debuglog`);

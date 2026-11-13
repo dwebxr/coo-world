@@ -378,6 +378,54 @@ test('network helper: every network of a test is stopped at its end, whatever on
   assert.equal(swapped.solanaGating.TOKEN_GATING_ENABLED, false)
 })
 
+test('network helper: a stop that throws half way still cancels with the timers the test gave', async t => {
+  const before = timers()
+  const pending = new Set()
+  const cleared = []
+  const fake = {
+    setTimeout: fn => {
+      const handle = { fn }
+      pending.add(handle)
+      return handle
+    },
+    clearTimeout: handle => {
+      cleared.push(handle)
+      pending.delete(handle)
+    },
+  }
+  const { context, end } = handedContext(t)
+  const network = makeNetwork(context, { net, timers: fake })
+  network.tipWatcher = {
+    stop() {
+      throw new Error('a stand-in that fails when it is touched')
+    },
+  }
+  // a tip announcement waiting on the test's own timer: stopForFatal cancels it after the tip watcher's stop, which
+  // it never gets past here
+  const announcement = (network.tipAnnounce.timer = fake.setTimeout(() => {}))
+  assert.equal(pending.size, 1)
+  const ended = await end()
+  assert.match(ended.error?.message ?? '', /fails when it is touched/)
+  assert.equal(pending.size, 0, "the announcement was cancelled with the test's clearTimeout")
+  assert.equal(cleared.at(-1), announcement)
+  // (the socket check, for which the test gave no timer, is the global one)
+  assert.equal(timers(), before)
+  // a cancellation of the test's that throws as well changes neither what is reported nor what is put back
+  const second = handedContext(t)
+  const other = makeNetwork(second.context, {
+    net,
+    timers: {
+      clearTimeout() {
+        throw new Error('a clearTimeout that fails')
+      },
+    },
+  })
+  assert.match((await second.end()).error?.message ?? '', /a clearTimeout that fails/)
+  assert.equal(other.stopping, true)
+  assert.equal(timers(), before)
+  makeNetwork(t, { net })
+})
+
 test('network helper: a stop that throws a falsy value fails the end of the test as well', async t => {
   const before = timers()
   const { context, end } = handedContext(t)

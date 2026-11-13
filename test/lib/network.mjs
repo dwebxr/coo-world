@@ -57,6 +57,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { ENV_TABLE } from './envTable.mjs'
+import * as classTimers from './networkTimers.mjs'
 
 const ENTRY = `
   export { ServerNetwork } from './src/core/systems/ServerNetwork.js'
@@ -212,6 +213,20 @@ function testState(t) {
       } catch (err) {
         if (!state.threw) state.failure = err
         state.threw = true
+        // the stop ended half way: what it had not reached is cancelled as the class would have, with the timers
+        // the test gave (still in the table here; a handle of the test's own means nothing to the global functions
+        // below).
+        for (const cancel of [
+          () => classTimers.clearTimeout(network.saveTimerId),
+          () => classTimers.clearInterval(network.socketIntervalId),
+          () => network.tipAnnounce?.timer && classTimers.clearTimeout(network.tipAnnounce.timer),
+        ]) {
+          try {
+            cancel()
+          } catch {
+            // not reported: the stop's own error is
+          }
+        }
       } finally {
         clearTimeout(network.saveTimerId)
         clearInterval(network.socketIntervalId)

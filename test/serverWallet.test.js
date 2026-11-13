@@ -303,6 +303,35 @@ test('wallet attempts: obsolete nonce or attempt leaves the current challenge us
   assert.equal(socket.wallet.challenge, null)
 })
 
+test('wallet attempts: a proof handed in when its challenge has expired is refused before any balance is read', async t => {
+  const f = fixture(t, { result: { known: true, balance: 10000 } })
+  const socket = await f.connect()
+  // one millisecond before the end it still verifies, and the visitor is granted
+  const early = f.challenge(socket)
+  f.advance(gating.CHALLENGE_TTL_MS - 1)
+  await f.network.onRequestBuilderByToken(socket, early)
+  assert.equal(socket.wallet.verified, address)
+  assert.equal(f.calls.length, 1)
+  assert.equal(socket.player.data.rank, Ranks.BUILDER)
+  assert.equal(gating.walletOf(socket.id), address)
+  // at the end it does not: the same signer, a signature that is right, and the clock of the handler. (Asking for
+  // the second challenge has taken the first one's grant away.)
+  const proof = f.challenge(socket, 2)
+  assert.equal(socket.player.data.rank, Ranks.VISITOR)
+  const { expiresAt } = socket.wallet.challenge
+  f.advance(expiresAt - Date.now())
+  assert.equal(Date.now(), expiresAt)
+  clear(socket)
+  await f.network.onRequestBuilderByToken(socket, proof)
+  assert.equal(socket.wallet.verified, null)
+  assert.equal(socket.wallet.challenge, null)
+  assert.deepEqual(replies(socket, 'onWalletStatus'), [{ verified: false, attempt: 2 }])
+  assert.match(replies(socket, 'onChatAdded')[0].body, /Wallet verification failed/)
+  assert.equal(f.calls.length, 1, 'no balance was read for it')
+  assert.equal(socket.player.data.rank, Ranks.VISITOR)
+  assert.equal(gating.walletOf(socket.id), null)
+})
+
 test('wallet cross-socket: another socket cannot use or sign the first socket challenge', async t => {
   const f = fixture(t)
   const a = await f.connect('a', Ranks.ADMIN)

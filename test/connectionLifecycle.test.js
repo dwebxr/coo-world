@@ -26,8 +26,8 @@ function deferred() {
 }
 
 // `lapsed`: the user row of a genuine token that is past its end ({ id, rank }), for a connection whose token no
-// longer signs anyone in
-function fixture(t, { pause, fail, existing = false, auth = { userId: 'player' }, lapsed = null } = {}) {
+// longer signs anyone in; `rank`: the stored rank of the existing user; `env`: the network's environment on top
+function fixture(t, { pause, fail, existing = false, auth = { userId: 'player' }, lapsed = null, rank = 0, env } = {}) {
   const logs = []
   const calls = []
   const players = new Map()
@@ -46,7 +46,7 @@ function fixture(t, { pause, fail, existing = false, auth = { userId: 'player' }
     }
     return Promise.resolve(value)
   }
-  const user = { id: 'player', name: 'Saved', rank: 0 }
+  const user = { id: 'player', name: 'Saved', rank }
   // (the checks of what the join hands its collaborators are made inside onConnection's own catch, which takes a
   // throw for a failed join: inside() reports them at the end of the test as well)
   const db = table => {
@@ -68,6 +68,7 @@ function fixture(t, { pause, fail, existing = false, auth = { userId: 'player' }
     net,
     log: line => logs.push(line),
     init: { db },
+    env,
     modules: {
       [SESSION]: {
         readJWT: () => step('readJWT', auth),
@@ -153,7 +154,9 @@ function fixture(t, { pause, fail, existing = false, auth = { userId: 'player' }
     return ws
   }
   const ws = peer()
-  const run = (params = { authToken: 'token' }, target = ws) => network.onConnection(target, params)
+  // `admission`: what the route hands on of the door ({ rankedUser })
+  const run = (params = { authToken: 'token' }, target = ws, admission) =>
+    network.onConnection(target, params, undefined, admission)
   return {
     network,
     ws,
@@ -209,6 +212,47 @@ for (const pause of stages) {
     assert.equal(f.limits.stats().active, 1, 'close request does not release a TCP lease')
     assert.deepEqual(f.logs, ['onConnection: SetupError: setup failed'])
     f.ws.finishClose()
+    assert.equal(f.limits.stats().active, 0)
+  })
+}
+
+// A stored admin past playerLimit on one of the places kept for ranked users, let in at the door on one too: a close
+// during each of its waits gives back the kept place, the user id and the transport lease, and the next connection
+// of that admin takes the place again
+for (const pause of ['readJWT', 'lookup', 'livekit']) {
+  test(`onConnection: close during ${pause} on a kept place releases it, the user id and the transport lease`, async t => {
+    const f = fixture(t, { pause, existing: true, rank: 2, env: { ADMIN_CODE: 'code', WS_RESERVED_SOCKETS: '1' } })
+    f.network.storedRanks.set('player', 2)
+    f.network.world.settings.playerLimit = 1
+    const other = {}
+    f.network.sockets.set('other', other)
+    const running = f.run(undefined, undefined, { rankedUser: 'player' })
+    const value = await f.reached.promise
+    // (the token is read before a place is taken)
+    assert.equal(f.network.playersPresent(), pause === 'readJWT' ? 1 : 2, 'the kept place is held while the join waits')
+    if (pause === 'livekit') assert.equal(f.network.connecting.size, 1)
+    f.ws.finishClose()
+    assert.equal(f.network.playersPresent(), 1, 'given back with the connection')
+    f.pending.resolve(value)
+    await running
+    assert.deepEqual(
+      f.calls,
+      ['readJWT', 'lookup', 'livekit'].slice(0, ['readJWT', 'lookup', 'livekit'].indexOf(pause) + 1)
+    )
+    assert.equal(f.network.joining?.size ?? 0, 0)
+    assert.equal(f.network.arriving ?? 0, 0)
+    assert.equal(f.network.connecting.size, 0)
+    assert.equal(f.limits.stats().active, 0)
+    assert.deepEqual(f.ws.packets, [])
+    assert.equal(f.added.length, 0)
+    // the admin again: the kept place is there to take
+    const again = f.peer()
+    await f.run(undefined, again, { rankedUser: 'player' })
+    assert.equal(readPacket(again.packets[0])[0], 'onSnapshot')
+    assert.equal(f.network.playersPresent(), 2)
+    assert.equal(f.inserted.length, 0)
+    again.finishClose()
+    assert.equal(f.network.sockets.get('other'), other)
     assert.equal(f.limits.stats().active, 0)
   })
 }

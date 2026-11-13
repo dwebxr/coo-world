@@ -186,22 +186,30 @@ test('evm session: independent of the Solana wallet session shape', () => {
   })
 })
 
-test('evm tip watch table: two jobs for every connection WS_MAX_SOCKETS admits', () => {
-  const sockets = env => readConnectionLimitsEnv(env).maxSockets
+test('evm tip watch table: two jobs for every connection WS_MAX_SOCKETS and WS_RESERVED_SOCKETS admit', () => {
+  const sockets = env => readConnectionLimitsEnv(env).maxSockets + readConnectionLimitsEnv(env).reserved
   assert.equal(evm.TIP_WATCH_PER_SOCKET, 2)
   assert.equal(evm.resolveTipWatchMax({}), 2 * sockets({}))
-  assert.equal(evm.resolveTipWatchMax({}), 128)
-  assert.equal(evm.TIP_WATCH_MAX, 128, 'the test process sets no WS_MAX_SOCKETS')
-  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '200' }), 400)
-  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '1' }), 2)
+  assert.equal(evm.resolveTipWatchMax({}), 136, '64 connections and the 4 places kept for ranked users')
+  assert.equal(evm.TIP_WATCH_MAX, 136, 'the test process sets no WS_MAX_SOCKETS nor WS_RESERVED_SOCKETS')
+  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '200' }), 408)
+  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '1' }), 10)
+  // without kept places, as before there were any
+  assert.equal(evm.resolveTipWatchMax({ WS_RESERVED_SOCKETS: '0' }), 128)
+  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '1', WS_RESERVED_SOCKETS: '0' }), 2)
+  assert.equal(evm.resolveTipWatchMax({ WS_RESERVED_SOCKETS: '8' }), 144)
   // 2.5 admits three connections: room for the two watches of each
-  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '2.5' }), 6)
+  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '2.5', WS_RESERVED_SOCKETS: '0' }), 6)
+  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '2.5', WS_RESERVED_SOCKETS: '2' }), 10)
   // 0.2 admits one connection
-  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '0.2' }), 2)
-  // no limit on connections: nothing to derive the table from, so it is the default's
+  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '0.2', WS_RESERVED_SOCKETS: '0' }), 2)
+  // no limit on connections: nothing to derive the table from, so it is 2 x the default WS_MAX_SOCKETS, kept places
+  // or not
   assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '0' }), 128)
+  assert.equal(evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '0', WS_RESERVED_SOCKETS: '0' }), 128)
   // a value the server refuses at start-up is refused here too, not replaced by a default
   assert.throws(() => evm.resolveTipWatchMax({ WS_MAX_SOCKETS: '-1' }), /\[envs\] WS_MAX_SOCKETS/)
+  assert.throws(() => evm.resolveTipWatchMax({ WS_RESERVED_SOCKETS: '9' }), /\[envs\] WS_RESERVED_SOCKETS/)
 })
 
 test('evm tip tokens: resolved for the sign-in chain only, invalid lists disable tips with a log', () => {

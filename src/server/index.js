@@ -16,7 +16,7 @@ import { compressOptions } from './compressOptions'
 
 import { createServerWorld } from '../core/createServerWorld'
 import { buildPublicEnv, unlistedPublicEnvNote } from '../core/extras/publicEnv'
-import { readJWT } from '../core/utils-server'
+import { claimedSessionUser, readJWT, readJWTNow } from '../core/utils-server'
 import { getDB } from './db'
 import { Storage, readStorageLimitsEnv } from './Storage'
 import { installShutdown, stopApps } from './shutdown'
@@ -30,7 +30,7 @@ import { pageRoutes, readHstsEnv, securityHeaders } from './pageRoutes'
 import { cspReportRoute } from './cspReports'
 import { walletOf } from './solana-gating'
 import { createUploadLimits, readUploadLimitsEnv } from './uploadLimits'
-import { createConnectionLimits, readConnectionLimitsEnv } from './connectionLimits'
+import { createConnectionLimits, keptPlacesNote, readConnectionLimitsEnv } from './connectionLimits'
 import { createWsRoute } from './wsRoute'
 import { assetRoutes, uploadRoutes } from './uploadRoutes'
 import { readKickEnv } from './kickList'
@@ -80,7 +80,10 @@ if (!(maxUploadSize > 0)) {
   throw new Error('[envs] PUBLIC_MAX_UPLOAD_SIZE must be a positive number of megabytes')
 }
 const uploadLimitsConfig = readUploadLimitsEnv(process.env) // UPLOAD_*; throws on a bad value
-const connectionLimitsConfig = readConnectionLimitsEnv(process.env) // WS_CONNECT_*; throws on a bad value
+const connectionLimitsConfig = readConnectionLimitsEnv(process.env) // WS_CONNECT_*, WS_RESERVED_*; throws on a bad value
+// the places kept for ranked users (connectionLimits.js), as they are in effect for the admin mode, or why not
+const keptPlacesLine = keptPlacesNote(connectionLimitsConfig, adminMode(process.env))
+if (keptPlacesLine) console[keptPlacesLine.level](keptPlacesLine.message)
 // what the per-address limits (connections, uploads, wrong admin codes) take for a client's address: behind a proxy
 // that is not named here every client has the proxy's
 console.log(
@@ -232,8 +235,14 @@ if (world.assetsDir) {
 }
 // per-address connection limits, checked before a connection touches the database (see connectionLimits.js)
 const connectionLimits = createConnectionLimits(connectionLimitsConfig)
-// the /ws route (wsRoute.js): the transport's options, the admission by those limits and the route
-const wsRoute = createWsRoute({ connectionLimits, clientIpHeader: uploadLimitsConfig.clientIpHeader, world })
+// the /ws route (wsRoute.js): the transport's options, the admission by those limits and the route. `sessions`: what
+// it asks of a session token for a place kept for ranked users, in the turn the request is admitted in
+const wsRoute = createWsRoute({
+  connectionLimits,
+  clientIpHeader: uploadLimitsConfig.clientIpHeader,
+  world,
+  sessions: { readNow: readJWTNow, claimedUserId: claimedSessionUser },
+})
 fastify.register(ws, wsRoute.options)
 fastify.register(wsRoute.register)
 

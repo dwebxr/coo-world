@@ -1,8 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { Ranks } from '../src/core/extras/ranks.js'
 import { readPacket } from '../src/core/packets.js'
-import { app, apps, fixture, settle } from './lib/joinFixture.mjs'
+import { createConnectionLimits, readConnectionLimitsEnv } from '../src/server/connectionLimits.js'
+import { app, apps, fixture, net, settle } from './lib/joinFixture.mjs'
+import { makeNetwork } from './lib/network.mjs'
+import { loadRoute } from './lib/wsRoute.mjs'
 
 const packets = ws => ws.packets.map(readPacket)
 
@@ -322,4 +326,277 @@ test('while the server is stopping nothing is released (the world is saved as it
   f.network.onDisconnect(one.socket)
   assert.equal(f.world.entities.get('moving').data.mover, 'one')
   assert.ok(f.world.entities.get('loading'))
+})
+
+// --- the places kept for ranked users (WS_RESERVED_SOCKETS): the list of stored ranks, and playerLimit ---
+
+// the join world with the kept places in effect (an admin code: not open to all), 2 of them unless `env` says
+// otherwise, and `rows` in the users table (id -> rank) and, as start-up would have read them, on the list
+function kept(t, { env = {}, rows = {} } = {}) {
+  const f = fixture(t, { env: { ADMIN_CODE: 'code', WS_RESERVED_SOCKETS: '2', ...env } })
+  f.world.settings.setHasAdminCode(true)
+  for (const [id, rank] of Object.entries(rows)) {
+    f.users.set(id, { id, name: id, avatar: null, rank })
+    if (rank >= Ranks.BUILDER) f.network.storedRanks.set(id, rank)
+  }
+  f.keptLines = () => f.logs.filter(line => line.includes('kept for ranked users'))
+  return f
+}
+
+test('kept places: the list of stored ranks is read at start (builder and above); a read that fails leaves it empty', async t => {
+  for (const fails of [false, true]) {
+    const asked = []
+    const users = {
+      select: async (...columns) => {
+        asked.push(columns)
+        if (fails) throw new Error('no such table')
+        return [
+          { id: 'admin', rank: 2 },
+          { id: 'builder', rank: 1 },
+          { id: 'visitor', rank: 0 },
+          { id: 'unranked', rank: null },
+        ]
+      },
+    }
+    const network = makeNetwork(t, {
+      net,
+      world: {
+        settings: { deserialize() {}, serialize: () => ({}), setHasAdminCode() {}, on() {} },
+        entities: { items: new Map(), add() {} },
+      },
+      init: {
+        db: table =>
+          table === 'users' ? users : table === 'config' ? { where: () => ({ first: async () => undefined }) } : [],
+      },
+    })
+    network.world.blueprints = new net.Blueprints(network.world)
+    const lines = []
+    t.mock.method(console, 'log', () => {})
+    t.mock.method(console, 'error', line => lines.push(String(line)))
+    await network.start()
+    assert.deepEqual(asked, [['id', 'rank']])
+    if (fails) {
+      assert.equal(network.storedRanks.size, 0)
+      assert.equal(network.storedRankOf('admin'), Ranks.VISITOR)
+      assert.deepEqual(lines, [
+        '[network] user ids could not be read (no such table); an app that takes one is moved to a new id when that user joins, and the places kept for ranked users stay unused until a restart',
+      ])
+      continue
+    }
+    assert.deepEqual(
+      [...network.storedRanks],
+      [
+        ['admin', 2],
+        ['builder', 1],
+      ]
+    )
+    assert.deepEqual([...network.userIds].sort(), ['admin', 'builder', 'unranked', 'visitor'])
+    for (const [id, rank] of [
+      ['admin', 2],
+      ['builder', 1],
+      ['visitor', 0],
+      ['unranked', 0],
+      ['nobody', 0],
+      [undefined, 0],
+      [null, 0],
+    ]) {
+      assert.equal(network.storedRankOf(id), rank, String(id))
+    }
+    assert.deepEqual(lines, [])
+  }
+})
+
+test('kept places: /admin with the code and a rank given or taken change the list in the turn they are decided', async t => {
+  const f = kept(t, { rows: { u: Ranks.VISITOR } })
+  assert.equal((await f.join({ authToken: 'u' })).method, 'onSnapshot')
+  const socket = f.network.sockets.get('u')
+  await f.network.onCommand(socket, { args: ['admin', 'code'] })
+  assert.equal(socket.player.data.rank, Ranks.ADMIN)
+  assert.equal(f.network.storedRankOf('u'), Ranks.ADMIN, '/admin <code>')
+  await f.network.onCommand(socket, { args: ['admin', 'code'] })
+  assert.equal(f.network.storedRankOf('u'), Ranks.VISITOR, '/admin <code> again')
+  assert.equal(f.network.storedRanks.has('u'), false)
+  for (const rank of [Ranks.BUILDER, Ranks.ADMIN, Ranks.VISITOR, Ranks.ADMIN]) {
+    await f.network.onModifyRank(f.builder, { playerId: 'u', rank })
+    assert.equal(f.network.storedRankOf('u'), rank, `modifyRank ${rank}`)
+  }
+  // the database's write is another matter: the list holds what was decided (userRows.js)
+  assert.equal(f.network.userRows().intended('u').rank, Ranks.ADMIN)
+})
+
+test('kept places, playerLimit: at a limit of 2, stored admins take the 2 kept places; visitors and a third admin are refused', async t => {
+  const f = kept(t, { rows: { a1: 2, a2: 2, a3: 2, b1: 1 } })
+  f.world.settings.playerLimit = 2
+  assert.equal((await f.join()).method, 'onSnapshot')
+  assert.equal((await f.join()).method, 'onSnapshot')
+  assert.equal((await f.join()).snapshot, 'player_limit', 'a visitor at the limit')
+  assert.equal(
+    (await f.join({ authToken: 'b1' })).snapshot,
+    'player_limit',
+    'a builder, while the places are for admins'
+  )
+  assert.equal((await f.join({ authToken: 'a1' })).method, 'onSnapshot')
+  assert.equal((await f.join({ authToken: 'a2' })).method, 'onSnapshot')
+  assert.equal(f.network.sockets.size, 4)
+  assert.equal((await f.join()).snapshot, 'player_limit', 'a visitor never takes a kept place')
+  assert.equal((await f.join({ authToken: 'a3' })).snapshot, 'player_limit', 'the kept places are in use')
+  assert.deepEqual(placesHeld(f.network), [0, 0])
+  // a kept place freed is the next admin's
+  f.network.sockets.get('a1').disconnect()
+  assert.equal((await f.join()).snapshot, 'player_limit', 'still 3 of 2: no visitor')
+  assert.equal((await f.join({ authToken: 'a3' })).method, 'onSnapshot')
+  // said once per user id
+  assert.deepEqual(f.keptLines(), [
+    '[network] "a1" (stored rank 2) was let past playerLimit (2) on a place kept for ranked users (1 of 2 in use)',
+    '[network] "a2" (stored rank 2) was let past playerLimit (2) on a place kept for ranked users (2 of 2 in use)',
+    '[network] "a3" (stored rank 2) was let past playerLimit (2) on a place kept for ranked users (2 of 2 in use)',
+  ])
+  f.network.sockets.get('a3').disconnect()
+  assert.equal((await f.join({ authToken: 'a3' })).method, 'onSnapshot')
+  assert.equal(f.keptLines().length, 3)
+  // WS_RESERVED_RANK=builder: builders share them
+  const g = kept(t, { env: { WS_RESERVED_RANK: 'builder' }, rows: { b1: 1 } })
+  g.world.settings.playerLimit = 1
+  assert.equal((await g.join()).method, 'onSnapshot')
+  assert.equal((await g.join({ authToken: 'b1' })).method, 'onSnapshot')
+})
+
+test('kept places, playerLimit: with WS_RESERVED_SOCKETS=0, or admin open to all, a stored admin at the limit is refused as before', async t => {
+  for (const env of [{ WS_RESERVED_SOCKETS: '0' }, { ADMIN_CODE: null }]) {
+    const f = kept(t, { env, rows: { a1: 2 } })
+    f.world.settings.playerLimit = 1
+    assert.equal((await f.join()).method, 'onSnapshot')
+    assert.equal((await f.join({ authToken: 'a1' })).snapshot, 'player_limit', JSON.stringify(env))
+    assert.deepEqual(f.keptLines(), [])
+    assert.deepEqual(placesHeld(f.network), [0, 0])
+  }
+})
+
+test('kept places, playerLimit: the world rank setting and the session are not a stored rank', async t => {
+  // builders' places, and a world that makes every visitor a builder (its rank setting): a visitor is still one
+  const f = kept(t, { env: { WS_RESERVED_RANK: 'builder' }, rows: { v: 0, b: 1 } })
+  f.world.settings.rank = Ranks.BUILDER
+  assert.equal(f.world.settings.effectiveRank, Ranks.BUILDER)
+  f.world.settings.playerLimit = 1
+  assert.equal((await f.join()).method, 'onSnapshot')
+  assert.equal((await f.join({ authToken: 'v' })).snapshot, 'player_limit')
+  assert.deepEqual(f.keptLines(), [], 'no kept place was taken for it')
+  // nor is it on the door's path: a connection let in for `v` is refused where the limit leaves room
+  f.world.settings.playerLimit = 0
+  assert.equal((await f.join({ authToken: 'v' }, undefined, undefined, { rankedUser: 'v' })).snapshot, 'player_limit')
+  assert.deepEqual(f.keptLines(), [
+    '[network] a connection let in through a place kept for ranked users is not one: "v" has a stored rank of 0; refused',
+  ])
+  assert.equal((await f.join({ authToken: 'b' })).method, 'onSnapshot', 'the positive control: a stored builder')
+})
+
+test('kept places: a connection let in on one whose row is not ranked, or gone, is refused before any user is made; said once', async t => {
+  const f = kept(t, { rows: { admin: 2, demoted: 0 } })
+  // the list says admin for `demoted` (a database edit the server did not see) and for `gone` (a row deleted)
+  f.network.storedRanks.set('demoted', 2)
+  f.network.storedRanks.set('gone', 2)
+  const users = f.users.size
+  for (let i = 0; i < 2; i++) {
+    for (const id of ['demoted', 'gone']) {
+      const joined = await f.join({ authToken: id }, undefined, undefined, { rankedUser: id })
+      assert.equal(joined.snapshot, 'player_limit', id)
+      assert.deepEqual(joined.ws.closeCodes, [undefined])
+    }
+    // a kept place handed to a connection that brings no token, or another user's
+    assert.equal((await f.join({}, undefined, undefined, { rankedUser: 'admin' })).snapshot, 'player_limit')
+    assert.equal(
+      (await f.join({ authToken: 'demoted' }, undefined, undefined, { rankedUser: 'admin' })).snapshot,
+      'player_limit'
+    )
+  }
+  assert.equal(f.users.size, users, 'no user was made')
+  assert.equal(f.network.sockets.size, 0)
+  assert.deepEqual(placesHeld(f.network), [0, 0])
+  assert.equal(f.network.connecting.size, 0)
+  assert.deepEqual(f.keptLines(), [
+    '[network] a connection let in through a place kept for ranked users is not one: "demoted" has a stored rank of 0; refused',
+    '[network] a connection let in through a place kept for ranked users is not one: its session token brought no user row of "gone"; refused',
+    '[network] a connection let in through a place kept for ranked users is not one: its session token brought no user row of "admin"; refused',
+  ])
+  // what this server decided over the row counts: an admin whose rank was taken while the write is under way
+  let land
+  f.store.holdUserUpdate = new Promise(resolve => (land = resolve))
+  f.network.userRows().intend('admin', { rank: Ranks.VISITOR })
+  assert.equal(
+    (await f.join({ authToken: 'admin' }, undefined, undefined, { rankedUser: 'admin' })).snapshot,
+    'player_limit'
+  )
+  assert.equal(f.users.get('admin').rank, Ranks.ADMIN, 'the row still said admin')
+  land()
+  await f.network.userRows().idle()
+  // the positive control: the admin's own, as the row and the decision say
+  f.network.userRows().intend('admin', { rank: Ranks.ADMIN })
+  const joined = await f.join({ authToken: 'admin' }, undefined, undefined, { rankedUser: 'admin' })
+  assert.equal(joined.method, 'onSnapshot')
+  assert.equal(f.network.sockets.size, 1)
+})
+
+test("kept places, playerLimit: a place the list called ranked but the row does not is taken again as anyone's", async t => {
+  for (const room of [false, true]) {
+    const f = kept(t, { rows: { stale: 0 } })
+    f.network.storedRanks.set('stale', 2)
+    f.world.settings.playerLimit = room ? 2 : 1
+    assert.equal((await f.join()).method, 'onSnapshot')
+    const joined = await f.join({ authToken: 'stale' })
+    if (room) {
+      assert.equal(joined.method, 'onSnapshot', 'a place under the limit: it joins, as a visitor')
+      assert.equal(f.network.sockets.size, 2)
+      assert.equal((await f.join()).snapshot, 'player_limit', 'the limit holds after it')
+    } else {
+      assert.equal(joined.snapshot, 'player_limit', 'the world is full for a visitor')
+      assert.equal(f.network.sockets.size, 1)
+    }
+    assert.deepEqual(placesHeld(f.network), [0, 0])
+  }
+})
+
+test('kept places: a kicked admin who is on the list is told so', async t => {
+  const f = kept(t, { rows: { admin: 2 } })
+  f.world.settings.playerLimit = 1
+  assert.equal((await f.join()).method, 'onSnapshot')
+  f.network.kicks().add({ userId: 'admin' })
+  assert.equal((await f.join({ authToken: 'admin' })).snapshot, 'kicked')
+  assert.equal((await f.join({ authToken: 'admin' }, undefined, undefined, { rankedUser: 'admin' })).snapshot, 'kicked')
+  assert.deepEqual(placesHeld(f.network), [0, 0])
+})
+
+test('kept places: a rank taken while connected through one leaves the connection; the next at the cap is refused at the door', async t => {
+  const f = kept(t, { rows: { admin: 2 } })
+  const limits = createConnectionLimits({ ...readConnectionLimitsEnv({}), ratePerMin: 0, maxSockets: 1, reserved: 2 })
+  // the session tokens of the join world: a token is the id of its user
+  const route = loadRoute(limits, f.network, undefined, {
+    claimedUserId: token => token || null,
+    readNow: token => (token ? { userId: token, renew: false } : null),
+  })
+  const door = authToken => {
+    const transport = new EventEmitter()
+    const reply = { code: () => reply, header: () => reply, send: () => (reply.refused = true) }
+    let passed = false
+    route.preValidation(
+      { ws: true, raw: { socket: transport }, headers: {}, ip: '10.0.0.1', query: { authToken } },
+      reply,
+      () => (passed = true)
+    )
+    return { passed, transport }
+  }
+  assert.equal(door('').passed, true, 'a visitor fills the server')
+  const at = door('admin')
+  assert.equal(at.passed, true)
+  assert.equal(limits.stats().ranked, 1)
+  assert.equal(
+    (await f.join({ authToken: 'admin' }, undefined, undefined, { rankedUser: 'admin' })).method,
+    'onSnapshot'
+  )
+  // another admin takes the rank away
+  await f.network.onModifyRank(f.builder, { playerId: 'admin', rank: Ranks.VISITOR })
+  assert.ok(f.network.sockets.has('admin'), 'the connection stays')
+  assert.equal(limits.stats().ranked, 1, 'and so does its place, until its transport closes')
+  assert.equal(door('admin').passed, false, 'the next connection of that user at the cap is a visitor')
+  at.transport.emit('close')
+  assert.equal(limits.stats().ranked, 0)
 })

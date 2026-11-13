@@ -3,14 +3,24 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import nacl from 'tweetnacl'
 import { PublicKey } from '@solana/web3.js'
-import moment from 'moment'
 import Fastify from 'fastify'
 import { uploadRoutes } from '../src/server/uploadRoutes.js'
-import { connectionMethod, fakeWs, makeNetwork } from './lib/networkHarness.mjs'
+import { fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
 import { readPacket, writeClientPacket } from '../src/core/packets.js'
 import { Ranks } from '../src/core/extras/ranks.js'
-import { sanitizeName, isAvatarUrl } from '../src/core/extras/entityModifyPolicy.js'
-import * as gating from '../src/server/solana-gating.js'
+
+// The real network (test/lib/network.mjs). What the old harness injected into the class is given per test through
+// stand-in modules: the token gate (the bundle's own module with its switch and amount set: its record of granted
+// wallets is the one `gating.walletOf` reads), a session token that is the id of its user, and the makers of the
+// token service. The bundle is evaluated in a known environment, whatever the shell sets.
+const SOLANA = 'src/server/solana-gating.js'
+const SESSION = 'src/core/utils-server.js'
+const SOLANA_RPC = 'src/server/solanaRpc.js'
+const TOKEN_BALANCE = 'src/server/tokenBalance.js'
+const net = await loadNetwork({ standIns: [SOLANA, SESSION, SOLANA_RPC, TOKEN_BALANCE] })
+const gating = net.solanaGating
+// (as the old harness's join had it: no token ever renewed, none taken for an expired session)
+const session = { readJWT: async userId => ({ userId }), expiredSessionUser: async () => null }
 
 const enabled = {
   ...gating,
@@ -70,21 +80,7 @@ function fixture(t, options = {}) {
       return f.result
     },
   }
-  const network = makeNetwork(() => {}, {
-    tokenBalanceService: service,
-    context: {
-      solanaGating: { ...enabled, REQUIRED_TOKEN_AMOUNT: required },
-      process: { env: { ADMIN_CODE: 'code' } },
-      // (a write of a user's row that fails is a plain line of the server's log)
-      console: { ...console, error: line => f.logs.push(line) },
-    },
-  })
-  f.network = network
-  // the users' rows as the server means them to be (userRows.js)
-  f.rows = () => network.userRows()
-  f.rank = (admin, socket, rank) => network.onModifyRank(admin, { playerId: socket.id, rank })
-  network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
-  network.db = table => ({
+  const db = table => ({
     where: (column, id) => ({
       first: async () => users.get(id),
       update: async patch => {
@@ -94,6 +90,19 @@ function fixture(t, options = {}) {
       },
     }),
   })
+  const network = makeNetwork(t, {
+    net,
+    init: { tokenBalanceService: service, db },
+    env: { ADMIN_CODE: 'code' },
+    // (a write of a user's row that fails is a plain line of the server's log)
+    log: line => f.logs.push(line),
+    modules: { [SOLANA]: { ...enabled, REQUIRED_TOKEN_AMOUNT: required }, [SESSION]: session },
+  })
+  f.network = network
+  // the users' rows as the server means them to be (userRows.js)
+  f.rows = () => network.userRows()
+  f.rank = (admin, socket, rank) => network.onModifyRank(admin, { playerId: socket.id, rank })
+  network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
   Object.assign(network.world, {
     settings: { serialize: () => ({}), effectiveRank: 0 },
     livekit: { serialize: async () => ({}), clearModifiers() {} },
@@ -119,17 +128,6 @@ function fixture(t, options = {}) {
       get: id => entities.get(id),
       serialize: () => [...entities.values()].map(player => ({ ...player.data })),
     },
-  })
-  network.onConnection = connectionMethod({
-    solanaGating: enabled,
-    moment,
-    sanitizeName,
-    isAvatarUrl,
-    isNumber: value => typeof value === 'number',
-    readJWT: async userId => ({ userId }),
-    HEALTH_MAX: 100,
-    process: { env: {} },
-    performance,
   })
   f.connect = async (id = 'visitor', rank = Ranks.VISITOR) => {
     if (!users.has(id)) users.set(id, { id, name: id, rank })
@@ -160,29 +158,33 @@ function fixture(t, options = {}) {
   return f
 }
 
-test('wallet service: disabled gating ignores balance requests and constructs neither service nor RPC', async () => {
+test('wallet service: disabled gating ignores balance requests and constructs neither service nor RPC', async t => {
   for (const on of [false, true]) {
     let rpc = 0,
       services = 0
     const service = { get() {} }
     const readRaw = () => {}
-    const context = {
-      solanaGating: { ...enabled, TOKEN_GATING_ENABLED: on },
-      createSolanaRpc: () => {
-        rpc++
-        return { readRaw }
+    const modules = {
+      [SOLANA]: { ...enabled, TOKEN_GATING_ENABLED: on },
+      [SOLANA_RPC]: {
+        createSolanaRpc: () => {
+          rpc++
+          return { readRaw }
+        },
       },
-      createTokenBalanceService: options => {
-        services++
-        assert.equal(options.readRaw, readRaw)
-        return service
+      [TOKEN_BALANCE]: {
+        createTokenBalanceService: options => {
+          services++
+          assert.equal(options.readRaw, readRaw)
+          return service
+        },
       },
     }
-    const production = makeNetwork(() => {}, { context })
+    const production = makeNetwork(t, { net, modules })
     assert.equal(production.tokenBalanceService, on ? service : null)
     assert.equal(rpc, on ? 1 : 0)
     assert.equal(services, on ? 1 : 0)
-    const injected = makeNetwork(() => {}, { context, tokenBalanceService: service })
+    const injected = makeNetwork(t, { net, modules, init: { tokenBalanceService: service } })
     assert.equal(injected.tokenBalanceService, on ? service : null)
     assert.equal(rpc, on ? 1 : 0)
     assert.equal(services, on ? 1 : 0)
@@ -507,9 +509,11 @@ test('decided rank: a promotion of a token-granted builder whose write fails is 
   assert.ok(!next.player.tokenGrantedRank)
   next.disconnect()
   // another process (a restart without a final save that landed) has what the database holds
-  const restarted = makeNetwork(() => {}, {
-    tokenBalanceService: f.network.tokenBalanceService,
-    context: { solanaGating: enabled },
+  const restarted = makeNetwork(t, {
+    net,
+    log: () => {},
+    init: { tokenBalanceService: f.network.tokenBalanceService },
+    modules: { [SOLANA]: enabled },
   })
   restarted.db = f.network.db
   restarted.spawn = f.network.spawn
@@ -572,9 +576,11 @@ test('wallet liveness: reconnect drops an old pending grant and restart requires
   f.result = { known: false }
   await f.verify(next)
   next.disconnect()
-  const restarted = makeNetwork(() => {}, {
-    tokenBalanceService: f.network.tokenBalanceService,
-    context: { solanaGating: enabled },
+  const restarted = makeNetwork(t, {
+    net,
+    log: () => {},
+    init: { tokenBalanceService: f.network.tokenBalanceService },
+    modules: { [SOLANA]: enabled },
   })
   restarted.db = f.network.db
   restarted.spawn = f.network.spawn

@@ -588,6 +588,7 @@ test('network helper: the ported files pass with those settings in their environ
     'playerCoalescing',
     'scriptChat',
     'serverFileRead',
+    'serverWallet',
     'sharedObjects',
     'userRowsNetwork',
     'writeLedger',

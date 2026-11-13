@@ -19,7 +19,9 @@ const net = await loadNetwork()
 const timers = () => process.getActiveResourcesInfo().filter(name => name === 'Timeout').length
 
 // settings a developer's shell may hold, each of which changed what the old tests or a first version of this helper
-// saw (a save timer, the token gate, EVM, the admin code, the assets URL, the connection limit, the kick list)
+// saw (a save timer, the token gate, EVM, the admin code, the assets URL, the connection limit, the kick list), and
+// NETWORK_SOURCE_ROOT, which an earlier version of the helper took for a checkout to bundle the network from (here a
+// folder that exists and is no checkout)
 const AMBIENT = {
   SAVE_INTERVAL: '0',
   PUBLIC_TOKEN_MINT: 'So11111111111111111111111111111111111111112',
@@ -29,6 +31,7 @@ const AMBIENT = {
   ADMIN_CODE: 'an-ambient-code',
   ASSETS_BASE_URL: 'https://ambient.example/assets',
   KICK_MINUTES: 'not a number',
+  NETWORK_SOURCE_ROOT: os.tmpdir(),
 }
 // process.env as it was for `names`, to put back after a test that changes it
 function keepEnvironment(t, names) {

@@ -430,7 +430,7 @@ test('client fatal stops animation, worker and visibility restart; close cannot 
   assert.equal(flushed, 0, 'fatal close flushed queued mutations')
 })
 
-test('fatal stop suppresses save rearming and refuses mutating packets', async t => {
+test('fatal stop suppresses save rearming and refuses mutating packets; a stopped network sends no waiting tip announcement and sets no timer for it', async t => {
   // the real network (test/lib/network.mjs), against the REAL_PHYSX_SOURCE_ROOT checkout when it is set (where this
   // test read the class from before); it saves on a timer (SAVE_INTERVAL 60), which the stop must not set again. The
   // token gate's module and the EVM sign-in's are stand-ins (below)

@@ -223,6 +223,92 @@ test('server bundle: a CommonJS replacement is read by property each time an exp
   )
 })
 
+test("network helper: timers a test gives are the class's own; its imports, and a name not given, call the globals", async t => {
+  // a module the class imports, replaced by one that hands out the setTimeout it sees
+  const own = await loadNetwork({
+    replace: {
+      'src/server/kickList.js': `
+        import { createKickList as real } from 'real:'
+        export * from 'real:'
+        export const createKickList = config => Object.assign(real(config), { setTimeout })
+      `,
+    },
+  })
+  t.after(own.destroy)
+  const before = timers()
+  const calls = []
+  const fake = {
+    setTimeout: (fn, ms) => (calls.push(['setTimeout', ms]), { fn, ms }),
+    clearTimeout: timer => calls.push(['clearTimeout', timer?.ms ?? timer]),
+  }
+  const pinged = (network, ms) => {
+    const socket = new own.Socket({ id: 'p', ws: fakeWs(), network })
+    network.sockets.set('p', socket)
+    return { socket, answered: network.answersPing(socket, ms) }
+  }
+  await t.test('a test that gives them', async t => {
+    assert.throws(() => makeNetwork(t, { net: own, timers: { setImmediate() {} } }), /timers is an object with any of/)
+    const network = makeNetwork(t, { net: own, timers: fake })
+    // the constructor's socket check: no setInterval given, so the global one
+    assert.equal(timers(), before + 1)
+    // a takeover's ping: its deadline is the class's own setTimeout
+    const { socket, answered } = pinged(network, 1234)
+    assert.deepEqual(calls, [['setTimeout', 1234]])
+    socket.ws.emit('pong')
+    assert.equal(await answered, true)
+    assert.equal(timers(), before + 1)
+    // a module the class imports calls the global one
+    assert.equal(network.kicks().setTimeout, globalThis.setTimeout)
+    // a tip announcement waiting when the test ends
+    network.tipAnnounce.timer = { ms: 'announcement' }
+    calls.length = 0
+  })
+  // the end stopped the network with them (stopForFatal: the save timer, none here, and the announcement), and
+  // cleared the global socket check
+  assert.deepEqual(calls, [
+    ['clearTimeout', null],
+    ['clearTimeout', 'announcement'],
+  ])
+  assert.equal(timers(), before)
+  // then put the globals back: a network of the next test calls them (its socket check, and the ping's deadline,
+  // which ends the wait unanswered)
+  const { answered } = pinged(makeNetwork(t, { net: own }), 5)
+  assert.equal(timers(), before + 2)
+  assert.equal(await answered, false)
+  assert.equal(calls.length, 2)
+})
+
+test('server bundle: prepend puts a line before one module of the bundle', async t => {
+  const seen = (globalThis.prependedLines = [])
+  t.after(() => delete globalThis.prependedLines)
+  const bundle = await bundleServer(`export { readKickEnv } from './src/server/kickList.js'`, {
+    prepend: { 'src/server/kickList.js': `globalThis.prependedLines.push(typeof readKickEnv);` },
+  })
+  t.after(bundle.destroy)
+  // run once, in the module's own scope: it sees the module's function
+  assert.deepEqual(seen, ['function'])
+  assert.equal(typeof bundle.module.readKickEnv, 'function')
+  await assert.rejects(
+    bundleServer(`export { readKickEnv } from './src/server/kickList.js'`, {
+      prepend: { 'src/server/cleaner.js': ';' },
+    }),
+    /prepend: src\/server\/cleaner.js is not imported by the bundle/
+  )
+  await assert.rejects(
+    bundleServer(`export { readKickEnv } from './src/server/kickList.js'`, {
+      replace: { 'src/server/kickList.js': `export * from 'real:'` },
+      prepend: { 'src/server/kickList.js': ';' },
+    }),
+    /prepend: src\/server\/kickList.js is replaced/
+  )
+  await assert.rejects(
+    bundleServer(`export { readKickEnv } from './src/server/kickList.js'`, {
+      prepend: { 'src/server/kickList.js': ';\n;' },
+    }),
+    /not one line/
+  )
+})
+
 test('network helper: entityClasses gives Entities the classes a file of the tests exports', async t => {
   const own = await loadNetwork({ replace: entityClasses(new URL('./lib/joinEntities.mjs', import.meta.url)) })
   t.after(own.destroy)

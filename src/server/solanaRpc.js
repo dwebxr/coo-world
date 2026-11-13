@@ -1,5 +1,5 @@
 import { PublicKey } from '@solana/web3.js'
-import { ACCOUNT_SIZE, AccountLayout, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } from '@solana/spl-token'
+import { ACCOUNT_SIZE, associatedTokenAddress, readTokenAccount, TOKEN_PROGRAM_ID } from './splTokenAccount.js'
 
 export function createSolanaRpc({
   env = process.env,
@@ -37,7 +37,7 @@ export function createSolanaRpc({
     signal?.throwIfAborted()
     const tokenMint = new PublicKey(mint)
     const owner = new PublicKey(wallet)
-    const ata = getAssociatedTokenAddressSync(tokenMint, owner)
+    const ata = associatedTokenAddress(tokenMint, owner)
     const id = ++nextId
     const response = await fetch(endpoint.href, {
       method: 'POST',
@@ -98,7 +98,7 @@ export function createSolanaRpc({
     if (data.length !== ACCOUNT_SIZE || data.toString('base64') !== value.data[0]) {
       throw new Error('invalid token account data')
     }
-    const account = AccountLayout.decode(data)
+    const account = readTokenAccount(data)
     if (!account.mint.equals(tokenMint) || !account.owner.equals(owner) || typeof account.amount !== 'bigint') {
       throw new Error('invalid token account fields')
     }

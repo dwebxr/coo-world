@@ -5,13 +5,35 @@ import { fork } from 'child_process'
 /**
  * Copies over the built PhysX files, then either (re)starts the fork
  * (dev) or exits the process (prod build).
+ *
+ * A build that failed has nothing to finish:
+ * - a production build exits 1. It used to exit 0 here, before esbuild could report the failure to the script, so
+ *   `npm run build` succeeded with a syntax error in the server (and left no, or an old, build/index.js);
+ * - in dev the fork that is running is left as it is until a build succeeds (when the first build fails there is
+ *   none yet, and none is started). It used to be stopped and started again on the output of the failed build, which
+ *   esbuild 0.25 deletes: the new fork died at once.
  */
-export function makePhysxFinalizePlugin({ rootDir, dev, forkEntry }) {
+export function makePhysxFinalizePlugin({
+  rootDir,
+  dev,
+  forkEntry,
+  exit = code => process.exit(code),
+  start = fork,
+  log = console,
+}) {
   let spawn
   return {
     name: 'server-finalize-plugin',
     setup(build) {
-      build.onEnd(async () => {
+      build.onEnd(async result => {
+        if (result.errors.length) {
+          if (!dev) return exit(1)
+          log.error(
+            `[build] failed (${result.errors.length} errors): ` +
+              (spawn ? `${forkEntry} is left running as it was` : `${forkEntry} is not started`)
+          )
+          return
+        }
         // copy over physx js
         const physxIdlSrc = path.join(rootDir, 'src/core/physx-js-webidl.js')
         const physxIdlDest = path.join(rootDir, 'build/physx-js-webidl.js')
@@ -24,9 +46,9 @@ export function makePhysxFinalizePlugin({ rootDir, dev, forkEntry }) {
         if (dev) {
           // (re)start server
           spawn?.kill('SIGTERM')
-          spawn = fork(path.join(rootDir, forkEntry))
+          spawn = start(path.join(rootDir, forkEntry))
         } else {
-          process.exit(0)
+          exit(0)
         }
       })
     },

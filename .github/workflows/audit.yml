@@ -1,0 +1,44 @@
+name: Audit
+
+# The advisories npm reports for the packages of a production install (scripts/audit.mjs): a high or critical one
+# fails unless audit-allowlist.json names it with a date that has not passed; lower severities are listed. Weekly,
+# because an advisory is published without anything changing here, and on a pull request that changes what is
+# installed, the allowlist, the script or this workflow. It does not look at dev dependencies.
+on:
+  pull_request:
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'audit-allowlist.json'
+      - 'scripts/audit.mjs'
+      - '.github/workflows/audit.yml'
+  schedule:
+    - cron: '41 5 * * 1'
+  workflow_dispatch:
+
+# the job only reads the repository; third-party actions are pinned to a commit (the tag is in the comment)
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@0ad4b8fadaa221de15dcec353f45205ec38ea70b # v4.1.4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # exits non-zero also when the registry gives no report: a run that could not audit is not a pass
+      - name: Audit production dependencies
+        run: node scripts/audit.mjs

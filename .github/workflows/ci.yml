@@ -51,3 +51,11 @@ jobs:
 
       - name: Test
         run: npm test
+
+      # LAST STEP OF THE JOB (new steps go above this one). The Docker image is built by hand, so this is the only
+      # automatic check that the server starts without dev dependencies: scripts/prod-smoke.mjs copies build/ and
+      # src/ to a temp folder, runs `npm ci --omit=dev` there, starts the server and asks for /health, / and /env.js.
+      # It does not build or run the image (Alpine/musl, the image's own install and prune, its HEALTHCHECK command).
+      - name: Production install smoke (server starts without dev dependencies)
+        timeout-minutes: 10
+        run: node scripts/prod-smoke.mjs

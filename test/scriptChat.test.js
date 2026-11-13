@@ -1,7 +1,7 @@
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
 import { loadClient, clientWorld } from './lib/clientHarness.mjs'
-import { makeNetwork } from './lib/networkHarness.mjs'
+import { loadNetwork, makeNetwork } from './lib/network.mjs'
 import { bundleClient, forgedElement, renderSafely } from './lib/renderHarness.mjs'
 import { chatEnvelope, scriptChatMessage } from '../src/core/extras/chatPolicy.js'
 import { strictDecode } from '../src/core/extras/strictDecode.js'
@@ -11,6 +11,8 @@ const decodePacket = packet => {
   const [id, data] = strictDecode(packet, { maxNodes: 8192, build: true }).value
   return [packetNameById(id), data]
 }
+
+const net = await loadNetwork()
 
 let ui
 before(async () => {
@@ -68,8 +70,8 @@ test("world.chat from a script: an app line, never a player's or the server's", 
   ])
 })
 
-function appChatNetwork() {
-  const network = makeNetwork()
+function appChatNetwork(t) {
+  const network = makeNetwork(t, { net })
   const stored = []
   const relayed = []
   const logs = []
@@ -88,8 +90,8 @@ function appChatNetwork() {
   return { network, stored, relayed, logs, socket }
 }
 
-test("appChat: a client script's broadcast reaches everyone as the app's line, named by the server", async () => {
-  const { network, stored, relayed, socket } = appChatNetwork()
+test("appChat: a client script's broadcast reaches everyone as the app's line, named by the server", async t => {
+  const { network, stored, relayed, socket } = appChatNetwork(t)
   await network.onAppChat(socket, {
     id: 'shop',
     body: ' Sale today ',
@@ -110,8 +112,8 @@ test("appChat: a client script's broadcast reaches everyone as the app's line, n
   assert.deepEqual(relayed, [['chatAdded', msg, 'bob']], 'relayed to the others, not back to the sender')
 })
 
-test('appChat: an unknown or non-app entity, or a message that is not text, is dropped and logged once', async () => {
-  const { network, stored, relayed, logs, socket } = appChatNetwork()
+test('appChat: an unknown or non-app entity, or a message that is not text, is dropped and logged once', async t => {
+  const { network, stored, relayed, logs, socket } = appChatNetwork(t)
   for (const data of [
     { id: 'missing', body: 'x' },
     { id: 'bob', body: 'x' },
@@ -170,8 +172,8 @@ test('world.chat on the server: broadcast as an app line', () => {
   assert.equal(Object.hasOwn(sent[0][1], 'fromId'), false)
 })
 
-test("a player's chat packet is a player line whatever kind it claims", async () => {
-  const network = makeNetwork()
+test("a player's chat packet is a player line whatever kind it claims", async t => {
+  const network = makeNetwork(t, { net })
   const stored = []
   const relayed = []
   network.world.chat = { add: (msg, broadcast) => stored.push({ msg, broadcast }) }

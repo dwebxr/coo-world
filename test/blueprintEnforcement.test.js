@@ -7,14 +7,15 @@ import {
   sanitizeBlueprintModify,
   WORLD_BLUEPRINT_BYTES,
 } from '../src/core/extras/blueprintPolicy.js'
-import { Blueprints } from './lib/clientHarness.mjs'
-import { fakeWs, makeNetwork, Socket } from './lib/networkHarness.mjs'
+import { fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
 
-function fixture() {
+const net = await loadNetwork()
+const { Blueprints, Socket } = net
+
+function fixture(t) {
   const logs = []
-  const network = makeNetwork(line => logs.push(line))
+  const network = makeNetwork(t, { net, log: line => logs.push(line) })
   const world = network.world
-  world.network = network
   world.entities = {
     items: new Map(),
     get(id) {
@@ -61,8 +62,8 @@ const app = (id, blueprint) => ({
   state: {},
 })
 
-test('blueprint enforcement: decoded adds and modifies store and broadcast only the shared policy value', () => {
-  const f = fixture()
+test('blueprint enforcement: decoded adds and modifies store and broadcast only the shared policy value', t => {
+  const f = fixture(t)
   const add = {
     id: 'bp',
     version: 0,
@@ -86,8 +87,8 @@ test('blueprint enforcement: decoded adds and modifies store and broadcast only 
   assert.equal(f.packets(f.author).length, 0, 'accepted broadcasts exclude the editing socket')
 })
 
-test('blueprint enforcement: unknown names are escaped, cut to 32 characters and logged once per socket', () => {
-  const f = fixture()
+test('blueprint enforcement: unknown names are escaped, cut to 32 characters and logged once per socket', t => {
+  const f = fixture(t)
   const key = '\n"' + 'x'.repeat(30) + 'secret-key-tail'
   for (const [id, socket] of [
     ['bp', f.author],
@@ -108,7 +109,7 @@ test('blueprint enforcement: unknown names are escaped, cut to 32 characters and
 test('blueprint enforcement: invalid and stale changes share a one-second revert limit per socket and blueprint', t => {
   let now = 10000
   t.mock.method(Date, 'now', () => now)
-  const f = fixture()
+  const f = fixture(t)
   const current = { id: 'bp', version: 3, props: { text: 'current' } }
   f.world.blueprints.add(current)
   f.world.blueprints.add({ ...current, id: 'other' })
@@ -138,8 +139,8 @@ test('blueprint enforcement: invalid and stale changes share a one-second revert
   assert.equal(f.packets().length, 0)
 })
 
-test('blueprint enforcement: malformed roots and invalid ids have no effects or handler failures', () => {
-  const f = fixture()
+test('blueprint enforcement: malformed roots and invalid ids have no effects or handler failures', t => {
+  const f = fixture(t)
   for (const data of [null, false, [], 1, 'bp', { id: 1, version: 0 }, { id: 'x'.repeat(65), version: 0 }]) {
     f.send('blueprintAdded', data)
     f.send('blueprintModified', data)
@@ -151,8 +152,8 @@ test('blueprint enforcement: malformed roots and invalid ids have no effects or 
   assert.ok(f.logs.every(line => !line.includes('failed:')))
 })
 
-test('blueprint enforcement: a refused add removes the matching optimistic entity only on its socket', () => {
-  const f = fixture()
+test('blueprint enforcement: a refused add removes the matching optimistic entity only on its socket', t => {
+  const f = fixture(t)
   // Even if the id already exists, a refused replacement must not spawn against that old blueprint.
   const current = { id: 'bp', version: 0 }
   f.world.blueprints.add(current)
@@ -173,8 +174,8 @@ test('blueprint enforcement: a refused add removes the matching optimistic entit
   assert.ok(f.world.entities.get('next-app'), 'the pending refusal is consumed once')
 })
 
-test('blueprint enforcement: a model/script the server would read as a local file is refused at the packet', () => {
-  const f = fixture()
+test('blueprint enforcement: a model/script the server would read as a local file is refused at the packet', t => {
+  const f = fixture(t)
   for (const [i, change] of [
     { script: '/etc/passwd' },
     { script: 'asset://../../../proc/self/environ' },
@@ -196,8 +197,8 @@ test('blueprint enforcement: a model/script the server would read as a local fil
   assert.equal(f.network.dirtyBlueprints.size, 1)
 })
 
-test('blueprint enforcement: a legacy stored model/script stays editable; setting a refused one reverts', () => {
-  const f = fixture()
+test('blueprint enforcement: a legacy stored model/script stays editable; setting a refused one reverts', t => {
+  const f = fixture(t)
   const legacy = { id: 'bp', version: 3, name: 'old', script: '/etc/hosts', model: 'asset://../x.glb' }
   f.world.blueprints.add(legacy)
   // a modify that does not touch script or model, and one that repeats them unchanged
@@ -216,8 +217,8 @@ test('blueprint enforcement: a legacy stored model/script stays editable; settin
   assert.equal(f.world.blueprints.get('bp').model, legacy.model)
 })
 
-test('blueprint enforcement: a refused new blueprint and its entity are both absent', () => {
-  const f = fixture()
+test('blueprint enforcement: a refused new blueprint and its entity are both absent', t => {
+  const f = fixture(t)
   for (const id of ['new', 'x'.repeat(65)]) {
     f.send('blueprintAdded', { id, version: -1 })
     f.send('entityAdded', app(`app-${id}`, id))
@@ -234,7 +235,7 @@ test('blueprint enforcement: a refused new blueprint and its entity are both abs
 test('blueprint enforcement: pending add refusal survives unrelated entities, expires and clears on a valid retry', t => {
   let now = 0
   t.mock.method(Date, 'now', () => now)
-  const f = fixture()
+  const f = fixture(t)
   f.world.blueprints.add({ id: 'bp', version: 0 })
   f.world.blueprints.add({ id: 'other', version: 0 })
   f.send('blueprintAdded', { id: 'bp', version: -1 })
@@ -253,7 +254,7 @@ test('blueprint enforcement: pending add refusal survives unrelated entities, ex
   assert.equal(f.packets(f.author).length, 0)
 })
 
-test('blueprint enforcement: five production shapes and four collection files are stored and broadcast unchanged', () => {
+test('blueprint enforcement: five production shapes and four collection files are stored and broadcast unchanged', t => {
   const production = JSON.parse(fs.readFileSync(new URL('./fixtures/blueprint-shapes.json', import.meta.url)))
   const directory = new URL('../src/world/collections/default/', import.meta.url)
   const collection = fs
@@ -266,7 +267,7 @@ test('blueprint enforcement: five production shapes and four collection files ar
   assert.equal(production.length, 5)
   assert.equal(collection.length, 4)
   for (const blueprint of [...production, ...collection]) {
-    const f = fixture()
+    const f = fixture(t)
     f.send('blueprintAdded', blueprint)
     assert.deepEqual(f.world.blueprints.get(blueprint.id), blueprint, blueprint.name)
     assert.deepEqual(f.packets(), [['onBlueprintAdded', blueprint]])
@@ -278,8 +279,8 @@ const largeBlueprint = (id, length = 60000) => ({ id, version: 0, props: { notes
 const totalBytes = blueprints =>
   blueprints.serialize().reduce((total, bp) => total + writePacket('blueprintAdded', bp).length, 0)
 
-test('blueprint budget: ninth 60 KB add is refused, its entity removed, and the world snapshot still writes', () => {
-  const f = fixture()
+test('blueprint budget: ninth 60 KB add is refused, its entity removed, and the world snapshot still writes', t => {
+  const f = fixture(t)
   for (let i = 0; i < 9; i++) f.send('blueprintAdded', largeBlueprint(`bp${i}`))
   assert.equal(f.world.blueprints.items.size, 8)
   assert.equal(f.world.blueprints.bytes, totalBytes(f.world.blueprints))
@@ -301,7 +302,7 @@ test('blueprint budget: ninth 60 KB add is refused, its entity removed, and the 
 test('blueprint budget: modifications measure the merged blueprint and share the rate-limited revert path', t => {
   let now = 0
   t.mock.method(Date, 'now', () => now)
-  const f = fixture()
+  const f = fixture(t)
   for (let i = 0; i < 8; i++) f.world.blueprints.add(largeBlueprint(`bp${i}`))
   f.world.blueprints.add(largeBlueprint('bp8', 40000))
   const original = f.world.blueprints.get('bp8')
@@ -331,7 +332,7 @@ test('blueprint budget: modifications measure the merged blueprint and share the
 test('blueprint budget: over-budget startup loads and warns, then allows only non-growing changes', async t => {
   const warnings = []
   t.mock.method(console, 'warn', line => warnings.push(line))
-  const f = fixture()
+  const f = fixture(t)
   const rows = Array.from({ length: 9 }, (_, i) => ({ id: `bp${i}`, data: JSON.stringify(largeBlueprint(`bp${i}`)) }))
   f.network.db = table =>
     table === 'config' ? { where: () => ({ first: async () => undefined }) } : table === 'blueprints' ? rows : []
@@ -353,8 +354,8 @@ test('blueprint budget: over-budget startup loads and warns, then allows only no
   assert.equal(f.world.blueprints.bytes, totalBytes(f.world.blueprints))
 })
 
-test('announce before apply: blueprint broadcast precedes the synchronous rebuild event and preserves author', () => {
-  const f = fixture()
+test('announce before apply: blueprint broadcast precedes the synchronous rebuild event and preserves author', t => {
+  const f = fixture(t)
   f.world.blueprints.add({ id: 'bp', version: 0 })
   f.world.entities.items.set('app', {
     data: { blueprint: 'bp' },
@@ -372,8 +373,8 @@ test('announce before apply: blueprint broadcast precedes the synchronous rebuil
   assert.deepEqual(f.logs, [])
 })
 
-test('announce before apply: app entity modification precedes its synchronous rebuild event', () => {
-  const f = fixture()
+test('announce before apply: app entity modification precedes its synchronous rebuild event', t => {
+  const f = fixture(t)
   f.world.blueprints.add({ id: 'bp', version: 0 })
   f.world.entities.items.set('app', {
     isApp: true,
@@ -392,8 +393,8 @@ test('announce before apply: app entity modification precedes its synchronous re
   assert.deepEqual(f.logs, [])
 })
 
-test('announce before apply: app entity addition precedes its synchronous init event', () => {
-  const f = fixture()
+test('announce before apply: app entity addition precedes its synchronous init event', t => {
+  const f = fixture(t)
   f.world.blueprints.add({ id: 'bp', version: 0 })
   f.world.entities.add = safe => {
     assert.deepEqual(f.packets(), [['onEntityAdded', safe]])

@@ -1,76 +1,25 @@
-import { persistenceRecord } from '../src/core/extras/persistenceRecord.js'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import fs from 'node:fs'
-import vm from 'node:vm'
-import { writeClientPacket, writePacket } from '../src/core/packets.js'
-import {
-  createInboundGate,
-  createInboundScheduler,
-  INBOX_SOCKET_CAP,
-  packetNodeLimit,
-} from '../src/core/extras/inboundPolicy.js'
-import { briefError, createLogOnce } from '../src/core/extras/logOnce.js'
-import { readInboundPacket } from '../src/server/inboundDecode.js'
+import { writeClientPacket } from '../src/core/packets.js'
+import { INBOX_SOCKET_CAP } from '../src/core/extras/inboundPolicy.js'
 import { createEventLedger, createEventQueue } from '../src/core/extras/appEventQueue.js'
-import { sanitizeBlueprintModify } from '../src/core/extras/blueprintPolicy.js'
+import { loadNetwork, makeNetwork } from './lib/network.mjs'
 
-// Exercise the real receive/queue/flush methods without booting physics, the database or Solana.
-const source = fs.readFileSync(new URL('../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
-const methods = [
-  'markBlueprintDirty',
-  'admit',
-  'enqueue',
-  'flush',
-  'flushPending',
-  'onDisconnect',
-  'releaseApps',
-  'dropTipTickets',
-  'checkSockets',
-  'onEntityEvent',
-  'onBlueprintModified',
-  'revertBlueprint',
-]
-  .map(name => {
-    const method = source.match(new RegExp(`^  ${name}(?:\\(| = )[^]*?^  }`, 'm'))?.[0]
-    assert.ok(method, `${name} method found`)
-    return method
-  })
-  .join('\n')
-const socketSource = fs.readFileSync(new URL('../src/core/Socket.js', import.meta.url), 'utf8')
-const Socket = vm.runInNewContext(`(${socketSource.slice(socketSource.indexOf('class Socket'))})`, { writePacket })
-const Network = vm.runInNewContext(`(class Network { ${methods} })`, {
-  performance,
-  packetNodeLimit,
-  readInboundPacket,
-  briefError,
-  solanaGating: { clearSocket() {} },
-  Uint8Array,
-  console,
-  internalEvents: ['update'],
-  sanitizeBlueprintModify,
-  persistenceRecord,
-})
-const make = () => {
+// Exercise the real receive/queue/flush methods without booting physics, the database or Solana: the real network
+// (test/lib/network.mjs) and its own Socket, inbound gate and scheduler. `log` takes the gate's and the class's own
+// once-per-subject lines (the constructor wires them to it)
+const net = await loadNetwork()
+const make = t => {
   const logs = []
-  const network = new Network()
-  network.scheduler = createInboundScheduler()
-  network.sockets = new Map()
-  network.world = {
-    livekit: { clearModifiers() {} },
-    apps: { eventLedger: createEventLedger() },
-    entities: { items: new Map() },
-  }
-  network.logOnce = createLogOnce(line => logs.push(line))
-  network.gate = createInboundGate({ now: () => 1000, log: line => logs.push(line) })
+  const network = makeNetwork(t, { net, log: line => logs.push(line) })
   const ws = new EventEmitter()
-  const socket = new Socket({ id: 'test', ws, network, player: { isBuilder: () => true, destroy() {} } })
+  const socket = new net.Socket({ id: 'test', ws, network, player: { isBuilder: () => true, destroy() {} } })
   return { network, ws, socket, logs }
 }
 
-test('Socket: admission precedes exact-size copy; flush passes bytes, nodes, socket and builder metadata', () => {
-  const { network, ws, socket } = make()
+test('Socket: admission precedes exact-size copy; flush passes bytes, nodes, socket and builder metadata', t => {
+  const { network, ws, socket } = make(t)
   const backing = Buffer.alloc(1024 * 1024)
   const packet = writeClientPacket('entityEvent', ['app', 0, 'probe', { n: 1 }])
   backing.set(packet, 100)
@@ -97,8 +46,8 @@ test('Socket: admission precedes exact-size copy; flush passes bytes, nodes, soc
   assert.ok(Number.isFinite(at) && at > 0 && at <= performance.now(), `arrival time: ${at}`)
 })
 
-test('Socket: refused scans and a full inbox are counted, logged once, and never copied', () => {
-  const { network, ws, socket, logs } = make()
+test('Socket: refused scans and a full inbox are counted, logged once, and never copied', t => {
+  const { network, ws, socket, logs } = make(t)
   for (let i = 0; i < 3; i++) ws.emit('message', Buffer.from([0x92, 8, 0xc1]))
   assert.equal(socket.inbox.length, 0)
   assert.equal(network.gate.dropped(socket), 3)
@@ -119,8 +68,8 @@ test('Socket: refused scans and a full inbox are counted, logged once, and never
   assert.equal(socket.inbox.length, 0)
 })
 
-test('flush: a corrupted admitted copy is a decoder bug counted per packet and logged once', () => {
-  const { network, ws, socket, logs } = make()
+test('flush: a corrupted admitted copy is a decoder bug counted per packet and logged once', t => {
+  const { network, ws, socket, logs } = make(t)
   const seen = []
   network.onPing = (s, data) => seen.push(data)
   for (let i = 0; i < 2; i++) {
@@ -136,8 +85,8 @@ test('flush: a corrupted admitted copy is a decoder bug counted per packet and l
   assert.equal(socket.inboxCost, 0)
 })
 
-test('flush: per-socket FIFO drains work below W even when wire bytes exceed 256 KiB', () => {
-  const { network, ws, socket } = make()
+test('flush: per-socket FIFO drains work below W even when wire bytes exceed 256 KiB', t => {
+  const { network, ws, socket } = make(t)
   const seen = []
   network.onEntityEvent = (s, data) => seen.push(data[0])
   for (let i = 0; i < 6; i++) ws.emit('message', writeClientPacket('entityEvent', [i, 'x'.repeat(60000)]))
@@ -149,8 +98,8 @@ test('flush: per-socket FIFO drains work below W even when wire bytes exceed 256
   assert.equal(network.scheduler.pool, 0)
 })
 
-test('flush: node work stops a tick before the next entry would exceed W', () => {
-  const { network, ws, socket } = make()
+test('flush: node work stops a tick before the next entry would exceed W', t => {
+  const { network, ws, socket } = make(t)
   const seen = []
   network.onEntityEvent = (s, data) => seen.push(data[0])
   for (let i = 0; i < 3; i++) ws.emit('message', writeClientPacket('entityEvent', [i, Array(8187).fill(0)]))
@@ -163,8 +112,8 @@ test('flush: node work stops a tick before the next entry would exceed W', () =>
   assert.equal(socket.inboxCost, 0)
 })
 
-test('enqueue: capacity is reserved before copying and a failed copy releases its reservation', () => {
-  const { network, ws, socket } = make()
+test('enqueue: capacity is reserved before copying and a failed copy releases its reservation', t => {
+  const { network, ws, socket } = make(t)
   const slice = Uint8Array.prototype.slice
   const packet = writeClientPacket('ping', 1)
   Uint8Array.prototype.slice = function () {
@@ -181,8 +130,8 @@ test('enqueue: capacity is reserved before copying and a failed copy releases it
   assert.equal(socket.inbox.length, 0)
 })
 
-test('enqueue: late packets for a disconnected socket are counted as disconnected without copying', () => {
-  const { network, ws, socket, logs } = make()
+test('enqueue: late packets for a disconnected socket are counted as disconnected without copying', t => {
+  const { network, ws, socket, logs } = make(t)
   ws.emit('close')
   for (let i = 0; i < 2; i++) ws.emit('message', writeClientPacket('ping', i))
   assert.equal(network.gate.dropped(socket), 2)
@@ -193,8 +142,8 @@ test('enqueue: late packets for a disconnected socket are counted as disconnecte
   assert.equal(network.scheduler.pool, 0)
 })
 
-test('onDisconnect: release queued and deferred credit synchronously, with lazy skipping on the next flush', () => {
-  const { network, ws, socket } = make()
+test('onDisconnect: release queued and deferred credit synchronously, with lazy skipping on the next flush', t => {
+  const { network, ws, socket } = make(t)
   const packet = writeClientPacket('entityEvent', 'x'.repeat(60000))
   for (let i = 0; i < 5; i++) ws.emit('message', packet)
   const entries = [...socket.inbox]
@@ -222,8 +171,8 @@ test('onDisconnect: release queued and deferred credit synchronously, with lazy 
   assert.ok(entries.every(e => e.released))
 })
 
-test('flush: synchronous and async handler errors are brief, logged once, and do not stall the queue', async () => {
-  const { network, ws, socket, logs } = make()
+test('flush: synchronous and async handler errors are brief, logged once, and do not stall the queue', async t => {
+  const { network, ws, socket, logs } = make(t)
   const seen = []
   network.onPing = (s, data) => {
     seen.push(data)
@@ -239,8 +188,8 @@ test('flush: synchronous and async handler errors are brief, logged once, and do
   assert.equal(socket.inboxCost, 0)
 })
 
-test('onEntityEvent: rejects invalid versions silently and passes scheduler metadata to the app', () => {
-  const { network, socket, ws, logs } = make()
+test('onEntityEvent: rejects invalid versions silently and passes scheduler metadata to the app', t => {
+  const { network, socket, ws, logs } = make(t)
   const seen = []
   network.world.entities = {
     items: new Map(),
@@ -276,8 +225,8 @@ test('onEntityEvent: rejects invalid versions silently and passes scheduler meta
   assert.equal(typeof allow, 'function')
 })
 
-test('onBlueprintModified: passes the editing socket as author without changing the existing local argument', () => {
-  const { network, socket } = make()
+test('onBlueprintModified: passes the editing socket as author without changing the existing local argument', t => {
+  const { network, socket } = make(t)
   const seen = []
   network.requireBuilder = () => true
   network.world.blueprints = {
@@ -286,8 +235,6 @@ test('onBlueprintModified: passes the editing socket as author without changing 
     modify: (...args) => seen.push(args),
   }
   network.send = () => {}
-  network.dirtyBlueprints = new Map()
-  network.persistenceRevision = 0
   const data = { id: 'bp', version: 1 }
   network.onBlueprintModified(socket, data)
   assert.equal(seen.length, 1)
@@ -297,8 +244,8 @@ test('onBlueprintModified: passes the editing socket as author without changing 
   assert.deepEqual({ ...seen[0][2] }, { authorSocketId: socket.id })
 })
 
-test('onDisconnect and checkSockets: purge and expire actual queued events, releasing the shared ledger', () => {
-  const { network, socket } = make()
+test('onDisconnect and checkSockets: purge and expire actual queued events, releasing the shared ledger', t => {
+  const { network, socket } = make(t)
   const ledger = network.world.apps.eventLedger
   const queue = createEventQueue({ ledger, isServer: true })
   const meta = { bytes: 100, nodes: 10, socketId: socket.id, builder: true }

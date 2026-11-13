@@ -1,70 +1,17 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import vm from 'node:vm'
 import { inspect } from 'node:util'
-import moment from 'moment'
-import {
-  isExternalUrl,
-  sanitizeAppModify,
-  sanitizeAppRelease,
-  sanitizeEntityAdd,
-  sanitizeName,
-  sanitizePlayerSelfModify,
-  sanitizeSpawn,
-  sessionAvatarRequest,
-} from '../src/core/extras/entityModifyPolicy.js'
-import { isAdminOnlySettingKey, isKnownSettingKey, normalizeSettingValue } from '../src/core/extras/settingsPolicy.js'
-import { briefError, createLogOnce } from '../src/core/extras/logOnce.js'
-import { eventPayload } from '../src/core/extras/eventPayload.js'
+import { createLogOnce } from '../src/core/extras/logOnce.js'
 import { Ranks } from '../src/core/extras/ranks.js'
-import { sanitizeBlueprintModify } from '../src/core/extras/blueprintPolicy.js'
-import { previewValue } from '../src/core/extras/assetURL.js'
-import { createActionBudgets } from '../src/core/extras/actionBudget.js'
-import { createPendingChanges } from '../src/core/extras/pendingChanges.js'
-import { adminMode, adminWaitScale, createAdminGate } from '../src/server/adminCode.js'
-import { isAdminCommand, readCommandPacket } from '../src/core/extras/chatCommand.js'
-import { createUserRows } from '../src/server/userRows.js'
-import { endGrantByDecision } from '../src/server/rankGrants.js'
+import { loadNetwork, makeNetwork } from './lib/network.mjs'
 
-const source = fs.readFileSync(new URL('../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
-const methods = [
-  'requireBuilder',
-  'spend',
-  'settingAllowed',
-  'releaseSettings',
-  'heldAfter',
-  'saveConfig',
-  'onBlueprintModified',
-  'revertBlueprint',
-  'onEntityModified',
-  'onEntityAdded',
-  'onEntityRemoved',
-  'onSettingsModified',
-  'onAi',
-  'admin',
-  'saveExpired',
-  'userRows',
-  'storeRank',
-  'onCommand',
-  'onModifyRank',
-  'defaultAvatar',
-  'dropBuilderUrls',
-  'onSpawnModified',
-  'onRequestBuilderByToken',
-  'onRequestBuilderNonce',
-  'onRequestBuilderRecheck',
-  'onTokenBalanceRequest',
-  'onRevokeBuilderByToken',
-]
-  .map(name => {
-    const method = source.match(new RegExp(`^  ${name}(?:\\(| = )[^]*?^  }`, 'm'))?.[0]
-    assert.ok(method, `${name} method found`)
-    return method
-  })
-  .join('\n')
+// The real network (test/lib/network.mjs). What the old harness gave the class is given the same way here: an admin
+// code in the environment, and the token gate switched on through a stand-in of its module (the rest of it is the
+// real module's)
+const SOLANA = 'src/server/solana-gating.js'
+const net = await loadNetwork({ standIns: [SOLANA] })
 
-function fixture() {
+function fixture(t) {
   const lines = []
   const calls = []
   // plain lines of the server's log (console.error): none, unless the test says it expects some
@@ -84,66 +31,7 @@ function fixture() {
       assert.fail('thrown value inspected')
     },
   }
-  const Network = vm.runInNewContext(`(class { ${methods} })`, {
-    performance,
-    createActionBudgets,
-    createPendingChanges,
-    isObject: value => value !== null && typeof value === 'object',
-    isExternalUrl,
-    sanitizeAppModify,
-    sanitizeAppRelease,
-    sanitizeEntityAdd,
-    sanitizeName,
-    sanitizePlayerSelfModify,
-    sanitizeSpawn,
-    sessionAvatarRequest,
-    sanitizeBlueprintModify,
-    isAdminOnlySettingKey,
-    isKnownSettingKey,
-    normalizeSettingValue,
-    briefError,
-    previewValue,
-    adminMode,
-    adminWaitScale,
-    createAdminGate,
-    isAdminCommand,
-    readCommandPacket,
-    eventPayload,
-    moment,
-    Ranks,
-    uuid: () => 'message',
-    setImmediate,
-    process: { env: { ADMIN_CODE: 'code' } },
-    solanaGating: { TOKEN_GATING_ENABLED: true, clearWallet() {} },
-    createUserRows,
-    endGrantByDecision,
-    console: {
-      error(line) {
-        if (!server.lines) assert.fail('refusals must go through logOnce')
-        assert.equal(typeof line, 'string')
-        server.lines.push(line)
-      },
-    },
-  })
-  const network = new Network()
-  network.loadedConfig = new Map([['spawn', null]])
-  network.dirtyConfig = new Map()
-  const once = createLogOnce(line => {
-    assert.equal(typeof line, 'string')
-    lines.push(line)
-  })
-  network.logOnce = (subject, key, line) => {
-    calls.push({ subject, key })
-    return once(subject, key, line)
-  }
-  network.world = {
-    blueprints: { get() {} },
-    entities: { get: id => entities.get(id) },
-    settings: {},
-    events: { emit() {} },
-  }
-  network.send = () => {}
-  network.db = () => ({
+  const db = () => ({
     where: () => ({
       update: async () => {
         throw failure
@@ -157,6 +45,40 @@ function fixture() {
       }),
     }),
   })
+  const network = makeNetwork(t, {
+    net,
+    env: { ADMIN_CODE: 'code' },
+    modules: { [SOLANA]: { TOKEN_GATING_ENABLED: true, clearWallet() {} } },
+    // (the token gate is on: no balance is read in these tests)
+    init: { db, tokenBalanceService: { get: () => assert.fail('a token balance read') } },
+    world: {
+      blueprints: { get() {} },
+      entities: { get: id => entities.get(id) },
+      settings: {},
+      events: { emit() {} },
+    },
+    // the server's log (console.error; the constructor's own once-per-subject lines too)
+    log: line => {
+      if (!server.lines) assert.fail('refusals must go through logOnce')
+      assert.equal(typeof line, 'string')
+      server.lines.push(line)
+    },
+  })
+  // and nothing else of the console: the class's console under the old harness had only `error`, so a line on any
+  // other of its methods failed the test
+  for (const method of ['warn', 'log', 'info']) {
+    t.mock.method(console, method, () => assert.fail(`console.${method} in a handler`))
+  }
+  network.loadedConfig.set('spawn', null)
+  const once = createLogOnce(line => {
+    assert.equal(typeof line, 'string')
+    lines.push(line)
+  })
+  network.logOnce = (subject, key, line) => {
+    calls.push({ subject, key })
+    return once(subject, key, line)
+  }
+  network.send = () => {}
   const socket = (id = 'socket') => ({
     id,
     player: {
@@ -253,8 +175,8 @@ const refusals = [
 ]
 
 for (const [index, [key, message, refuse]] of refusals.entries()) {
-  test(`handler logging ${index}: ${message} logs bounded ids once per socket and key`, async () => {
-    const f = fixture()
+  test(`handler logging ${index}: ${message} logs bounded ids once per socket and key`, async t => {
+    const f = fixture(t)
     const a = f.socket()
     const b = f.socket() // the same user reconnecting is a new log subject
     const id = 'i'.repeat(64) + 'secret-packet-tail'.repeat(1000)
@@ -271,8 +193,8 @@ for (const [index, [key, message, refuse]] of refusals.entries()) {
   })
 }
 
-test('handler logging: an id with a line break or control characters cannot start a log line of its own', async () => {
-  const f = fixture()
+test('handler logging: an id with a line break or control characters cannot start a log line of its own', async t => {
+  const f = fixture(t)
   const s = f.socket()
   const forged = 'x\n[network] admin granted to everyone\r\u001b[2J\u2028y'
   await f.network.onEntityModified(s, packet({ id: forged }))
@@ -284,8 +206,8 @@ test('handler logging: an id with a line break or control characters cannot star
   }
 })
 
-test('handler logging: builder refusals use builder:<action> and a bounded socket id', () => {
-  const f = fixture()
+test('handler logging: builder refusals use builder:<action> and a bounded socket id', t => {
+  const f = fixture(t)
   for (const s of [f.socket('s'.repeat(1000)), f.socket('s'.repeat(1000))]) {
     s.player.isBuilder = () => false
     for (const action of [
@@ -308,8 +230,8 @@ test('handler logging: builder refusals use builder:<action> and a bounded socke
   assert.equal(f.lines.length, 14)
 })
 
-test('handler logging: all refusal reasons are independently logged once per socket', async () => {
-  const f = fixture()
+test('handler logging: all refusal reasons are independently logged once per socket', async t => {
+  const f = fixture(t)
   const s = f.socket()
   s.player.isAdmin = () => false
   const refuse = async () => {
@@ -333,8 +255,8 @@ test('handler logging: all refusal reasons are independently logged once per soc
   assert.equal(f.lines.length, 8)
 })
 
-test('handler logging: caught handler failures use briefError, and logOnce or the once-per-run rule of the user rows', async () => {
-  const f = fixture()
+test('handler logging: caught handler failures use briefError, and logOnce or the once-per-run rule of the user rows', async t => {
+  const f = fixture(t)
   const serverLines = f.serverLines()
   const s = f.socket()
   f.entities.set(s.id, s.player)

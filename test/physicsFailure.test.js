@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict'
 import { before, after, test } from 'node:test'
-import fs from 'node:fs'
-import vm from 'node:vm'
 import { bundleRealPhysx } from './lib/realPhysx.mjs'
+import { loadNetwork, makeNetwork } from './lib/network.mjs'
 
 let bundle, B
 before(async () => {
@@ -429,21 +428,17 @@ test('client fatal stops animation, worker and visibility restart; close cannot 
 })
 
 test('fatal stop suppresses save rearming and refuses mutating packets', async t => {
-  const sourceRoot = process.env.REAL_PHYSX_SOURCE_ROOT
-  const source = fs.readFileSync(
-    sourceRoot
-      ? `${sourceRoot}/src/core/systems/ServerNetwork.js`
-      : new URL('../src/core/systems/ServerNetwork.js', import.meta.url),
-    'utf8'
-  )
-  const names = [
-    'stopForFatal',
-    'save',
-    'saveDirty',
-    'admit',
-    'enqueue',
-    'flush',
-    'flushPending',
+  // the real network (test/lib/network.mjs), against the REAL_PHYSX_SOURCE_ROOT checkout when it is set (where this
+  // test read the class from before); it saves on a timer (SAVE_INTERVAL 60), which the stop must not set again. The
+  // token gate's module is a stand-in (below)
+  const SOLANA = 'src/server/solana-gating.js'
+  const net = await loadNetwork({
+    sourceRoot: process.env.REAL_PHYSX_SOURCE_ROOT,
+    env: { SAVE_INTERVAL: 60 },
+    standIns: [SOLANA],
+  })
+  t.after(() => net.destroy())
+  const handlers = [
     'onBlueprintAdded',
     'onBlueprintModified',
     'onEntityAdded',
@@ -459,34 +454,51 @@ test('fatal stop suppresses save rearming and refuses mutating packets', async t
     'onTokenBalanceRequest',
     'onRevokeBuilderByToken',
   ]
-  const methods = names
-    .map(name => {
-      const method = source.match(new RegExp(`^  (?:async )?${name}(?:\\(| = )[^]*?^  }`, 'm'))?.[0]
-      assert.ok(method, name)
-      return method
+  // Once stopped, a handler returns before it touches anything: the connection, the payload and its meta, the world
+  // and the token gate's module fail the test when they are read or called (and are recorded, for a handler that
+  // catches the throw), and so does a line of the network's log (a packet the flush took would be refused with one).
+  // (The class this test cut out of its file before had none of these, and a handler that went on threw there.)
+  const touched = []
+  const tripwire = label =>
+    new Proxy(function () {}, {
+      get(_, key) {
+        touched.push(`${label}.${String(key)}`)
+        throw new Error(`${label} was touched while stopping`)
+      },
+      has(_, key) {
+        touched.push(`${String(key)} in ${label}`)
+        throw new Error(`${label} was touched while stopping`)
+      },
+      apply() {
+        touched.push(`${label}()`)
+        throw new Error(`${label} was called while stopping`)
+      },
     })
-    .join('\n')
+  let stopped = false
+  // until the stop, the real module's values (init() reads its switch)
+  const gating = new Proxy(
+    {},
+    {
+      has: () => stopped,
+      get(_, key) {
+        touched.push(`solanaGating.${String(key)}`)
+        throw new Error('the token gate was read while stopping')
+      },
+    }
+  )
   const timers = clock(t)
-  const Network = vm.runInNewContext(`(class { ${methods} })`, {
-    setTimeout,
-    clearTimeout,
-    clearInterval,
-    Promise,
-    Error,
-    moment: () => ({ toISOString: () => '' }),
-    SAVE_INTERVAL: 60,
-  })
-  const network = new Network()
+  const network = makeNetwork(t, { net, modules: { [SOLANA]: gating }, log: line => touched.push(`log: ${line}`) })
   network.stopForFatal()
-  network.dirtyBlueprints = new Map()
-  network.dirtyApps = new Map()
+  stopped = true
+  network.world = tripwire('world')
   await network.save()
   assert.equal(timers.tasks.size, 0, 'the existing save does not rearm during shutdown')
   assert.equal(network.admit(), false)
   assert.equal(network.enqueue(), false)
   network.scheduler = { flush: fn => fn({}, {}) }
   network.flush()
-  for (const name of names.filter(name => name.startsWith('on'))) await network[name]()
+  for (const name of handlers) await network[name](tripwire('socket'), tripwire('data'), tripwire('meta'))
+  assert.deepEqual(touched, [])
 })
 
 test('latched apps cannot dispatch pointer or control callbacks', () => {

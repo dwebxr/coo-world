@@ -626,15 +626,19 @@ test('network helper: the ported files pass with those settings in their environ
     'connectionLifecycle',
     'eventBudget',
     'externalAvatarUrls',
+    'inboundNetwork',
     'joinAdmission',
     'joinBudget',
     'moderation',
+    'networkLogging',
     'networkTransforms',
     'packetAccess',
     'packetRefusals',
     'persistence',
     'persistedHydration',
+    'physicsFailure',
     'playerCoalescing',
+    'protocolVersion',
     'scriptChat',
     'serverEvmWallet',
     'serverFileRead',
@@ -642,6 +646,8 @@ test('network helper: the ported files pass with those settings in their environ
     'sharedObjects',
     'userRowsNetwork',
     'writeLedger',
+    'wsAdmission',
+    'wsTransport',
   ].map(name => fileURLToPath(new URL(`./${name}.test.js`, import.meta.url)))
   const { PATH, HOME, TMPDIR } = process.env
   // (the reporter is named: with its output piped, Node 22 would print TAP and Node 24 the spec lines read below)

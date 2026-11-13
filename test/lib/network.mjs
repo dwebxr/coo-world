@@ -25,8 +25,9 @@
 //   world. world: fields the stub world has besides (or instead of) the ones below. init: what init() is given (db,
 //   tokenBalanceService, evmHoldings, tipWatcher, evmSignatureVerifier, maxUploadSize). env: values on top of the
 //   known environment and of net.env, for what the class reads when it runs (ADMIN_CODE, ASSETS_BASE_URL, …).
-//   log: where the network's own once-per-subject lines go (its logOnce, inbound gate and write ledger, made with
-//   that sink instead of the console). The test's end stops it (stopForFatal), which clears every timer the class
+//   log: where the network's own once-per-subject lines go: the console its constructor wires them to is `log`
+//   (console.warn while the constructor runs, which its logOnce, inbound gate and relay drop keep; console.error for
+//   the test, which its write ledger calls). The constructor's own wiring is what runs. The test's end stops it (stopForFatal), which clears every timer the class
 //   keeps, and puts the environment back.
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
@@ -39,9 +40,6 @@ const ENTRY = `
   export { Settings } from './src/core/systems/Settings.js'
   export { Entities } from './src/core/systems/Entities.js'
   export { Blueprints } from './src/core/systems/Blueprints.js'
-  export { createLogOnce } from './src/core/extras/logOnce.js'
-  export { createInboundGate } from './src/core/extras/inboundPolicy.js'
-  export { createWriteLedger } from './src/core/extras/writeLedger.js'
   export { createEventLedger } from './src/core/extras/appEventQueue.js'
   export { RpcError } from './src/server/evmRpc.js'
   export * as solanaGating from './src/server/solana-gating.js'
@@ -128,20 +126,28 @@ export function stubWorld(net, fields = {}) {
   }
 }
 
+// console.warn is `warn` while `construct` runs: what takes it then (createLogOnce(), createInboundGate(),
+// createRelayDrop() default to it) keeps it
+function constructedWithWarn(warn, construct) {
+  const original = console.warn
+  console.warn = warn
+  try {
+    return construct()
+  } finally {
+    console.warn = original
+  }
+}
+
 // `net`: what loadNetwork returned, or importNetwork in a worker or a child process
 export function makeNetwork(t, { net, world: fields, log, init = {}, env } = {}) {
   assert.ok(net?.ServerNetwork && net.env, 'makeNetwork: pass what loadNetwork() or importNetwork() gave as `net`')
   testEnv(t, { ...testEnvironment(), ...net.env, ...known(env) })
   const world = stubWorld(net, fields)
-  const network = new net.ServerNetwork(world)
+  if (log) t.mock.method(console, 'error', log)
+  const network = log ? constructedWithWarn(log, () => new net.ServerNetwork(world)) : new net.ServerNetwork(world)
   world.network = network
   // the constructor's socket check, a save timer after start(), a tip announcement: none outlives the test
   t.after(() => network.stopForFatal())
-  if (log) {
-    network.logOnce = net.createLogOnce(log)
-    network.gate = net.createInboundGate({ log })
-    network.writer = net.createWriteLedger({ log })
-  }
   network.init(init)
   return network
 }

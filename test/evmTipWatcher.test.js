@@ -371,8 +371,8 @@ test('tip watcher: a job that arrives later is asked after a job that already wa
   assert.deepEqual(t.calls.at(-1), ['eth_getTransactionReceipt', late], 'the new one a tick later')
 })
 
-// A flood as the server lets visitors make one (ServerNetwork.js): `senders` connections with two watch slots each,
-// every slot filled again when its job ends. One honest tip is reported at 30 s and mined 4 s later.
+// A flood as the server lets visitors make one (onEvmTip, src/server/network/tips.js): `senders` connections with two
+// watch slots each, every slot filled again when its job ends. One honest tip is reported at 30 s and mined 4 s later.
 // - 'mined': the junk is the hash of a real transaction without the transfer. It fails at its first call, and the
 //   connection has a new ticket every 10 s (the intent budget)
 // - 'unknown': the junk is a hash no node knows. It holds its slot for a minute, then the slot is used again at once

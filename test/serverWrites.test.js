@@ -285,15 +285,17 @@ function onlyConnections(unit, array, name) {
 // each with the units that need it; any other is refused, whatever it holds, and nothing on the right of a binding is
 // followed:
 // - a plain parameter of the unit itself (a class member, a field's function, a module's top-level function): 44 of
-//   today's 48 sends and pings, in 23 units: the methods retireSocket, spend, onTipResult, revertBlueprint,
-//   releaseSettings; the fields onCommand, onModifyRank, onRequestEvmNonce, onRequestEvmVerify, onRevokeEvmWallet,
-//   onRequestEvmTipIntent, onEvmTip, onEntityAdded, onEntityModified, onSpawnModified, onAi, onPing; the top-level
+//   today's 48 sends and pings, in 23 units: the methods retireSocket, spend, revertBlueprint, releaseSettings; the
+//   fields onCommand, onModifyRank, onEntityAdded, onEntityModified, onSpawnModified, onAi, onPing; the top-level
 //   functions of src/server/network/solanaWallet.js checkBuilderBalance, endTokenGrant (methods of the class before),
-//   onRequestBuilderNonce, onRequestBuilderByToken, onTokenBalanceRequest, onRevokeBuilderByToken (fields before);
+//   onRequestBuilderNonce, onRequestBuilderByToken, onTokenBalanceRequest, onRevokeBuilderByToken (fields before),
+//   of evmWallet.js onRequestEvmNonce, onRequestEvmVerify, onRevokeEvmWallet (fields before), and of tips.js
+//   onTipResult (a method before), onRequestEvmTipIntent, onEvmTip (fields before);
 // - a plain parameter of a function passed directly to `this.sockets.forEach`, or to `forEach` of a local array of
 //   the unit's that only ever receives such connections (onlyConnections): checkSockets, whose ping is in the first
 //   and whose `dead.forEach(socket => socket.disconnect())` binds the name too;
-// - a declaration or assignment of `this.sockets.get(…)`: sendTo, announceTip, and the field onKick (`tSocket`).
+// - a declaration or assignment of `this.sockets.get(…)`: sendTo, the field onKick (`tSocket`), and tips.js's
+//   announceTip (a method before).
 // Where an origin reads `this.sockets`, that `this` has to be the unit's own (not that of a nested non-arrow function,
 // or of a member of a nested class or object). A for…of over the connections and `new Socket(…)` are not on it: no
 // unit that sends on the name binds it so (onConnection makes a Socket and sends nothing on it).

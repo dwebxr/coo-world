@@ -9,27 +9,25 @@
 //   `Reflect.apply(f, ws, …)`), where a transport is an expression that is `ws` or ends in `.ws`;
 // - in the network's own files (networkSource.mjs), an allowed receiver that is not what its name says: `this` where
 //   it is not the network's (the class's members and the module's top-level functions have it, with the arrows inside
-//   them; a non-arrow function nested in another has its own, and the module's top level has none), and `socket` or
-//   `tSocket` that is a transport, directly or through the local names it is given through (`= ws`, `= x.ws`,
-//   `const { ws: raw } = peer`, a chain `raw = ws; socket = raw`, a condition, `??`), or that is, in a function nested
-//   in another, anything it cannot tell to be one of the network's connections (a call, a parameter): what it can tell
-//   is `this.sockets.get(…)`, `new Socket(…)` and a parameter of a callback of `this.sockets.forEach` (or `.values()`,
-//   and the like).
+//   them; a non-arrow function nested in another has its own, and the module's top level has none); and `socket` or
+//   `tSocket` bound, in the function that binds it, by anything but the origins listed at allowedParam below (a
+//   parameter of a class member, of a top-level function or of a `this.sockets.forEach` callback; `this.sockets.get(…)`;
+//   `new Socket(…)`; a for…of over the network's connections). Nothing on the right of a binding is followed: a name, a
+//   member, a call, a destructuring, a default, a condition is refused whatever it holds.
 // The parser is @babel/parser. It is a tripwire for a maintainer's mistake, not a proof. What it cannot see, said
 // plainly:
-// - a transport that reaches an allowed name through something but local names: a module it is imported from, a
-//   property it was kept in (`this.raw = ws; const socket = this.raw`), a call that returns it
-//   (`const socket = wrap(ws)`), in a class member or a top-level function (in a nested function those are refused as
-//   unknown);
-// - a transport handed in as a parameter under an allowed name of a class member or of a top-level function
-//   (`function tell(socket)` called with a `ws`), or under another name and given to an allowed one there;
-// - a transport under another name than `ws` (`const conn = new WebSocket(…)`): refused when it is called on directly
-//   (`conn.send(…)` is not an allowed receiver), not when it is given to an allowed name in such a function;
-// - a key computed at run time (`ws[name](…)`, `Reflect.get(ws, 'send')`), a transport reached through a helper that
-//   takes it (`invoke(ws, 'send')`), and anything through `eval`, `Function` or `with`;
+// - a transport handed in as an argument where an allowed parameter takes it (`tell(ws)` for `function tell(socket)`,
+//   a class member or a top-level function), or put into the network's own connections (`this.sockets.set(id, ws)`,
+//   whose `get` and `forEach` then hand it out);
+// - a module's top-level function called as a method of something that is not the network (`ws.leak = leak;
+//   ws.leak()`): its `this` is then that object (handing a transport in through call, apply, bind or Reflect.apply is
+//   refused);
+// - a key computed at run time (`ws[name](…)`), a transport reached through a helper that takes it (`invoke(ws,
+//   'send')`, `Reflect.get(ws, 'send')`), and anything through `eval`, `Function` or `with`;
 // - files outside the ones read (src/server, core/Socket.js, the Server*/Apps systems).
-// (Bindings are resolved per function, not per block: a `socket` an inner block declares again is taken together
-// with the outer one, which can refuse more, not less.)
+// (A transport kept in a property is not among them: `this.raw.send(…)` is a receiver that is not allowed, and
+// `socket = this.raw` an origin that is not on the list. Bindings are resolved per function, not per block: a
+// `socket` an inner block declares again is taken together with the outer one, which can refuse more, not less.)
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -47,7 +45,8 @@ const walkFiles = dir =>
   })
 
 const SENDS = ['send', 'ping']
-const ITERATORS = new Set(['forEach', 'filter', 'map', 'find', 'some', 'every', 'flatMap'])
+// the methods of the network's connections a callback whose parameter is a connection is passed to (today: forEach)
+const ITERATORS = new Set(['forEach'])
 const isMember = node => node?.type === 'MemberExpression' || node?.type === 'OptionalMemberExpression'
 const isCall = node => node?.type === 'CallExpression' || node?.type === 'OptionalCallExpression'
 const FUNCTIONS = new Set([
@@ -113,62 +112,58 @@ function networkThis(parents) {
   return false // the module's own
 }
 
-// what a name is bound to, seen from `parents`: the innermost function (or the module) that declares it, and what it
-// is given there: { param } (a parameter), { destructured: key, param? } (taken out of an object under that key),
-// { iterated } (a for…of or for…in variable), { expression } (an initializer or an assignment; null: none)
+// Every binding a name has in the innermost function (or the module) that binds it, seen from `parents`: its
+// parameters, its declarations (in blocks too), and every assignment to the name in that function's body (in the
+// functions nested in it too). Each as { kind, node }: 'param' (a plain parameter), 'param-pattern' (a parameter
+// with a pattern, a default or a rest), 'declared' (a variable, with its initializer or none), 'declared-pattern' (a
+// variable bound by destructuring), 'iterated' (a for…of or for…in variable, with what it iterates), 'assigned' (with
+// the value), 'other' (a catch parameter, a function, a class or an import of that name).
 function bindingOf(name, parents) {
   const scopes = [...parents.filter(node => isFunction(node) || node.type === 'Program')].reverse()
-  // the names a pattern binds, and the key each is taken out under
-  const patternNames = (pattern, key = null) => {
+  const names = pattern => {
     if (!pattern) return []
-    if (pattern.type === 'Identifier') return [{ name: pattern.name, key }]
-    if (pattern.type === 'AssignmentPattern') return patternNames(pattern.left, key)
-    if (pattern.type === 'RestElement') return patternNames(pattern.argument, null)
+    if (pattern.type === 'Identifier') return [pattern.name]
+    if (pattern.type === 'AssignmentPattern') return names(pattern.left)
+    if (pattern.type === 'RestElement') return names(pattern.argument)
     if (pattern.type === 'ObjectPattern') {
       return pattern.properties.flatMap(property =>
-        property.type === 'ObjectProperty'
-          ? patternNames(property.value, keyOf({ ...property, property: property.key }))
-          : patternNames(property, null)
+        names(property.type === 'ObjectProperty' ? property.value : property)
       )
     }
-    if (pattern.type === 'ArrayPattern') return pattern.elements.flatMap(element => patternNames(element, null))
+    if (pattern.type === 'ArrayPattern') return pattern.elements.flatMap(names)
     return []
   }
   for (const scope of scopes) {
     const sources = []
-    let declared = false
     if (isFunction(scope)) {
       for (const param of scope.params) {
-        for (const bound of patternNames(param)) {
-          if (bound.name !== name) continue
-          declared = true
-          sources.push(param.type === 'Identifier' ? { param: true } : { param: true, destructured: bound.key })
-        }
+        if (names(param).includes(name)) sources.push({ kind: param.type === 'Identifier' ? 'param' : 'param-pattern' })
       }
     }
-    // declarations in this scope (not in functions nested in it), and assignments anywhere in it
     const visit = (node, nested) => {
       if (!node || typeof node.type !== 'string') return
       if (node !== scope && isFunction(node)) nested = true
-      if (!nested && node.type === 'VariableDeclarator') {
-        for (const bound of patternNames(node.id)) {
-          if (bound.name !== name) continue
-          declared = true
-          if (node.id.type === 'Identifier') {
-            sources.push({ expression: node.init ?? null, iterated: node.iterated ?? null })
-          } else sources.push({ destructured: bound.key, from: node.init ?? node.iterated ?? null })
+      if (!nested) {
+        if (node.type === 'VariableDeclarator' && names(node.id).includes(name)) {
+          if (node.id.type !== 'Identifier') sources.push({ kind: 'declared-pattern' })
+          else if (node.iterated) sources.push({ kind: 'iterated', node: node.iterated })
+          else sources.push({ kind: 'declared', node: node.init ?? null })
+        }
+        if (node.type === 'ForOfStatement' || node.type === 'ForInStatement') {
+          for (const declaration of node.left.declarations ?? []) declaration.iterated = node.right
+        }
+        if (node.type === 'CatchClause' && names(node.param).includes(name)) sources.push({ kind: 'other' })
+        if ((node.type === 'FunctionDeclaration' || node.type === 'ClassDeclaration') && node.id?.name === name) {
+          sources.push({ kind: 'other' })
+        }
+        if (node.type === 'ImportDeclaration' && node.specifiers.some(specifier => specifier.local.name === name)) {
+          sources.push({ kind: 'other' })
         }
       }
-      if (!nested && (node.type === 'ForOfStatement' || node.type === 'ForInStatement')) {
-        for (const declaration of node.left.declarations ?? []) declaration.iterated = node.right
-      }
-      if (node.type === 'AssignmentExpression') {
-        if (node.left.type === 'Identifier' && node.left.name === name) sources.push({ expression: node.right })
-        else if (node.left.type === 'ObjectPattern' || node.left.type === 'ArrayPattern') {
-          for (const bound of patternNames(node.left)) {
-            if (bound.name === name) sources.push({ destructured: bound.key, from: node.right })
-          }
-        }
+      if (node.type === 'AssignmentExpression' && names(node.left).includes(name)) {
+        sources.push(
+          node.left.type === 'Identifier' ? { kind: 'assigned', node: node.right } : { kind: 'declared-pattern' }
+        )
       }
       for (const [key, value] of Object.entries(node)) {
         if (key === 'loc' || key === 'iterated') continue
@@ -177,66 +172,49 @@ function bindingOf(name, parents) {
       }
     }
     visit(isFunction(scope) ? scope.body : scope, false)
-    if (declared) return { scope, sources, nested: parents.slice(0, parents.indexOf(scope)).some(isFunction) }
+    if (sources.length) return { scope, sources }
   }
   return null
 }
 
-// What an expression a receiver is bound to comes from, following the local names it is given through (with
-// `visited`, so that a loop of assignments ends): 'transport', 'connection' (one of the network's), 'param' (a
-// parameter of a class member or of a top-level function: not known) or 'unknown'
-const combine = origins => {
-  const known = origins.filter(origin => origin !== 'none')
-  if (known.includes('transport')) return 'transport'
-  if (known.length && known.every(origin => origin === 'connection')) return 'connection'
-  if (known.length === 1 && known[0] === 'param') return 'param'
-  return 'unknown'
-}
-function sourceOrigin(source, binding, parents, visited) {
-  if (source.destructured !== undefined) {
-    // a transport taken out of an object (`const { ws: raw } = peer`)
-    if (source.destructured === 'ws') return 'transport'
-    return 'unknown'
+// The origins a connection of the network's may be bound by (`socket`, `tSocket` as a receiver of send or ping in
+// the network's files), as today's class binds them; any other origin is refused, whatever it holds, and nothing
+// on the right of a binding is followed:
+// - a plain parameter of a class member (a method, or the function of a field), of a module's top-level function
+//   (declared, exported, or the function value of a top-level variable), or of a function passed to `forEach` of the
+//   network's connections (`this.sockets.forEach(socket => …)`, on `this.sockets.values()` or a spread of either);
+// - a declaration or assignment of `this.sockets.get(…)` or of `new Socket(…)`;
+// - the variable of a for…of over the network's connections (`this.sockets`, `this.sockets.values()`).
+// (Today's class uses the first two: 48 receivers, by parameters of its methods and fields and of one callback of
+// `this.sockets.forEach`, and by `this.sockets.get(…)`.)
+function allowedParam(binding, parents) {
+  const scope = binding.scope
+  const at = parents.indexOf(scope)
+  const above = parents[at - 1]
+  if (scope.type === 'ClassMethod' || scope.type === 'ClassPrivateMethod') return true
+  if (above?.type === 'ClassProperty' || above?.type === 'ClassPrivateProperty') return true
+  const topLevel = !parents.slice(0, at).some(isFunction)
+  if (topLevel && (scope.type === 'FunctionDeclaration' || above?.type === 'VariableDeclarator')) return true
+  const callee = above?.callee
+  if (isCall(above) && above.arguments.includes(scope) && isMember(callee) && ITERATORS.has(keyOf(callee))) {
+    return isSockets(callee.object)
   }
-  if (source.param) {
-    if (!binding.nested) return 'param'
-    // a callback of the network's connections: this.sockets.forEach(socket => …)
-    const call = parents[parents.indexOf(binding.scope) - 1]
-    const callee = call?.callee
-    const callback = isCall(call) && isMember(callee) && ITERATORS.has(keyOf(callee)) && isSockets(callee.object)
-    return callback ? 'connection' : 'unknown'
-  }
-  if (source.iterated) return isSockets(source.iterated) ? 'connection' : originOf(source.iterated, parents, visited)
-  if (source.expression === null) return 'none'
-  return originOf(source.expression, parents, visited)
+  return false
 }
-function originOf(expression, parents, visited) {
-  if (!expression) return 'unknown'
-  if (isTransport(expression)) return 'transport'
-  if (isConnection(expression)) return 'connection'
-  switch (expression.type) {
-    case 'Identifier': {
-      if (visited.has(expression.name)) return 'none'
-      visited.add(expression.name)
-      const binding = bindingOf(expression.name, parents)
-      if (!binding) return 'unknown'
-      return combine(binding.sources.map(source => sourceOrigin(source, binding, parents, visited)))
-    }
-    case 'ConditionalExpression':
-      return combine([
-        originOf(expression.consequent, parents, visited),
-        originOf(expression.alternate, parents, visited),
-      ])
-    case 'LogicalExpression':
-      return combine([originOf(expression.left, parents, visited), originOf(expression.right, parents, visited)])
-    case 'SequenceExpression':
-      return originOf(expression.expressions.at(-1), parents, visited)
-    case 'AwaitExpression':
-      return originOf(expression.argument, parents, visited)
-    case 'AssignmentExpression':
-      return originOf(expression.right, parents, visited)
+function refusedOrigin(source, binding, parents) {
+  switch (source.kind) {
+    case 'param':
+      return allowedParam(binding, parents)
+        ? null
+        : "is a parameter of a function that is not a class member, a top-level function or a callback of the network's connections"
+    case 'declared':
+    case 'assigned':
+      if (isConnection(source.node)) return null
+      return `is given what is not a connection of the network's (${source.node?.type ?? 'nothing'})`
+    case 'iterated':
+      return isSockets(source.node) ? null : "iterates what is not the network's connections"
     default:
-      return 'unknown'
+      return 'is bound by a pattern, a default, a catch, a declaration or an import, which is not on the list'
   }
 }
 
@@ -244,15 +222,9 @@ function originOf(expression, parents, visited) {
 function notAConnection(name, parents) {
   const binding = bindingOf(name, parents)
   if (!binding) return `${name} is not bound in this file`
-  const visited = new Set([name])
-  const origins = binding.sources.map(source => sourceOrigin(source, binding, parents, visited))
-  if (origins.includes('transport')) return `${name} is a transport (directly or through local names)`
-  if (!binding.nested) return null
-  for (const [index, origin] of origins.entries()) {
-    if (origin === 'connection' || origin === 'none') continue
-    return binding.sources[index].param && binding.sources[index].destructured === undefined
-      ? `${name} is a parameter of a nested function that is not a callback of the network's connections`
-      : `${name} is given, in a nested function, what is not known to be a connection of the network's`
+  for (const source of binding.sources) {
+    const why = refusedOrigin(source, binding, parents)
+    if (why) return `${name} ${why}`
   }
   return null
 }
@@ -407,6 +379,20 @@ test('server writes: what escaped before (an alias, an extracted or bound send, 
     'a destructured parameter': 'export function f({ ws: socket }) {\n  socket.send(1)\n}',
     'an alias through a condition':
       'export function f(ws, other) {\n  const raw = other ?? ws\n  const socket = raw\n  socket.send(1)\n}',
+    'an alias whose initializer a nested parameter shadows':
+      'export function f(ws) {\n  const raw = ws,\n    socket = raw\n  return raw => socket.send(1)\n}',
+    'an alias whose initializer a nested connection shadows':
+      'export function f(ws) {\n  const raw = ws,\n    socket = raw\n  return () => {\n    const raw = new Socket({ ws })\n    socket.send(1)\n  }\n}',
+    'a connection given another value later':
+      'export function f(id, peer) {\n  let socket = this.sockets.get(id)\n  socket = peer\n  socket.send(1)\n}',
+    'a connection or a transport':
+      'export function f(id, ws) {\n  const socket = id ? this.sockets.get(id) : ws\n  socket.send(1)\n}',
+    'a default value': 'export function f(socket = this.ws) {\n  socket.send(1)\n}',
+    'a catch parameter':
+      'export function f() {\n  try {\n    this.go()\n  } catch (socket) {\n    socket.send(1)\n  }\n}',
+    'a member of something else': 'export function f(peer) {\n  const tSocket = peer.socket\n  tSocket.send(1)\n}',
+    'a call result, in a top-level function': 'export function f(make) {\n  const socket = make()\n  socket.send(1)\n}',
+    'a callback of another collection': 'export function f(list) {\n  list.forEach(socket => socket.ping())\n}',
   }
   for (const [what, source] of Object.entries(caught)) {
     assert.ok(bypasses(file, source).length >= 1, `${what}:\n${source}`)

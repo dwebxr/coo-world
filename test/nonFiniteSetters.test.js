@@ -1,8 +1,8 @@
 // Three node properties that kept NaN or Infinity (17-F) now follow the rule of the bounded neighbours
 // (boundedValue.js: no bound throws): NaN is the property's default, a number past the largest float32 is that bound,
 // a number inside it is kept as it is. A prim's `emissiveIntensity` still throws for what it threw for before (a
-// negative number, -Infinity included, and anything that is not a number). A particles node's `direction` and
-// `velocityRadial` are bounded on both sides.
+// negative number, -Infinity included, and anything that is not a number other than undefined, which gives the
+// default). A particles node's `direction` and `velocityRadial` are bounded on both sides.
 //
 // Each value is given four ways: the script's handle (the proxy), app.create (the real Apps hook: the node is
 // constructed from host-safe keys and the rest goes through the proxy, createOptions.js), and on the host side the
@@ -288,8 +288,9 @@ const runWorker = (kind, data, steps) =>
         // a sphere of radius 1 around the emitter: a particle's own direction points away from the centre. Each step
         // the radial velocity moves it by velocityRadial / 60 and adds velocityRadial to its velocity, so after the
         // first step it is 2 * bound / 60 from the centre (the radius and the start speed are lost in the rounding).
-        // The worker's numbers are doubles; the position buffer is float32 and holds Infinity once a coordinate passes
-        // the largest float32, which in this configuration is on the tenth step. Never NaN.
+        // The worker's numbers are doubles; the position buffer is float32 and holds Infinity once a coordinate is
+        // large enough to round to it (from 3.4028235677973366e38 up, just past the largest float32), which in this
+        // configuration is on the tenth step. Never NaN.
         const max = 3.4028234663852886e38
         for (let i = 0; i < 8; i++) {
           const distance = Math.hypot(...particle(outputs[0].aPosition, i))

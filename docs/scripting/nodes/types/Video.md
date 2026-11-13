@@ -10,7 +10,7 @@ A url to a video file, or an asset url from a video prop.
 
 Currently only `mp4` and `m3u8` (HLS streams) are supported.
 
-### `.linked`: Number|String
+### `.linked`: Boolean|String
 
 By default, videos are not linked and each node spawns a new video player with its own state and control.
 
@@ -25,6 +25,33 @@ Whether the video should loop. Defaults to `false`.
 Whether the video should be displayed. Defaults to `true`.
 
 This can be used if you just want to play audio headlessly with more control over the audio position.
+
+A video with `visible: false` still loads its source on the client: its video element is made and given `src` after the
+node is added, and once the element has its first frame the video's sound is connected and `duration` gives its length.
+What a script sees differently from a visible video:
+
+- `loading` stays `true`, and `onLoad` is never called.
+- A `play()` made before the video has its player (right after the node is added, when its `src` has not been loaded
+  in the page before) is kept, but not carried out while the video is hidden: it stays pending, and runs once the node
+  is made visible and its new element has its first frame. A visible video carries it out once its first frame has
+  arrived. A `play()` made once the player exists reaches the video element, visible or not.
+- To know that a hidden video's first frame has arrived, read `duration`: it is `0` before the video has a player,
+  `undefined` from then until the first frame, and the video's length after that.
+
+Setting `visible` to `true` later rebuilds the node: its video element is let go and a new one loads the source again
+(unless another node still holds the same `linked` element), `loading` is `true` until the new element's first frame,
+and then `onLoad` is called.
+
+To load a video before showing it, add a video with `visible: false` and a `linked` key, and once its `duration`
+reports the video's length (its element has its first frame), add the video to show with the same `src` and the same
+`linked` key. Both use the one element, which is then loaded: the shown video's `onLoad` is called just after it is
+added, with no second video element, and `loading` is then `false`. A shown video added before that uses the same
+element too, but its `onLoad` waits for that first frame. Linked videos share
+their playback (see `linked`). Removing the hidden video afterwards leaves the element to the shown one.
+
+These were observed in a test that runs a script, the engine's video node and its video loader with a stand-in video
+element, not in a browser. It is left as it is on purpose: a change would make hidden videos in existing worlds carry out
+a `play()` they now keep pending, and so start to sound.
 
 ### `.material`
 
@@ -43,7 +70,7 @@ Whether the mesh material is lit (reacts to lighting) or not. Defaults to `false
 
 ### `.doubleside`: Boolean
 
-Whether the video should play on both sides of the plane. Does not apply to custom geometry. Defaults to `true`.
+Whether the video should play on both sides of the plane. Does not apply to custom geometry. Defaults to `false`.
 
 ### `.castShadow`: Boolean
 
@@ -73,11 +100,17 @@ Defaults to `contain`.
 
 ### `.width`: Number|null
 
-The fixed width of the plane when not using a custom geometry. Can be set to `null` to be automatic. When automatic, the width will match the `.ratio` value until the video begins playback and will then resize to match the video dimensions. Defaults to `null`.
+The fixed width of the plane when not using a custom geometry. Can be set to `null` to be automatic: the width is then
+`height * aspect` until the video's first frame has arrived, and `height * (videoWidth / videoHeight)`, with the video's
+own aspect ratio, after that.
+Defaults to `null` (with the default `height` of `1` and `aspect` of `16 / 9`, a plane 1.78 wide before the first frame,
+1.33 wide for a 4:3 video after it). When `width` and `height` are both `null` the plane has no size.
 
 ### `.height`: Number|null
 
-The fixed height of the plane when not using a custom geometry. Can be set to `null` to be automatic. When automatic, the height will match the `.ratio` value until the video begins playback and will then resize to match the video dimensions. Defaults to `null`.
+The fixed height of the plane when not using a custom geometry. Can be set to `null` to be automatic: the height is
+then `width / aspect` until the video's first frame has arrived, and `width / (videoWidth / videoHeight)`, with the
+video's own aspect ratio, after that. Defaults to `1`, so a `width` alone gives a fixed plane: set `height` to `null` for an automatic one.
 
 ### `.geometry`: Geometry
 
@@ -130,6 +163,21 @@ Whether the video is currently playing. Read-only.
 ### `.currentTime`: Number
 
 The current time of the video. Can be used to read and update the current time of the video. A time set is kept finite and not negative (`NaN` is `0`).
+
+### `.loading`: Boolean
+
+`true` until the video's first frame has arrived and it is shown, then `false`. Setting `src` makes it `true` again.
+Read-only. It stays `true` on the server, which plays no video, and for a video with `visible: false` (see `visible`).
+
+### `.duration`: Number
+
+The length of the video in seconds. Read-only. It is `0` before the video has a player (before it is added, and on the
+server), and `undefined` from then until its first frame has arrived.
+
+### `.onLoad`: Function
+
+Called, with no arguments, once the video's first frame has arrived and it is shown. It is not called on the server or
+for a video with `visible: false`.
 
 ### `.{...Node}`
 

@@ -63,7 +63,7 @@ Whether the canvas is affected by lighting. Defaults to `false`.
 
 ### `.doubleside`: Boolean
 
-Whether the canvas is doublesided. Defaults to `false`.
+Whether the canvas is doublesided. Defaults to `true`.
 
 ### `.billboard`: String
 

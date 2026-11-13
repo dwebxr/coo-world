@@ -6,6 +6,13 @@ const SPRITESHEET_MAX_SIDE = 256
 const SPRITESHEET_MAX_FPS = 1000
 // points of an over-life curve
 const CURVE_MAX_POINTS = 64
+// Attempts at a point of a `box` shape of origin `volume`: a point inside that is farther from every face than the
+// thickness allows is drawn again, and the last attempt takes a point of the surface. A side of 0, NaN or Infinity (a
+// distance of NaN), sides that are all negative, or a thickness of NaN leave out every point inside, and at a thickness
+// of 1 or more (or NaN) no attempt draws the surface: drawing again without a bound recursed until the stack
+// overflowed. A box with finite sides above 0 and a finite thickness draws again 15 times for one particle with a
+// chance below 1e-14 (at most 0.11 an attempt, at a thickness of 0.25).
+const BOX_VOLUME_ATTEMPTS = 16
 
 import { DEG2RAD } from '../core/extras/general'
 import { boundedInteger, boundedNumber } from '../core/extras/boundedValue.js'
@@ -732,13 +739,13 @@ function createShape(config) {
 
     case 'box':
       // Box shape - position on or within box, direction points outward
-      return (pos, dir) => {
+      return function box(pos, dir, attempt = 1) {
         const [width, height, depth, thickness, origin, spherize] = args
 
         // Handle different origin types: volume, edge, or shell
         if (origin === 'volume') {
-          // Full volume sampling with thickness consideration
-          if (thickness === 0 || Math.random() > thickness) {
+          // Full volume sampling with thickness consideration (the last attempt is a surface point: BOX_VOLUME_ATTEMPTS)
+          if (attempt >= BOX_VOLUME_ATTEMPTS || thickness === 0 || Math.random() > thickness) {
             // Surface point
             const face = Math.floor(Math.random() * 6)
             switch (face) {
@@ -811,9 +818,8 @@ function createShape(config) {
                 else if (distToFront === minDist) dir.set(0, 0, Math.sign(randomZ))
               }
             } else {
-              // If point is too far from surface, recursively try again
-              // Using a safer approach to avoid infinite recursion
-              return createShape(['box', width, height, depth, thickness, origin, spherize])(pos, dir)
+              // If point is too far from surface, try again (at most BOX_VOLUME_ATTEMPTS in all)
+              return box(pos, dir, attempt + 1)
             }
           }
         } else if (origin === 'edge') {

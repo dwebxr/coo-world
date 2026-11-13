@@ -255,3 +255,121 @@ test('skinnedmesh: play() with no options is play({}) (it threw)', () =>
     assert.equal(results[0].action, undefined)
     assert.equal(results[0].walkRunning, false, 'the clip that played faded out, as for any name not found')
   }))
+
+// The particle worker with the config a particles node gives it: eight particles started by a burst at once, steps of
+// 1/60 s in world space with the emitter at the origin, additive blending (no sort: the buffers in pool order), and
+// Math.random replaced by a fixed sequence whose draws are counted. `kind` says what is checked.
+const runWorker = kind =>
+  runProbe(
+    bundle,
+    ({ createNode, THREE }, { kind }) => {
+      let seed = 1
+      let draws = 0
+      Math.random = () => {
+        draws++
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+        return seed / 2 ** 32
+      }
+      const outputs = []
+      self.postMessage = msg => msg.op === 'update' && outputs.push(msg)
+      const create = (id, data) => {
+        const node = createNode('particles', {
+          rate: 0,
+          bursts: [{ time: 0, count: 8 }],
+          max: 8,
+          speed: '1',
+          blending: 'additive',
+          ...data,
+        })
+        self.onmessage({ data: { op: 'create', id, ...node.getConfig() } })
+      }
+      // one update of an emitter: its particles' positions and directions
+      const step = id => {
+        const before = outputs.length
+        self.onmessage({
+          data: {
+            op: 'update',
+            emitterId: id,
+            delta: 1 / 60,
+            camPosition: [0, 0, 5],
+            matrixWorld: new THREE.Matrix4().toArray(),
+            aPosition: new Float32Array(8 * 3),
+            aRotation: new Float32Array(8),
+            aDirection: new Float32Array(8 * 3),
+            aSize: new Float32Array(8),
+            aColor: new Float32Array(8 * 3),
+            aAlpha: new Float32Array(8),
+            aEmissive: new Float32Array(8),
+            aUV: new Float32Array(8 * 4),
+          },
+        })
+        assert.equal(outputs.length, before + 1, `${id}: one update`)
+        const out = outputs.at(-1)
+        const triples = array => Array.from({ length: out.n }, (_, i) => Array.from(array.slice(i * 3, i * 3 + 3)))
+        return { n: out.n, positions: triples(out.aPosition), directions: triples(out.aDirection) }
+      }
+      const isAxis = v => v.filter(c => c !== 0).length === 1 && v.some(c => Math.abs(c) === 1)
+
+      if (kind === 'box volume') {
+        // A box of origin `volume` draws a point inside it and draws again while the point is farther from every face
+        // than the thickness lets it be (as a share of the half side). A side of 0, NaN or Infinity (a distance of NaN
+        // there) leaves out every point, as do sides that are all negative and a thickness of NaN, and below a
+        // thickness of 1 an attempt can take a point of the surface instead: at 1 or more (or NaN) it never does, and
+        // the worker recursed until its stack overflowed. The last of a bounded number of attempts takes a point of the
+        // surface: for a box with a side of 0, what the same box gives at any thickness below 1.
+        const degenerate = {
+          'side 0': ['box', 0, 1, 1, 1, 'volume', false],
+          'side 0, thickness 2': ['box', 0, 1, 1, 2, 'volume', false],
+          'side 0, thickness 0.99999': ['box', 0, 1, 1, 0.99999, 'volume', false],
+          'side 0, spherize': ['box', 0, 1, 1, 1, 'volume', true],
+          'sides 0': ['box', 0, 0, 0, 1, 'volume', false],
+          'side NaN': ['box', NaN, 1, 1, 1, 'volume', false],
+          'side Infinity': ['box', Infinity, 1, 1, 1, 'volume', false],
+          'sides negative': ['box', -1, -1, -1, 1, 'volume', false],
+          'thickness NaN': ['box', 1, 1, 1, NaN, 'volume', false],
+        }
+        create('ordinary', {})
+        for (const [id, shape] of Object.entries(degenerate)) create(id, { shape })
+        for (const id of ['ordinary', ...Object.keys(degenerate), 'ordinary']) {
+          assert.equal(step(id).n, 8, id)
+        }
+        // each particle of the flat box is on its surface: on the face its direction is the normal of (it moved 1/60
+        // of a unit along that direction in the step), and the flat box is the two faces across its side of 0
+        create('flat', { shape: degenerate['side 0'] })
+        const flat = step('flat')
+        for (let i = 0; i < 8; i++) {
+          const direction = flat.directions[i]
+          assert.ok(isAxis(direction), `particle ${i}: a face's normal, ${direction}`)
+          const at = flat.positions[i].map((v, k) => v - direction[k] / 60)
+          assert.ok(Math.abs(at[0]) < 1e-6, `particle ${i}: in the flat box, ${at}`)
+          assert.ok(Math.abs(at[1]) <= 0.5 + 1e-6 && Math.abs(at[2]) <= 0.5 + 1e-6, `particle ${i}: ${at}`)
+          const axis = direction.findIndex(c => c !== 0)
+          if (axis > 0) assert.ok(Math.abs(Math.abs(at[axis]) - 0.5) < 1e-6, `particle ${i}: on its face, ${at}`)
+        }
+        // a box that is not degenerate draws as before: the same draws and the same particles (recorded before the
+        // bound), retries included (44 draws for 8 particles: three attempts were drawn again)
+        draws = 0
+        seed = 1
+        create('proper', { shape: ['box', 1, 2, 3, 0.5, 'volume', false] })
+        const proper = step('proper')
+        assert.equal(draws, 44)
+        const round = v => Math.round(v * 1e6) / 1e6 + 0
+        assert.deepEqual(
+          proper.positions.flat().map(round),
+          [
+            -0.130482, 0.566193, 0.168566, -0.264924, 0.961692, -1.516667, -0.516667, 0.365205, 0.094377, -0.395466,
+            -0.875576, -0.543358, 0.250905, 0.878069, -0.968178, 0.499908, -0.22283, 0.144142, 0.511006, 0.750094,
+            0.634225, -0.345042, -0.25545, -1.516667,
+          ]
+        )
+        assert.deepEqual(
+          proper.directions.flat().map(round),
+          [0, 1, 0, 0, 0, -1, -1, 0, 0, 0, -1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, -1]
+        )
+      }
+    },
+    { kind }
+  )
+
+test('particle worker: a volume box with a side of 0 or NaN and a thickness of 1 or more emits (its stack overflowed)', () =>
+  runWorker('box volume'))

@@ -7,11 +7,14 @@ const SPRITESHEET_MAX_FPS = 1000
 // points of an over-life curve
 const CURVE_MAX_POINTS = 64
 // Attempts at a point of a `box` shape of origin `volume`: a point inside that is farther from every face than the
-// thickness allows is drawn again, and the last attempt takes a point of the surface. A side of 0, NaN or Infinity (a
-// distance of NaN), sides that are all negative, or a thickness of NaN leave out every point inside, and at a thickness
-// of 1 or more (or NaN) no attempt draws the surface: drawing again without a bound recursed until the stack
-// overflowed. A box with finite sides above 0 and a finite thickness draws again 15 times for one particle with a
-// chance below 1e-14 (at most 0.11 an attempt, at a thickness of 0.25).
+// thickness allows (as a share of the half side) is drawn again, and the last attempt takes a point of the surface. A
+// side of 0, NaN or Infinity, or one whose half is 0 (Number.MIN_VALUE), gives a distance of NaN and leaves out every
+// point inside, as does a thickness of NaN; sides that are all negative give distances from 1 to 2 and leave out every
+// point at a thickness of 1. At a thickness of 1 or more (or NaN) no attempt draws the surface, and drawing again
+// without a bound recursed until the stack overflowed. For sides whose halves are normal numbers (from about 2.2e-308:
+// not 0 and not subnormal, where the distance takes only a few values) and a finite thickness, the distance is spread
+// evenly from 0 to 1: an attempt is drawn again with a chance of at most 0.11 (at a thickness of 0.25), and 15 in a
+// row for one particle with a chance below 1e-14.
 const BOX_VOLUME_ATTEMPTS = 16
 
 import { DEG2RAD } from '../core/extras/general'

@@ -313,10 +313,11 @@ const runWorker = kind =>
       if (kind === 'box volume') {
         // A box of origin `volume` draws a point inside it and draws again while the point is farther from every face
         // than the thickness lets it be (as a share of the half side). A side of 0, NaN or Infinity (a distance of NaN
-        // there) leaves out every point, as do sides that are all negative and a thickness of NaN, and below a
-        // thickness of 1 an attempt can take a point of the surface instead: at 1 or more (or NaN) it never does, and
-        // the worker recursed until its stack overflowed. The last of a bounded number of attempts takes a point of the
-        // surface: for a box with a side of 0, what the same box gives at any thickness below 1.
+        // there) leaves out every point, as does a thickness of NaN, and sides that are all negative (distances from 1
+        // to 2) at a thickness of 1; below a thickness of 1 an attempt can take a point of the surface instead: at 1 or
+        // more (or NaN) it never does, and the worker recursed until its stack overflowed. The last of a bounded number
+        // of attempts takes a point of the surface: for a box with a side of 0, what the same box gives at any
+        // thickness below 1.
         const degenerate = {
           'side 0': ['box', 0, 1, 1, 1, 'volume', false],
           'side 0, thickness 2': ['box', 0, 1, 1, 2, 'volume', false],
@@ -336,7 +337,12 @@ const runWorker = kind =>
         // each particle of the flat box is on its surface: on the face its direction is the normal of (it moved 1/60
         // of a unit along that direction in the step), and the flat box is the two faces across its side of 0
         create('flat', { shape: degenerate['side 0'] })
+        draws = 0
         const flat = step('flat')
+        // every particle took 16 attempts: fifteen points inside, each refused (one draw for the choice of the surface,
+        // three for the point), and then a point of the surface (one draw for the face, two for the point on it). The
+        // bound is 16, and it is counted for each particle anew.
+        assert.equal(draws, 8 * (15 * 4 + 3))
         for (let i = 0; i < 8; i++) {
           const direction = flat.directions[i]
           assert.ok(isAxis(direction), `particle ${i}: a face's normal, ${direction}`)

@@ -1,8 +1,8 @@
-// `node scripts/image-check.mjs [--model=current] [--summary <file>] [--logs <dir>] [--dry-run]`
+// `node scripts/image-check.mjs [--model=current|nonroot] [--summary <file>] [--logs <dir>] [--dry-run]`
 //
 // Builds the Docker image of this repository and runs it, with the `docker` CLI and nothing published to the host.
 // It needs Docker and Node only (it imports nothing from node_modules: the workflow that runs it, image.yml, does
-// no `npm ci`). The steps, in scripts/lib/imageCheck.mjs:
+// no `npm ci`). The steps of `--model=current`, in scripts/lib/imageCheck.mjs:
 //   a. `docker build` of the repository root under a throw-away tag, with a COMMIT_HASH of this run;
 //   b. a container the way the image starts by itself (its ENTRYPOINT and CMD, its user), with a named volume at
 //      the world's path (/app/world) and the settings the server refuses to start without, all made up;
@@ -31,9 +31,33 @@
 // each step took, the signals Docker sent at each stop and the exit code of its `die` event, what is in the world
 // folder.
 //
-// `--model` names how the image is expected to start. `current` (the default) is the image as it is today. An
-// unknown model is an error, and so is `nonroot` until it is implemented (see MODELS in the library).
-// `--dry-run` prints the docker commands of a run in which every step goes well, in order, and runs none.
+// `--model` names how the image is expected to start (MODELS in the library); an unknown one is an error.
+//   current  (the default) the image before scripts/coo-entrypoint.sh: npm as PID 1, everything as root.
+//   nonroot  the image with scripts/coo-entrypoint.sh as its ENTRYPOINT and `node build/index.js` as its CMD (what
+//            image.yml runs). Everything `current` asserts, and:
+//            - the volume is first filled by the same image started the old way (`--user 0 --entrypoint npm … run
+//              start`, healthy, stopped); the next normal start (the SIGTERM stop's container) becomes healthy, PID 1
+//              is `node build/index.js` with node as its executable, its uids and gids (/proc/1/status) are all
+//              1001, nothing under /app/world is not 1001's (`find -xdev ! -user 1001`, `! -group 1001`), and the
+//              entrypoint's line says it gave at least one entry to 1001:1001;
+//            - db.sqlite made root's through a throw-away root container (`--entrypoint chown`); the next start (the
+//              SIGINT stop's container) gives it back: nothing left that is not 1001's, and the line says >= 1;
+//            - db.sqlite made root's with mode 0400 and assets 0500 (a throw-away `sh`); the next start gives both
+//              back: the owner line and the modes line say >= 1, `docker exec --user 1001:1001 … test -w` of both
+//              succeeds, and a `docker stop -t 10` saves as above;
+//            - a further start on the volume: both lines say 0;
+//            - `-e PORT=3100` (and the three addresses on it), no volume: healthy by the image's own health check;
+//            - `--user 2000:2000` on a fresh, root-owned volume: the container ends by itself with exit code 1 and
+//              the server's `[server] start-up failed; exiting with code 1: … EACCES` line, not healthy;
+//            - a link /app/world/link -> /app/build put on the fresh volume by a throw-away root container, and
+//              `-e WORLD=world/link/public`: exit code 1 with the refusal of /app/build/public; `docker diff` of that
+//              container shows nothing at or under /app/build;
+//            - `-e WORLD=build`: exit code 1 with the entrypoint's `refused` line; `docker diff` of that container
+//              shows nothing at or under /app/build, and a throw-away root container of the image finds nothing
+//              there that is not root's;
+//            - `-e WORLD=../usr/local/bin`: exit code 1 with the refusal; `docker diff` shows nothing under /usr.
+// `--dry-run` prints the docker commands of a run of the model in which every step goes well, in order, and runs
+// none.
 //
 // What this does NOT check: anything Fly does differently from `docker run` (its own init as PID 1, the signal and
 // timeout set in fly.toml, who owns a mounted volume, its health checks, which are not the Dockerfile's), another
@@ -58,7 +82,8 @@ import {
   simulatedDocker,
 } from './lib/imageCheck.mjs'
 
-const USAGE = 'usage: node scripts/image-check.mjs [--model=current] [--summary <file>] [--logs <dir>] [--dry-run]'
+const USAGE =
+  'usage: node scripts/image-check.mjs [--model=current|nonroot] [--summary <file>] [--logs <dir>] [--dry-run]'
 const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 }
 // how long a docker command that ran out of time gets to end on SIGTERM before it is killed (after a signal to this
 // script: SIGNAL_BUDGET.killAfterMs)
@@ -202,7 +227,7 @@ for (const signal of Object.keys(SIGNAL_EXIT_CODES)) {
 
 async function dryRun(options) {
   say(`dry run: the docker commands of a run of model ${options.model} in which every step goes well. None is run.`)
-  const simulated = simulatedDocker({ commitHash })
+  const simulated = simulatedDocker({ commitHash, model: options.model })
   const summary = await runImageCheck({
     docker: simulated,
     model: options.model,

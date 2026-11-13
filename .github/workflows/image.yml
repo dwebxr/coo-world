@@ -1,18 +1,21 @@
 name: Image
 
-# Builds the Docker image from the Dockerfile and runs it (scripts/image-check.mjs): the container has to become
-# healthy, and a `docker stop` (SIGTERM, 10 s) and a `docker stop --signal SIGINT -t 5` (Fly's documented default
-# signal and timeout) each have to end it with exit code 0 after the server's final save. Who PID 1 is, the process
-# tree and the uids are recorded in the job's output and in the uploaded summary. Nothing is pushed anywhere, the
-# containers publish no port, and every setting is made up: there are no secrets here.
+# Builds the Docker image from the Dockerfile and runs it (scripts/image-check.mjs --model=nonroot): the container
+# has to become healthy, and a `docker stop` (SIGTERM, 10 s) and a `docker stop --signal SIGINT -t 5` (Fly's
+# documented default signal and timeout) each have to end it with exit code 0 after the server's final save. The
+# server has to be PID 1 as uid and gid 1001, and the entrypoint (scripts/coo-entrypoint.sh) has to take over a
+# volume written by root, give back a file root wrote later and modes root could live with, follow another PORT in
+# the health check, let a container started as another user fail in the server's start-up, and refuse a WORLD that
+# names the image's code, a system tree, or the code through a link (the script's header lists every assertion). Nothing is pushed anywhere, the containers publish no port, and every
+# setting is made up: there are no secrets here.
 #
 # NOT A REQUIRED CHECK, and it must not be made one: with a `paths` filter the workflow does not run for a pull
 # request that touches none of these files, and a required check that never reports stays pending for good.
 #
-# It runs when what the image is built from changes, or the server's start-up and stop (src/server/, and src/core/,
-# which is bundled into the server: the final save is ServerNetwork.flushBeforeExit), or the check itself; on main
-# after such a merge; weekly, because the base image's tag (FROM node:…-alpine) can be pushed again with other
-# contents and the `apk` packages are whatever the day's index holds; and by hand.
+# It runs when what the image is built from changes (the entrypoint among it), or the server's start-up and stop
+# (src/server/, and src/core/, which is bundled into the server: the final save is ServerNetwork.flushBeforeExit),
+# or the check itself; on main after such a merge; weekly, because the base image's tag (FROM node:…-alpine) can be
+# pushed again with other contents and the `apk` packages are whatever the day's index holds; and by hand.
 on:
   pull_request:
     paths:
@@ -24,6 +27,8 @@ on:
       - 'scripts/build*.mjs'
       - 'scripts/lib/**'
       - 'scripts/image-check.mjs'
+      - 'scripts/coo-entrypoint.sh'
+      - 'scripts/coo-world-folder.mjs'
       - 'src/server/**'
       - 'src/core/**'
       - '.github/workflows/image.yml'
@@ -38,6 +43,8 @@ on:
       - 'scripts/build*.mjs'
       - 'scripts/lib/**'
       - 'scripts/image-check.mjs'
+      - 'scripts/coo-entrypoint.sh'
+      - 'scripts/coo-world-folder.mjs'
       - 'src/server/**'
       - 'src/core/**'
       - '.github/workflows/image.yml'
@@ -72,13 +79,13 @@ jobs:
           node-version-file: '.nvmrc'
 
       # The runner's own Docker and plain `docker build`: no Docker action, no registry login, no push. The script
-      # removes the containers, the volume and the tag it made, also when a step fails.
+      # removes the containers, the volumes and the tag it made, also when a step fails.
       # `exec`: when the run is cancelled, the runner signals the step's entry process (SIGINT, SIGTERM 7.5 s later,
       # the process tree killed 2.5 s after that). Without `exec` that process is Bash, which waits for Node and does
       # not pass the signal on, so the script would not learn of the cancel and its cleanup would be killed with it.
       # With `exec`, Node is the step's process and the script's own SIGINT/SIGTERM handling runs (image-check.mjs).
       - name: Build the image, run it and stop it
-        run: exec node scripts/image-check.mjs --model=current --summary image-check.json --logs image-check-logs
+        run: exec node scripts/image-check.mjs --model=nonroot --summary image-check.json --logs image-check-logs
 
       # also after a failure: the summary says what was seen up to there, the logs are the containers' whole output
       - name: Upload the summary and the container logs

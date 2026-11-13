@@ -11,19 +11,30 @@ import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
+  ENTRYPOINT_LINES,
   EVENTS_TIMEOUT_MS,
   MODELS,
   NOT_STOPPED_OR_SAVED,
   SIGNAL_BUDGET,
+  SIMULATED_PS,
+  SIMULATED_PS_NONROOT,
+  SIMULATED_STATUS,
+  SIMULATED_STATUS_NONROOT,
+  STARTUP_FAILED,
   STOPS,
+  SYSTEM_WORLD,
+  LINK_WORLD,
   UsageError,
   buildRunArgs,
+  changedUnder,
   classifyProcess,
   classifyTree,
   commandKind,
   containerEnv,
   describeTiming,
   describeTree,
+  entrypointCounts,
+  envOnPort,
   eventsArgs,
   formatCommand,
   judgeStop,
@@ -36,6 +47,7 @@ import {
   parseProcStatus,
   parsePs,
   parseState,
+  refusal,
   runImageCheck,
   runNames,
   simulatedDocker,
@@ -47,6 +59,7 @@ import {
 } from '../scripts/lib/imageCheck.mjs'
 import { serverStartEnv } from '../scripts/lib/startEnv.mjs'
 import { installShutdown } from '../src/server/shutdown.js'
+import { installStartupExit } from '../src/server/startupExit.js'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const script = path.join(root, 'scripts/image-check.mjs')
@@ -755,10 +768,22 @@ test('the names of a run all carry its id', () => {
     prefix: 'image-check-0123456789ab',
     image: 'image-check-0123456789ab:check',
     volume: 'image-check-0123456789ab-world',
+    freshVolume: 'image-check-0123456789ab-fresh',
     containers: {
       sigterm: 'image-check-0123456789ab-sigterm',
       sigint: 'image-check-0123456789ab-sigint',
       restart: 'image-check-0123456789ab-restart',
+      legacy: 'image-check-0123456789ab-legacy',
+      chown: 'image-check-0123456789ab-chown',
+      breakperms: 'image-check-0123456789ab-breakperms',
+      perms: 'image-check-0123456789ab-perms',
+      port: 'image-check-0123456789ab-port',
+      otheruser: 'image-check-0123456789ab-otheruser',
+      makelink: 'image-check-0123456789ab-makelink',
+      linked: 'image-check-0123456789ab-linked',
+      refused: 'image-check-0123456789ab-refused',
+      imagefiles: 'image-check-0123456789ab-imagefiles',
+      systemworld: 'image-check-0123456789ab-systemworld',
     },
   })
 })
@@ -879,7 +904,7 @@ test('a printed command masks the value of a setting with a secret\u2019s name; 
 
 // a run against the stand-in docker; `respond` changes single answers
 async function simulate(respond, options = {}) {
-  const docker = simulatedDocker({ commitHash: HASH, respond })
+  const docker = simulatedDocker({ commitHash: HASH, respond, model: options.model })
   const commands = []
   const said = []
   const logs = {}
@@ -1290,6 +1315,595 @@ test('a docker command that throws (not found, out of time) is a failed step', a
   assert.equal(summary.interrupted, null)
 })
 
+// --- --model=nonroot ------------------------------------------------------------------------------------------
+
+const NONROOT_PID1 = { exe: '/usr/local/bin/node', status: parseProcStatus(SIMULATED_STATUS_NONROOT) }
+
+test('nonroot: PID 1 has to be `node build/index.js`, node itself, as 1001 in all four uids and gids', () => {
+  const tree = classifyTree(parsePs(SIMULATED_PS_NONROOT))
+  assert.deepEqual(MODELS.nonroot.treeProblems({ tree, pid1: NONROOT_PID1 }), [])
+  assert.equal(MODELS.nonroot.pid1User, '1001:1001')
+  // the current image: npm as PID 1, root
+  const npm = classifyTree(parsePs(PS_NPM_NODE))
+  assert.deepEqual(
+    MODELS.nonroot.treeProblems({
+      tree: npm,
+      pid1: { exe: '/usr/local/bin/node', status: parseProcStatus(SIMULATED_STATUS) },
+    }),
+    [
+      'PID 1 is not `node build/index.js`: it is `npm run start`',
+      "PID 1's uid is 0 0 0 0 (real, effective, saved, file system), not 1001 in all four",
+      "PID 1's gid is 0 0 0 0 (real, effective, saved, file system), not 1001 in all four",
+    ]
+  )
+  // a shell as PID 1, with the server below it
+  const shell = classifyTree(
+    parsePs(
+      'PID PPID USER COMMAND\n    1     0 nodeuser /bin/sh -c node build/index.js\n    7     1 nodeuser node build/index.js\n'
+    )
+  )
+  assert.deepEqual(MODELS.nonroot.treeProblems({ tree: shell, pid1: { ...NONROOT_PID1, exe: '/bin/busybox' } }), [
+    'PID 1 is not `node build/index.js`: it is `/bin/sh -c node build/index.js`',
+    "PID 1's executable is /bin/busybox, not node",
+  ])
+  // a saved uid of 0 could take root back: all four have to be 1001
+  const saved = SIMULATED_STATUS_NONROOT.replace('Uid:\t1001\t1001\t1001\t1001', 'Uid:\t1001\t1001\t0\t1001')
+  assert.deepEqual(MODELS.nonroot.treeProblems({ tree, pid1: { ...NONROOT_PID1, status: parseProcStatus(saved) } }), [
+    "PID 1's uid is 1001 1001 0 1001 (real, effective, saved, file system), not 1001 in all four",
+  ])
+  // what could not be read is a failure here, not a gap
+  assert.deepEqual(MODELS.nonroot.treeProblems({ tree, pid1: { exe: null, status: null } }), [
+    "PID 1's executable is unknown, not node",
+    "PID 1's uid could not be read from /proc/1/status",
+    "PID 1's gid could not be read from /proc/1/status",
+  ])
+  assert.deepEqual(MODELS.nonroot.treeProblems({ tree: classifyTree([]) }), [
+    'no `node build/index.js` process is running in the container',
+    'PID 1 is not `node build/index.js`: no PID 1 in the listing',
+    "PID 1's executable is unknown, not node",
+    "PID 1's uid could not be read from /proc/1/status",
+    "PID 1's gid could not be read from /proc/1/status",
+  ])
+})
+
+test('nonroot: the entrypoint’s count, and what `docker diff` says changed under a folder', () => {
+  const log = [
+    '2026-11-13T10:00:00.000000001Z [entrypoint] entries given to 1001:1001 under /app/world: 0',
+    '2026-11-13T10:00:00.100000001Z server listening on port 3000',
+    '[entrypoint] entries given to 1001:1001 under /app/my world: 1234',
+    '[entrypoint] entries given to 1001:1001 under /app/world: many',
+  ].join('\n')
+  assert.deepEqual(entrypointCounts(log), [
+    { dir: '/app/world', count: 0 },
+    { dir: '/app/my world', count: 1234 },
+  ])
+  assert.deepEqual(entrypointCounts(''), [])
+  const diff = 'C /app\nA /app/world\nC /app/build\nC /app/build/index.js\nC /app/buildx\nD /tmp/x\n'
+  assert.deepEqual(changedUnder(diff, '/app/build'), ['C /app/build', 'C /app/build/index.js'])
+  assert.deepEqual(changedUnder('C /app\nA /app/world\n', '/app/build'), [])
+})
+
+test('nonroot: the other ways a container is started', () => {
+  const base = { name: 'c', image: 'i' }
+  assert.deepEqual(
+    buildRunArgs({ ...base, volume: 'v', user: '0', entrypoint: 'npm', command: ['run', 'start'], env: { A: '1' } }),
+    [
+      'run',
+      '-d',
+      '--name',
+      'c',
+      '--user',
+      '0',
+      '--entrypoint',
+      'npm',
+      '-v',
+      'v:/app/world',
+      '-e',
+      'A=1',
+      'i',
+      'run',
+      'start',
+    ]
+  )
+  // in the foreground, without a volume
+  assert.deepEqual(buildRunArgs({ ...base, detach: false, user: '0', entrypoint: 'find', command: ['/app/build'] }), [
+    'run',
+    '--name',
+    'c',
+    '--user',
+    '0',
+    '--entrypoint',
+    'find',
+    'i',
+    '/app/build',
+  ])
+  // the settings of a server on 3100: the port and the three addresses, nothing else changed
+  const moved = envOnPort(ENV, 3100)
+  assert.deepEqual(
+    Object.keys(moved).filter(key => moved[key] !== ENV[key]),
+    ['PORT', 'PUBLIC_WS_URL', 'PUBLIC_API_URL', 'ASSETS_BASE_URL']
+  )
+  assert.equal(moved.PORT, '3100')
+  assert.equal(moved.PUBLIC_WS_URL, 'ws://127.0.0.1:3100/ws')
+  assert.equal(moved.ASSETS_BASE_URL, 'http://127.0.0.1:3100/assets')
+  assert.equal(moved.JWT_SECRET, ENV.JWT_SECRET)
+})
+
+test('nonroot: the lines looked for are the ones the entrypoint, its decision and the server print', async () => {
+  const entrypoint = read('scripts/coo-entrypoint.sh')
+  assert.ok(entrypoint.includes("printf '[entrypoint] %s\\n'"))
+  assert.ok(entrypoint.includes('say "entries given to 1001:1001 under $dir: ${#given}"'))
+  assert.ok(entrypoint.includes('say "entries given u+rw (files) or u+rwx (folders) under $dir: ${#modes}"'))
+  assert.ok(entrypoint.includes('say "started as uid $uid, not as root: nothing under $dir changes owner'))
+  assert.equal(ENTRYPOINT_LINES.given, '[entrypoint] entries given to 1001:1001 under ')
+  assert.equal(ENTRYPOINT_LINES.modes, '[entrypoint] entries given u+rw (files) or u+rwx (folders) under ')
+  assert.equal(ENTRYPOINT_LINES.notRoot, '[entrypoint] started as uid ')
+  // the refusal, from the real decision (its app root is /app, which this machine does not have: the joined path is
+  // what is decided on for build and /usr/local/bin alike)
+  const cli = path.join(root, 'scripts/coo-world-folder.mjs')
+  for (const [world, folder] of [
+    ['build', '/app/build'],
+    [SYSTEM_WORLD, fs.realpathSync('/usr/local/bin')],
+  ]) {
+    const out = spawnSync(process.execPath, [cli], { encoding: 'utf8', env: { PATH: process.env.PATH, WORLD: world } })
+    assert.equal(out.status, 1)
+    assert.ok(out.stderr.startsWith(refusal(world, folder)), out.stderr)
+  }
+  assert.equal(refusal('build', '/app/build'), '[entrypoint] refused: WORLD="build" resolves to /app/build: ')
+  assert.equal(LINK_WORLD, 'world/link/public')
+  // the server's start-up failure, as the real installStartupExit writes it for a folder it cannot write
+  const written = []
+  const proc = {
+    exitCode: 0,
+    on() {},
+    off() {},
+    exit() {},
+    stderr: { write: (text, done) => (written.push(text), done?.()) },
+    stdout: { write: (text, done) => done?.() },
+  }
+  const startup = installStartupExit({ proc, setImmediate: run => run(), setTimeout: () => {} })
+  const denied = Object.assign(new Error("EACCES: permission denied, mkdir '/app/world/assets'"), { code: 'EACCES' })
+  startup.step(() => Promise.reject(denied))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(written.length, 1)
+  assert.ok(written[0].startsWith(`${STARTUP_FAILED}Error: EACCES: permission denied`), written[0])
+})
+
+const NONROOT_RUN = [
+  'version --format {{.Client.Version}} {{.Server.Version}}',
+  'build --build-arg COMMIT_HASH=RUN -t RUN:check /repo',
+  'image inspect --format {{json .Config}} RUN:check',
+  'volume create world',
+  // 1. the volume filled by the image started the old way: npm, as root
+  'run -d --name legacy --user 0 --entrypoint npm -v world:/app/world RUN:check run start',
+  'container inspect --format {{json .State}} legacy',
+  'stop -t 10 legacy',
+  'container inspect --format {{json .State}} legacy',
+  'logs --timestamps legacy',
+  // 2. started as the image starts: it takes the volume over; looked at; stopped with Docker's defaults
+  'run -d --name sigterm -v world:/app/world RUN:check',
+  'container inspect --format {{json .State}} sigterm',
+  'exec sigterm ps -o pid,ppid,user,args',
+  'exec sigterm cat /proc/1/status',
+  'exec --user 1001:1001 sigterm readlink /proc/1/exe',
+  'exec sigterm curl -fsS --max-time 5 http://127.0.0.1:3000/status',
+  'exec sigterm ls -ln /app/world',
+  'logs --timestamps sigterm',
+  'exec sigterm find /app/world -xdev ! -user 1001',
+  'exec sigterm find /app/world -xdev ! -group 1001',
+  'stop -t 10 sigterm',
+  'container inspect --format {{json .State}} sigterm',
+  'logs --timestamps sigterm',
+  'events --since TIME --until TIME --filter container=sigterm --filter type=container --format {{json .}}',
+  // 3. one file root's again; the next start gives it back; stopped as Fly stops
+  'run --name chown --user 0 --entrypoint chown -v world:/app/world RUN:check 0:0 /app/world/db.sqlite',
+  'run -d --name sigint -v world:/app/world RUN:check',
+  'container inspect --format {{json .State}} sigint',
+  'logs --timestamps sigint',
+  'exec sigint find /app/world -xdev ! -user 1001',
+  'exec sigint find /app/world -xdev ! -group 1001',
+  'stop --signal SIGINT -t 5 sigint',
+  'container inspect --format {{json .State}} sigint',
+  'logs --timestamps sigint',
+  'events --since TIME --until TIME --filter container=sigint --filter type=container --format {{json .}}',
+  // 4. db.sqlite root's with mode 0400, assets 0500; the next start gives both back, writable; a SIGTERM stop saves
+  'run --name breakperms --user 0 --entrypoint sh -v world:/app/world RUN:check -c ' +
+    'chown 0:0 /app/world/db.sqlite && chmod 0400 /app/world/db.sqlite && chmod 0500 /app/world/assets',
+  'run -d --name perms -v world:/app/world RUN:check',
+  'container inspect --format {{json .State}} perms',
+  'logs --timestamps perms',
+  'exec perms find /app/world -xdev ! -user 1001',
+  'exec perms find /app/world -xdev ! -group 1001',
+  'exec --user 1001:1001 perms test -w /app/world/db.sqlite',
+  'exec --user 1001:1001 perms test -w /app/world/assets',
+  'stop -t 10 perms',
+  'container inspect --format {{json .State}} perms',
+  'logs --timestamps perms',
+  'events --since TIME --until TIME --filter container=perms --filter type=container --format {{json .}}',
+  // 5. a start that has nothing to give
+  'run -d --name restart -v world:/app/world RUN:check',
+  'container inspect --format {{json .State}} restart',
+  'logs --timestamps restart',
+  'exec restart find /app/world -xdev ! -user 1001',
+  'exec restart find /app/world -xdev ! -group 1001',
+  // 6. another PORT, no volume
+  'run -d --name port RUN:check',
+  'container inspect --format {{json .State}} port',
+  'logs --timestamps port',
+  // 7. another user, on a fresh volume
+  'volume create fresh',
+  'run -d --name otheruser --user 2000:2000 -v fresh:/app/world RUN:check',
+  'container inspect --format {{json .State}} otheruser',
+  'logs --timestamps otheruser',
+  // 8. the image's code through a link on the fresh volume: refused, nothing under /app/build changed
+  'run --name makelink --user 0 --entrypoint ln -v fresh:/app/world RUN:check -s /app/build /app/world/link',
+  'run -d --name linked -v fresh:/app/world RUN:check',
+  'container inspect --format {{json .State}} linked',
+  'logs --timestamps linked',
+  'diff linked',
+  // 9. a refused WORLD, what it changed, and the image's own /app/build
+  'run -d --name refused RUN:check',
+  'container inspect --format {{json .State}} refused',
+  'logs --timestamps refused',
+  'diff refused',
+  'run --name imagefiles --user 0 --entrypoint find RUN:check /app/build ! -user 0',
+  // 10. a WORLD in a system tree
+  'run -d --name systemworld RUN:check',
+  'container inspect --format {{json .State}} systemworld',
+  'logs --timestamps systemworld',
+  'diff systemworld',
+  // the cleanup: the logs of the two still running, then everything of this run
+  'logs --timestamps restart',
+  'logs --timestamps port',
+  'rm -f legacy sigterm chown sigint breakperms perms restart port otheruser makelink linked refused imagefiles systemworld',
+  'volume rm world fresh',
+  'image rm RUN:check',
+]
+
+test('nonroot: a run in which everything goes well: the docker commands, in order', async () => {
+  const { summary, commands, calls, logs } = await simulate(undefined, { model: 'nonroot' })
+  assert.deepEqual(commands, calls, 'every command that is run is printed')
+  assert.deepEqual(commands.map(brief), NONROOT_RUN)
+  assert.deepEqual(summary.failures, [])
+  assert.equal(summary.ok, true)
+  assert.equal(summary.model, 'nonroot')
+  // the settings of the containers that are not started with the run's own
+  const settingsOf = role => {
+    const args = commands.find(command => command[0] === 'run' && command.includes(NAMES.containers[role]))
+    return Object.fromEntries(
+      args
+        .filter((arg, i) => args[i - 1] === '-e')
+        .map(setting => [setting.slice(0, setting.indexOf('=')), setting.slice(setting.indexOf('=') + 1)])
+    )
+  }
+  assert.deepEqual(settingsOf('sigterm'), ENV)
+  assert.deepEqual(settingsOf('legacy'), ENV)
+  assert.deepEqual(settingsOf('otheruser'), ENV)
+  assert.deepEqual(settingsOf('port'), envOnPort(ENV, 3100))
+  assert.deepEqual(settingsOf('refused'), { ...ENV, WORLD: 'build' })
+  assert.deepEqual(settingsOf('systemworld'), { ...ENV, WORLD: '../usr/local/bin' })
+  assert.deepEqual(settingsOf('linked'), { ...ENV, WORLD: 'world/link/public' })
+  assert.deepEqual(settingsOf('chown'), {}, 'the throw-away containers need no settings')
+  // what was seen
+  const started = ['legacy', 'sigterm', 'sigint', 'perms', 'restart', 'port', 'otheruser', 'linked', 'refused']
+  const byRole = Object.fromEntries(summary.containers.map(record => [record.role, record]))
+  assert.deepEqual(Object.keys(byRole), [...started, 'systemworld'])
+  assert.equal(byRole.sigterm.tree.serverIsPid1, true)
+  assert.deepEqual(byRole.sigterm.pid1.status.uid, { real: 1001, effective: 1001, saved: 1001, fs: 1001 })
+  const counts = role => [byRole[role].entrypoint.given[0].count, byRole[role].entrypoint.modes[0].count]
+  assert.deepEqual(['sigterm', 'sigint', 'perms', 'restart', 'port'].map(counts), [
+    [23, 0],
+    [1, 0],
+    [1, 2],
+    [0, 0],
+    [1, 0],
+  ])
+  assert.deepEqual(byRole.perms.writable, { '/app/world/db.sqlite': 0, '/app/world/assets': 0 })
+  assert.deepEqual(byRole.restart.ownership, { user: { code: 0, listed: '' }, group: { code: 0, listed: '' } })
+  assert.deepEqual(
+    ['sigterm', 'sigint', 'perms'].map(role => [byRole[role].stop.ok, byRole[role].stop.signal]),
+    [
+      [true, 'SIGTERM'],
+      [true, 'SIGINT'],
+      [true, 'SIGTERM'],
+    ]
+  )
+  for (const role of ['otheruser', 'linked', 'refused', 'systemworld']) assert.equal(byRole[role].exit.exitCode, 1)
+  for (const role of ['linked', 'refused', 'systemworld']) assert.equal(byRole[role].diff, '')
+  assert.deepEqual(
+    summary.throwaway.map(entry => [entry.role, entry.code]),
+    [
+      ['chown', 0],
+      ['breakperms', 0],
+      ['makelink', 0],
+      ['imagefiles', 0],
+    ]
+  )
+  assert.deepEqual(summary.image.config.entrypoint, ['/usr/local/bin/coo-entrypoint.sh'])
+  assert.deepEqual(summary.image.config.cmd, ['node', 'build/index.js'])
+  assert.deepEqual(Object.keys(logs), [...started, 'systemworld'])
+  // every argument of the cleanup that names something is a name of this run
+  for (const args of commands.slice(-3)) {
+    for (const arg of args.filter(arg => !['rm', '-f', 'volume', 'image'].includes(arg))) {
+      assert.ok(arg.startsWith(NAMES.prefix), arg)
+    }
+  }
+  assert.deepEqual(
+    summary.cleanup.map(step => [step.what, step.code]),
+    [
+      ['the containers', 0],
+      ['the volumes', 0],
+      ['the image tag', 0],
+    ]
+  )
+  // every container and volume a command of the run names is in the cleanup
+  const removed = new Set(commands.slice(-3).flat())
+  for (const args of commands.filter(args => args[0] === 'run'))
+    assert.ok(removed.has(args[args.indexOf('--name') + 1]))
+  for (const args of commands.filter(args => args[0] === 'volume' && args[1] === 'create'))
+    assert.ok(removed.has(args[2]))
+  assert.ok(!JSON.stringify(summary).includes('a-made-up-secret'))
+})
+
+// the role of a docker command's container, for the answers below
+const roleIn = args => {
+  const named = args.find(arg => arg.startsWith(`${NAMES.prefix}-`) || arg.startsWith('container=' + NAMES.prefix))
+  return named ? named.slice(named.lastIndexOf('-') + 1) : null
+}
+const exited = (code, health = 'starting') =>
+  JSON.stringify({ Status: 'exited', Running: false, ExitCode: code, Health: { Status: health, Log: [] } })
+const runningHealthy = JSON.stringify({ Status: 'running', Running: true, ExitCode: 0, Health: { Status: 'healthy' } })
+
+test('nonroot: PID 1 as root, or not the server, fails the run', async () => {
+  const { summary } = await simulate(
+    args => {
+      if (args[0] !== 'exec') return undefined
+      if (args.includes('ps')) return { stdout: SIMULATED_PS }
+      if (args.includes('cat')) return { stdout: SIMULATED_STATUS }
+      return undefined
+    },
+    { model: 'nonroot' }
+  )
+  assert.deepEqual(summary.failures, [
+    'sigterm: PID 1 is not `node build/index.js`: it is `npm run start`',
+    "sigterm: PID 1's uid is 0 0 0 0 (real, effective, saved, file system), not 1001 in all four",
+    "sigterm: PID 1's gid is 0 0 0 0 (real, effective, saved, file system), not 1001 in all four",
+  ])
+})
+
+test('nonroot: what is left that is not 1001’s, and wrong counts, fail the run, which goes on', async () => {
+  const { summary } = await simulate(
+    args => {
+      const role = roleIn(args)
+      if (args[0] === 'exec' && args.includes('find') && role === 'sigint') {
+        return { stdout: args.includes('-user') ? '/app/world/db.sqlite\n/app/world/db.sqlite-wal\n' : '' }
+      }
+      if (args[0] === 'exec' && args.includes('find') && role === 'restart' && args.includes('-group')) {
+        return { code: 1, stdout: '', stderr: 'find: /app/world/x: Permission denied' }
+      }
+      if (args[0] === 'logs' && role === 'sigterm') return { stdout: 'server listening on port 3000' }
+      if (args[0] === 'logs' && role === 'restart') {
+        return {
+          stdout: `${ENTRYPOINT_LINES.given}/app/world: 2\n${ENTRYPOINT_LINES.given}/app/world: 0\nserver listening`,
+        }
+      }
+      if (args[0] === 'logs' && role === 'port') return { stdout: `${ENTRYPOINT_LINES.given}/data/world: 1` }
+      return undefined
+    },
+    { model: 'nonroot' }
+  )
+  assert.deepEqual(summary.failures, [
+    'sigterm: no `[entrypoint] entries given to 1001:1001 under …` line(s) in the log, expected one (the entrypoint prints it on every start as root)',
+    'sigterm: no `[entrypoint] entries given u+rw (files) or u+rwx (folders) under …` line(s) in the log, expected one (the entrypoint prints it on every start as root)',
+    'sigterm (SIGTERM, 10 s): the log has no `[server] SIGTERM: saving the world before exit` line',
+    'sigterm (SIGTERM, 10 s): the log has no `[network] final save complete` line',
+    "sigint: under /app/world, not 1001's (user): /app/world/db.sqlite, /app/world/db.sqlite-wal",
+    'restart: 2 `[entrypoint] entries given to 1001:1001 under …` line(s) in the log, expected one (the entrypoint prints it on every start as root)',
+    'restart: no `[entrypoint] entries given u+rw (files) or u+rwx (folders) under …` line(s) in the log, expected one (the entrypoint prints it on every start as root)',
+    "restart: `docker exec image-check-0123456789ab-restart find /app/world -xdev '!' -group 1001` exited 1: find: /app/world/x: Permission denied",
+    'port: the entrypoint looked at /data/world, not at /app/world',
+    'port: no `[entrypoint] entries given u+rw (files) or u+rwx (folders) under …` line(s) in the log, expected one (the entrypoint prints it on every start as root)',
+  ])
+  // a count that is too low or too high
+  const counts = await simulate(
+    args => {
+      const role = roleIn(args)
+      const both = (given, modes) => ({
+        stdout: `${ENTRYPOINT_LINES.given}/app/world: ${given}\n${ENTRYPOINT_LINES.modes}/app/world: ${modes}`,
+      })
+      if (args[0] === 'logs' && role === 'sigint') return both(0, 0)
+      if (args[0] === 'logs' && role === 'perms') return both(1, 0)
+      if (args[0] === 'logs' && role === 'restart') return both(1, 3)
+      return undefined
+    },
+    { model: 'nonroot' }
+  )
+  assert.deepEqual(counts.summary.failures, [
+    'sigint: 0 entries given to 1001:1001, expected at least 1 (db.sqlite was made root’s before this start)',
+    'sigint (SIGINT, 5 s): the log has no `[server] SIGINT: saving the world before exit` line',
+    'sigint (SIGINT, 5 s): the log has no `[network] final save complete` line',
+    'perms: 0 entries given owner read and write, expected at least 1 (db.sqlite was made 0400 and assets 0500 before this start)',
+    'perms (SIGTERM, 10 s): the log has no `[server] SIGTERM: saving the world before exit` line',
+    'perms (SIGTERM, 10 s): the log has no `[network] final save complete` line',
+    'restart: 1 entries given to 1001:1001, expected 0 (nothing was written as root since the last start)',
+    'restart: 3 entries given owner read and write, expected 0 (every mode was given back at the last start)',
+  ])
+  // what 1001:1001 still cannot write after the start
+  const unwritable = await simulate(
+    args =>
+      args[0] === 'exec' && args.includes('test') && args.at(-1) === '/app/world/db.sqlite' ? { code: 1 } : undefined,
+    { model: 'nonroot' }
+  )
+  assert.deepEqual(unwritable.summary.failures, [
+    'perms: /app/world/db.sqlite is not writable for 1001:1001 (`test -w` exited 1)',
+  ])
+})
+
+test('nonroot: the container started as another user has to fail in the server’s start-up, not be healthy', async () => {
+  const healthy = await simulate(
+    args => (args[0] === 'container' && roleIn(args) === 'otheruser' ? { stdout: runningHealthy } : undefined),
+    { model: 'nonroot' }
+  )
+  assert.deepEqual(healthy.summary.failures, [
+    `otheruser: ${NAMES.containers.otheruser} became healthy; expected it to end by itself with exit code 1`,
+  ])
+  // the run went on to the refused WORLDs, and the healthy one is removed with the rest
+  assert.equal(healthy.summary.containers.at(-1).role, 'systemworld')
+  assert.ok(healthy.commands.at(-3).includes(NAMES.containers.otheruser))
+
+  const otherReason = await simulate(
+    args => {
+      if (roleIn(args) !== 'otheruser') return undefined
+      if (args[0] === 'container') return { stdout: exited(1) }
+      if (args[0] === 'logs') return { stdout: `${STARTUP_FAILED}Error: [envs] PORT not set` }
+      return undefined
+    },
+    { model: 'nonroot' }
+  )
+  assert.deepEqual(otherReason.summary.failures, [
+    'otheruser: the log has no line with `[entrypoint] started as uid 2000, not as root`',
+    'otheruser: the log has no line with `[server] start-up failed; exiting with code 1: ` and `EACCES`',
+  ])
+
+  const zero = await simulate(
+    args => (args[0] === 'container' && roleIn(args) === 'otheruser' ? { stdout: exited(0) } : undefined),
+    { model: 'nonroot' }
+  )
+  assert.deepEqual(zero.summary.failures, ['otheruser: exit code 0, expected 1'])
+})
+
+test('nonroot: a refused WORLD has to end with 1 and change nothing under what it names', async () => {
+  const { summary } = await simulate(
+    args => {
+      const role = roleIn(args)
+      if (args[0] === 'container' && role === 'refused') return { stdout: exited(0) }
+      if (args[0] === 'logs' && role === 'refused') return { stdout: 'server listening on port 3000' }
+      if (args[0] === 'diff' && role === 'refused') {
+        return { stdout: 'C /app\nA /app/world\nC /app/build\nC /app/build/index.js\n' }
+      }
+      if (args[0] === 'diff' && role === 'linked') return { stdout: 'C /app/build\nC /app/build/public\n' }
+      if (args[0] === 'diff' && role === 'systemworld') return { stdout: 'C /usr/local/bin\nC /usr/local/bin/node\n' }
+      if (args[0] === 'logs' && role === 'systemworld') return { stdout: '[entrypoint] entries given …' }
+      if (args[0] === 'run' && args.includes('find')) return { stdout: '/app/build/index.js\n' }
+      return undefined
+    },
+    { model: 'nonroot' }
+  )
+  assert.deepEqual(summary.failures, [
+    'linked: the container changed /app/build: C /app/build, C /app/build/public',
+    'refused: exit code 0, expected 1',
+    'refused: the log has no line with `[entrypoint] refused: WORLD="build" resolves to /app/build: `',
+    'refused: the container changed /app/build: C /app/build, C /app/build/index.js',
+    "imagefiles: not root's under /app/build: /app/build/index.js",
+    'systemworld: the log has no line with `[entrypoint] refused: WORLD="../usr/local/bin" resolves to /usr/local/bin: `',
+    'systemworld: the container changed /usr: C /usr/local/bin, C /usr/local/bin/node',
+  ])
+  const unread = await simulate(
+    args => (args[0] === 'diff' && roleIn(args) === 'refused' ? { code: 1, stderr: 'no such container' } : undefined),
+    { model: 'nonroot' }
+  )
+  assert.deepEqual(unread.summary.failures, [
+    `refused: \`docker diff ${NAMES.containers.refused}\` exited 1: no such container`,
+  ])
+  // the link could not be made: the step the link run needs ends the run
+  const nolink = await simulate(
+    args => (args[0] === 'run' && args.includes('ln') ? { code: 1, stderr: 'ln: exists' } : undefined),
+    { model: 'nonroot' }
+  )
+  assert.deepEqual(nolink.summary.failures, ['the link /app/world/link -> /app/build exited 1: ln: exists'])
+})
+
+test('nonroot: a step the rest needs ends the run, and the cleanup removes what it made', async () => {
+  // the old way never becomes healthy
+  const legacy = await simulate(
+    args => (args[0] === 'container' && roleIn(args) === 'legacy' ? { stdout: exited(1) } : undefined),
+    { model: 'nonroot' }
+  )
+  assert.match(legacy.summary.failures[0], /-legacy stopped by itself before it was healthy \(exit code 1\)/)
+  assert.deepEqual(legacy.commands.slice(-3).map(brief), ['rm -f legacy', 'volume rm world', 'image rm RUN:check'])
+  // the chown through a root container fails
+  const chown = await simulate(
+    args =>
+      args[0] === 'run' && args.includes('chown')
+        ? { code: 1, stderr: 'chown: /app/world/db.sqlite: No such file' }
+        : undefined,
+    { model: 'nonroot' }
+  )
+  assert.deepEqual(chown.summary.failures, [
+    'the chown of /app/world/db.sqlite to root exited 1: chown: /app/world/db.sqlite: No such file',
+  ])
+  assert.deepEqual(chown.commands.slice(-3).map(brief), [
+    'rm -f legacy sigterm chown',
+    'volume rm world',
+    'image rm RUN:check',
+  ])
+})
+
+test('nonroot: an interruption during a throw-away container: straight to the removals, that one among them', async () => {
+  const inner = simulatedDocker({ commitHash: HASH, model: 'nonroot' })
+  let interrupted = null
+  const afterSignal = []
+  const docker = async args => {
+    if (interrupted && commandKind(args) !== 'remove') {
+      throw Object.assign(new Error(`stopped by ${interrupted}`), { interrupted })
+    }
+    if (interrupted) afterSignal.push(args)
+    // the signal comes while the root container's chown runs: the command is ended, the container may exist
+    if (args[0] === 'run' && args.includes('chown')) {
+      interrupted = 'SIGTERM'
+      throw Object.assign(new Error(`stopped by ${interrupted}`), { interrupted })
+    }
+    return inner(args)
+  }
+  const summary = await runImageCheck({
+    docker,
+    model: 'nonroot',
+    names: NAMES,
+    repoDir: '/repo',
+    commitHash: HASH,
+    env: ENV,
+    report: { command: () => {}, info: () => {} },
+    sleep: async () => {},
+    interrupted: () => interrupted,
+  })
+  assert.equal(summary.interrupted, 'SIGTERM')
+  assert.deepEqual(summary.failures, [])
+  assert.deepEqual(afterSignal.map(brief), ['rm -f legacy sigterm chown', 'volume rm world', 'image rm RUN:check'])
+})
+
+test('nonroot: what a signal does to its new commands', async () => {
+  const { commands } = await simulate(undefined, { model: 'nonroot' })
+  const kinds = commands.map(args => [brief(args).split(' ').slice(0, 2).join(' '), commandKind(args)])
+  assert.deepEqual(
+    kinds.filter(([, kind]) => kind === 'remove').map(([command]) => command),
+    ['rm -f', 'volume rm', 'image rm']
+  )
+  // the containers in the foreground create something too: they are let finish, then ended
+  assert.deepEqual(
+    kinds.filter(([, kind]) => kind === 'create').map(([command]) => command),
+    [
+      'volume create',
+      'run -d', // legacy
+      'run -d', // sigterm
+      'run --name', // chown
+      'run -d', // sigint
+      'run --name', // breakperms
+      'run -d', // perms
+      'run -d', // restart
+      'run -d', // port
+      'volume create',
+      'run -d', // otheruser
+      'run --name', // makelink
+      'run -d', // linked
+      'run -d', // refused
+      'run --name', // imagefiles
+      'run -d', // systemworld
+    ]
+  )
+  assert.equal(commandKind(['diff', 'x']), 'wait')
+  assert.equal(commandKind(['exec', '--user', '1001:1001', 'x', 'readlink', '/proc/1/exe']), 'wait')
+})
+
 // --- the arguments and the models -----------------------------------------------------------------------------
 
 test('arguments: the model, the summary file, the logs folder, the dry run', () => {
@@ -1309,16 +1923,16 @@ test('arguments: the model, the summary file, the logs folder, the dry run', () 
   assert.throws(() => parseArgs(['world']), /unknown argument "world"/)
 })
 
-test('models: only `current` exists; `nonroot` and anything else is an error', () => {
-  assert.deepEqual(Object.keys(MODELS), ['current'])
+test('models: `current` and `nonroot`; anything else is an error', () => {
+  assert.deepEqual(Object.keys(MODELS), ['current', 'nonroot'])
   assert.equal(modelFor('current'), MODELS.current)
+  assert.equal(modelFor('nonroot'), MODELS.nonroot)
+  assert.equal(parseArgs(['--model=nonroot']).model, 'nonroot')
   assert.throws(
-    () => modelFor('nonroot'),
-    err => err instanceof UsageError && /--model=nonroot is not implemented yet/.test(err.message)
+    () => modelFor('root'),
+    err => err instanceof UsageError && /unknown model "root" \(known: current, nonroot\)/.test(err.message)
   )
-  assert.throws(() => modelFor('root'), /unknown model "root" \(known: current\)/)
   assert.throws(() => modelFor('toString'), /unknown model "toString"/)
-  assert.throws(() => parseArgs(['--model=nonroot']), UsageError)
   assert.throws(() => parseArgs(['--model', 'today']), /unknown model "today"/)
 })
 
@@ -1387,7 +2001,7 @@ test('an unknown model and an unknown argument end with code 2 before anything i
   const bin = emptyBin()
   try {
     for (const [args, message] of [
-      [['--model=nonroot'], /--model=nonroot is not implemented yet/],
+      [['--model=root'], /unknown model "root" \(known: current, nonroot\)/],
       [['--model=tini'], /unknown model "tini"/],
       [['--push'], /unknown argument "--push"/],
     ]) {
@@ -1420,11 +2034,16 @@ test('without docker the script says so, writes the summary and exits 1', () => 
 })
 
 // A `docker` on PATH that is test/lib/fakeDocker.mjs: the script's own spawning, files and signal handling run.
-function fakeDockerBin(mode) {
+function fakeDockerBin(mode, model = 'current') {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'image-check-fake-'))
   const fake = path.join(root, 'test/lib/fakeDocker.mjs')
   fs.writeFileSync(path.join(dir, 'docker'), `#!/bin/sh\nexec "${process.execPath}" "${fake}" "$@"\n`, { mode: 0o755 })
-  const env = { PATH: `${dir}${path.delimiter}${process.env.PATH}`, FAKE_DOCKER_DIR: dir, FAKE_DOCKER_MODE: mode }
+  const env = {
+    PATH: `${dir}${path.delimiter}${process.env.PATH}`,
+    FAKE_DOCKER_DIR: dir,
+    FAKE_DOCKER_MODE: mode,
+    FAKE_DOCKER_MODEL: model,
+  }
   const calls = () =>
     fs
       .readFileSync(path.join(dir, 'calls.jsonl'), 'utf8')
@@ -1478,6 +2097,75 @@ test('the script against a fake docker: it passes, and writes the summary and th
     assert.ok(!`${out.stdout}${out.stderr}`.includes(secrets[0]), 'the value is not in the output')
     assert.equal(shown.filter(line => line.includes(" -e 'JWT_SECRET=***' ")).length, 3)
     assert.deepEqual(calls[calls.length - 1].slice(0, 2), ['image', 'rm'])
+  } finally {
+    fs.rmSync(fake.dir, { recursive: true, force: true })
+  }
+})
+
+test('--dry-run --model=nonroot prints the commands of that run and starts no docker', () => {
+  const bin = emptyBin()
+  try {
+    const out = runScript(['--dry-run', '--model=nonroot'], { PATH: bin })
+    assert.equal(out.status, 0, out.stderr)
+    const commands = out.stdout.split('\n').filter(line => line.startsWith('docker '))
+    assert.equal(commands.length, NONROOT_RUN.length)
+    assert.match(out.stdout, new RegExp(`dry run: ${NONROOT_RUN.length} docker commands, none was run`))
+    assert.ok(
+      commands.some(line =>
+        /^docker exec --user 1001:1001 image-check-[0-9a-f]{12}-sigterm readlink \/proc\/1\/exe$/.test(line)
+      )
+    )
+    assert.ok(commands.some(line => / -e PORT=3100 /.test(line)))
+    assert.ok(commands.some(line => / -e WORLD=build /.test(line)))
+    assert.ok(commands.some(line => / -e WORLD=\.\.\/usr\/local\/bin /.test(line)))
+    assert.ok(commands.some(line => / -e WORLD=world\/link\/public /.test(line)))
+    assert.ok(commands.some(line => /test -w \/app\/world\/db\.sqlite$/.test(line)))
+    assert.ok(commands.some(line => / --user 2000:2000 /.test(line)))
+    assert.match(commands.at(-2), /^docker volume rm image-check-[0-9a-f]{12}-world image-check-[0-9a-f]{12}-fresh$/)
+    assert.ok(!commands.some(line => / (-p|--publish)[ =]/.test(line)))
+  } finally {
+    fs.rmSync(bin, { recursive: true, force: true })
+  }
+})
+
+test('the script against a fake docker, --model=nonroot: it passes, with a log for each container', posixOnly, () => {
+  const fake = fakeDockerBin('ok', 'nonroot')
+  try {
+    const summaryFile = path.join(fake.dir, 'image-check.json')
+    const logs = path.join(fake.dir, 'logs')
+    const out = runScript(['--model=nonroot', '--summary', summaryFile, '--logs', logs], fake.env)
+    assert.equal(out.status, 0, `${out.stdout}\n${out.stderr}`.slice(-2000))
+    assert.match(out.stdout, /\[image-check\] passed in \d+ s \(model nonroot\)/)
+    assert.match(
+      out.stdout,
+      /PID 1: executable \/usr\/local\/bin\/node, name "node", uid 1001, SIGTERM handled, SIGINT handled/
+    )
+    assert.match(out.stdout, /the entrypoint: 0 entries under \/app\/world given to 1001:1001/)
+    assert.match(out.stdout, /the entrypoint: 2 entries under \/app\/world given owner read and write/)
+    assert.match(out.stdout, /\/app\/world\/db\.sqlite: writable for 1001:1001/)
+    assert.match(out.stdout, /everything under \/app\/world is 1001:1001's/)
+    assert.match(out.stdout, /`docker diff`: nothing at or under \/app\/build changed/)
+    const summary = JSON.parse(fs.readFileSync(summaryFile, 'utf8'))
+    assert.equal(summary.ok, true)
+    assert.deepEqual(
+      summary.logFiles.map(file => path.basename(file)),
+      [
+        'legacy.log',
+        'sigterm.log',
+        'sigint.log',
+        'perms.log',
+        'restart.log',
+        'port.log',
+        'otheruser.log',
+        'linked.log',
+        'refused.log',
+        'systemworld.log',
+      ]
+    )
+    assert.match(fs.readFileSync(path.join(logs, 'otheruser.log'), 'utf8'), /EACCES/)
+    const calls = fake.calls()
+    assert.equal(calls.length, NONROOT_RUN.length)
+    assert.deepEqual(calls.at(-3).slice(0, 2), ['rm', '-f'])
   } finally {
     fs.rmSync(fake.dir, { recursive: true, force: true })
   }
@@ -1684,10 +2372,11 @@ test('image.yml: read-only, pinned to the commits ci.yml uses, no Docker action,
   assert.match(workflow, /runs-on: ubuntu-24\.04/)
   assert.match(workflow, /timeout-minutes: \d+/)
   assert.match(workflow, /node-version-file: '\.nvmrc'/)
-  // `exec`: Node, not Bash, is the step's process, so a cancel's SIGINT reaches the script and its cleanup runs
+  // `exec`: Node, not Bash, is the step's process, so a cancel's SIGINT reaches the script and its cleanup runs. The
+  // model is the image's as the Dockerfile builds it now: its entrypoint, the server as 1001:1001
   assert.match(
     workflow,
-    /\n {8}run: exec node scripts\/image-check\.mjs --model=current --summary image-check\.json --logs image-check-logs\n/
+    /\n {8}run: exec node scripts\/image-check\.mjs --model=nonroot --summary image-check\.json --logs image-check-logs\n/
   )
   assert.match(workflow, /if: \$\{\{ always\(\) \}\}\n\s+uses: actions\/upload-artifact@/)
   // what the image is built from, the harness and the workflow itself, for pull requests and for main alike
@@ -1701,6 +2390,9 @@ test('image.yml: read-only, pinned to the commits ci.yml uses, no Docker action,
     'scripts/build*.mjs',
     'scripts/lib/**',
     'scripts/image-check.mjs',
+    // the image's entrypoint, and the decision on the world folder it runs (its library is in scripts/lib/)
+    'scripts/coo-entrypoint.sh',
+    'scripts/coo-world-folder.mjs',
     'src/server/**',
     // bundled into the server (build/index.js): the final save is in src/core/systems/ServerNetwork.js
     'src/core/**',

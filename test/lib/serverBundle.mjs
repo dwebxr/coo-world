@@ -18,10 +18,11 @@
 // - `prepend`: { 'src/…/module.js': text } — the text goes before the module's own source, on its first line (the
 //   module's line numbers stay): an import there of a module of the tests (by absolute path) gives that one module
 //   bindings that shadow the globals of the same names, which the rest of the bundle still reads
-//   (network.mjs: the timers of ServerNetwork.js and tips.js). The module must be a file of this repository, part of
-//   the bundle and not replaced. `{ text, optional: true }` in place of the text: the same where the bundle has the
-//   module, and nothing where it has not (no error then); it must still be a file of this repository and not
-//   replaced (network.mjs: tips.js in a bundle of a `sourceRoot` whose class may not import it).
+//   (network.mjs: the timers of ServerNetwork.js, tips.js and persistence.js). The module must be a file of this
+//   repository, part of the bundle and not replaced. `{ text, optional: true }` in place of the text: the same where
+//   the bundle has the module, and nothing where it has not (no error then); it must still be a file of this
+//   repository and not replaced (network.mjs: tips.js and persistence.js in a bundle of a `sourceRoot` whose class may
+//   not import them).
 // - `sourceRoot`: a checkout whose src/core and src/server files are read instead of this one's where they exist
 //   (REAL_PHYSX_SOURCE_ROOT, as in persistedStartup.test.js); `replace` wins over it, and `prepend` goes before the
 //   baseline's source.

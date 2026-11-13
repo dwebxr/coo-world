@@ -343,6 +343,74 @@ test("network helper: the timers a test gives are those of the class's code move
   assert.equal(timers(), before)
 })
 
+test("network helper: the timers a test gives are those of the class's code moved to src/server/network/ too (the save timer, the final save's deadline)", async t => {
+  const before = timers()
+  const calls = []
+  const made = []
+  const fake = {
+    setTimeout: (fn, ms) => (calls.push(['setTimeout', ms]), made.push({ fn, ms }), made.at(-1)),
+    clearTimeout: timer => calls.push(['clearTimeout', timer?.ms ?? timer]),
+  }
+  // a database with nothing stored, whose writes of a row never end
+  const db = table => {
+    if (table === 'config') return { where: () => ({ first: async () => undefined }) }
+    if (table === 'users') return { select: async () => [] }
+    return Object.assign([], { insert: () => ({ onConflict: () => ({ merge: () => new Promise(() => {}) }) }) })
+  }
+  const interval = 60_000 // SAVE_INTERVAL's default, in ms
+  const lines = []
+  await t.test('a test that gives them', async t => {
+    for (const level of ['log', 'error']) t.mock.method(console, level, line => lines.push(line))
+    const network = makeNetwork(t, {
+      net,
+      timers: fake,
+      world: { settings: { deserialize() {}, serialize: () => ({}), setHasAdminCode() {}, on() {} } },
+      init: { db },
+    })
+    network.world.blueprints = new net.Blueprints(network.world)
+    // the first save, which hydrate sets in src/server/network/persistence.js: the test's setTimeout
+    await network.start()
+    assert.deepEqual(calls, [['setTimeout', interval]])
+    assert.equal(network.saveTimerId, made[0])
+    assert.equal(made[0].fn, network.save)
+    assert.equal(timers(), before + 1, 'the socket check only: no global timer')
+    // run by the test: the save cancels it with the test's clearTimeout and sets the next one with its setTimeout
+    await made[0].fn()
+    assert.deepEqual(calls.splice(0), [
+      ['setTimeout', interval],
+      ['clearTimeout', interval],
+      ['setTimeout', interval],
+    ])
+    assert.equal(network.saveTimerId, made[1])
+    // the final save, with a row whose write does not end: stopForFatal (the class's) cancels the save timer with the
+    // test's clearTimeout, and the deadline is the test's setTimeout, which ends the save when the test runs it
+    network.markBlueprintDirty({ id: 'b1', version: 0 })
+    const saving = network.flushBeforeExit(1000)
+    assert.deepEqual(calls, [
+      ['clearTimeout', interval],
+      ['setTimeout', 1000],
+    ])
+    assert.equal(timers(), before, 'the socket check cleared; no global timer')
+    // the save it queues starts (cancelling the save timer again) and the row's write is under way
+    for (let turn = 0; turn < 2; turn++) await new Promise(resolve => setImmediate(resolve))
+    assert.equal(calls.length, 3)
+    made[2].fn()
+    await assert.rejects(saving, /save deadline exceeded/)
+    assert.equal(network.flushExpired, true)
+    // and the deadline, once run, was cancelled at the save's end with the test's clearTimeout
+    assert.deepEqual(calls.splice(0), [
+      ['clearTimeout', interval],
+      ['setTimeout', 1000],
+      ['clearTimeout', interval],
+      ['clearTimeout', 1000],
+    ])
+    assert.match(lines.at(-1), /^\[network\] not persisted: blueprints=\["b1"\] /)
+  })
+  // the end stopped the network: the class's clearTimeout cancelled the save timer, with the test's
+  assert.deepEqual(calls, [['clearTimeout', interval]])
+  assert.equal(timers(), before)
+})
+
 test('server bundle: prepend puts a line before one module of the bundle', async t => {
   const seen = (globalThis.prependedLines = [])
   t.after(() => delete globalThis.prependedLines)
@@ -416,7 +484,45 @@ test("network helper: a sourceRoot whose class does not import tips.js (from bef
   t.after(old.destroy)
   // the network's modules in that bundle (each module of a bundle starts with a line of its path)
   const modules = fs.readFileSync(fileURLToPath(old.url), 'utf8').match(/^\/\/ src\/server\/network\/\S+$/gm)
-  assert.deepEqual(modules, ['// src/server/network/solanaWallet.js', '// src/server/network/evmWallet.js'])
+  assert.deepEqual(modules, [
+    '// src/server/network/solanaWallet.js',
+    '// src/server/network/evmWallet.js',
+    '// src/server/network/persistence.js',
+  ])
+  const calls = []
+  const network = makeNetwork(t, {
+    net: old,
+    timers: { setTimeout: (fn, ms) => (calls.push(ms), { fn, ms }), clearTimeout: () => {} },
+  })
+  // a takeover's ping: its deadline is the class's own setTimeout, the test's
+  const socket = new old.Socket({ id: 'p', ws: fakeWs(), network })
+  network.sockets.set('p', socket)
+  const answered = network.answersPing(socket, 1234)
+  assert.deepEqual(calls, [1234])
+  socket.ws.emit('pong')
+  assert.equal(await answered, true)
+})
+
+test("network helper: a sourceRoot whose class does not import persistence.js (from before the move) loads, and the class's timers there are the test's", async t => {
+  // the baseline: the class alone, today's without its import of persistence.js (whose members it then never calls
+  // here: the test does not start the world)
+  const CLASS = 'src/core/systems/ServerNetwork.js'
+  const IMPORT = "import * as persistence from '../../server/network/persistence'\n"
+  const source = fs.readFileSync(fileURLToPath(new URL(`../${CLASS}`, import.meta.url)), 'utf8')
+  assert.equal(source.split(IMPORT).length, 2, 'the class imports persistence.js once')
+  const baseline = fs.mkdtempSync(path.join(os.tmpdir(), 'network-baseline-'))
+  t.after(() => fs.rmSync(baseline, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(baseline, path.dirname(CLASS)), { recursive: true })
+  fs.writeFileSync(path.join(baseline, CLASS), source.replace(IMPORT, ''))
+  const old = await loadNetwork({ sourceRoot: baseline })
+  t.after(old.destroy)
+  // the network's modules in that bundle (each module of a bundle starts with a line of its path)
+  const modules = fs.readFileSync(fileURLToPath(old.url), 'utf8').match(/^\/\/ src\/server\/network\/\S+$/gm)
+  assert.deepEqual(modules, [
+    '// src/server/network/solanaWallet.js',
+    '// src/server/network/evmWallet.js',
+    '// src/server/network/tips.js',
+  ])
   const calls = []
   const network = makeNetwork(t, {
     net: old,

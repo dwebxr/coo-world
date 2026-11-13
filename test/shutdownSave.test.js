@@ -148,9 +148,12 @@ test(
   'shutdown: queued config writes that block the thread are stopped at the deadline too, and the exit is 1',
   { timeout: 60000 },
   async () => {
-    // 200 writes of 50 ms each (10 s back to back), queued before the signal
+    // 200 writes of 50 ms each (10 s back to back), queued before the signal. The first one, written, holds the rest
+    // until the child has taken the signal (shutdownChild.mjs): queued writes start only after that, each checks the
+    // final save's deadline, and they stop at it. Writes that were not queued behind each other were all waiting for
+    // the same turn of the event loop, which ran them all, the held one aside, before the signal could be taken.
     const proc = child('slowconfig', 500)
-    await proc.waitFor('ready')
+    await proc.waitFor('holding the first write')
     proc.child.kill('SIGTERM')
     await proc.exited
     assert.equal(proc.code, 1)

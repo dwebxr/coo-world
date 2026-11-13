@@ -48,11 +48,12 @@
 //   of those names use (the names it lacks are the global functions, read at each call), as the old harness injected
 //   them into the class: test/lib/networkTimers.mjs is imported on the first line of the bundle's ServerNetwork.js and
 //   of each module of src/server/network/ whose functions (members of the class, moved there) call them: tips.js, a tip
-//   announcement that waits (TIMED_FILES below; serverBundle.mjs `prepend`). Only those files' calls: the other modules
-//   (a tip watcher, the admin code's brake) call the globals. A member moved with a timer call to a module of its own
-//   needs that file in TIMED_FILES. Set before the constructor runs (its socket check is a setInterval) and kept until
-//   the test ends, after its networks are stopped (stopForFatal clears with it); every network of the test makes its
-//   timers with the last one given (there is one table for the process). A timer whose handle is an object or a
+//   announcement that waits; persistence.js, the save timer and the final save's deadline (TIMED_FILES below;
+//   serverBundle.mjs `prepend`). Only those files' calls: the other modules (a tip watcher, the admin code's brake)
+//   call the globals. A member moved with a timer call to a module of its own needs that file in TIMED_FILES. Set
+//   before the constructor runs (its socket check is a setInterval) and kept until the test ends, after its networks
+//   are stopped (stopForFatal clears with it); every network of the test makes its timers with the last one given
+//   (there is one table for the process). A timer whose handle is an object or a
 //   function is cancelled by the object that made it, whichever is the last one by then (a test with two networks, each
 //   with its own fake); a handle that is a number, or one the class did not make through here, is cancelled by the last
 //   one given: two fakes that hand out numbers leave the first one's timers.
@@ -108,12 +109,13 @@ const ENTRY = `
 `
 
 // the class's own timers go through test/lib/networkTimers.mjs (makeNetwork's `timers`): those of ServerNetwork.js
-// and of the network's modules that call them (its members moved there: tips.js, a tip announcement that waits).
+// and of the network's modules that call them (its members moved there: tips.js, a tip announcement that waits;
+// persistence.js, the save timer and the final save's deadline).
 // Every file's line is required (a bundle without the file is an error, and so is a path that is no file), but in a
 // bundle of a `sourceRoot` a module's goes only where that bundle has the module: another checkout's class may not
 // import it (one from before its members moved there). The class's line is required there too.
 const NETWORK = 'src/core/systems/ServerNetwork.js'
-const TIMED_FILES = [NETWORK, 'src/server/network/tips.js']
+const TIMED_FILES = [NETWORK, 'src/server/network/tips.js', 'src/server/network/persistence.js']
 const TIMER_NAMES = ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval']
 const TIMER_IMPORT = `import { ${TIMER_NAMES.join(', ')} } from ${JSON.stringify(fileURLToPath(new URL('./networkTimers.mjs', import.meta.url)))};`
 const prependFor = sourceRoot =>

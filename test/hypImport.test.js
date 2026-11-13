@@ -15,6 +15,7 @@ import { loadClient, clientWorld } from './lib/clientHarness.mjs'
 import { png } from './lib/imageBytes.mjs'
 import { importApp, exportApp, INVALID_HYP, takeAsset } from '../src/core/extras/appTools.js'
 import { fieldValues } from '../src/core/extras/appFields.js'
+import { resolveReference } from '../src/core/extras/assetURL.js'
 import { load } from './lib/persistenceHarness.mjs'
 import { extensionOf } from '../src/server/uploadPolicy.js'
 import { IMAGE_HEADER_BYTES, MAX_IMAGE_PIXELS, readImageHeader } from '../src/core/extras/imageHeader.js'
@@ -147,7 +148,8 @@ function setup(t, served = {}) {
   t.mock.method(console, 'warn', (...args) => warnings.push(args.join(' ')))
   const world = clientWorld()
   world.assetsUrl = ASSETS
-  world.resolveURL = url => (url.startsWith('asset://') ? storeURL(url) : url)
+  // as World.resolveURL does it
+  world.resolveURL = url => resolveReference(url, ASSETS)
   world.scripts = { evaluate: code => ({ code }) }
   world.audio = { ctx: { decodeAudioData: async buffer => ({ text: latin1(buffer) }) } }
   world.network.maxUploadSize = 12
@@ -269,16 +271,18 @@ test('other spellings of a stored address, built-in names and other hosts are ke
   const script = await f.world.loader.load('script', url)
   const loaded = {}
   for (const [address, [type]] of Object.entries(builtins)) loaded[address] = await f.world.loader.load(type, address)
-  // the same store file written another way: the loader takes each for asset://<hash>.js, the upload does not
-  const spellings = [
-    storeURL(url),
-    `${url}?v=2`,
-    `${url}#a`,
-    `asset://${hash}.JS`,
-    `asset://${hash.toUpperCase()}.js`,
-    `asset://${hash}.glb.js`,
-    ` ${url}`,
-  ]
+  // Aliases of asset://<hash>.js: the loader files each under the same key (the store's own URL of the file, and the
+  // address with a query, a fragment or white space around it: ClientLoader.resourceURL, World.resolveURL), but none
+  // is the name an upload of the bytes is stored under. A file could use them to reach a loaded address
+  const aliases = [storeURL(url), `${url}?v=2`, `${url}#a`, ` ${url}`]
+  for (const alias of aliases)
+    assert.equal(f.world.loader.keyFor('script', alias), f.world.loader.keyFor('script', url))
+  // Other paths, which the canonical form leaves out as well: an upper-case extension or hash, or another extension
+  // before it. The loader files them under keys of their own (the path is compared as it is written)
+  const others = [`asset://${hash}.JS`, `asset://${hash.toUpperCase()}.js`, `asset://${hash}.glb.js`]
+  for (const other of others)
+    assert.notEqual(f.world.loader.keyFor('script', other), f.world.loader.keyFor('script', url))
+  const spellings = [...aliases, ...others]
   const planted = KINDS.script[1]('PLANTED')
   let drops = 0
   for (const spelling of spellings) {
@@ -408,6 +412,137 @@ test('the scene replacement takes only the assets stored under their hashes', as
   assert.deepEqual(g.uploads, [])
   assert.equal(g.world.blueprints.getScene().model, 'asset://ai.glb')
   assert.equal(g.sent(), 1, 'blueprintModified')
+})
+
+// uploads that finish when the test says so: each entry resolves or rejects the upload it stands for
+function deferUploads(world) {
+  const pending = []
+  world.network.upload = (file, options) =>
+    new Promise((resolve, reject) => pending.push({ name: file.name, batch: options?.batch, resolve, reject }))
+  return pending
+}
+
+// the names of the packets the builder sends, in order
+function sentNames(world) {
+  const names = []
+  const send = world.network.send.bind(world.network)
+  world.network.send = (name, data) => {
+    names.push(name)
+    return send(name, data)
+  }
+  return names
+}
+
+// a file with two assets stored under their hashes and a built-in reference between them
+function mixedFile(blueprint) {
+  const glb = KINDS.model[1]('the model')
+  const code = KINDS.script[1]('the script')
+  const model = contentURL(glb, 'glb')
+  const script = contentURL(code, 'js')
+  const file = hyp({ ...blueprint, model, script }, [
+    { type: 'model', url: model, bytes: glb },
+    { type: 'avatar', url: 'asset://avatar.vrm', bytes: KINDS.avatar[1]('PLANTED') },
+    { type: 'script', url: script, bytes: code },
+  ])
+  return { file, taken: [model, script].map(url => url.slice('asset://'.length)) }
+}
+const settle = async () => {
+  for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve))
+}
+
+test('a new app with assets taken and left out is announced only when the last taken upload has finished', async t => {
+  const errors = []
+  t.mock.method(console, 'error', (...args) => errors.push(args.map(String).join(' ')))
+  for (const outcome of ['uploaded', 'failed']) {
+    const f = setup(t)
+    const uploads = deferUploads(f.world)
+    const sent = sentNames(f.world)
+    const app = { local: null, uploaded: 0, destroyed: [] }
+    f.world.entities.add = (data, local) => {
+      app.local = local
+      return { onUploaded: () => app.uploaded++, destroy: broadcast => app.destroyed.push(broadcast) }
+    }
+    const { file, taken } = mixedFile({ name: 'mixed' })
+    const adding = f.builder.addApp(file, at)
+    await settle()
+    assert.deepEqual(
+      uploads.map(u => u.name),
+      taken,
+      'the taken assets, as one batch'
+    )
+    assert.equal(uploads[0].batch, uploads[1].batch)
+    assert.equal(app.local, false, 'added here, not announced')
+    // the last one asked for finishes first: nothing yet
+    uploads[1].resolve()
+    await settle()
+    assert.deepEqual(sent, [])
+    assert.equal(app.uploaded, 0)
+    if (outcome === 'uploaded') {
+      uploads[0].resolve()
+      await adding
+      assert.deepEqual(sent, ['blueprintAdded', 'entityAdded'])
+      assert.equal(app.uploaded, 1)
+      assert.equal(f.world.blueprints.items.size, 1)
+    } else {
+      // as before: the toast says why, and the app and its blueprint go, here only (they were never announced)
+      uploads[0].reject(new Error('Upload failed: 503'))
+      await adding
+      assert.deepEqual(sent, [])
+      assert.equal(app.uploaded, 0)
+      assert.deepEqual(app.destroyed, [false])
+      assert.equal(f.world.blueprints.items.size, 0)
+      assert.deepEqual(f.world.toasts, ['Upload failed: 503'])
+      assert.deepEqual(errors, ['failed to upload .hyp assets', 'Error: Upload failed: 503'])
+    }
+    assert.equal(f.warnings.length, 1, 'the built-in reference is left out')
+  }
+})
+
+test('a scene replacement with assets taken and left out is announced only when the last taken upload has finished', async t => {
+  const errors = []
+  t.mock.method(console, 'error', (...args) => errors.push(args.map(String).join(' ')))
+  for (const outcome of ['uploaded', 'failed']) {
+    const f = setup(t)
+    const uploads = deferUploads(f.world)
+    const sent = sentNames(f.world)
+    f.world.blueprints.add({
+      id: '$scene',
+      version: 0,
+      name: 'Scene',
+      model: null,
+      script: null,
+      props: {},
+      scene: true,
+    })
+    const { file, taken } = mixedFile({ name: 'New scene', scene: true })
+    const adding = f.builder.addApp(file, at)
+    await settle()
+    assert.deepEqual(
+      uploads.map(u => u.name),
+      taken
+    )
+    assert.equal(uploads[0].batch, uploads[1].batch)
+    assert.equal(f.world.blueprints.getScene().name, 'New scene', 'changed here at once')
+    uploads[1].resolve()
+    await settle()
+    assert.deepEqual(sent, [])
+    if (outcome === 'uploaded') {
+      uploads[0].resolve()
+      await adding
+      assert.deepEqual(sent, ['blueprintModified'])
+      assert.equal(f.world.blueprints.getScene().name, 'New scene')
+    } else {
+      // as before: the toast says why, and the change is taken back here; nothing was announced
+      uploads[0].reject(new Error('Upload failed: 503'))
+      await adding
+      assert.deepEqual(sent, [])
+      assert.deepEqual(f.world.toasts, ['Upload failed: 503'])
+      const scene = f.world.blueprints.getScene()
+      assert.deepEqual([scene.name, scene.model, scene.script], ['Scene', null, null])
+      assert.deepEqual(errors, ['Error: Upload failed: 503'])
+    }
+    assert.equal(f.warnings.length, 1)
+  }
 })
 
 test('the five files shipped with the world: all 18 assets are taken, the duplicate in Image.hyp too', async t => {

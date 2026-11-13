@@ -1110,10 +1110,10 @@ export class ClientBuilder extends System {
   // their own bytes, of a kind a blueprint loads (takeAsset, appTools.js). Every asset used to be put in the loader
   // under the url the file gave it, so a file could make this client show its bytes wherever that address is loaded
   // (another app's model or script, the default avatar, an emote, an https URL) until a reload. Any other asset is left
-  // out: the blueprint keeps its reference, which this client loads from its own address, as everyone else does. That
-  // loses nothing for anyone: the server names an upload by the hash of its bytes, so the uploaded copy of such an
-  // asset was never what its reference loads; only this client's own cache made it so. Said once in the console when
-  // some are left out.
+  // out: the blueprint keeps its reference, which this client loads from its own address, as everyone else does.
+  // Other clients lose nothing: the server names an upload by the hash of its bytes, so the uploaded copy of such an
+  // asset was never what its reference loads for them. This client no longer uses the bytes the file carries for it,
+  // and shows it only if that address can be loaded. Said once in the console when some are left out.
   takeAssets(assets) {
     const taken = assets.filter(takeAsset)
     const left = assets.length - taken.length

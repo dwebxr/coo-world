@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import { fakeWs, makeNetwork } from './lib/network.mjs'
 import { clientWorld, loadClient } from './lib/clientHarness.mjs'
 import { fixture as joinFixture, net, sentTo } from './lib/joinFixture.mjs'
+import { deferred } from './lib/persistenceFixture.mjs'
 import { Ranks } from '../src/core/extras/ranks.js'
 import { packetNodeLimit } from '../src/core/extras/inboundPolicy.js'
 import { readInboundPacket } from '../src/server/inboundDecode.js'
@@ -16,6 +17,8 @@ const CODE = 'a-long-random-admin-code'
 
 function fixture(t, env = { ADMIN_CODE: CODE }) {
   const writes = []
+  const rows = new Map()
+  let hold = null
   const broadcasts = []
   const commands = []
   const network = makeNetwork(t, {
@@ -26,7 +29,15 @@ function fixture(t, env = { ADMIN_CODE: CODE }) {
     init: {
       db: () => ({
         where: (_column, id) => ({
-          update: async patch => writes.push({ id, ...patch }),
+          // a user row's UPDATE: in `writes` when it starts, in `rows` when it lands; `holdNext(promise)` makes the
+          // next one wait for that promise before it lands
+          update: async patch => {
+            writes.push({ id, ...patch })
+            const held = hold
+            hold = null
+            if (held) await held
+            rows.set(id, { ...rows.get(id), ...patch })
+          },
         }),
       }),
     },
@@ -61,7 +72,8 @@ function fixture(t, env = { ADMIN_CODE: CODE }) {
   }
   const admin = (socket, ...args) => network.onCommand(socket, { args: ['admin', ...args] })
   const said = socket => socket.sent.filter(([name]) => name === 'chatAdded').map(([, line]) => line.body)
-  return { network, writes, broadcasts, commands, connect, admin, said }
+  const holdNext = promise => (hold = promise)
+  return { network, writes, rows, holdNext, broadcasts, commands, connect, admin, said }
 }
 
 test('the right code makes a visitor admin, stored; entered again it takes admin away', async t => {
@@ -104,13 +116,19 @@ test('the admin command is never handed on as a command event, in any letter cas
   // with the rank of the fourth
   assert.deepEqual(f.said(socket), ['Admin granted!', 'Admin revoked!', 'Admin granted!', 'Admin revoked!'])
   assert.equal(socket.player.data.rank, Ranks.VISITOR)
+  await f.network.userRows().idle()
   assert.deepEqual(f.writes.at(-1), { id: socket.id, rank: Ranks.VISITOR })
-  // Was 4. A user's row has one writer (userRows.js): a rank decided while its statement is under way goes out with
-  // the next statement, and one replaced before its turn is not written. In the old harness each `await` of the
-  // handler (a promise of the vm's realm) took turns enough for every statement to land first; run in this realm, as
-  // the server runs, the second toggle finds the first statement under way and the fourth replaces the third:
-  // admin, visitor, visitor.
-  assert.equal(f.writes.length, 3)
+  assert.deepEqual(f.rows.get(socket.id), { rank: Ranks.VISITOR })
+  assert.equal(f.network.userRows().unstored(), 0)
+  // Was 4 statements, exactly. A user's row has one writer (userRows.js): a rank decided while its statement is
+  // under way goes out with the next statement, and one replaced before its turn is not written; how many toggles
+  // meet a statement under way depends on how fast the database answers (these immediate mocks give 3; under the old
+  // harness each `await` of a handler's promise from the vm's realm took turns enough for every statement to land
+  // first). What holds whatever the database: at least 2 statements, the first toggle's (the writer starts with it at
+  // once) and the fourth's (nothing decided is left unwritten, above), and at most one per toggle. A writer that wrote
+  // every toggle at once, without merging, is within these bounds too: that is allowed here (the next test holds a
+  // statement to show the merging).
+  assert.ok(f.writes.length >= 2 && f.writes.length <= 4, `${f.writes.length} statements`)
   await f.network.onCommand(socket, { args: ['dance', 'now'] })
   assert.equal(f.commands.length, 1)
   assert.equal(f.commands[0][0], 'command')
@@ -122,6 +140,29 @@ test('the admin command is never handed on as a command event, in any letter cas
     value: 'now',
     args: ['dance', 'now'],
   })
+})
+
+test('/admin: toggles decided while a statement of the row is held go out as one more statement, the rank of the last', async t => {
+  const f = fixture(t)
+  const socket = f.connect()
+  const release = deferred()
+  f.holdNext(release.promise)
+  await f.admin(socket, CODE)
+  // decided while that statement (admin) is under way: visitor, admin, visitor
+  for (let i = 0; i < 3; i++) await f.admin(socket, CODE)
+  assert.deepEqual(f.writes, [{ id: socket.id, rank: Ranks.ADMIN }])
+  assert.equal(f.rows.get(socket.id), undefined, 'nothing has landed')
+  // released, with no further toggle: the rank decided last is written, by one more statement; the two between never
+  release.resolve()
+  await f.network.userRows().idle()
+  assert.deepEqual(f.writes, [
+    { id: socket.id, rank: Ranks.ADMIN },
+    { id: socket.id, rank: Ranks.VISITOR },
+  ])
+  assert.deepEqual(f.rows.get(socket.id), { rank: Ranks.VISITOR })
+  assert.equal(socket.player.data.rank, Ranks.VISITOR)
+  assert.equal(f.network.userRows().unstored(), 0)
+  assert.deepEqual(f.said(socket), ['Admin granted!', 'Admin revoked!', 'Admin granted!', 'Admin revoked!'])
 })
 
 test('a command packet is a list of words: anything else is not handed to scripts', async t => {

@@ -78,9 +78,13 @@ export function fixture(t, { env = {}, modules = {} } = {}) {
     return {
       where: (key, id) => ({
         first: async () => users.get(id),
-        // a user row's UPDATE, applied and recorded in `store.userUpdates`
+        // a user row's UPDATE, recorded in `store.userUpdates` when it starts and applied to the row when it lands;
+        // `store.holdUserUpdate`: a promise the next one waits for before it lands
         update: async changes => {
           ;(store.userUpdates ??= []).push({ id, changes: { ...changes } })
+          const hold = store.holdUserUpdate
+          store.holdUserUpdate = null
+          if (hold) await hold
           const row = users.get(id)
           if (row) Object.assign(row, changes)
           return row ? 1 : 0

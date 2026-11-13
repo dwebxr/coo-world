@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { Ranks } from '../src/core/extras/ranks.js'
 import { readPacket, writeClientPacket, writePacket } from '../src/core/packets.js'
 import { BACKLOG_CAP, SCRIPT_BACKLOG_CAP } from '../src/core/extras/writeLedger.js'
-import { fixture, settle } from './lib/joinFixture.mjs'
+import { fixture } from './lib/joinFixture.mjs'
+import { deferred } from './lib/persistenceFixture.mjs'
 
 // A world with an admin code (so a visitor is a visitor), an admin, and two visitors: `a` acts, `b` watches
 async function stage(t) {
@@ -204,6 +205,35 @@ test('own player: a name or avatar that is not new is not told or written again'
   assert.equal(s.got(s.b).length, 4)
 })
 
+test('own player: names decided while a statement of the row is held go out as one more statement, the last of them', async t => {
+  const s = await stage(t)
+  const modify = (data, at) => s.tick(s.f.network.onEntityModified(s.a.socket, { id: 'a', ...data }, { at }))
+  const release = deferred()
+  s.f.store.holdUserUpdate = release.promise
+  await modify({ name: 'first' }, 1000)
+  // decided while the first statement is under way
+  for (const name of ['second', 'third', 'last']) await modify({ name }, 1000)
+  assert.deepEqual(
+    s.f.store.userUpdates.map(update => update.changes),
+    [{ name: 'first' }]
+  )
+  assert.equal(s.f.users.get('a').name, 'a', 'nothing has landed')
+  // released, with no further change: the name decided last is written, by one more statement; the two between never
+  release.resolve()
+  await s.f.network.userRows().idle()
+  assert.deepEqual(
+    s.f.store.userUpdates.map(update => update.changes),
+    [{ name: 'first' }, { name: 'last' }]
+  )
+  assert.equal(s.f.users.get('a').name, 'last')
+  assert.equal(s.f.network.userRows().unstored(), 0)
+  // everyone else was told each name when it was decided
+  assert.deepEqual(
+    s.got(s.b).map(([, data]) => data.name),
+    ['first', 'second', 'third', 'last']
+  )
+})
+
 test("own player: over the budget, name and avatar are taken out, the sender gets the server's back, movement goes on", async t => {
   const s = await stage(t)
   s.f.world.settings.customAvatars = true
@@ -212,13 +242,13 @@ test("own player: over the budget, name and avatar are taken out, the sender get
   s.got(s.a)
   s.got(s.b)
   // Was: the count taken at once. A user's row has one writer (userRows.js): a name decided while its statement is
-  // under way goes out with the next statement. In the old harness each `await` of the handler (a promise of the vm's
-  // realm) took turns enough for every statement to land first; run in this realm, as the server runs, the last
-  // statement is still to come here, and would be counted as written by the sixth change. Now: counted once the
-  // writer is done, with the row on the last name.
-  await settle()
+  // under way goes out with the next statement, which may be still to come here (with these immediate mocks it is),
+  // and "nothing written" below would charge it to the sixth change. Now: counted once the writer is idle, with the
+  // last statement and the row on the last name and nothing decided left unwritten.
+  await s.f.network.userRows().idle()
   assert.deepEqual(s.f.store.userUpdates.at(-1).changes, { name: 'n4' })
   assert.equal(s.f.users.get('a').name, 'n4')
+  assert.equal(s.f.network.userRows().unstored(), 0)
   const writes = s.f.store.userUpdates.length
   // the sixth: the sender had applied "sixth" and an avatar before sending
   await modify({ name: 'sixth', avatar: 'asset://mine.vrm', p: [4, 5, 6] }, 1000)
@@ -696,14 +726,20 @@ test('rank: where no admin code is set, an admin cannot lower their own rank; wi
     changes.map(([, data]) => data.rank),
     [1, 0, 1, 0, 1, 0, 1, 0, 1, 0]
   )
+  await locked.f.network.userRows().idle()
   assert.deepEqual(locked.f.store.userUpdates.at(-1), { id: 'b', changes: { rank: Ranks.VISITOR } })
   assert.equal(locked.f.users.get('b').rank, Ranks.VISITOR)
-  // Was 10. A user's row has one writer (userRows.js): a rank decided while its statement is under way goes out with
-  // the next statement, and one replaced before its turn is not written. In the old harness each `await` of the
-  // handler (a promise of the vm's realm) took turns enough for every statement to land first; run in this realm, as
-  // the server runs, the writer takes the first change, then the latest of every two: builder, then visitor five
-  // times.
-  assert.equal(locked.f.store.userUpdates.length, 6)
+  assert.equal(locked.f.network.userRows().unstored(), 0)
+  // Was 10 statements, exactly. A user's row has one writer (userRows.js): a rank decided while its statement is
+  // under way goes out with the next statement, and one replaced before its turn is not written; how many changes meet
+  // a statement under way depends on how fast the database answers (these immediate mocks give 6; under the old
+  // harness each `await` of a handler's promise from the vm's realm took turns enough for every statement to land
+  // first). What holds whatever the database: at least 2 statements, the first change (the writer starts with it at
+  // once) and the tenth (nothing decided is left unwritten, above), and at most one per change. A writer that wrote
+  // every change at once, without merging, is within these bounds too: that is allowed here (the test below holds a
+  // statement to show the merging).
+  const statements = locked.f.store.userUpdates.length
+  assert.ok(statements >= 2 && statements <= 10, `${statements} statements`)
   // their own rank kept as it is (admin to admin) is not a lowering
   const same = await stage(t)
   same.f.network.admin().mode = 'locked'

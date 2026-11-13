@@ -510,18 +510,38 @@ test('kept places: a lease released twice is counted back once, and a refusal ma
   assert.equal(twoOfThem.limits.admit({ key: 'busy' }, { user: 'admin' }).ok, false)
 })
 
-test('kept places: an idle user entry is swept as the addresses are; an open one or a refilling one stays', () => {
+test('kept places: an idle user entry is swept as the addresses are; an open one, or one still refilling, stays with what it has left', () => {
   const { limits, c } = make({ maxSockets: 1, reserved: 2, ratePerMin: 10, burst: 20 })
   limits.admit({ key: 'v' })
   const open = limits.admit({ key: 'a' }, { user: 'open' })
   limits.admit({ key: 'b' }, { user: 'gone' }).release()
-  assert.equal(limits.stats().users, 2)
+  // 'spent': 15 of its burst of 20 used, every one closed again
+  for (let i = 0; i < 15; i++) {
+    const lease = limits.admit({ key: `s${i}` }, { user: 'spent' })
+    assert.equal(lease.ok, true)
+    lease.release()
+  }
+  assert.equal(limits.stats().users, 3)
   c.tick(SWEEP_INTERVAL_MS)
-  limits.admit({ key: 'v' }) // sweeps: 'gone' holds 19 + 10 tokens again (full), 'open' has a connection open
-  assert.equal(limits.stats().users, 1)
+  // sweeps: 'gone' holds 19 + 10 tokens again (full) and goes; 'open' has a connection open; 'spent' holds 5 + 10
+  // of 20, still refilling, and stays
+  limits.admit({ key: 'v' })
+  assert.equal(limits.stats().users, 2)
+  // 'spent' kept its allowance: 15 more now, not a new burst of 20
+  let admitted = 0
+  for (let i = 0; i < 30; i++) {
+    const lease = limits.admit({ key: `t${i}` }, { user: 'spent' })
+    if (!lease.ok) continue
+    admitted++
+    lease.release()
+  }
+  assert.equal(admitted, 15)
   open.release()
   c.tick(SWEEP_INTERVAL_MS)
-  limits.admit({ key: 'v' })
+  limits.admit({ key: 'v' }) // 'open' is full again and goes; 'spent' holds 10 of 20 and stays
+  assert.equal(limits.stats().users, 1)
+  c.tick(SWEEP_INTERVAL_MS)
+  limits.admit({ key: 'v' }) // 'spent' is full again
   assert.equal(limits.stats().users, 0)
 })
 

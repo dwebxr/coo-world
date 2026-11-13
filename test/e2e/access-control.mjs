@@ -30,10 +30,12 @@
 //   the wallet features on is searched the same way.
 // - Places kept for ranked users (WS_RESERVED_SOCKETS), on a third server at WS_MAX_SOCKETS 3 with 2 kept: at the cap,
 //   an upgrade with no token, a visitor's or a builder's genuine token, or a token naming the admin signed with
-//   another secret gets 503 with Retry-After and is never upgraded; the admin's own token comes in as the admin, a
-//   second connection with it is refused as a duplicate, a visitor is still refused while the admin is one of the 3
-//   open, and the admin comes in past a playerLimit of 1 where a visitor is refused. The log says each kept place
-//   once per user id and has no token.
+//   another secret gets 503 with Retry-After and is never upgraded; the admin's own token comes in as the admin; a
+//   visitor is refused while a kept place is still free, which the admin's second connection then takes at the door
+//   (and is refused as a duplicate by the join); the admin comes in past a playerLimit of 1 where a visitor is
+//   refused. The log, read once the server has stopped, says each kept place once per user id and has no token. A
+//   connection let in after others closed is tried again until it is (the server sees a close after the client
+//   does); no wait decides a verdict.
 //
 // What it does not ask (the tables name the tests that do): uploads and response headers (gate-extras.mjs,
 // test/uploadRoutes.test.js), the relay packets (fullstack.mjs A8), /status (A8b), the wait after wrong admin codes
@@ -484,7 +486,8 @@ function world(server) {
 
 // An upgrade the server may refuse before it upgrades (the connection limits), through the ws package, whose
 // 'unexpected-response' gives the HTTP answer (as fullstack.mjs's churn probe does): -> { status, retryAfter,
-// upgraded } for a refusal, { method, data } for the first packet of one let in (then closed), within a wait
+// upgraded } for a refusal, or { method, data } for the first packet of one let in, once that connection is closed
+// on this side (its close event: the server may see it later), within a wait
 const upgrade = (port, label, authToken) =>
   new Promise((resolve, reject) => {
     const query = new URLSearchParams({ v: String(PROTOCOL_VERSION), name: label })
@@ -510,12 +513,14 @@ const upgrade = (port, label, authToken) =>
       req.destroy()
       finish(result)
     })
+    let answer = null
     ws.on('message', packet => {
+      if (answer) return
       const [method, data] = readPacket(packet)
+      answer = { method, data, upgraded }
       ws.close()
-      finish({ method, data, upgraded })
     })
-    ws.on('close', () => finish(null, new Error(`[${label}] closed before an answer`)))
+    ws.on('close', () => (answer ? finish(answer) : finish(null, new Error(`[${label}] closed before an answer`))))
     ws.on('error', err => finish(null, err))
   })
 
@@ -1842,14 +1847,40 @@ try {
       const origin = `http://localhost:${port}`
       const connectedUsers = async () =>
         (await (await fetch(`${origin}/status`, { signal: AbortSignal.timeout(wait(10000)) })).json()).connectedUsers
-      // every connection closed, and the server's count of them back to `count` (the transports close with them)
-      const settled = async (count = 0) => {
-        await waitUntil(async () => (await connectedUsers()) === count, {
-          timeout: wait(10000),
-          interval: 50,
-          message: `${count} connected`,
-        })
-        await sleep(300)
+      // What a connection that closed frees (its transport's lease, its player's place) comes back when the server
+      // sees the close, which the close event on this side does not wait for. So a connection that has to be let in
+      // after others closed is tried again until it is, within a wait, each refused attempt closed and its close
+      // awaited; and one whose verdict is the join's (a player_limit kick) is tried again only while the door refuses
+      // it (503: a lease not back yet). No wait decides a verdict: a refusal is never waited for, and every refusal
+      // asserted below is at a count of open connections that no close still to come can change (said at each).
+      const admitted = async (label, options) => {
+        let client = null
+        await waitUntil(
+          async () => {
+            try {
+              client = await w3.connect(label, options)
+              return true
+            } catch {
+              const attempt = w3.clients.at(-1)
+              attempt.close()
+              await within(attempt.closed, wait(10000), `[${label}] the close of an attempt that was refused`)
+              return false
+            }
+          },
+          { timeout: 15000, interval: 100, message: `[${label}] let in` }
+        )
+        return client
+      }
+      const pastTheDoor = async label => {
+        let answer = null
+        await waitUntil(
+          async () => {
+            answer = await upgrade(port, label)
+            return answer.status !== 503
+          },
+          { timeout: 15000, interval: 100, message: `[${label}] past the door` }
+        )
+        return answer
       }
       const refusedAtTheDoor = async (label, authToken) => {
         const outcome = await upgrade(port, label, authToken)
@@ -1881,56 +1912,69 @@ try {
       const tokens = { admin: admin.authToken, builder: builder.authToken, former: former.authToken }
       tokens.forged = signToken(sessionPayload(admin.id), 'not-the-secret-of-this-server')
       for (const client of [admin, builder, former]) await w3.close(client)
-      await settled()
 
-      // three visitors fill it
+      // three visitors fill it. The third is let in only while fewer than 3 are open: the two others and nothing
+      // else, so from here exactly the three are open (a refusal at the door holds nothing)
       const visitors = []
-      for (const label of ['v1', 'v2', 'v3']) visitors.push(await w3.connect(label))
-      // what does not get a kept place: no token, a visitor's genuine token, a builder's (the places are for
-      // admins), a token naming the admin signed with another secret
+      for (const label of ['v1', 'v2', 'v3']) visitors.push(await admitted(label))
+      // at 3 open, 2 kept places free: what does not get one is refused. No token, a visitor's genuine token, a
+      // builder's (the places are for admins), a token naming the admin signed with another secret
       await refusedAtTheDoor('no token')
       await refusedAtTheDoor("former's token", tokens.former)
       await refusedAtTheDoor("the builder's token", tokens.builder)
       await refusedAtTheDoor('a forged token naming the admin', tokens.forged)
-      eq(await connectedUsers(), 3, 'the three visitors, still')
+      await waitUntil(async () => (await connectedUsers()) === 3, {
+        timeout: 10000,
+        interval: 50,
+        message: 'the three visitors, and nobody else, connected',
+      })
 
-      // the admin's own token comes in, as the admin
+      // the admin's own token comes in, as the admin: 4 open
       const back = await w3.connect('admin-back', { authToken: tokens.admin })
       eq(back.id, admin.id, 'the same user')
       eq(entityOf(back.snapshot, back.id)?.rank, 2, 'an admin in its own snapshot')
       eq(await connectedUsers(), 4, 'one beyond WS_MAX_SOCKETS')
-      // a second connection with the same token: let in at the door (2 per user), refused as a duplicate
+      // at 4 open, a kept place is still free, and a visitor does not get it
+      await refusedAtTheDoor('a visitor while a kept place is free')
+      // the free kept place, taken by the admin's second connection (the 2 of its own): let in at the door, refused
+      // as a duplicate by the join. Nothing closed in between, so the place was free for the visitor too
       const again = await upgrade(port, 'admin-again', tokens.admin)
-      eq(again.method, 'onKick', 'the second connection is told why')
+      eq(again.upgraded, true, 'the second connection of the admin is let in at the door')
+      eq(again.method, 'onKick', 'and told why it does not join')
       eq(again.data, 'duplicate_user')
       ok(back.isOpen, 'the first stays')
 
-      // the admin kicks a visitor; with the admin and two visitors open (3), a visitor is still refused
+      // the admin kicks a visitor, sets playerLimit 1 and leaves, and so do the visitors
       const [v1, v2, v3] = visitors
       back.send('kick', v1.id)
       await within(v1.closed, wait(10000), '[v1] the kick')
-      await settled(3)
-      await refusedAtTheDoor('a visitor while the admin holds a kept place')
-
-      // playerLimit: the admin sets 1 and leaves, and so do the visitors
       await w3.send(back, 'settingsModified', { key: 'playerLimit', value: 1 })
       for (const client of [back, v2, v3]) await w3.close(client)
-      await settled()
-      const p1 = await w3.connect('p1')
-      const p2 = await upgrade(port, 'p2')
+      // one visitor takes the one place; the next one, once past the door, is refused by the limit: one player is
+      // here whatever close is still to come
+      const p1 = await admitted('p1')
+      const p2 = await pastTheDoor('p2')
       eq(p2.method, 'onKick', 'the next visitor is told why')
       eq(p2.data, 'player_limit')
       // the admin comes in past the limit on a kept place, twice (one line in the log)
       for (const label of ['admin-past-limit', 'admin-past-limit-again']) {
-        const past = await w3.connect(label, { authToken: tokens.admin })
+        const past = await admitted(label, { authToken: tokens.admin })
         eq(past.id, admin.id, `${label}: the admin`)
+        eq(entityOf(past.snapshot, past.id)?.rank, 2, `${label}: as the admin`)
         await w3.close(past)
-        await settled(1)
       }
       ok(p1.isOpen, 'the visitor in the one place stays')
-      await w3.close(p1)
 
-      // the log: one line per user id for the door's kept place and for playerLimit's, and no token
+      // the log, read whole once every connection is closed and the server has stopped: one line per user id for the
+      // door's kept place and for playerLimit's, and no token
+      await Promise.all(w3.clients.map(w3.close))
+      await third.stop()
+      third = null
+      await waitUntil(() => thirdServer.child.stdout.readableEnded && thirdServer.child.stderr.readableEnded, {
+        timeout: 5000,
+        interval: 50,
+        message: "the end of the server's output",
+      })
       eq(thirdServer.count('came in through a place kept for ranked users'), 1, 'the door said it once')
       eq(
         thirdServer.count(
@@ -1945,10 +1989,11 @@ try {
         eq(thirdServer.count(token), 0, `the ${name} token is not in the log`)
         eq(thirdServer.count(token.split('.')[2]), 0, `nor its signature`)
       }
-      return "positive control: the admin's own token comes in at WS_MAX_SOCKETS and past playerLimit, where a visitor, a builder and a forged token naming the admin are refused"
+      return "positive control: the admin's own token comes in at WS_MAX_SOCKETS (on the kept place a visitor was just refused) and past playerLimit, where a visitor, a builder and a forged token naming the admin are refused"
     }
   )
 
+  // (stopped in [reserve], unless that case failed before)
   if (third) {
     for (const client of w3.clients) client.close()
     await third.stop()

@@ -38,8 +38,13 @@ Defaults to contain.
 
 ### `.backgroundColor`: String
 
-The radius of the border in pixels.
-Defaults to 0.
+The color drawn behind the image, in its box.
+Defaults to `null` (none).
+
+### `.borderRadius`: Number
+
+The radius of the corners of the background and of the image, in pixels.
+Defaults to `0`.
 
 ### `.flexDirection`: String
 

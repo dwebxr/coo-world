@@ -3,6 +3,7 @@
 // is left out of its collection, and the start goes on.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'fs-extra'
@@ -67,6 +68,34 @@ test('collections: a .hyp file importApp refuses is left out and said, and the s
   assert.deepEqual(f.uploads, ['good.glb', 'other.glb'], 'nothing of the refused file is uploaded')
   assert.deepEqual(f.errors, [
     '[collections] default: Cut.hyp is left out: not a valid .hyp file: an asset is longer than the file',
+  ])
+})
+
+test('collections: a file whose asset is not the file its stored address names is left out; other references as before', async t => {
+  const sha = bytes => createHash('sha256').update(bytes).digest('hex')
+  const ones = new Uint8Array(4).fill(1)
+  const twos = new Uint8Array(4).fill(2)
+  const app = async (id, url, bytes) => {
+    const blueprint = { id, name: id, model: url }
+    const file = await exportApp(blueprint, async () => new File([bytes], 'picked.glb'))
+    return { blueprint, buffer: Buffer.from(await file.arrayBuffer()) }
+  }
+  // stored under its hash; another file's bytes under that address; a name that is no stored address (as `hyp` makes)
+  const stored = await app('stored', `asset://${sha(ones)}.glb`, ones)
+  const planted = await app('planted', `asset://${sha(ones)}.glb`, twos)
+  const named = await hyp('named', 4)
+  const f = await start(t, {
+    default: {
+      name: 'Default',
+      apps: { 'Stored.hyp': stored.buffer, 'Planted.hyp': planted.buffer, 'Named.hyp': named.buffer },
+    },
+  })
+  await f.started
+  assert.deepEqual(f.system.list[0].blueprints, [stored.blueprint, named.blueprint])
+  // every asset of a file that is kept is uploaded, as before: the store names each by the hash of its bytes
+  assert.deepEqual(f.uploads, [`${sha(ones)}.glb`, 'named.glb'])
+  assert.deepEqual(f.errors, [
+    `[collections] default: Planted.hyp is left out: not a valid .hyp file: asset 1 (asset://${sha(ones)}.glb) is not the file its address names`,
   ])
 })
 

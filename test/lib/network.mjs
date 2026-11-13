@@ -16,7 +16,11 @@
 // loadNetwork({ replace, env, sourceRoot, standIns }) → net: the bundle's exports (below) plus `url` and `env` (the
 //   evaluation these exports come from, and the environment it was evaluated with: a worker or a child process imports
 //   that one with importNetwork({ url, env })) and `destroy`. `replace` and `sourceRoot` as buildServer takes them; a
-//   file that ran against REAL_PHYSX_SOURCE_ROOT before passes it as `sourceRoot` (nothing else reads it).
+//   file that ran against REAL_PHYSX_SOURCE_ROOT before passes it as `sourceRoot` (nothing else reads it), and nothing
+//   here reads the environment for it. In a bundle of a `sourceRoot` the timers' line of a module of TIMED_FILES goes
+//   only where the bundle has the module (below). To run test files as they are against another commit's product code
+//   (a step's tests on the code before it), a module hook given on the command line sets the default (see
+//   loadNetwork below).
 //   `standIns`: modules (repository paths) a test gives per network, as the old harness's `context` gave names to the
 //   class: each becomes a CommonJS stand-in (serverBundle.mjs) whose every export, each time the bundle's code uses
 //   it, is read from the object makeNetwork's `modules` gave for that path last, where that object has the name, and
@@ -106,15 +110,21 @@ const ENTRY = `
 
 // the class's own timers go through test/lib/networkTimers.mjs (makeNetwork's `timers`): those of ServerNetwork.js
 // and of the network's modules that call them (its members moved there: tips.js, a tip announcement that waits;
-// persistence.js, the save timer and the final save's deadline)
-const TIMED_FILES = [
-  'src/core/systems/ServerNetwork.js',
-  'src/server/network/tips.js',
-  'src/server/network/persistence.js',
-]
+// persistence.js, the save timer and the final save's deadline).
+// Every file's line is required (a bundle without the file is an error, and so is a path that is no file), but in a
+// bundle of a `sourceRoot` a module's goes only where that bundle has the module: another checkout's class may not
+// import it (one from before its members moved there). The class's line is required there too.
+const NETWORK = 'src/core/systems/ServerNetwork.js'
+const TIMED_FILES = [NETWORK, 'src/server/network/tips.js', 'src/server/network/persistence.js']
 const TIMER_NAMES = ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval']
 const TIMER_IMPORT = `import { ${TIMER_NAMES.join(', ')} } from ${JSON.stringify(fileURLToPath(new URL('./networkTimers.mjs', import.meta.url)))};`
-const PREPEND = Object.fromEntries(TIMED_FILES.map(file => [file, TIMER_IMPORT]))
+const prependFor = sourceRoot =>
+  Object.fromEntries(
+    TIMED_FILES.map(file => [
+      file,
+      file === NETWORK || !sourceRoot ? TIMER_IMPORT : { text: TIMER_IMPORT, optional: true },
+    ])
+  )
 const timerTable = (globalThis[Symbol.for('test/lib/network.mjs: timers')] ??= { current: null })
 
 const STAND_IN_ENTITIES = {
@@ -180,6 +190,23 @@ const setEnv = (name, value) => {
   else process.env[name] = value
 }
 
+// Test files as they are against another commit's product code: every loadNetwork without a `sourceRoot` of its own
+// bundles from that checkout's src/core and src/server when this hook, written to a file of one's own with the
+// checkout's path in it, is given on the command line (`node --import ./baseline.mjs --test <files>`; the checkout
+// needs its src/ only: `git archive <commit> src | tar -x -C <dir>`). The helper reads no environment variable that
+// selects sources; Node itself can preload a hook through NODE_OPTIONS, as it can any `--import`.
+//   import { register } from 'node:module'
+//   const root = '/path/to/the/checkout'
+//   // (the text replaced, in two parts: this comment must not hold it)
+//   const from = 'sourceRoot,' + ' standIns = []'
+//   const load = `export async function load(url, context, next) {
+//     const result = await next(url, context)
+//     if (!url.endsWith('/test/lib/network.mjs')) return result
+//     const parts = String(result.source).split(${JSON.stringify(from)})
+//     if (parts.length !== 2) throw new Error('baseline hook: loadNetwork is not written as it was')
+//     return { ...result, source: parts.join(${JSON.stringify(`sourceRoot = ${JSON.stringify(root)}, standIns = []`)}) }
+//   }`
+//   register(`data:text/javascript,${encodeURIComponent(load)}`)
 export async function loadNetwork({ replace, env, sourceRoot, standIns = [] } = {}) {
   // (imported here: a worker that only constructs from a bundle the main thread built never loads esbuild)
   const { buildServer } = await import('./serverBundle.mjs')
@@ -187,7 +214,7 @@ export async function loadNetwork({ replace, env, sourceRoot, standIns = [] } = 
   const forwarded = Object.fromEntries(standIns.map(file => [file, { commonjs: standInSource(file) }]))
   const built = await buildServer(ENTRY, {
     replace: { ...STAND_IN_ENTITIES, ...replace, ...forwarded },
-    prepend: PREPEND,
+    prepend: prependFor(sourceRoot),
     sourceRoot,
   })
   const evaluation = { ...testEnvironment(), ...known(env) }

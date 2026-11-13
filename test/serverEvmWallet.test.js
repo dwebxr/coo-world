@@ -381,6 +381,24 @@ test('evm wallet: a socket that disconnected mid-verify gets no reply', async t 
   assert.equal(socket.evmWallet.verified, null)
 })
 
+// currentEvm's own stop check: a handler checks the stop when a packet arrives, and a sign-in that waited for its
+// signature check is current only if the network has not begun to stop meanwhile (stopForFatal sets `stopping`, not
+// the world's fatalError)
+test('evm wallet: a sign-in whose signature check ends after the network began to stop is neither verified nor answered', async t => {
+  const f = fixture(t)
+  const socket = await f.connect()
+  const request = await f.challenge(socket)
+  delete request.message
+  clear(socket)
+  f.events.length = 0
+  const pending = f.network.onRequestEvmVerify(socket, request)
+  f.network.stopForFatal()
+  await pending
+  assert.equal(socket.ws.packets.length, 0)
+  assert.equal(socket.evmWallet.verified, null)
+  assert.deepEqual(f.events, [])
+})
+
 // --- P2a: receiving tips and tip intents ---
 
 const third = privateKeyToAccount(`0x${'33'.repeat(32)}`)
@@ -824,10 +842,14 @@ function fakeWatcher() {
 }
 function fakeTimers() {
   const pending = new Set()
+  // every delay the class asked for, in order
+  const delays = []
   return {
     pending,
+    delays,
     setTimeout: (fn, ms) => {
       const timer = { fn, ms }
+      delays.push(ms)
       pending.add(timer)
       return timer
     },
@@ -896,6 +918,38 @@ test('evm tip report: a ticket is the server copy of the intent, for its sender 
   assert.deepEqual(f.report(f.a, { ticket: late, txHash: hashOf(2) }), [
     { ticket: late, txHash: hashOf(2), state: 'failed', reason: 'unknown_ticket' },
   ])
+})
+
+// issueTipTicket: at the limit, the tickets ten minutes old or more (and not watched) are dropped first; only then is
+// one dropped to make room, an unused one before one that may be reported again
+test('evm tip report: at the limit of three tickets, one ten minutes old (600,000 ms, not 599,999) is dropped first, and an unused one is kept for it', async t => {
+  for (const age of [evm.TIP_TICKET_TTL_MS - 1, evm.TIP_TICKET_TTL_MS]) {
+    await t.test(`the oldest ticket ${age} ms old`, async t => {
+      const f = await tipFixture(t)
+      // the oldest: reported, and its result unconfirmed, so that it may be reported once more (retryable), which
+      // a ticket at the limit gives way after the unused ones
+      const old = f.ticket()
+      f.report(f.a, { ticket: old, txHash: hashOf(1) })
+      f.watcher.jobs.pop().onDone({ state: 'unverified' })
+      assert.equal(f.a.evmWallet.tickets.get(old).state, 'retryable')
+      f.advance(1000)
+      const unused = f.ticket()
+      const other = f.ticket()
+      f.advance(age - 1000)
+      const fourth = f.ticket()
+      if (age < evm.TIP_TICKET_TTL_MS) {
+        // not yet expired: the oldest unused ticket makes room
+        assert.deepEqual([...f.a.evmWallet.tickets.keys()], [old, other, fourth])
+        assert.equal(f.report(f.a, { ticket: unused, txHash: hashOf(2) })[0].reason, 'unknown_ticket')
+      } else {
+        // expired: it is dropped, and the unused ticket stays and can be reported
+        assert.deepEqual([...f.a.evmWallet.tickets.keys()], [unused, other, fourth])
+        assert.deepEqual(f.report(f.a, { ticket: unused, txHash: hashOf(2) }), [
+          { ticket: unused, txHash: hashOf(2), state: 'watching' },
+        ])
+      }
+    })
+  }
 })
 
 test('evm tip report: checks the ticket and the hash; malformed reports get no reply', async t => {
@@ -1111,6 +1165,22 @@ test('evm tip result: confirmed tips reply, fire a frozen tip event without addr
   assert.equal(f.chat[0].msg.kind, 'tip', 'the confirmation is a tip line, which no script can produce')
   assert.equal(f.chat[0].msg.body, 'Al ice tipped b 100 JPYC')
   assert.equal(f.a.evmWallet.tickets.has(ticket), false, 'the ticket is used up')
+})
+
+// tipConfirmed's `shown`: a name in the announcement is at most 32 code points (Array.from), so a character outside
+// the Basic Multilingual Plane is one, and the cut never leaves half of one
+test('evm tip result: an announced name is cut at 32 code points, a character outside the BMP at the cut kept whole', async t => {
+  const f = await tipFixture(t)
+  // 33 code points, 34 UTF-16 units: the 32nd is the emoji, the 33rd the `b`
+  f.a.player.data.name = `${'a'.repeat(31)}\u{1F600}b`
+  f.b.player.data.name = `${'c'.repeat(31)}\u{1F600}`
+  const ticket = f.ticket()
+  f.report(f.a, { ticket, txHash: hashOf(44) })
+  f.watcher.jobs.pop().onDone({ state: 'confirmed' })
+  assert.deepEqual(
+    f.chat.map(entry => entry.msg.body),
+    [`${'a'.repeat(31)}\u{1F600} tipped ${'c'.repeat(31)}\u{1F600} 100 JPYC`]
+  )
 })
 
 test('evm tip result: a tip announced to the world is not told to its recipient a second time', async t => {
@@ -1461,8 +1531,15 @@ test('evm tip announcements: three at once then one every three seconds; a sende
     ['c tipped b 100 JPYC', 'd tipped b 100 JPYC', 'e tipped b 100 JPYC']
   )
   assert.equal(f.timers.pending.size, 1, 'the fourth waits')
-  f.advance(3000)
+  // on a timer of three seconds; an announcement is earned back in three seconds, not one millisecond sooner
+  assert.deepEqual(f.timers.delays, [3000])
+  f.advance(2999)
   f.timers.runAll()
+  assert.equal(f.chat.length, 3, 'nothing at 2,999 ms')
+  assert.deepEqual(f.timers.delays, [3000, 3000], 'it waits again, three seconds')
+  f.advance(1)
+  f.timers.runAll()
+  assert.equal(f.chat.length, 4, 'one at 3,000 ms')
   assert.equal(f.chat.at(-1).msg.body, 'g tipped b 100 JPYC')
   assert.equal(f.timers.pending.size, 0)
   // the same sender again within 30 s: only the recipient hears about it, worded as private
@@ -1478,6 +1555,43 @@ test('evm tip announcements: three at once then one every three seconds; a sende
   f.advance(30_000)
   confirm(senders[0])
   assert.equal(f.chat.length, 5)
+})
+
+// announceTip: at most TIP_ANNOUNCE_QUEUE (20) announcements wait. One that comes while twenty wait is not queued:
+// the newest is the one the world is not told, and its recipient alone hears of it, in the private wording (as for a
+// sender inside their 30 s). The tip itself was counted, and its event fired, before it was announced (tipConfirmed)
+test('evm tip announcements: at most 20 wait; with 20 waiting the next is told to its recipient alone, and the 20 go out in order, one every three seconds', async t => {
+  const f = await tipFixture(t)
+  clear(f.b)
+  const announce = n =>
+    f.network.announceTip({ fromId: `p${n}`, toPlayerId: 'b', body: `line ${n}`, privateBody: `(only you) line ${n}` })
+  const lines = count => Array.from({ length: count }, (_, i) => `line ${i + 1}`)
+  // three at once, then twenty wait
+  for (let n = 1; n <= 23; n++) announce(n)
+  assert.deepEqual(
+    f.chat.map(entry => entry.msg.body),
+    lines(3)
+  )
+  assert.equal(f.network.tipAnnounce.queue.length, evm.TIP_ANNOUNCE_QUEUE)
+  assert.deepEqual(replies(f.b, 'onChatAdded'), [])
+  announce(24)
+  assert.equal(f.network.tipAnnounce.queue.length, 20)
+  const notes = replies(f.b, 'onChatAdded')
+  assert.equal(notes.length, 1)
+  assert.equal(notes[0].body, '(only you) line 24')
+  assert.equal(notes[0].kind, 'tip')
+  assert.equal(notes[0].fromId, null)
+  // the twenty go out one every three seconds, in the order they came; the 24th never does
+  for (let i = 0; i < 20; i++) {
+    f.advance(3000)
+    f.timers.runAll()
+  }
+  assert.deepEqual(
+    f.chat.map(entry => entry.msg.body),
+    lines(23)
+  )
+  assert.equal(f.timers.pending.size, 0)
+  assert.deepEqual(f.timers.delays, Array(20).fill(3000))
 })
 
 test('evm tips: a disconnect drops the tickets and cancels the jobs; invalidation keeps watched tickets', async t => {

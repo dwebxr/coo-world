@@ -58,11 +58,14 @@ How rough the material appears, from 0.0 (smooth/reflective) to 1.0 (rough/diffu
 
 ### `.opacity`: Number
 
-The opacity of the primitive, from 0.0 (fully transparent) to 1.0 (fully opaque). Defaults to `1`.
+The opacity of the primitive, from 0.0 (fully transparent) to 1.0 (fully opaque). Defaults to `1`. The material it is
+drawn with gets the opacity rounded to steps of `0.05`, `0.99` and above as `1` and `0.01` and below as `0` (from the
+code; measured: `0.98` and `0.975` drew at `1`, `0.974` at `0.95`). Reading `opacity` gives the value set.
 
 ### `.transparent`: Boolean
 
-Whether the primitive should be rendered with transparency. Must be `true` for opacity values less than 1 to take effect. Defaults to `false`.
+Deprecated, and it does nothing: reading it gives `undefined`, and setting it only logs `prim.transparent deprecated`. A prim is drawn with transparency when the opacity of its material (rounded, see `opacity`) is below `1`: an `opacity`
+of `0.99` draws an opaque prim, `0.974` a transparent one (measured).
 
 ### `.texture`: String | null
 

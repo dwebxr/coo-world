@@ -1,6 +1,6 @@
 # Material
 
-A material on a [Mesh](/docs/scripting/Mesh.md) node.
+A material on a [Mesh](/docs/scripting/nodes/types/mesh/Mesh.md) node.
 
 `mesh.material` belongs to the run of the app the mesh is mounted for: reading it again in that run gives the same
 object (also for another mesh of the run that uses the same material), and the object is frozen, so nothing can be

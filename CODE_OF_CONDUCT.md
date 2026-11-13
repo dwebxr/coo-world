@@ -36,7 +36,7 @@ This Code of Conduct applies within all community spaces, and it also applies wh
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement at [help@hyperfy.xyz]. All complaints will be reviewed and investigated promptly and fairly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement, the maintainers of this repository ([dwebxr/coo-world](https://github.com/dwebxr/coo-world)), by e-mail to realtor_colobus_2h@icloud.com, or through GitHub: the repository's [issue tracker](https://github.com/dwebxr/coo-world/issues) for a matter that can be public, and its private reporting form (the Security tab's "Report a vulnerability") for one that cannot. All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the reporter of any incident.
 

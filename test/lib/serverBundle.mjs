@@ -18,8 +18,11 @@
 // - `prepend`: { 'src/…/module.js': text } — the text goes before the module's own source, on its first line (the
 //   module's line numbers stay): an import there of a module of the tests (by absolute path) gives that one module
 //   bindings that shadow the globals of the same names, which the rest of the bundle still reads
-//   (network.mjs: the timers of ServerNetwork.js, tips.js and persistence.js). The module must be part of the bundle
-//   and not replaced.
+//   (network.mjs: the timers of ServerNetwork.js, tips.js and persistence.js). The module must be a file of this
+//   repository, part of the bundle and not replaced. `{ text, optional: true }` in place of the text: the same where
+//   the bundle has the module, and nothing where it has not (no error then); it must still be a file of this
+//   repository and not replaced (network.mjs: tips.js and persistence.js in a bundle of a `sourceRoot` whose class may
+//   not import them).
 // - `sourceRoot`: a checkout whose src/core and src/server files are read instead of this one's where they exist
 //   (REAL_PHYSX_SOURCE_ROOT, as in persistedStartup.test.js); `replace` wins over it, and `prepend` goes before the
 //   baseline's source.
@@ -66,17 +69,19 @@ function replacements(replace = {}) {
   return map
 }
 
-// prepend: repository-relative path → absolute path of the module (which must exist, and not be replaced) → text
+// prepend: repository-relative path → absolute path of the module (which must exist, and not be replaced) →
+// { text, optional }
 function prefixes(prepend = {}, replaced) {
   const map = new Map()
-  for (const [file, text] of Object.entries(prepend)) {
+  for (const [file, value] of Object.entries(prepend)) {
+    const { text, optional = false } = typeof value === 'string' ? { text: value } : (value ?? {})
     if (typeof text !== 'string' || text.includes('\n')) {
       throw new TypeError(`prepend: the text for ${file} is not one line`)
     }
     const absolute = path.resolve(root, file)
     if (!fs.existsSync(absolute)) throw new Error(`prepend: ${file} is not a file of this repository`)
     if (replaced.has(absolute)) throw new Error(`prepend: ${file} is replaced`)
-    map.set(absolute, text)
+    map.set(absolute, { text, optional: optional === true })
   }
   return map
 }
@@ -122,7 +127,8 @@ function plugin(replaced, prefixed, sourceRoot) {
         }
         const contents = read(args.path)
         if (prefixed.has(args.path)) {
-          return { contents: prefixed.get(args.path) + (contents ?? fs.readFileSync(args.path, 'utf8')), loader: 'js' }
+          const { text } = prefixed.get(args.path)
+          return { contents: text + (contents ?? fs.readFileSync(args.path, 'utf8')), loader: 'js' }
         }
         if (contents !== null) return { contents, loader: 'js' }
       })
@@ -156,7 +162,9 @@ async function build(contents, { replace, prepend, sourceRoot }) {
         ['replace', replaced],
         ['prepend', prefixed],
       ]) {
-        for (const file of files.keys()) {
+        for (const [file, value] of files) {
+          // (an optional prepend goes where the module is, and asks nothing where it is not)
+          if (option === 'prepend' && value.optional) continue
           if (!inputs.has(file))
             throw new Error(`${option}: ${path.relative(root, file)} is not imported by the bundle`)
         }

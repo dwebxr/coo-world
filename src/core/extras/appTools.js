@@ -1,4 +1,5 @@
 import { cloneDeep } from 'lodash-es'
+import { hashFile } from '../utils-client.js'
 
 export async function exportApp(blueprint, resolveFile) {
   blueprint = cloneDeep(blueprint)
@@ -85,7 +86,44 @@ export async function exportApp(blueprint, resolveFile) {
 // one after another within the file, is refused with a reason (an error with the code INVALID_HYP; the server leaves
 // such a file out of its collection, see collections.js). What the blueprint says is not looked at here: it goes
 // through the blueprint policy where it is used (ClientBuilder.addApp, the server's collections).
+//
+// Each asset comes back marked `contentAddressed`: whether its url is the address an upload of its bytes is stored
+// under (CONTENT_ADDRESS). A url in that form whose hash is not the hash of the asset's bytes refuses the whole file:
+// it can only be a file that puts other bytes under the address of a stored asset, or a damaged one. Any other url (a
+// built-in name such as asset://ai.glb, an http(s) URL, another spelling of a store address) is kept as it is and
+// marked false: nothing ties its bytes to that url, so the builder neither puts it in its loader nor uploads it
+// (takeAsset), and the reference loads from its own address. Each asset in that form is hashed once, with the hash
+// uploads use (WebCrypto: browsers and Node).
 export const INVALID_HYP = 'INVALID_HYP'
+
+// The address an upload of some bytes is stored under, and nothing else: asset://<sha256 of the bytes, 64 lower-case
+// hex digits>.<ext>. The server names a stored upload `${sha256}.${extensionOf(name)}` (src/server/assetFilename.js),
+// where extensionOf takes what follows the last dot, lower-cased, and /api/upload accepts only an extension of
+// lower-case letters and digits (uploadPolicy.js isAllowedExtension); up to 63 of them keep the name a valid asset name
+// (assetURL.js: at most 128 characters). No query, fragment or other form of the address: the loader files
+// `asset://x.js?v=2` and `<assets URL>/x.js` under the same key as asset://x.js, so they are other spellings of it.
+const CONTENT_ADDRESS = /^asset:\/\/([0-9a-f]{64})\.[a-z0-9]{1,63}$/
+
+// The loader kinds a blueprint's assets are loaded as: its model as `model` (or `avatar` for a .vrm: App.build), its
+// script as `script`, its image as `texture` (exportApp), and a file prop as its field's kind (Fields.js fileKinds:
+// avatar, emote, model, texture, image, video, hdr, audio). The same kinds ClientLoader.decode reads.
+export const APP_ASSET_TYPES = new Set([
+  'model',
+  'avatar',
+  'emote',
+  'script',
+  'texture',
+  'image',
+  'video',
+  'hdr',
+  'audio',
+])
+
+// whether a client takes an imported asset into its loader and uploads it (ClientBuilder.addApp): one stored under the
+// hash of its own bytes, of a kind a blueprint loads
+export function takeAsset(asset) {
+  return asset.contentAddressed === true && APP_ASSET_TYPES.has(asset.type)
+}
 
 export async function importApp(file) {
   const invalid = why => Object.assign(new Error(`not a valid .hyp file: ${why}`), { code: INVALID_HYP })
@@ -115,7 +153,7 @@ export async function importApp(file) {
   let position = 4 + headerSize
   const assets = []
 
-  for (const assetInfo of header.assets) {
+  for (const [index, assetInfo] of header.assets.entries()) {
     if (!isRecord(assetInfo) || typeof assetInfo.url !== 'string') throw invalid('an asset has no url')
     const size = assetInfo.size
     if (!Number.isSafeInteger(size) || size < 0) throw invalid('an asset has no size')
@@ -124,10 +162,15 @@ export async function importApp(file) {
     const file = new File([data], assetInfo.url.split('/').pop(), {
       type: typeof assetInfo.mime === 'string' ? assetInfo.mime : '',
     })
+    const claimed = CONTENT_ADDRESS.exec(assetInfo.url)
+    if (claimed && (await hashFile(file)) !== claimed[1]) {
+      throw invalid(`asset ${index + 1} (${assetInfo.url}) is not the file its address names`)
+    }
     assets.push({
       type: assetInfo.type,
       url: assetInfo.url,
       file,
+      contentAddressed: !!claimed,
     })
     position += size
   }

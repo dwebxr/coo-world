@@ -10,13 +10,26 @@
 // - in the network's own files (networkSource.mjs), an allowed receiver that is not what its name says: `this` where
 //   it is not the network's (the class's members and the module's top-level functions have it, with the arrows inside
 //   them; a non-arrow function nested in another has its own, and the module's top level has none), and `socket` or
-//   `tSocket` bound to a transport (`= ws`, `= x.ws`) or, in a function nested in another, to anything it cannot
-//   tell to be one of the network's connections (a call, a parameter): what it can tell is `this.sockets.get(…)`,
-//   `new Socket(…)` and a parameter of a callback of `this.sockets.forEach` (or `.values()`, and the like).
-// It is a tripwire for a maintainer's mistake, not a proof. What it cannot see, said plainly: a transport aliased in
-// another module and imported; one handed in as a parameter under an allowed name of a class member or of a
-// top-level function (`function tell(socket)` called with a `ws`); a key computed at run time (`ws[name](…)`); a
-// transport reached through a helper that takes it (`invoke(ws, 'send')`); any of these through `eval` or `Function`.
+//   `tSocket` that is a transport, directly or through the local names it is given through (`= ws`, `= x.ws`,
+//   `const { ws: raw } = peer`, a chain `raw = ws; socket = raw`, a condition, `??`), or that is, in a function nested
+//   in another, anything it cannot tell to be one of the network's connections (a call, a parameter): what it can tell
+//   is `this.sockets.get(…)`, `new Socket(…)` and a parameter of a callback of `this.sockets.forEach` (or `.values()`,
+//   and the like).
+// The parser is @babel/parser. It is a tripwire for a maintainer's mistake, not a proof. What it cannot see, said
+// plainly:
+// - a transport that reaches an allowed name through something but local names: a module it is imported from, a
+//   property it was kept in (`this.raw = ws; const socket = this.raw`), a call that returns it
+//   (`const socket = wrap(ws)`), in a class member or a top-level function (in a nested function those are refused as
+//   unknown);
+// - a transport handed in as a parameter under an allowed name of a class member or of a top-level function
+//   (`function tell(socket)` called with a `ws`), or under another name and given to an allowed one there;
+// - a transport under another name than `ws` (`const conn = new WebSocket(…)`): refused when it is called on directly
+//   (`conn.send(…)` is not an allowed receiver), not when it is given to an allowed name in such a function;
+// - a key computed at run time (`ws[name](…)`, `Reflect.get(ws, 'send')`), a transport reached through a helper that
+//   takes it (`invoke(ws, 'send')`), and anything through `eval`, `Function` or `with`;
+// - files outside the ones read (src/server, core/Socket.js, the Server*/Apps systems).
+// (Bindings are resolved per function, not per block: a `socket` an inner block declares again is taken together
+// with the outer one, which can refuse more, not less.)
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -100,18 +113,36 @@ function networkThis(parents) {
   return false // the module's own
 }
 
-// what a name is bound to, seen from `parents`: the innermost function (or the module) that declares it, and the
-// expressions it is given there (a parameter's is null)
+// what a name is bound to, seen from `parents`: the innermost function (or the module) that declares it, and what it
+// is given there: { param } (a parameter), { destructured: key, param? } (taken out of an object under that key),
+// { iterated } (a for…of or for…in variable), { expression } (an initializer or an assignment; null: none)
 function bindingOf(name, parents) {
   const scopes = [...parents.filter(node => isFunction(node) || node.type === 'Program')].reverse()
+  // the names a pattern binds, and the key each is taken out under
+  const patternNames = (pattern, key = null) => {
+    if (!pattern) return []
+    if (pattern.type === 'Identifier') return [{ name: pattern.name, key }]
+    if (pattern.type === 'AssignmentPattern') return patternNames(pattern.left, key)
+    if (pattern.type === 'RestElement') return patternNames(pattern.argument, null)
+    if (pattern.type === 'ObjectPattern') {
+      return pattern.properties.flatMap(property =>
+        property.type === 'ObjectProperty'
+          ? patternNames(property.value, keyOf({ ...property, property: property.key }))
+          : patternNames(property, null)
+      )
+    }
+    if (pattern.type === 'ArrayPattern') return pattern.elements.flatMap(element => patternNames(element, null))
+    return []
+  }
   for (const scope of scopes) {
     const sources = []
     let declared = false
     if (isFunction(scope)) {
       for (const param of scope.params) {
-        if (param.type === 'Identifier' && param.name === name) {
+        for (const bound of patternNames(param)) {
+          if (bound.name !== name) continue
           declared = true
-          sources.push({ param: true })
+          sources.push(param.type === 'Identifier' ? { param: true } : { param: true, destructured: bound.key })
         }
       }
     }
@@ -119,15 +150,25 @@ function bindingOf(name, parents) {
     const visit = (node, nested) => {
       if (!node || typeof node.type !== 'string') return
       if (node !== scope && isFunction(node)) nested = true
-      if (!nested && node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && node.id.name === name) {
-        declared = true
-        sources.push({ expression: node.init ?? null, iterated: node.iterated ?? null })
+      if (!nested && node.type === 'VariableDeclarator') {
+        for (const bound of patternNames(node.id)) {
+          if (bound.name !== name) continue
+          declared = true
+          if (node.id.type === 'Identifier') {
+            sources.push({ expression: node.init ?? null, iterated: node.iterated ?? null })
+          } else sources.push({ destructured: bound.key, from: node.init ?? node.iterated ?? null })
+        }
       }
       if (!nested && (node.type === 'ForOfStatement' || node.type === 'ForInStatement')) {
         for (const declaration of node.left.declarations ?? []) declaration.iterated = node.right
       }
-      if (node.type === 'AssignmentExpression' && node.left.type === 'Identifier' && node.left.name === name) {
-        sources.push({ expression: node.right })
+      if (node.type === 'AssignmentExpression') {
+        if (node.left.type === 'Identifier' && node.left.name === name) sources.push({ expression: node.right })
+        else if (node.left.type === 'ObjectPattern' || node.left.type === 'ArrayPattern') {
+          for (const bound of patternNames(node.left)) {
+            if (bound.name === name) sources.push({ destructured: bound.key, from: node.right })
+          }
+        }
       }
       for (const [key, value] of Object.entries(node)) {
         if (key === 'loc' || key === 'iterated') continue
@@ -141,27 +182,77 @@ function bindingOf(name, parents) {
   return null
 }
 
+// What an expression a receiver is bound to comes from, following the local names it is given through (with
+// `visited`, so that a loop of assignments ends): 'transport', 'connection' (one of the network's), 'param' (a
+// parameter of a class member or of a top-level function: not known) or 'unknown'
+const combine = origins => {
+  const known = origins.filter(origin => origin !== 'none')
+  if (known.includes('transport')) return 'transport'
+  if (known.length && known.every(origin => origin === 'connection')) return 'connection'
+  if (known.length === 1 && known[0] === 'param') return 'param'
+  return 'unknown'
+}
+function sourceOrigin(source, binding, parents, visited) {
+  if (source.destructured !== undefined) {
+    // a transport taken out of an object (`const { ws: raw } = peer`)
+    if (source.destructured === 'ws') return 'transport'
+    return 'unknown'
+  }
+  if (source.param) {
+    if (!binding.nested) return 'param'
+    // a callback of the network's connections: this.sockets.forEach(socket => …)
+    const call = parents[parents.indexOf(binding.scope) - 1]
+    const callee = call?.callee
+    const callback = isCall(call) && isMember(callee) && ITERATORS.has(keyOf(callee)) && isSockets(callee.object)
+    return callback ? 'connection' : 'unknown'
+  }
+  if (source.iterated) return isSockets(source.iterated) ? 'connection' : originOf(source.iterated, parents, visited)
+  if (source.expression === null) return 'none'
+  return originOf(source.expression, parents, visited)
+}
+function originOf(expression, parents, visited) {
+  if (!expression) return 'unknown'
+  if (isTransport(expression)) return 'transport'
+  if (isConnection(expression)) return 'connection'
+  switch (expression.type) {
+    case 'Identifier': {
+      if (visited.has(expression.name)) return 'none'
+      visited.add(expression.name)
+      const binding = bindingOf(expression.name, parents)
+      if (!binding) return 'unknown'
+      return combine(binding.sources.map(source => sourceOrigin(source, binding, parents, visited)))
+    }
+    case 'ConditionalExpression':
+      return combine([
+        originOf(expression.consequent, parents, visited),
+        originOf(expression.alternate, parents, visited),
+      ])
+    case 'LogicalExpression':
+      return combine([originOf(expression.left, parents, visited), originOf(expression.right, parents, visited)])
+    case 'SequenceExpression':
+      return originOf(expression.expressions.at(-1), parents, visited)
+    case 'AwaitExpression':
+      return originOf(expression.argument, parents, visited)
+    case 'AssignmentExpression':
+      return originOf(expression.right, parents, visited)
+    default:
+      return 'unknown'
+  }
+}
+
 // why `name` (socket, tSocket) at `parents` is not known to be a connection of the network's, or null
 function notAConnection(name, parents) {
   const binding = bindingOf(name, parents)
   if (!binding) return `${name} is not bound in this file`
-  for (const source of binding.sources) {
-    const expression = source.expression ?? source.iterated
-    if (isTransport(expression)) return `${name} is a transport`
-  }
+  const visited = new Set([name])
+  const origins = binding.sources.map(source => sourceOrigin(source, binding, parents, visited))
+  if (origins.includes('transport')) return `${name} is a transport (directly or through local names)`
   if (!binding.nested) return null
-  for (const source of binding.sources) {
-    if (source.param) {
-      // a callback of the network's connections: this.sockets.forEach(socket => …)
-      const at = parents.indexOf(binding.scope)
-      const call = parents[at - 1]
-      const callee = call?.callee
-      if (isCall(call) && isMember(callee) && ITERATORS.has(keyOf(callee)) && isSockets(callee.object)) continue
-      return `${name} is a parameter of a nested function that is not a callback of the network's connections`
-    }
-    if (source.iterated && isSockets(source.iterated)) continue
-    if (source.expression === null || isConnection(source.expression)) continue
-    return `${name} is given, in a nested function, what is not known to be a connection of the network's`
+  for (const [index, origin] of origins.entries()) {
+    if (origin === 'connection' || origin === 'none') continue
+    return binding.sources[index].param && binding.sources[index].destructured === undefined
+      ? `${name} is a parameter of a nested function that is not a callback of the network's connections`
+      : `${name} is given, in a nested function, what is not known to be a connection of the network's`
   }
   return null
 }
@@ -305,6 +396,17 @@ test('server writes: what escaped before (an alias, an extracted or bound send, 
     'a call result under an allowed name, nested':
       'export function f(make) {\n  return () => {\n    const socket = make()\n    socket.send(1)\n  }\n}',
     'an allowed name bound to nothing': 'export function f(data) {\n  socket.send(data)\n}',
+    'an alias chain of two links':
+      'export function f(ws) {\n  const raw = ws\n  const socket = raw\n  socket.send(1)\n}',
+    'an alias chain of three links':
+      'export function f(ws) {\n  const a = ws\n  const b = a\n  const socket = b\n  socket.send(1)\n}',
+    'an alias reassigned':
+      'export function f(peer, ws) {\n  let raw = peer\n  raw = ws\n  const tSocket = raw\n  tSocket.ping()\n}',
+    'a destructured alias':
+      'export function f(peer) {\n  const { ws: raw } = peer\n  const socket = raw\n  socket.send(1)\n}',
+    'a destructured parameter': 'export function f({ ws: socket }) {\n  socket.send(1)\n}',
+    'an alias through a condition':
+      'export function f(ws, other) {\n  const raw = other ?? ws\n  const socket = raw\n  socket.send(1)\n}',
   }
   for (const [what, source] of Object.entries(caught)) {
     assert.ok(bypasses(file, source).length >= 1, `${what}:\n${source}`)
@@ -327,6 +429,43 @@ test('server writes: what escaped before (an alias, an extracted or bound send, 
   for (const [what, source] of Object.entries(fine)) {
     assert.deepEqual(bypasses(file, source), [], `${what}:\n${source}`)
   }
+})
+
+// The guard's own tripwire against false alarms, for the moves to come: every method and function-valued field of
+// today's class, written as a top-level function of a network module (the shape a move gives it: its `this` is the
+// network), passes
+test("server writes: the class's members, rewritten as a network module's top-level functions, pass", () => {
+  const source = fs.readFileSync(path.join(ROOT, 'src/core/systems/ServerNetwork.js'), 'utf8')
+  const ast = parse(source, { sourceType: 'module' })
+  const declaration = ast.program.body
+    .map(node => (node.type === 'ExportNamedDeclaration' ? node.declaration : node))
+    .find(node => node?.type === 'ClassDeclaration' && node.id.name === 'ServerNetwork')
+  const text = node => source.slice(node.start, node.end)
+  const params = fn => (fn.params.length ? source.slice(fn.params[0].start, fn.params.at(-1).end) : '')
+  const functions = []
+  let methods = 0
+  let fields = 0
+  for (const member of declaration.body.body) {
+    if (member.type === 'ClassMethod' && member.kind === 'method') {
+      methods++
+      const head = `${member.async ? 'async ' : ''}function ${member.generator ? '*' : ''}${member.key.name}`
+      functions.push(`export ${head}(${params(member)}) ${text(member.body)}`)
+    } else if (member.type === 'ClassProperty' && isFunction(member.value)) {
+      fields++
+      const fn = member.value
+      const body = fn.body.type === 'BlockStatement' ? text(fn.body) : `{\n  return ${text(fn.body)}\n}`
+      functions.push(`export ${fn.async ? 'async ' : ''}function ${member.key.name}(${params(fn)}) ${body}`)
+    }
+  }
+  // (today: 62 methods besides the constructor, and 33 function-valued fields)
+  assert.ok(methods >= 60 && fields >= 30, `${methods} methods, ${fields} fields`)
+  const imports = ast.program.body.filter(node => node.type === 'ImportDeclaration').map(text)
+  const module = [...imports, ...functions].join('\n\n')
+  assert.deepEqual(bypasses('src/server/network/all.js', module), [])
+  // and the guard reads them: one of them changed to send raw is refused
+  const leaked = module.replace('export function write(ws, packet, options = {}) {', '$&\n  ws.send(packet)')
+  assert.notEqual(leaked, module)
+  assert.equal(bypasses('src/server/network/all.js', leaked).length, 1)
 })
 
 test('server writes: a module nested in src/server/network/ is found, read, and its raw send refused', t => {

@@ -437,6 +437,77 @@ test('stop: `during start-up, before the world was loaded` (shutdown.js:36) fail
   ])
 })
 
+// The log calls of a function (a definition as findFunction gives it: its node, its file's tree and source), read
+// from the syntax tree: every call whose callee is a member named error, warn, log, info, debug, trace or logOnce, of
+// any object (`console`, a `log` handed in, `audit` where `const audit = console`), its key written or a computed
+// string; and every call of a name the file binds to such a member (`const { error } = console`,
+// `const report = console.error`, `= console.warn.bind(console)`) or named logOnce. -> [{ call, line }]: the call's
+// text, from its callee to its closing parenthesis, and the line it starts on. What it does not see: a message built
+// elsewhere and logged through a variable, and a logger reached through another module or a call (`get().error(…)`
+// is seen; `const f = pick(console); f(…)` is not).
+const LOG_MEMBERS = new Set(['error', 'warn', 'log', 'info', 'debug', 'trace', 'logOnce'])
+const isMember = node => node?.type === 'MemberExpression' || node?.type === 'OptionalMemberExpression'
+const memberKey = node => {
+  if (!node.computed) return node.property.name ?? null
+  if (node.property.type === 'StringLiteral') return node.property.value
+  if (node.property.type === 'TemplateLiteral' && node.property.expressions.length === 0) {
+    return node.property.quasis[0].value.cooked
+  }
+  return null
+}
+const isLogMember = node => isMember(node) && LOG_MEMBERS.has(memberKey(node))
+const children = node =>
+  Object.entries(node)
+    .filter(([key]) => !['loc', 'start', 'end', 'extra', 'leadingComments', 'trailingComments'].includes(key))
+    .flatMap(([, value]) => (Array.isArray(value) ? value : [value]))
+    .filter(child => child && typeof child.type === 'string')
+// the names a file binds to a log member
+const loggers = new WeakMap()
+function loggerNames(ast) {
+  if (loggers.has(ast)) return loggers.get(ast)
+  const names = new Set(['logOnce'])
+  const visit = node => {
+    if (node.type === 'ObjectPattern') {
+      for (const property of node.properties) {
+        const key = property.key?.type === 'Identifier' ? property.key.name : property.key?.value
+        if (LOG_MEMBERS.has(key) && property.value?.type === 'Identifier') names.add(property.value.name)
+      }
+    }
+    if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier') {
+      const init = node.init
+      const bound = init?.type === 'CallExpression' && isMember(init.callee) && memberKey(init.callee) === 'bind'
+      if (isLogMember(init) || (bound && isLogMember(init.callee.object))) names.add(node.id.name)
+    }
+    children(node).forEach(visit)
+  }
+  visit(ast.program)
+  loggers.set(ast, names)
+  return names
+}
+function logCalls({ node, ast, source }) {
+  const names = loggerNames(ast)
+  const calls = []
+  const visit = at => {
+    if (at.type === 'CallExpression' || at.type === 'OptionalCallExpression') {
+      if (isLogMember(at.callee) || (at.callee.type === 'Identifier' && names.has(at.callee.name))) {
+        calls.push({ call: source.slice(at.start, at.end), line: at.loc.start.line })
+      }
+    }
+    children(at).forEach(visit)
+  }
+  visit(node)
+  return calls
+}
+
+// where the function `name` logs a line with `part` in it: `<file name>:<line>, <name>`, or null
+function logSite(name, part, files) {
+  for (const definition of findFunction(name, files)) {
+    const site = logCalls(definition).find(({ call }) => call.includes(part))
+    if (site) return `${path.basename(definition.file)}:${site.line}, ${name}`
+  }
+  return null
+}
+
 // What the final save's path in the network and in Storage.js prints, as it prints it (made up: ids, codes): each
 // fails a stop that otherwise passed. Each is named by the function that prints it and a part of the call's text;
 // where that call is now (the test's name) is found by parsing (test/lib/networkSource.mjs), wherever the function
@@ -578,49 +649,30 @@ const STOP_PATH_ALLOWED = [
 ]
 const STOP_PATH_REQUIRED = [': saving the world before exit', '[network] final save complete']
 
-// the logging calls in a function's text, each from `console.error(` (`log.log(`, `this.logOnce(`, …) to its
-// closing parenthesis: [{ call, at }] (`at`: where it starts in the text)
-function logCallSites(text) {
-  const calls = []
-  for (const match of text.matchAll(/\b(?:console|log)\.(?:log|warn|error)\(|\blogOnce\(/g)) {
-    let depth = 0
-    let at = match.index + match[0].length - 1
-    for (; at < text.length && at - match.index < 800; at++) {
-      if (text[at] === '(') depth++
-      if (text[at] === ')' && --depth === 0) break
-    }
-    calls.push({ call: text.slice(match.index, at + 1), at: match.index })
-  }
-  return calls
-}
-const logCallsIn = text => logCallSites(text).map(site => site.call)
-
-// where the function `name` logs a line with `part` in it: `<file name>:<line>, <name>`, or null
-function logSite(name, part, files) {
-  for (const { file, line, text } of findFunction(name, files)) {
-    const site = logCallSites(text).find(({ call }) => call.includes(part))
-    if (site) return `${path.basename(file)}:${line + text.slice(0, site.at).split('\n').length - 1}, ${name}`
-  }
-  return null
-}
-
-test('stop: every log line of the stop and save paths is forbidden, required or allowed with a reason', () => {
+// What the stop path logs that the verdict does not know, and how many log calls each function has, in a checkout
+// (`root`; this one by default)
+function stopPathProblems(functions = STOP_PATH_FUNCTIONS, root) {
   const unsorted = []
   const counts = {}
-  for (const [name, files] of STOP_PATH_FUNCTIONS) {
+  for (const [name, files] of functions) {
     counts[name] = 0
-    for (const { file, text } of findFunction(name, files)) {
-      const calls = logCallsIn(text)
+    for (const definition of findFunction(name, files, root)) {
+      const calls = logCalls(definition).map(({ call }) => call)
       counts[name] += calls.length
       for (const call of calls) {
         const known =
           NOT_STOPPED_OR_SAVED.some(part => call.includes(part)) ||
           STOP_PATH_REQUIRED.some(part => call.includes(part)) ||
           STOP_PATH_ALLOWED.some(({ part }) => call.includes(part))
-        if (!known) unsorted.push(`${file} ${name}: ${call.replace(/\s+/g, ' ').slice(0, 200)}`)
+        if (!known) unsorted.push(`${definition.file} ${name}: ${call.replace(/\s+/g, ' ').slice(0, 200)}`)
       }
     }
   }
+  return { unsorted, counts }
+}
+
+test('stop: every log line of the stop and save paths is forbidden, required or allowed with a reason', () => {
+  const { unsorted, counts } = stopPathProblems()
   assert.deepEqual(
     unsorted,
     [],
@@ -635,16 +687,56 @@ test('stop: every log line of the stop and save paths is forbidden, required or 
     saveConfig: 2,
     userRows: 1,
   })
-  // and it would see a new one, in the class or in a module that a move put the function in
-  for (const source of [
-    'class ServerNetwork {\n  async saveDirty() {\n    console.warn(`[network] row ${id} skipped (${why})`)\n  }\n}\n',
-    'export async function saveDirty() {\n  console.warn(`[network] row ${id} skipped (${why})`)\n}\n',
+  // and it would see a new one, in the class or in a module that a move put the function in, however it is written
+  const line = '`[network] row ${id} skipped (${why})`'
+  for (const [shape, source] of [
+    ['a member of the class', `class ServerNetwork {\n  async saveDirty() {\n    console.warn(${line})\n  }\n}\n`],
+    ['a function of a module', `export async function saveDirty() {\n  console.warn(${line})\n}\n`],
+    ['a space before the parenthesis', `export async function saveDirty() {\n  console.error (${line})\n}\n`],
+    ['a renamed console', `const audit = console\nexport async function saveDirty() {\n  audit.error(${line})\n}\n`],
+    ['a destructured logger', `const { warn } = console\nexport async function saveDirty() {\n  warn(${line})\n}\n`],
+    [
+      'a renamed destructured logger',
+      `const { error: report } = console\nexport async function saveDirty() {\n  report(${line})\n}\n`,
+    ],
+    ['a logger taken out', `const report = console.error\nexport async function saveDirty() {\n  report(${line})\n}\n`],
+    [
+      'a bound logger',
+      `const shout = console.warn.bind(console)\nexport async function saveDirty() {\n  shout(${line})\n}\n`,
+    ],
+    ['a computed key', `export async function saveDirty(logger) {\n  logger['debug'](${line})\n}\n`],
+    ['another level', `export async function saveDirty() {\n  console.trace(${line})\n}\n`],
+    ['an optional call', `export async function saveDirty(log) {\n  log?.info(${line})\n}\n`],
   ]) {
-    const added = definitionsIn(source, 'saveDirty').flatMap(({ text }) => logCallsIn(text))
-    assert.deepEqual(added, ['console.warn(`[network] row ${id} skipped (${why})`)'])
+    const added = definitionsIn(source, 'saveDirty').flatMap(definition => logCalls(definition).map(at => at.call))
+    assert.equal(added.length, 1, `${shape}: ${added}`)
+    assert.ok(added[0].includes(line), shape)
     assert.ok(!NOT_STOPPED_OR_SAVED.some(part => added[0].includes(part)))
   }
   for (const { reason } of STOP_PATH_ALLOWED) assert.ok(reason.length > 10)
+})
+
+test('stop: a function moved into a module nested in src/server/network/ is found there, and its new line refused', t => {
+  // a checkout of its own: the class hands saveDirty on to a module two folders down, which logs a line nobody sorted
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'stop-path-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const put = (file, text) => {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true })
+    fs.writeFileSync(path.join(root, file), text)
+  }
+  put(
+    'src/core/systems/ServerNetwork.js',
+    "import { saveDirty } from '../../server/network/deep/save.js'\nexport class ServerNetwork {\n  saveDirty() {\n    return saveDirty.call(this)\n  }\n}\n"
+  )
+  put(
+    'src/server/network/deep/save.js',
+    "export async function saveDirty() {\n  console.error ('[network] a row was skipped')\n}\n"
+  )
+  const { unsorted, counts } = stopPathProblems([['saveDirty']], root)
+  assert.deepEqual(counts, { saveDirty: 1 })
+  assert.deepEqual(unsorted, [
+    "src/server/network/deep/save.js saveDirty: console.error ('[network] a row was skipped')",
+  ])
 })
 
 // --- how long a stop took, by Docker's clock ------------------------------------------------------------------

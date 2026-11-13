@@ -4,40 +4,41 @@
 //
 // The network is the class in src/core/systems/ServerNetwork.js and the modules of src/server/network/ (any depth),
 // where parts of the class are to move as functions whose `this` is the network (P16, step 3). The folder is read
-// when it exists; it does not yet.
+// when it exists; it does not yet. `root`: the checkout read, this one by default (the tests of the tripwires give a
+// tree of their own, with such a folder).
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse } from '@babel/parser'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
-export const NETWORK_CLASS = 'src/core/systems/ServerNetwork.js'
-export const NETWORK_DIR = 'src/server/network'
+const NETWORK_CLASS = 'src/core/systems/ServerNetwork.js'
+const NETWORK_DIR = 'src/server/network'
 
 const posix = file => file.split(path.sep).join('/')
 
 // the network's files: repository paths, the class first, then the folder's .js files in name order
-export function networkFiles() {
+export function networkFiles(root = ROOT) {
   const files = [NETWORK_CLASS]
   const walk = dir => {
-    const entries = fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })
+    const entries = fs.readdirSync(path.join(root, dir), { withFileTypes: true })
     for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : 1))) {
       const file = `${dir}/${entry.name}`
       if (entry.isDirectory()) walk(file)
       else if (entry.name.endsWith('.js')) files.push(file)
     }
   }
-  if (fs.existsSync(path.join(ROOT, NETWORK_DIR))) walk(NETWORK_DIR)
+  if (fs.existsSync(path.join(root, NETWORK_DIR))) walk(NETWORK_DIR)
   return files
 }
 
-// whether `file` (absolute, or relative to the repository) is one of the network's
-export function isNetworkFile(file) {
-  const relative = posix(path.isAbsolute(file) ? path.relative(ROOT, file) : path.normalize(file))
+// whether `file` (absolute, or relative to the checkout) is one of the network's
+export function isNetworkFile(file, root = ROOT) {
+  const relative = posix(path.isAbsolute(file) ? path.relative(root, file) : path.normalize(file))
   return relative === NETWORK_CLASS || relative.startsWith(`${NETWORK_DIR}/`)
 }
 
-export const readSource = file => fs.readFileSync(path.join(ROOT, file), 'utf8')
+const readSource = (file, root) => fs.readFileSync(path.join(root, file), 'utf8')
 
 const FUNCTION_VALUES = new Set(['FunctionExpression', 'ArrowFunctionExpression'])
 const keyName = node => {
@@ -50,8 +51,9 @@ const keyName = node => {
 // The definitions of the function `name` in `source`: a method of a class or of an object literal
 // (`async saveDirty() {…}`), a property of either whose value is a function (`save = () => {…}`), a function
 // declaration (`export function installShutdown(…)`) or a variable whose value is a function. A name qualified by
-// its class (`Storage.write`) is a member of that class only. -> [{ line, text }]: the line it starts on and its
-// text, from its name (or `async`, `function`) to its end.
+// its class (`Storage.write`) is a member of that class only. -> [{ line, text, node, ast, source }]: the line it
+// starts on and its text, from its name (or `async`, `function`) to its end; its node in the file's syntax tree, the
+// tree and the file's source.
 const parsed = new Map()
 export function definitionsIn(source, name) {
   const [owner, member] = name.includes('.') ? name.split('.') : [null, name]
@@ -72,7 +74,7 @@ export function definitionsIn(source, name) {
       defined = node.id?.type === 'Identifier' && node.id.name === member && FUNCTION_VALUES.has(node.init?.type)
     }
     if (defined && (!owner || members === owner)) {
-      found.push({ line: node.loc.start.line, text: source.slice(node.start, node.end) })
+      found.push({ line: node.loc.start.line, text: source.slice(node.start, node.end), node, ast, source })
     }
     const className = ['ClassDeclaration', 'ClassExpression'].includes(node.type) ? (node.id?.name ?? null) : null
     for (const [key, value] of Object.entries(node)) {
@@ -88,12 +90,13 @@ export function definitionsIn(source, name) {
   return found
 }
 
-// Every definition of `name` in `files` (repository paths, the network's by default), in file order:
-// [{ file, line, text }]. Throws when there is none: a function that is gone, or renamed, is not silently skipped.
-// More than one is not an error: a member of the class that hands its call on to a function of a module of the
-// folder is a definition too, and every one of them is what that name runs.
-export function findFunction(name, files = networkFiles()) {
-  const found = files.flatMap(file => definitionsIn(readSource(file), name).map(at => ({ file, ...at })))
+// Every definition of `name` in `files` (paths in the checkout `root`; the network's by default), in file order:
+// [{ file, line, text, node, ast, source }]. Throws when there is none: a function that is gone, or renamed, is not
+// silently skipped. More than one is not an error: a member of the class that hands its call on to a function of a
+// module of the folder is a definition too, and every one of them is what that name runs.
+export function findFunction(name, files, root = ROOT) {
+  files ??= networkFiles(root)
+  const found = files.flatMap(file => definitionsIn(readSource(file, root), name).map(at => ({ file, ...at })))
   if (!found.length) throw new Error(`no function ${name} in ${files.join(', ')}`)
   return found
 }

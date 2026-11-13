@@ -1,74 +1,245 @@
+// A TRIPWIRE ON THE SOURCE (parsed with @babel/parser): nothing of the server writes to a transport but the write
+// ledger (writeLedger.js), through the network's write. It reads every file of src/server with its subfolders (the
+// network's modules of src/server/network/ among them), core/Socket.js and the Server*/Apps systems, and fails on:
+// - a `send` or `ping` called on anything but the receivers allowed below: `x.send(…)`, `x?.send(…)`,
+//   `x['send'](…)`, `` x[`send`](…) `` (a computed key that is a string, or a template without substitutions);
+// - a `send` or `ping` member referred to without being called there, whatever its object (`x.send.bind(x)`,
+//   `x.send.call(x, …)`, `const s = x.send`), or taken out of an object (`const { send } = x`);
+// - a transport handed to a function as its `this` (`f.call(ws, …)`, `f.apply(ws, …)`, `f.bind(ws)`,
+//   `Reflect.apply(f, ws, …)`), where a transport is an expression that is `ws` or ends in `.ws`;
+// - in the network's own files (networkSource.mjs), an allowed receiver that is not what its name says: `this` where
+//   it is not the network's (the class's members and the module's top-level functions have it, with the arrows inside
+//   them; a non-arrow function nested in another has its own, and the module's top level has none), and `socket` or
+//   `tSocket` bound to a transport (`= ws`, `= x.ws`) or, in a function nested in another, to anything it cannot
+//   tell to be one of the network's connections (a call, a parameter): what it can tell is `this.sockets.get(…)`,
+//   `new Socket(…)` and a parameter of a callback of `this.sockets.forEach` (or `.values()`, and the like).
+// It is a tripwire for a maintainer's mistake, not a proof. What it cannot see, said plainly: a transport aliased in
+// another module and imported; one handed in as a parameter under an allowed name of a class member or of a
+// top-level function (`function tell(socket)` called with a `ws`); a key computed at run time (`ws[name](…)`); a
+// transport reached through a helper that takes it (`invoke(ws, 'send')`); any of these through `eval` or `Function`.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { parse } from '@babel/parser'
 import { isNetworkFile, networkFiles } from './lib/networkSource.mjs'
 
-const root = new URL('../src/', import.meta.url)
+const ROOT = fileURLToPath(new URL('../', import.meta.url))
 const walkFiles = dir =>
   fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
     const file = path.join(dir, entry.name)
     return entry.isDirectory() ? walkFiles(file) : file.endsWith('.js') ? [file] : []
   })
 
-// Grep every send/ping call, then identify the receiver in the syntax tree. Only known HTTP, S3 and
-// network-wrapper receivers are allowed; a newly named raw transport cannot silently bypass the writer.
+const SENDS = ['send', 'ping']
+const ITERATORS = new Set(['forEach', 'filter', 'map', 'find', 'some', 'every', 'flatMap'])
+const isMember = node => node?.type === 'MemberExpression' || node?.type === 'OptionalMemberExpression'
+const isCall = node => node?.type === 'CallExpression' || node?.type === 'OptionalCallExpression'
+const FUNCTIONS = new Set([
+  'FunctionDeclaration',
+  'FunctionExpression',
+  'ArrowFunctionExpression',
+  'ObjectMethod',
+  'ClassMethod',
+  'ClassPrivateMethod',
+])
+const isFunction = node => FUNCTIONS.has(node?.type)
+// a member's key: its name, or a computed key that is a string or a template without substitutions (null: computed
+// at run time)
+const keyOf = member => {
+  if (!member.computed) return member.property.name ?? null
+  if (member.property.type === 'StringLiteral') return member.property.value
+  if (member.property.type === 'TemplateLiteral' && member.property.expressions.length === 0) {
+    return member.property.quasis[0].value.cooked
+  }
+  return null
+}
 const receiver = node => {
   if (node.type === 'Identifier') return node.name
   if (node.type === 'ThisExpression') return 'this'
-  if (node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') {
-    return `${receiver(node.object)}.${node.computed ? node.property.value : node.property.name}`
-  }
-  if (node.type === 'CallExpression') return receiver(node.callee)
+  if (isMember(node)) return `${receiver(node.object)}.${keyOf(node) ?? '?'}`
+  if (isCall(node)) return receiver(node.callee)
   return '?'
 }
-// The network's own receivers, in the network's own code only (test/lib/networkSource.mjs: the class in
-// src/core/systems/ServerNetwork.js and the modules of src/server/network/, whose functions are its methods): `this`,
-// the network, and `socket` / `tSocket`, its connections (a Socket, whose send and ping go through the network's write
-// ledger). Anywhere else nothing says that these names are either.
+// a transport: `ws`, or an expression that ends in `.ws`
+const isTransport = node =>
+  (node?.type === 'Identifier' && node.name === 'ws') || (isMember(node) && keyOf(node) === 'ws')
+// the network's connections: `this.sockets`, its `.values()`, or a spread of either
+const isSockets = node => {
+  if (node?.type === 'ArrayExpression') return node.elements.length === 1 && isSockets(node.elements[0]?.argument)
+  if (isCall(node) && isMember(node.callee) && keyOf(node.callee) === 'values') return isSockets(node.callee.object)
+  return isMember(node) && node.object.type === 'ThisExpression' && keyOf(node) === 'sockets'
+}
+// an expression a connection of the network's is taken from
+const isConnection = node =>
+  (isCall(node) && isMember(node.callee) && keyOf(node.callee) === 'get' && isSockets(node.callee.object)) ||
+  (node?.type === 'NewExpression' && node.callee.type === 'Identifier' && node.callee.name === 'Socket')
+
+// Receivers allowed everywhere: HTTP replies, the S3 client, the network itself
+const allowedAnywhere = (file, value) =>
+  value === 'reply' ||
+  value.startsWith('reply.') ||
+  (file.endsWith('/AssetsS3.js') && value === 'this.client') ||
+  value === 'world.network' ||
+  value === 'this.world.network'
+// and in the network's own files: `this`, the network, and `socket` / `tSocket`, its connections (a Socket, whose send
+// and ping go through the network's write ledger), where they are what their names say (below)
 const NETWORK_RECEIVERS = ['this', 'socket', 'tSocket']
-const allowed = (file, value) => {
-  if (value === 'reply' || value.startsWith('reply.')) return true
-  if (file.endsWith('/AssetsS3.js') && value === 'this.client') return true
-  if (value === 'world.network' || value === 'this.world.network') return true
-  if (isNetworkFile(file) && NETWORK_RECEIVERS.includes(value)) return true
-  return false
+
+// `this` at `parents` (outermost first) is the network's: that of a class member or of a top-level function
+function networkThis(parents) {
+  for (let i = parents.length - 1; i >= 0; i--) {
+    const node = parents[i]
+    if (node.type === 'ClassProperty' || node.type === 'ClassPrivateProperty') return true
+    if (node.type === 'ClassMethod' || node.type === 'ClassPrivateMethod') return true
+    if (node.type === 'ArrowFunctionExpression') continue
+    if (isFunction(node)) return !parents.slice(0, i).some(isFunction)
+  }
+  return false // the module's own
 }
 
-function bypasses(file, source) {
-  const found = []
-  const visit = node => {
-    if (!node || typeof node !== 'object') return
-    if (['CallExpression', 'OptionalCallExpression'].includes(node.type)) {
-      const callee = node.callee
-      if (['MemberExpression', 'OptionalMemberExpression'].includes(callee.type)) {
-        const name = callee.computed ? callee.property.value : callee.property.name
-        if (['send', 'ping'].includes(name) && !allowed(file, receiver(callee.object))) {
-          found.push(`${file}:${node.loc.start.line}: ${receiver(callee.object)}.${name}`)
+// what a name is bound to, seen from `parents`: the innermost function (or the module) that declares it, and the
+// expressions it is given there (a parameter's is null)
+function bindingOf(name, parents) {
+  const scopes = [...parents.filter(node => isFunction(node) || node.type === 'Program')].reverse()
+  for (const scope of scopes) {
+    const sources = []
+    let declared = false
+    if (isFunction(scope)) {
+      for (const param of scope.params) {
+        if (param.type === 'Identifier' && param.name === name) {
+          declared = true
+          sources.push({ param: true })
         }
       }
     }
+    // declarations in this scope (not in functions nested in it), and assignments anywhere in it
+    const visit = (node, nested) => {
+      if (!node || typeof node.type !== 'string') return
+      if (node !== scope && isFunction(node)) nested = true
+      if (!nested && node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && node.id.name === name) {
+        declared = true
+        sources.push({ expression: node.init ?? null, iterated: node.iterated ?? null })
+      }
+      if (!nested && (node.type === 'ForOfStatement' || node.type === 'ForInStatement')) {
+        for (const declaration of node.left.declarations ?? []) declaration.iterated = node.right
+      }
+      if (node.type === 'AssignmentExpression' && node.left.type === 'Identifier' && node.left.name === name) {
+        sources.push({ expression: node.right })
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (key === 'loc' || key === 'iterated') continue
+        if (Array.isArray(value)) value.forEach(child => visit(child, nested))
+        else if (value && typeof value === 'object') visit(value, nested)
+      }
+    }
+    visit(isFunction(scope) ? scope.body : scope, false)
+    if (declared) return { scope, sources, nested: parents.slice(0, parents.indexOf(scope)).some(isFunction) }
+  }
+  return null
+}
+
+// why `name` (socket, tSocket) at `parents` is not known to be a connection of the network's, or null
+function notAConnection(name, parents) {
+  const binding = bindingOf(name, parents)
+  if (!binding) return `${name} is not bound in this file`
+  for (const source of binding.sources) {
+    const expression = source.expression ?? source.iterated
+    if (isTransport(expression)) return `${name} is a transport`
+  }
+  if (!binding.nested) return null
+  for (const source of binding.sources) {
+    if (source.param) {
+      // a callback of the network's connections: this.sockets.forEach(socket => …)
+      const at = parents.indexOf(binding.scope)
+      const call = parents[at - 1]
+      const callee = call?.callee
+      if (isCall(call) && isMember(callee) && ITERATORS.has(keyOf(callee)) && isSockets(callee.object)) continue
+      return `${name} is a parameter of a nested function that is not a callback of the network's connections`
+    }
+    if (source.iterated && isSockets(source.iterated)) continue
+    if (source.expression === null || isConnection(source.expression)) continue
+    return `${name} is given, in a nested function, what is not known to be a connection of the network's`
+  }
+  return null
+}
+
+function bypasses(file, source, root = ROOT) {
+  const found = []
+  const say = (node, what) => found.push(`${file}:${node.loc.start.line}: ${what}`)
+  const network = isNetworkFile(file, root)
+  const visit = (node, parents) => {
+    if (!node || typeof node.type !== 'string') return
+    const parent = parents.at(-1)
+    // a send or ping called
+    if (isCall(node) && isMember(node.callee) && SENDS.includes(keyOf(node.callee))) {
+      const value = receiver(node.callee.object)
+      const name = `${value}.${keyOf(node.callee)}`
+      if (allowedAnywhere(file, value)) {
+        // as before
+      } else if (network && NETWORK_RECEIVERS.includes(value)) {
+        if (value === 'this') {
+          if (!networkThis(parents)) say(node, `${name}: this is not the network's here`)
+        } else {
+          const why = notAConnection(value, [...parents, node])
+          if (why) say(node, `${name}: ${why}`)
+        }
+      } else say(node, name)
+    }
+    // a send or ping referred to without a call
+    if (isMember(node) && SENDS.includes(keyOf(node)) && !(isCall(parent) && parent.callee === node)) {
+      say(node, `${receiver(node.object)}.${keyOf(node)} referred to without a call`)
+    }
+    // … or taken out of an object
+    if (node.type === 'ObjectPattern') {
+      for (const property of node.properties) {
+        if (property.type === 'ObjectProperty' && SENDS.includes(keyOf({ ...property, property: property.key }))) {
+          say(property, `{ ${keyOf({ ...property, property: property.key })} } taken out of an object`)
+        }
+      }
+    }
+    // a transport handed in as `this`
+    if (isCall(node) && isMember(node.callee)) {
+      const key = keyOf(node.callee)
+      const given =
+        ['call', 'apply', 'bind'].includes(key) && node.arguments[0]
+          ? node.arguments[0]
+          : key === 'apply' && receiver(node.callee.object) === 'Reflect'
+            ? node.arguments[1]
+            : null
+      if (key === 'apply' && receiver(node.callee.object) === 'Reflect' && isTransport(node.arguments[1])) {
+        say(node, 'a transport handed in as this (Reflect.apply)')
+      } else if (given && isTransport(given)) say(node, `a transport handed in as this (.${key})`)
+    }
+    const inner = [...parents, node]
     for (const [key, value] of Object.entries(node)) {
-      if (['loc', 'start', 'end'].includes(key)) continue
-      if (Array.isArray(value)) value.forEach(visit)
-      else visit(value)
+      if (['loc', 'start', 'end', 'iterated'].includes(key)) continue
+      if (Array.isArray(value)) value.forEach(child => visit(child, inner))
+      else if (value && typeof value === 'object') visit(value, inner)
     }
   }
-  visit(parse(source, { sourceType: 'module' }))
+  visit(parse(source, { sourceType: 'module' }).program, [])
   return found
 }
 
-test('server writes: no raw transport send or ping outside writeLedger', () => {
+// the files read, in a checkout (`root`): every file of src/server and its subfolders, core/Socket.js and the
+// Server*/Apps systems; and what they write
+function scan(root = ROOT) {
   const files = [
     // every folder below src/server too: src/server/network/, where the network's methods move, when it exists
-    ...walkFiles(new URL('server/', root).pathname),
-    new URL('core/Socket.js', root).pathname,
-    ...walkFiles(new URL('core/systems/', root).pathname).filter(file => /\/(Server[^/]*|Apps)\.js$/.test(file)),
+    ...walkFiles(path.join(root, 'src/server')),
+    ...[path.join(root, 'src/core/Socket.js')].filter(file => fs.existsSync(file)),
+    ...walkFiles(path.join(root, 'src/core/systems')).filter(file => /\/(Server[^/]*|Apps)\.js$/.test(file)),
   ]
+  return { files, violations: files.flatMap(file => bypasses(file, fs.readFileSync(file, 'utf8'), root)) }
+}
+
+test('server writes: no raw transport send or ping outside writeLedger', () => {
+  const { files, violations } = scan()
   // the network's files are all read
-  for (const file of networkFiles()) assert.ok(files.includes(new URL(`../${file}`, import.meta.url).pathname), file)
-  const violations = files.flatMap(file => bypasses(file, fs.readFileSync(file, 'utf8')))
+  for (const file of networkFiles()) assert.ok(files.includes(path.join(ROOT, file)), file)
   assert.deepEqual(violations, [])
 })
 
@@ -79,27 +250,104 @@ test('server writes: guard detects direct, aliased, optional and computed transp
 })
 
 test("server writes: the network's own receivers are allowed in its files only, the class and src/server/network/", () => {
+  // the shape the network's code has: a class member, a module's top-level function (`this` is the network)
+  const shaped = body => `export function tell(socket, tSocket, name, data) {\n${body}\n}`
   // (as the scan names them, absolute, and relative to the repository)
   for (const file of [
-    new URL('../src/core/systems/ServerNetwork.js', import.meta.url).pathname,
-    new URL('../src/server/network/tips.js', import.meta.url).pathname,
+    path.join(ROOT, 'src/core/systems/ServerNetwork.js'),
+    path.join(ROOT, 'src/server/network/tips.js'),
     'src/server/network/wallets/evm.js',
   ]) {
     for (const source of ['this.send(name, data)', 'socket.send(name, data)', 'tSocket.ping()']) {
-      assert.deepEqual(bypasses(file, source), [], `${file}: ${source}`)
+      assert.deepEqual(bypasses(file, shaped(source)), [], `${file}: ${source}`)
     }
     for (const source of ['ws.send(data)', 'this.ws.ping()', 'socket.ws.send(data)', 'player.send(data)']) {
-      assert.equal(bypasses(file, source).length, 1, `${file}: ${source}`)
+      assert.equal(bypasses(file, shaped(source)).length, 1, `${file}: ${source}`)
     }
   }
   for (const file of [
     'src/server/index.js',
     'src/server/network.js',
     'src/server/networkX/a.js',
-    new URL('../src/server/ServerNetwork.js', import.meta.url).pathname,
+    path.join(ROOT, 'src/server/ServerNetwork.js'),
   ]) {
     for (const source of ['this.send(name, data)', 'socket.send(name, data)']) {
-      assert.equal(bypasses(file, source).length, 1, `${file}: ${source}`)
+      assert.equal(bypasses(file, shaped(source)).length, 1, `${file}: ${source}`)
     }
   }
+})
+
+test('server writes: what escaped before (an alias, an extracted or bound send, a transport as this, a template key) is caught', () => {
+  const file = 'src/server/network/tips.js'
+  const caught = {
+    'an alias under an allowed name': 'export function f(ws, data) {\n  const socket = ws\n  socket.send(data)\n}',
+    'an alias of a transport field':
+      'export function f(peer) {\n  let tSocket\n  tSocket = peer.ws\n  tSocket.ping()\n}',
+    'a send taken out of the transport': 'export function f(ws, data) {\n  const { send } = ws\n  send(data)\n}',
+    'a send renamed out of the transport':
+      'export function f(ws, data) {\n  const { send: write } = ws\n  write(data)\n}',
+    'a bound send': 'export function f(ws, data) {\n  const write = ws.send.bind(ws)\n  write(data)\n}',
+    'a send called through call': 'export function f(ws, data) {\n  ws.send.call(ws, data)\n}',
+    'a send extracted': 'export function f(ws) {\n  return ws.ping\n}',
+    'a function given the transport as this':
+      'function raw(data) {\n  this.send(data)\n}\nexport const f = ws => raw.call(ws, 1)',
+    'the same through apply': 'function raw(data) {\n  this.send(data)\n}\nexport const f = ws => raw.apply(ws, [1])',
+    'the same through Reflect.apply':
+      'function raw(data) {\n  this.send(data)\n}\nexport const f = ws => Reflect.apply(raw, ws, [1])',
+    'a template key': 'export function f(ws, data) {\n  ws[`send`](data)\n}',
+    "this of a nested function: not the network's":
+      'export function f(data) {\n  return function () {\n    this.send(data)\n  }\n}',
+    "this of an object's method: not the network's":
+      'export function f(data) {\n  return { go() { this.send(data) } }\n}',
+    "this of the module: not the network's": 'export const f = data => this.send(data)',
+    'a nested parameter under an allowed name':
+      'export function f(list, data) {\n  list.forEach(socket => socket.send(data))\n}',
+    'a call result under an allowed name, nested':
+      'export function f(make) {\n  return () => {\n    const socket = make()\n    socket.send(1)\n  }\n}',
+    'an allowed name bound to nothing': 'export function f(data) {\n  socket.send(data)\n}',
+  }
+  for (const [what, source] of Object.entries(caught)) {
+    assert.ok(bypasses(file, source).length >= 1, `${what}:\n${source}`)
+  }
+  // and what the network's code does: not caught
+  const fine = {
+    'a member of the class':
+      'class N {\n  tell(socket, data) {\n    this.send("x", data)\n    socket.send("x", data)\n  }\n}',
+    'an arrow property of the class':
+      'class N {\n  onPing = (socket, time) => {\n    socket.send("pong", time)\n  }\n}',
+    'an arrow inside a top-level function': 'export function f(data) {\n  [1].forEach(() => this.send("x", data))\n}',
+    'a connection the network keeps':
+      'export function f(id) {\n  const tSocket = this.sockets.get(id)\n  tSocket.send("x")\n}',
+    'a callback of its connections': 'export function f() {\n  this.sockets.forEach(socket => socket.send("x"))\n}',
+    'its connections, iterated':
+      'export function f() {\n  for (const socket of this.sockets.values()) socket.ping()\n}',
+    'a connection made here':
+      'export function f(ws) {\n  return () => {\n    const socket = new Socket({ ws })\n    socket.send("x")\n  }\n}',
+  }
+  for (const [what, source] of Object.entries(fine)) {
+    assert.deepEqual(bypasses(file, source), [], `${what}:\n${source}`)
+  }
+})
+
+test('server writes: a module nested in src/server/network/ is found, read, and its raw send refused', t => {
+  // a checkout of its own: the class, a socket, and a network module two folders down
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'server-writes-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const put = (file, text) => {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true })
+    fs.writeFileSync(path.join(root, file), text)
+  }
+  put(
+    'src/core/systems/ServerNetwork.js',
+    'export class ServerNetwork {\n  tell(socket) {\n    socket.send("x")\n  }\n}\n'
+  )
+  put('src/core/Socket.js', 'export class Socket {}\n')
+  put(
+    'src/server/network/deep/raw.js',
+    'export function leak(ws) {\n  console.error("[network] leaking")\n  ws.send(1)\n}\n'
+  )
+  assert.deepEqual(networkFiles(root), ['src/core/systems/ServerNetwork.js', 'src/server/network/deep/raw.js'])
+  const { files, violations } = scan(root)
+  assert.ok(files.includes(path.join(root, 'src/server/network/deep/raw.js')))
+  assert.deepEqual(violations, [`${path.join(root, 'src/server/network/deep/raw.js')}:3: ws.send`])
 })

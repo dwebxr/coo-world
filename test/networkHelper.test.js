@@ -10,7 +10,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import { bundleServer, heldBundles } from './lib/serverBundle.mjs'
-import { entityClasses, fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
+import { entityClasses, fakeWs, inside, loadNetwork, makeNetwork } from './lib/network.mjs'
 import * as classTimers from './lib/networkTimers.mjs'
 import { readPacket, writeClientPacket } from '../src/core/packets.js'
 import { readKickEnv } from '../src/server/kickList.js'
@@ -484,6 +484,49 @@ test('network helper: a stop that throws a falsy value fails the end of the test
   const ended = await end()
   assert.deepEqual(ended, { threw: true, error: 0 })
   assert.equal(timers(), before)
+})
+
+test('network helper: a check that fails inside a catch of the class fails the end of the test as well', async t => {
+  const { context, end } = handedContext(t)
+  const logs = []
+  const network = makeNetwork(context, { net, log: line => logs.push(line) })
+  // a handler the flush dispatches: what it throws, the flush logs and goes on
+  network.onPing = () => inside(context, () => assert.fail('seen in the handler'))
+  const socket = new net.Socket({ id: 'peer', ws: fakeWs(), network, player: { isBuilder: () => false } })
+  socket.ws.emit('message', writeClientPacket('ping', 1))
+  network.flush()
+  assert.equal(logs.length, 1)
+  assert.match(logs[0], /ping from client peer failed: AssertionError: seen in the handler/)
+  const ended = await end()
+  assert.equal(ended.threw, true)
+  assert.equal(ended.error.message, 'seen in the handler')
+  // a check that passes returns what it returns; outside a test that holds the helper, one that fails only throws
+  assert.equal(
+    inside(t, () => 'value'),
+    'value'
+  )
+  assert.throws(() => inside(t, () => assert.fail('only thrown')), /only thrown/)
+})
+
+test("network helper: a fake connection's check of a ping is reported at the end, though the write ledger catches it", async t => {
+  const { context, end } = handedContext(t)
+  const network = makeNetwork(context, { net, log: () => {} })
+  // the class's own ping: no payload, unmasked
+  const ws = fakeWs()
+  assert.equal(network.write(ws, null), true)
+  assert.deepEqual(await end(), { threw: false })
+  // another: the ledger takes the throw for a dead connection and closes it, and the end reports the check
+  const other = handedContext(t)
+  const second = makeNetwork(other.context, { net, log: () => {} })
+  const pinged = fakeWs()
+  const ping = pinged.ping
+  pinged.ping = (data, mask, cb) => ping('a payload', mask, cb)
+  assert.equal(second.write(pinged, null), false)
+  assert.equal(pinged.terminations, 1)
+  const ended = await other.end()
+  assert.equal(ended.threw, true)
+  assert.equal(ended.error.code, 'ERR_ASSERTION')
+  assert.equal(ended.error.actual, 'a payload')
 })
 
 test('network helper: a test that makes a network while another one holds the helper is refused', async t => {

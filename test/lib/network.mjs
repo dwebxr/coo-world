@@ -57,6 +57,11 @@
 //   network writes it: a later makeNetwork's `log` takes it over). The constructor's own wiring is what runs.
 //   The test's end stops every network it made (stopForFatal), which clears every timer the class keeps, and puts
 //   the environment and the stand-ins' objects back.
+// inside(t, check) → what `check` returns: for an assertion a test makes in code the network calls and catches (a
+//   handler the flush dispatches, a collaborator of a join, the write ledger's ping), which the class takes for a
+//   failure of its own and only logs or works around, so that the test would not fail on it. `check` runs as it is;
+//   what it throws is thrown on, as before, and is reported again by the test's end (after everything is put back,
+//   unless a stop failed there first). fakeWs's own check of a ping is made this way.
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
@@ -204,6 +209,7 @@ function testState(t) {
     ended: false,
     threw: false,
     failure: undefined,
+    inside: [], // what a check made inside the class's own catch threw (inside())
   }
   tests.set(t, state)
   holder = t
@@ -248,6 +254,7 @@ function testState(t) {
   t.after(() => {
     end()
     if (state.threw) throw state.failure
+    if (state.inside.length) throw state.inside[0]
   })
   // node:test runs no later hook of a test once one has thrown: a hook registered BEFORE the first makeNetwork that
   // throws would leave all of this standing, and the next test would be refused as concurrent. The test's signal
@@ -334,6 +341,17 @@ export function makeNetwork(t, { net, world: fields, log, init = {}, env, module
   return network
 }
 
+// See the top. (Reported by a test that holds the helper and has not ended; otherwise only thrown)
+export function inside(t, check) {
+  try {
+    return check()
+  } catch (err) {
+    const state = tests.get(t)
+    if (state && !state.ended) state.inside.push(err)
+    throw err
+  }
+}
+
 // a connection as the ws library gives it: what is written stays in `packets`, its write callbacks in `pending`
 // until `drain()`, and `terminate()` closes it as the transport would
 export function fakeWs() {
@@ -346,9 +364,14 @@ export function fakeWs() {
     ws.packets.push(packet)
     ws.pending.push(cb)
   }
+  // (the write ledger catches a ping that throws and takes the connection for a dead one: the check is reported at
+  // the end of the test that holds the helper as well)
   ws.ping = (data, mask, cb) => {
-    assert.equal(data, undefined)
-    assert.equal(mask, false)
+    const check = () => {
+      assert.equal(data, undefined)
+      assert.equal(mask, false)
+    }
+    inside(holder, check)
     ws.pending.push(cb)
   }
   ws.terminate = () => {

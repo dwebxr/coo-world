@@ -15,7 +15,6 @@ import compress from '@fastify/compress'
 import { compressOptions } from './compressOptions'
 
 import { createServerWorld } from '../core/createServerWorld'
-import { PROTOCOL_VERSION, writePacket } from '../core/packets'
 import { buildPublicEnv, unlistedPublicEnvNote } from '../core/extras/publicEnv'
 import { readJWT } from '../core/utils-server'
 import { getDB } from './db'
@@ -30,8 +29,9 @@ import { adminMode, adminStartupNotes } from './adminCode'
 import { pageRoutes, readHstsEnv, securityHeaders } from './pageRoutes'
 import { cspReportRoute } from './cspReports'
 import { walletOf } from './solana-gating'
-import { clientIpKeys, createUploadLimits, readUploadLimitsEnv } from './uploadLimits'
+import { createUploadLimits, readUploadLimitsEnv } from './uploadLimits'
 import { createConnectionLimits, readConnectionLimitsEnv } from './connectionLimits'
+import { createWsRoute } from './wsRoute'
 import { assetRoutes, uploadRoutes } from './uploadRoutes'
 import { readKickEnv } from './kickList'
 import { describeHoldingContracts, readHoldingContractsEnv } from './evmHoldings'
@@ -230,20 +230,12 @@ fastify.register(cspReportRoute, { clientIpHeader: uploadLimitsConfig.clientIpHe
 if (world.assetsDir) {
   fastify.register(assetRoutes, { root: world.assetsDir })
 }
-fastify.register(ws, {
-  options: {
-    maxPayload: 65536,
-    maxFragments: 8,
-    maxBufferedChunks: 1024,
-    autoPong: false,
-    perMessageDeflate: false,
-    closeTimeout: 2000,
-  },
-})
 // per-address connection limits, checked before a connection touches the database (see connectionLimits.js)
 const connectionLimits = createConnectionLimits(connectionLimitsConfig)
-const kLease = Symbol('wsLease')
-fastify.register(worldNetwork)
+// the /ws route (wsRoute.js): the transport's options, the admission by those limits and the route
+const wsRoute = createWsRoute({ connectionLimits, clientIpHeader: uploadLimitsConfig.clientIpHeader, world })
+fastify.register(ws, wsRoute.options)
+fastify.register(wsRoute.register)
 
 // uploads are accepted from a connected session only: the bearer token names the user,
 // the live socket carries the rank. headers are never logged.
@@ -314,33 +306,5 @@ await startup.step(async () => {
 })
 // start-up is over: from here the exit code is the shutdown's (shutdown.js)
 startup.listening()
-
-function admitConnection(request, reply, done) {
-  if (request.ws !== true) return done()
-  const transport = request.raw.socket
-  if (transport[kLease]) return reply.code(503).header('Retry-After', '10').send()
-  const header = uploadLimitsConfig.clientIpHeader
-  const lease = connectionLimits.admit(clientIpKeys(header ? request.headers[header] : undefined, request.ip))
-  if (!lease.ok) return reply.code(503).header('Retry-After', '10').send()
-  transport[kLease] = lease
-  transport.once('close', lease.release)
-  // An abort before ws takes over must not become an unhandled transport error.
-  transport.once('error', () => transport.destroy())
-  if (transport.destroyed) lease.release()
-  done()
-}
-
-async function worldNetwork(fastify) {
-  fastify.get('/ws', { websocket: true, preValidation: admitConnection }, (ws, req) => {
-    if (req.query.v !== String(PROTOCOL_VERSION)) {
-      world.network.write(ws, writePacket('kick', 'outdated'), { name: 'kick' })
-      ws.close(1008, 'outdated')
-      return
-    }
-    // the address the connection limits counted it under: the brake on wrong admin codes uses the same key
-    const header = uploadLimitsConfig.clientIpHeader
-    world.network.onConnection(ws, req.query, clientIpKeys(header ? req.headers[header] : undefined, req.ip))
-  })
-}
 
 console.log(`server listening on port ${port}`)

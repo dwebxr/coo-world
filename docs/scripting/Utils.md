@@ -22,6 +22,89 @@ const randomInt = num(0, 10);
 const randomFloat = num(100, 1000, 2);
 ```
 
+`num` rounds a `Math.random()` number to `dp` decimal places. So when `min` and `max` are themselves on that grid (whole
+numbers for `dp` 0), they come up half as often as each value between them. Measured over 40,000 calls each: `num(0, 3)`
+gave 0 6784 times, 1 13169 times, 2 13461 times and 3 6586 times; `num(0.5, 3.5)` gave 1, 2 and 3 13250, 13296 and
+13454 times.
+
+---
+
+## `prng`
+
+`prng(seed)` returns a function `rand(min, max, dp = 0)` that draws numbers from a sequence fixed by `seed`. `rand(max)`
+is `rand(0, max)`, `min` and `max` are swapped when `min` is the larger, and `dp` asks for that many decimal places.
+With `dp` 0 the result is `min` plus a whole number, up to `max`: a whole number when `min` is one (from `min` to
+`max`, both included, when `max` is one too), and not when `min` is not (`prng(42)` with `rand(0.5, 3.5)` gives 0.5, 1.5, 2.5 and
+3.5).
+
+```javascript
+const rand = prng(42)
+rand(0, 100) // 68, then 38, 60, 50, ... for seed 42
+rand(0, 1, 2) // 0, 0.01, ... or 1
+```
+
+**The same seed gives the same sequence.** Two runs that call `prng(42)` and then make the same calls get the same
+numbers. Observed with the generator's code in Node (the server's engine) and on a Chromium and a WebKit page: five
+seeds, 4,200 calls each, the same numbers in all three. `prng()` and `prng(0)` use the same built-in seed.
+
+**The numbers are not evenly spread.** How uneven depends on the seed and on how many numbers were drawn. Measured with
+`rand(0, 3)` over its first 4,000 calls, where an even spread is about 1,000 each:
+
+| seed    | 0    | 1    | 2    | 3    |
+| ------- | ---- | ---- | ---- | ---- |
+| `1`     | 1441 | 737  | 1134 | 688  |
+| `7`     | 1327 | 696  | 732  | 1245 |
+| `100`   | 1265 | 1187 | 814  | 734  |
+| `12345` | 1051 | 1044 | 950  | 955  |
+
+Seed `1` was still uneven after 400,000 calls (102526, 98004, 100675, 98795). A seed other than `0` whose lowest 31 bits
+are all 0 (`2147483648`, `4294967296`, `-2147483648`, ...) gives the same number on every call, the smallest it can
+give: `min` with `dp` 0 (`rand(3, 9)` gives 3, `rand(0.5, 3)` gives 0.5), and `min` rounded up to `dp` decimal places
+otherwise (`rand(0.05, 1, 1)` gives 0.1). Seed `0` is the built-in seed (above).
+
+**The range has a limit.** `max - min` must be at most `2147483647`; with decimals, `(max - min) * 10 ** dp` must be.
+For a larger range about half of the results are below `min` (negative when `min` is 0), and none is more than
+`2147483647` above `min`. Measured with seed 42 over 1,000 calls: 508 results below `min` for `rand(0, 2147483648)`, 476
+for `rand(0, 1e10)`, 508 for `rand(0, 3000000, 3)` and 508 for `rand(-1073741824, 1073741824)`.
+
+**It is not for anything that must be fair or secret** (a prize, a draw, a shuffle players rely on, a code). A script
+runs in every visitor's browser, with the seeds it uses, and the results follow from one another: from 31 results of
+`rand(0, 1)` in a row, every later one can be computed (tried: it predicted the next 500 correctly).
+
+From the code, the reason: `prng` is a 31-bit linear-feedback shift register with two taps, started from the seed's
+lowest 31 bits; each result is made of the register's next bits (each bit is the exclusive or of the bits 28 and 31
+places before it) and is put together with JavaScript's 32-bit integer operations, which turn a 32nd bit into a minus
+sign. It is left as it is on purpose: a correction would change the numbers every seed gives, and so what existing
+worlds built from a seed.
+
+When a script needs evenly spread numbers:
+
+- `Math.random()` works in a script (it is the engine's own `Math`). `Math.floor(Math.random() * (max - min + 1)) + min`
+  gives a whole number from `min` to `max` when both are whole numbers; measured for 0 to 3 over 40,000 calls: 10261, 9940, 9751, 10048. It has no
+  seed: its numbers are not the same on the server and in each browser, and a number may come up again. `num` (above)
+  favours the values between its ends.
+- For a sequence that repeats from a seed, a script can carry its own generator. The one below (known as Mulberry32)
+  ran in a script: for seeds 1 to 20, 40,000 calls each, each of 0 to 3 came up between 9,743 and 10,221 times, and it
+  gave the same numbers in Node, Chromium and WebKit.
+
+```javascript
+function seeded(seed) {
+  let a = seed >>> 0
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0
+    let t = a
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296 // from 0 up to, not including, 1
+  }
+}
+const next = seeded(42)
+const roll = Math.floor(next() * 6) + 1 // 1 to 6
+```
+
+Neither is meant for secrets (anyone who has the script can run its generator with its seed), and a script has no
+`crypto`: `typeof crypto` is `'undefined'` there.
+
 ---
 
 ## `setTimeout`

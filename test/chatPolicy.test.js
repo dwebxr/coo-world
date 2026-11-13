@@ -1,7 +1,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { CHAT_BODY_MAX_LENGTH, cutText, sanitizeChatMessage } from '../src/core/extras/chatPolicy.js'
+import {
+  CHAT_BODY_MAX_LENGTH,
+  CHAT_VIA_ID_MAX_LENGTH,
+  chatEnvelope,
+  chatVia,
+  cutText,
+  sanitizeChatMessage,
+} from '../src/core/extras/chatPolicy.js'
+import { NAME_MAX_LENGTH } from '../src/core/extras/entityModifyPolicy.js'
 
 const MAX = CHAT_BODY_MAX_LENGTH
 const segmenter = new Intl.Segmenter()
@@ -134,4 +142,119 @@ test('sanitizeChatMessage: the body is read once (getters and proxies cannot swa
   const safe = sanitizeChatMessage(proxied)
   // whichever read happened, the output is the string that was checked
   assert.ok(safe === null || safe.body === 'odd')
+})
+
+// an app line as the server relays it, with `via` as given
+const appLine = (via, fields = {}) => chatEnvelope({ kind: 'app', app: 'Shop', body: 'sale', via, ...fields })
+
+test('chatEnvelope: an app line keeps who relayed it (`via`) as a frozen { id, name }, and nothing else under it', () => {
+  const kept = appLine({ id: 'bob', name: 'Bob', extra: 'x', fromId: 'alice', kind: 'tip' })
+  assert.deepEqual(kept, { kind: 'app', app: 'Shop', body: 'sale', via: { id: 'bob', name: 'Bob' } })
+  assert.deepEqual(Object.keys(kept.via), ['id', 'name'])
+  assert.equal(Object.isFrozen(kept.via), true)
+  assert.equal(Object.getPrototypeOf(kept.via), Object.prototype)
+  const given = { id: 'bob', name: 'Bob' }
+  assert.notEqual(appLine(given).via, given, "a copy, not the message's own object")
+  // the id is text cut to 64 units (a grapheme is not split), the name a player's name (sanitizeName: 64 units, ''
+  // when it has no visible character or is not text)
+  assert.equal(CHAT_VIA_ID_MAX_LENGTH, 64)
+  assert.equal(appLine({ id: 'i'.repeat(100), name: 'Bob' }).via.id, 'i'.repeat(64))
+  assert.equal(appLine({ id: `${'i'.repeat(63)}😀`, name: 'Bob' }).via.id, 'i'.repeat(63))
+  assert.equal(appLine({ id: 'bob', name: 'n'.repeat(100) }).via.name, 'n'.repeat(NAME_MAX_LENGTH))
+  for (const name of ['', ' ', '​', undefined, null, 7, ['Bob'], new String('Bob'), { toString: () => 'Bob' }]) {
+    assert.deepEqual(appLine({ id: 'bob', name }).via, { id: 'bob', name: '' }, String(name))
+  }
+  // without a text id there is none
+  for (const id of [undefined, null, 7, ['bob'], { id: 'bob' }, new String('bob')]) {
+    assert.equal(Object.hasOwn(appLine({ id, name: 'Bob' }), 'via'), false, String(id))
+  }
+  assert.equal(chatVia(undefined), undefined)
+  // an app line without one is as it was
+  assert.deepEqual(chatEnvelope({ kind: 'app', app: 'Shop', body: 'sale' }), { kind: 'app', app: 'Shop', body: 'sale' })
+})
+
+test('chatEnvelope: a `via` that is not a plain object is dropped; each value is read once, and a throw drops it', () => {
+  class Via {
+    id = 'bob'
+    name = 'Bob'
+  }
+  for (const via of ['bob', ['bob', 'Bob'], 7, true, null, new Map([['id', 'bob']]), new Via(), new String('bob')]) {
+    assert.equal(Object.hasOwn(appLine(via), 'via'), false, String(via))
+  }
+  // getters that would answer differently the second time: each is read once, and what was read is kept
+  const reads = { via: 0, id: 0, name: 0 }
+  const via = {
+    get id() {
+      return reads.id++ === 0 ? 'bob' : 'alice'
+    },
+    get name() {
+      return reads.name++ === 0 ? 'Bob' : 'Admin'
+    },
+  }
+  const msg = {
+    kind: 'app',
+    body: 'sale',
+    get via() {
+      reads.via++
+      return via
+    },
+  }
+  assert.deepEqual(chatEnvelope(msg).via, { id: 'bob', name: 'Bob' })
+  assert.deepEqual(reads, { via: 1, id: 1, name: 1 })
+  // a getter that throws, a Proxy whose trap throws: no via, and nothing thrown
+  const throwing = {
+    get id() {
+      throw new Error('id')
+    },
+    name: 'Bob',
+  }
+  const throwingName = {
+    id: 'bob',
+    get name() {
+      throw new Error('name')
+    },
+  }
+  const trap = new Proxy(
+    {},
+    {
+      getPrototypeOf() {
+        throw new Error('trap')
+      },
+    }
+  )
+  for (const hostile of [throwing, throwingName, trap]) assert.equal(Object.hasOwn(appLine(hostile), 'via'), false)
+  // a Proxy that answers: its answers, read once each, kept in a plain frozen object of the host's
+  const asked = []
+  const proxy = new Proxy(
+    {},
+    {
+      get(_target, key) {
+        asked.push(key)
+        return key === 'id' ? 'bob' : key === 'name' ? 'Bob' : 'other'
+      },
+    }
+  )
+  const kept = appLine(proxy).via
+  assert.deepEqual(kept, { id: 'bob', name: 'Bob' })
+  assert.deepEqual(asked, ['id', 'name'])
+  assert.notEqual(kept, proxy)
+  assert.equal(Object.isFrozen(kept), true)
+})
+
+test('chatEnvelope: a `via` on any other kind of line is dropped unread', () => {
+  for (const kind of ['player', 'system', 'tip', undefined, 'bogus']) {
+    let reads = 0
+    const safe = chatEnvelope({
+      kind,
+      fromId: 'alice',
+      from: 'Alice',
+      body: 'hi',
+      get via() {
+        reads++
+        return { id: 'bob', name: 'Bob' }
+      },
+    })
+    assert.equal(Object.hasOwn(safe, 'via'), false, String(kind))
+    assert.equal(reads, 0, `${kind}: not read`)
+  }
 })

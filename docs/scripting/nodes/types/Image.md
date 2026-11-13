@@ -16,7 +16,7 @@ The width of the surface. When set to `null` it will adapt to the aspect ratio o
 
 ### `.height`: Number|null
 
-The height of the surface. When set to `null` it will adapt to the aspect ratio of the image and the specified `width`. Defaults to `null`.
+The height of the surface. When set to `null` it will adapt to the aspect ratio of the image and the specified `width`. Defaults to `1`.
 
 ### `.fit`: Enum("none", "contain", "cover")
 
@@ -42,7 +42,7 @@ Whether the surface is lit (reacts to lighting) or not. Defaults to `false`.
 
 ### `.doubleside`: Boolean
 
-Whether the surface should render the image on both sides. Defaults to `true`.
+Whether the surface should render the image on both sides. Defaults to `false`.
 
 ### `.castShadow`: Boolean
 

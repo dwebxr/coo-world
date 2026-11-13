@@ -59,6 +59,20 @@ const MODEL_IDLE_SECONDS = 10
 // material nothing renders, which only a churn of thousands of variants can cause
 const LINKED_MATERIAL_LIMIT = 8192
 
+// A mesh a script made has no material (a script cannot set one). It is drawn with a white standard material of its
+// app's own (linkedMaterial's fallback), which that app's material-less meshes of one batch share. A script can recolour
+// it through its handle, so it is never shared with another app: the batch key names the app (a token per app entity,
+// so nothing of the app's own data goes into the key).
+const fallbackOwners = new WeakMap()
+let fallbackOwnerCount = 0
+function fallbackKey(node) {
+  const entity = node?.ctx?.entity
+  if (!entity) return 'none'
+  let key = fallbackOwners.get(entity)
+  if (!key) fallbackOwners.set(entity, (key = `none-${++fallbackOwnerCount}`))
+  return key
+}
+
 /**
  * Stage System
  *
@@ -223,7 +237,8 @@ export class Stage extends System {
     uberShader = uberShader === true
     castShadow = castShadow === true
     receiveShadow = receiveShadow === true
-    const id = `${geometry.uuid}/${material.uuid}/${uberShader}/${castShadow}/${receiveShadow}`
+    const materialKey = material ? material.uuid : fallbackKey(node)
+    const id = `${geometry.uuid}/${materialKey}/${uberShader}/${castShadow}/${receiveShadow}`
     if (!this.models.has(id)) {
       const model = new Model(
         this,
@@ -234,6 +249,8 @@ export class Stage extends System {
         castShadow,
         receiveShadow
       )
+      // a fallback material belongs to its batch alone: it goes when the batch is released
+      model.ownsMaterial = !material
       this.models.set(id, model)
       // after the new Model is registered, so its own material is never the one trimmed
       this.trimLinkedMaterials()
@@ -671,6 +688,10 @@ class Model {
     this.geometry.disposeBoundsTree?.()
     this.geometry.dispose()
     this.stage.models.delete(this.id)
+    if (this.ownsMaterial && this.stage.linkedMaterials.get(this.id) === this.material) {
+      this.stage.linkedMaterials.delete(this.id)
+      disposeMaterial(this.material)
+    }
     // its material is now trimmable, so a burst of variants that all expired comes back under the limit
     this.stage.trimLinkedMaterials()
   }

@@ -399,8 +399,9 @@ function createEmitter(config) {
           v3.multiplyScalar(velocityRadial * delta)
           // Move particle along this radial direction
           particle.position.add(v3)
-          // Also add to velocity for consistency
-          particle.velocity.add(v3.divideScalar(delta))
+          // Also add to velocity for consistency (a step of no time, at a timescale of 0, moves nothing and adds
+          // nothing: its division is 0 / 0, which made the velocity and then the position NaN)
+          if (delta !== 0) particle.velocity.add(v3.divideScalar(delta))
         }
       }
       // move particles based on current velocity

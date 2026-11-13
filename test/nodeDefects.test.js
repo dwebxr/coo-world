@@ -367,9 +367,38 @@ const runWorker = kind =>
           [0, 1, 0, 0, 0, -1, -1, 0, 0, 0, -1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, -1]
         )
       }
+
+      if (kind === 'radial at timescale 0') {
+        // At a timescale of 0 every step is of no time. The radial velocity moved a particle by velocityRadial times
+        // the step and added that, divided by the step, to its velocity: 0 / 0, and the velocity and the positions were
+        // NaN from the first step on. A step of no time moves nothing: the particles stay where they started.
+        const sphere = ['sphere', 1, 1]
+        create('still', { timescale: 0, velocityRadial: 3, shape: sphere })
+        create('still, no radial velocity', { timescale: 0, shape: sphere })
+        create('moving', { timescale: 1, velocityRadial: 3, shape: sphere })
+        const steps = id => Array.from({ length: 5 }, () => step(id).positions)
+        for (const id of ['still', 'still, no radial velocity']) {
+          const [first, ...rest] = steps(id)
+          assert.equal(first.length, 8, id)
+          for (const position of first) {
+            assert.ok(position.every(Number.isFinite), `${id}: ${position}`)
+            assert.ok(Math.hypot(...position) <= 1 + 1e-6, `${id}: in the sphere, ${position}`)
+          }
+          for (const positions of rest) assert.deepEqual(positions, first, `${id}: not moved`)
+        }
+        // (control: at a timescale of 1 the same emitter moves)
+        const [first, second] = steps('moving')
+        for (let i = 0; i < 8; i++) {
+          assert.ok(second[i].every(Number.isFinite))
+          assert.ok(Math.hypot(...second[i]) > Math.hypot(...first[i]), `moving: particle ${i} went outward`)
+        }
+      }
     },
     { kind }
   )
 
 test('particle worker: a volume box with a side of 0 or NaN and a thickness of 1 or more emits (its stack overflowed)', () =>
   runWorker('box volume'))
+
+test('particle worker: a timescale of 0 with a radial velocity leaves the particles where they started (it gave NaN)', () =>
+  runWorker('radial at timescale 0'))

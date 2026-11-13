@@ -214,7 +214,8 @@ test("node: the handle's pointer-callback getters ask the node, not the object t
   }))
 
 // `play()` with no options threw a TypeError (it destructured `undefined`); `stop()` has had a default. It is now
-// `play({})`: a play with no name, which is a clip not found (warned, as for any name the model lacks).
+// `play({})`: a play with no name, read as the text 'undefined': a clip not found (warned, as for any name the model
+// lacks) unless the model has an animation of that name, which then plays.
 test('skinnedmesh: play() with no options is play({}) (it threw)', () =>
   runProbe(bundle, ({ createNode, Apps, THREE }) => {
     const apps = new Apps({ network: {}, events: {} })
@@ -254,6 +255,19 @@ test('skinnedmesh: play() with no options is play({}) (it threw)', () =>
     assert.deepEqual(results[0].warned, ['[skinnedmesh] animation not found: undefined'])
     assert.equal(results[0].action, undefined)
     assert.equal(results[0].walkRunning, false, 'the clip that played faded out, as for any name not found')
+    // a model with an animation named 'undefined': play() plays it, as play({}) does
+    for (const opts of [[], [{}]]) {
+      const clip = new THREE.AnimationClip('undefined', 1, [
+        new THREE.NumberKeyframeTrack('.position[x]', [0, 1], [0, 1]),
+      ])
+      const node = createNode('skinnedmesh', { object3d: new THREE.Object3D(), animations: [clip] })
+      node.activate({ world: { stage: { scene: { add() {}, remove() {} }, dirtyNodes: new Set() }, setHot() {} } })
+      warned.length = 0
+      node.getProxy().play(...opts)
+      assert.equal(node.action?.getClip().name, 'undefined', `play(${opts.length ? '{}' : ''})`)
+      assert.deepEqual(warned, [])
+      node.deactivate()
+    }
   }))
 
 // The particle worker with the config a particles node gives it: eight particles started by a burst at once, steps of

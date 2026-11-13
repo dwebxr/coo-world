@@ -47,6 +47,7 @@ import {
 } from '../scripts/lib/imageCheck.mjs'
 import { serverStartEnv } from '../scripts/lib/startEnv.mjs'
 import { installShutdown } from '../src/server/shutdown.js'
+import { definitionsIn, findFunction, networkFiles } from './lib/networkSource.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const script = path.join(root, 'scripts/image-check.mjs')
@@ -436,23 +437,49 @@ test('stop: `during start-up, before the world was loaded` (shutdown.js:36) fail
   ])
 })
 
-// What the final save's path in ServerNetwork.js and Storage.js prints, as it prints it (made up: ids, codes): each
-// fails a stop that otherwise passed. (Its part of the source is held to the source below.)
-for (const [where, line] of [
+// What the final save's path in the network and in Storage.js prints, as it prints it (made up: ids, codes): each
+// fails a stop that otherwise passed. Each is named by the function that prints it and a part of the call's text;
+// where that call is now (the test's name) is found by parsing (test/lib/networkSource.mjs), wherever the function
+// is written: for the network's, in the class or in a module of src/server/network/. (Its part of the source is held
+// to the source below.)
+const STORAGE = ['src/server/Storage.js']
+for (const [name, files, part, line] of [
   [
-    'ServerNetwork.js:773, flushBeforeExit',
+    'flushBeforeExit',
+    undefined,
+    '[network] not persisted: ',
     '[network] not persisted: blueprints=["a1"] apps=[] config=[] users=0 storage=saved',
   ],
-  ['ServerNetwork.js:703, saveDirty', '[network] error saving entities 3f9a: SqliteError: database is locked'],
-  ['ServerNetwork.js:805, saveConfig', '[network] error saving settings: SqliteError: database is locked'],
-  ['ServerNetwork.js:783, saveConfig', '[network] settings was not loaded; changes will not be saved'],
   [
-    'ServerNetwork.js:927, userRows',
+    'saveDirty',
+    undefined,
+    '[network] error saving ',
+    '[network] error saving entities 3f9a: SqliteError: database is locked',
+  ],
+  [
+    'saveConfig',
+    undefined,
+    '[network] error saving ',
+    '[network] error saving settings: SqliteError: database is locked',
+  ],
+  [
+    'saveConfig',
+    undefined,
+    ' was not loaded; changes will not be saved',
+    '[network] settings was not loaded; changes will not be saved',
+  ],
+  [
+    'userRows',
+    undefined,
+    ' not stored (kept in memory; ',
     "[network] rank of user u1 not stored (kept in memory; written again with that user's next change or at the final save): Error: timeout",
   ],
-  ['Storage.js:291, Storage.write', '[storage] failed to save storage.json (ENOSPC); retrying'],
+  ['Storage.write', STORAGE, '[storage] failed to save ', '[storage] failed to save storage.json (ENOSPC); retrying'],
 ]) {
+  const site = logSite(name, part, files)
+  const where = site ?? `${name}, which no longer prints it`
   test(`stop: ${JSON.stringify(line.slice(0, 40))}… (${where}) fails a stop that otherwise passed`, () => {
+    assert.ok(site, `${name} has no log call with ${JSON.stringify(part)} any more: update this list`)
     const verdict = stopOf(STOPS.sigterm, { log: `${savedLog('SIGTERM')}\n${line}` })
     assert.equal(verdict.ok, false)
     assert.deepEqual(verdict.reasons, [`the log says: ${line}`])
@@ -511,12 +538,12 @@ test('stop: the lines looked for are the ones the server prints', async () => {
       printed.join(' / ')
     )
   }
-  // the texts themselves, where they are written
-  const network = read('src/core/systems/ServerNetwork.js')
+  // the texts themselves, where they are written (the network's: in the class or the modules of src/server/network/)
+  const network = networkFiles().map(read).join('\n')
   assert.ok(network.includes("console.log('[network] final save complete')"))
   assert.ok(read('src/server/shutdown.js').includes('`[server] ${signal}: saving the world before exit'))
   // every forbidden part is in one of the files it is quoted from: none is left behind by a changed message
-  const sources = ['src/server/shutdown.js', 'src/core/systems/ServerNetwork.js', 'src/server/Storage.js'].map(read)
+  const sources = [read('src/server/shutdown.js'), network, read('src/server/Storage.js')]
   assert.deepEqual(stopExpectation(STOPS.sigterm).forbidden, NOT_STOPPED_OR_SAVED)
   for (const part of NOT_STOPPED_OR_SAVED)
     assert.ok(
@@ -530,57 +557,68 @@ test('stop: the lines looked for are the ones the server prints', async () => {
 // with the reason. A log call added to one of these functions later fails this test until it is sorted, so that a
 // new "not saved" message cannot slip past the image check unnoticed. Reading the source is right here because what
 // is asked is about the source (is every message accounted for), not about behaviour; the behaviour of each line is
-// tested above. It is kept to the named functions: the rest of ServerNetwork.js logs plenty that has nothing to do
-// with a stop. Its weak spot, said plainly: a message built elsewhere and logged through a variable is not seen.
+// tested above. It is kept to the named functions: the rest of the network logs plenty that has nothing to do with a
+// stop. Each is found by parsing (test/lib/networkSource.mjs) wherever it is written; the network's in all of its
+// files, the class and the modules of src/server/network/ that parts of it move to, every definition of the name (a
+// member of the class that hands its call on to a module's function is one too). Its weak spot, said plainly: a
+// message built elsewhere and logged through a variable is not seen.
 const STOP_PATH_FUNCTIONS = [
   // the signal handler: stopWorld, closeServer, the final save, its deadline, a second signal
-  ['src/server/shutdown.js', '\nexport function installShutdown('],
+  ['installShutdown', ['src/server/shutdown.js']],
   // the final save, and what it calls that prints: save() -> saveDirty, saveSettings -> saveConfig, the users' rows
-  ['src/core/systems/ServerNetwork.js', '\n  async flushBeforeExit('],
-  ['src/core/systems/ServerNetwork.js', '\n  async saveDirty('],
-  ['src/core/systems/ServerNetwork.js', '\n  saveConfig('],
-  ['src/core/systems/ServerNetwork.js', '\n  userRows() {'],
+  ['flushBeforeExit'],
+  ['saveDirty'],
+  ['saveConfig'],
+  ['userRows'],
 ]
 const STOP_PATH_ALLOWED = [
-  // ServerNetwork.js:708 (saveDirty): the rows it did write. A row it could not write prints `[network] error
-  // saving` (forbidden) and stays dirty, and the final save then says `[network] not persisted` (forbidden)
+  // saveDirty: the rows it did write. A row it could not write prints `[network] error saving` (forbidden) and stays
+  // dirty, and the final save then says `[network] not persisted` (forbidden)
   { part: 'world saved (', reason: 'what was written, not what was not' },
 ]
 const STOP_PATH_REQUIRED = [': saving the world before exit', '[network] final save complete']
 
-// the text of each logging call in a function: from `console.error(` (`log.log(`, `this.logOnce(`, …) to its
-// closing parenthesis
-function logCallsIn(source, signature) {
-  const start = source.indexOf(signature)
-  assert.ok(start !== -1, `${signature.trim()} is not in the file any more: update STOP_PATH_FUNCTIONS`)
-  const indent = /\n( *)/.exec(signature)[1]
-  const end = source.indexOf(`\n${indent}}\n`, start + 1)
-  const body = source.slice(start, end)
+// the logging calls in a function's text, each from `console.error(` (`log.log(`, `this.logOnce(`, …) to its
+// closing parenthesis: [{ call, at }] (`at`: where it starts in the text)
+function logCallSites(text) {
   const calls = []
-  for (const match of body.matchAll(/\b(?:console|log)\.(?:log|warn|error)\(|\blogOnce\(/g)) {
+  for (const match of text.matchAll(/\b(?:console|log)\.(?:log|warn|error)\(|\blogOnce\(/g)) {
     let depth = 0
     let at = match.index + match[0].length - 1
-    for (; at < body.length && at - match.index < 800; at++) {
-      if (body[at] === '(') depth++
-      if (body[at] === ')' && --depth === 0) break
+    for (; at < text.length && at - match.index < 800; at++) {
+      if (text[at] === '(') depth++
+      if (text[at] === ')' && --depth === 0) break
     }
-    calls.push(body.slice(match.index, at + 1))
+    calls.push({ call: text.slice(match.index, at + 1), at: match.index })
   }
   return calls
+}
+const logCallsIn = text => logCallSites(text).map(site => site.call)
+
+// where the function `name` logs a line with `part` in it: `<file name>:<line>, <name>`, or null
+function logSite(name, part, files) {
+  for (const { file, line, text } of findFunction(name, files)) {
+    const site = logCallSites(text).find(({ call }) => call.includes(part))
+    if (site) return `${path.basename(file)}:${line + text.slice(0, site.at).split('\n').length - 1}, ${name}`
+  }
+  return null
 }
 
 test('stop: every log line of the stop and save paths is forbidden, required or allowed with a reason', () => {
   const unsorted = []
   const counts = {}
-  for (const [file, signature] of STOP_PATH_FUNCTIONS) {
-    const calls = logCallsIn(read(file), signature)
-    counts[signature.trim()] = calls.length
-    for (const call of calls) {
-      const known =
-        NOT_STOPPED_OR_SAVED.some(part => call.includes(part)) ||
-        STOP_PATH_REQUIRED.some(part => call.includes(part)) ||
-        STOP_PATH_ALLOWED.some(({ part }) => call.includes(part))
-      if (!known) unsorted.push(`${file} ${signature.trim()}: ${call.replace(/\s+/g, ' ').slice(0, 200)}`)
+  for (const [name, files] of STOP_PATH_FUNCTIONS) {
+    counts[name] = 0
+    for (const { file, text } of findFunction(name, files)) {
+      const calls = logCallsIn(text)
+      counts[name] += calls.length
+      for (const call of calls) {
+        const known =
+          NOT_STOPPED_OR_SAVED.some(part => call.includes(part)) ||
+          STOP_PATH_REQUIRED.some(part => call.includes(part)) ||
+          STOP_PATH_ALLOWED.some(({ part }) => call.includes(part))
+        if (!known) unsorted.push(`${file} ${name}: ${call.replace(/\s+/g, ' ').slice(0, 200)}`)
+      }
     }
   }
   assert.deepEqual(
@@ -591,19 +629,21 @@ test('stop: every log line of the stop and save paths is forbidden, required or 
   )
   // the reading itself found what is there today (8 calls in the handler, 7 on the final save's path)
   assert.deepEqual(counts, {
-    'export function installShutdown(': 8,
-    'async flushBeforeExit(': 2,
-    'async saveDirty(': 2,
-    'saveConfig(': 2,
-    'userRows() {': 1,
+    installShutdown: 8,
+    flushBeforeExit: 2,
+    saveDirty: 2,
+    saveConfig: 2,
+    userRows: 1,
   })
-  // and it would see a new one
-  const added = logCallsIn(
-    '\n  async saveDirty() {\n    console.warn(`[network] row ${id} skipped (${why})`)\n  }\n',
-    '\n  async saveDirty('
-  )
-  assert.deepEqual(added, ['console.warn(`[network] row ${id} skipped (${why})`)'])
-  assert.ok(!NOT_STOPPED_OR_SAVED.some(part => added[0].includes(part)))
+  // and it would see a new one, in the class or in a module that a move put the function in
+  for (const source of [
+    'class ServerNetwork {\n  async saveDirty() {\n    console.warn(`[network] row ${id} skipped (${why})`)\n  }\n}\n',
+    'export async function saveDirty() {\n  console.warn(`[network] row ${id} skipped (${why})`)\n}\n',
+  ]) {
+    const added = definitionsIn(source, 'saveDirty').flatMap(({ text }) => logCallsIn(text))
+    assert.deepEqual(added, ['console.warn(`[network] row ${id} skipped (${why})`)'])
+    assert.ok(!NOT_STOPPED_OR_SAVED.some(part => added[0].includes(part)))
+  }
   for (const { reason } of STOP_PATH_ALLOWED) assert.ok(reason.length > 10)
 })
 

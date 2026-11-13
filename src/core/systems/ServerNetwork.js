@@ -1290,9 +1290,15 @@ export class ServerNetwork extends System {
     this.send('chatAdded', message, socket.id, { skippable: true })
   }
 
-  // a client script's broadcast world.chat(): relayed as that app's line. Only the text and a display name come
-  // from the packet (through the script chat rules); the kind, the missing player id and the app's name (from the
-  // server's blueprint) are the server's. Any visitor may send it, since client scripts run in visitors' browsers
+  // appChat: what a client script's broadcast world.chat() sends, and what any connection can send naming any app of
+  // the world (client scripts run in visitors' browsers: the server cannot tell one from a modified client). Relayed
+  // as that app's line: only the text and a display name come from the packet (through the script chat rules); the
+  // kind, the missing player id and the app's name are the server's. The name is the one of the blueprint record the
+  // app names when the line arrives (the app's own build may not have loaded it yet, or may still hold an older
+  // one); it says nothing of which script, or which version of it, sent the line. The line also says whose
+  // connection relayed it: `via`, the id and the name this connection's player has here, never anything of the
+  // packet (its own `via` or any other field is not read). An attribution, not an authentication: the name is the
+  // one the visitor chose (chatPolicy.js CHAT_KINDS)
   onAppChat = async (socket, data, meta) => {
     if (!isObject(data) || Array.isArray(data) || typeof data.id !== 'string') {
       return this.logOnce(
@@ -1309,7 +1315,7 @@ export class ServerNetwork extends System {
         `onAppChat: no such app from ${socket.id} (further ones are not logged)`
       )
     }
-    const line = appChatLine(data.body, data.from, entity.blueprint?.name)
+    const line = appChatLine(data.body, data.from, this.world.blueprints.get(entity.data.blueprint)?.name)
     if (!line) {
       return this.logOnce(
         socket,
@@ -1320,7 +1326,13 @@ export class ServerNetwork extends System {
     // a client script speaking through the player's connection: a budget of its own, and nothing said to a player
     // who typed nothing
     if (!this.spend(socket, 'appChat', meta)) return
-    const message = { id: uuid(), ...line, createdAt: moment().toISOString() }
+    const player = socket.player.data
+    const message = {
+      id: uuid(),
+      ...line,
+      via: { id: player.id, name: player.name },
+      createdAt: moment().toISOString(),
+    }
     this.world.chat.add(message, false)
     this.send('chatAdded', message, socket.id, { skippable: true })
   }

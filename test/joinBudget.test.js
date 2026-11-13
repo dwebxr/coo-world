@@ -639,10 +639,15 @@ test("join budget: Codex's worst case (blueprints and apps at the budget, 64 pla
       enteredAt: Date.now(),
     })
   }
+  // app lines a visitor's client sent, with the largest `via` (chatPolicy.js chatVia: an id of 64, a name of 64
+  // three-byte characters), which no budget counts: the 'chat' step drops them with the rest of the history
   f.world.chat.msgs = Array.from({ length: 50 }, (_, i) => ({
     id: `m${i}`,
+    kind: 'app',
+    app: '€'.repeat(64),
     from: '€'.repeat(64),
     body: '€'.repeat(500),
+    via: { id: `p${i}`.padEnd(64, 'i'), name: '€'.repeat(64) },
   }))
   f.world.livekit.state = {
     wsUrl: 'wss://livekit.example',

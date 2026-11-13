@@ -13,9 +13,9 @@
 //   payload would do too. Each case says in its result line whether it has one, and why not when it has none.
 // - Identity: a session token with a forged signature, and one for a user that does not exist, do not connect as
 //   the user they name.
-// - A known gap is not a case: a visitor's `appChat` under the name of an app whose script did not send it (CHANGELOG,
-//   "What remains"). What the server does with it is printed in a GAP line, which passes or fails nothing; what is a
-//   guarantee about app lines today is asserted in [app-chat].
+// - A visitor's `appChat` under the name of an app whose script did not send it is relayed: the server cannot tell
+//   (CHANGELOG, "What remains"). [app-chat] asserts that such a line names the visitor's connection (`via`, set by
+//   the server whatever the packet claimed), and the other guarantees about app lines.
 // - Secrets: the server runs with a distinct sentinel value in every variable test/lib/envTable.mjs classes as a
 //   secret (but DB_URI, which has to stay `local`). No sentinel is in what the run gets from it: the page, /env.js,
 //   /status, /health; the error answers of a page that does not exist, an asset that does not exist, /api/upload
@@ -692,39 +692,64 @@ try {
 
   // ---------- an app's line of chat (a client script's world.chat(), relayed by the server) ----------
 
-  // What the server guarantees today is asserted: a line it relays is an app line, with no player id and never the
-  // system's or a tip's kind; an app that does not exist gets none; a connection's lines are limited (actionBudget.js
-  // appChat: a burst of 10, then 2 a second). What it does not guarantee is not asserted: the server checks that the
-  // app named exists, not that its script sent the line, so a modified client can post a line under any app's name
-  // (CHANGELOG, Security, the `world.chat()` entry: "What remains"). Whether such a line was relayed is said in a GAP
-  // line of its own, which is neither a pass nor a failure: the suite passes either way.
-  const gap = text => console.log(`GAP   ${text}`)
-  let appLinesRelayed = null
+  // What the server guarantees is asserted: a line it relays is an app line, with no player id and never the
+  // system's or a tip's kind, and it says whose connection sent it (`via`: the id and the name that connection's
+  // player has on the server, whatever the packet claimed); a server script's line has no `via`; an app that does
+  // not exist gets none; a connection's lines are limited (actionBudget.js appChat: a burst of 10, then 2 a second).
+  // What it cannot guarantee is not asserted: the server checks that the app named exists, not that its script sent
+  // the line, so a modified client can still post a line under any app's name, with any text and display name
+  // (CHANGELOG, Security, the `world.chat()` entry: "What remains"); such a line now names that client's player.
   await run(
     'app-chat',
-    "a visitor's app line: never a player's, the system's or a tip's; none for an app that does not exist; limited",
+    "a visitor's app line: never a player's, the system's or a tip's, and names the visitor; none for an app that does not exist; limited",
     async () => {
       const appLines = (from, prefix) => got(admin, from, 'onChatAdded', data => String(data?.body).startsWith(prefix))
-      // a visitor names an app it did not script, and claims a kind, a player id and an app name
+      // the name the line has to carry: the one the visitor's player has on the server when the lines arrive
+      await send(visitor, 'command', { args: ['name', 'p14-relayer'] })
+      const name = entityOf(await fresh(), visitor.id)?.name
+      eq(name, 'p14-relayer', "the visitor's name on the server")
+      const expectedVia = JSON.stringify({ id: visitor.id, name })
+      // a visitor names an app it did not script, and claims a kind, a player id, an app name, a display name and a
+      // `via` of its own (an object naming the admin, a text, a list)
+      const claims = {
+        system: { id: admin.id, name: 'Admin' },
+        tip: 'Admin',
+        player: [admin.id, 'Admin'],
+      }
       let from = admin.mark()
-      for (const kind of ['system', 'tip', 'player']) {
+      for (const [kind, via] of Object.entries(claims)) {
         await send(visitor, 'appChat', {
           id: 'p14-probe',
           body: `P14 app line ${kind}`,
-          from: 'anyone',
+          from: 'Admin',
           kind,
           fromId: admin.id,
           app: 'System',
+          via,
         })
       }
       await barrier(admin)
       const relayed = appLines(from, 'P14 app line ')
-      appLinesRelayed = relayed.length
+      eq(relayed.length, 3, 'each line was relayed (the app exists, the budget has room)')
       for (const { data } of relayed) {
         eq(data.kind, 'app', `${data.body}: the kind`)
         eq(data.fromId ?? null, null, `${data.body}: the player id`)
         eq(data.app, 'p14-probe', `${data.body}: the app's name, from the server's blueprint`)
+        eq(data.from, 'Admin', `${data.body}: the display name the line chose (a script's, as before)`)
+        eq(JSON.stringify(data.via), expectedVia, `${data.body}: who sent it, from the server, not the packet`)
       }
+      // a newcomer is told the same in the chat of its snapshot
+      const kept = (await fresh()).chat.filter(msg => String(msg.body).startsWith('P14 app line '))
+      eq(kept.length, 3, 'the lines are in the chat a newcomer gets')
+      for (const msg of kept) eq(JSON.stringify(msg.via), expectedVia, `${msg.body}: who sent it, in the snapshot`)
+      // the control: a server script's line (the probe's, told of an event) is an app line with no `via`
+      from = admin.mark()
+      await send(visitor, 'entityEvent', event('probe', { n: 'via' }))
+      await barrier(admin)
+      const server = said(admin, from, 'P14_APP_EVENT {"name":"probe"')
+      eq(server.length, 1, "the probe's server script said it")
+      eq(server[0].data.kind, 'app', "a server script's line: the kind")
+      eq(Object.hasOwn(server[0].data, 'via'), false, "a server script's line names no visitor")
       // an app that does not exist, and a player's id in the place of an app's
       from = admin.mark()
       const log = logFrom()
@@ -776,19 +801,13 @@ try {
       const measured = `${Math.round(shown.ms)} ms for the burst (attempt ${shown.attempt}), allowance ${allowed} (${BURST} + ${RATE}/s), ${lines.length} of ${LINES} relayed`
       ok(lines.length >= BURST, `fewer than the ${BURST} the bucket starts with: ${measured}`)
       ok(lines.length <= allowed, `more than the bucket lets through in the time measured: ${measured}`)
-      for (const { data } of lines) eq(data.kind, 'app', `${data.body}: the kind`)
+      for (const { data } of lines) {
+        eq(data.kind, 'app', `${data.body}: the kind`)
+        eq(data.via?.id, shown.chatter.id, `${data.body}: names the connection that sent it`)
+      }
       await logged(shown.budgetLog, `"${shown.chatter.id}" is over its appChat budget`)
-      return `the limit: ${measured}, and the log says the rest were over the budget (the positive control of the refusal for an app that does not exist); ${relayed.length} of 3 lines with claimed fields relayed, each checked; the line under another app's name: see the GAP line`
+      return `the limit: ${measured}, and the log says the rest were over the budget (the positive control of the refusal for an app that does not exist); 3 lines with claimed fields (a display name, a via of their own) relayed under another app's name, each naming the visitor in its via, also in a newcomer's snapshot; a server script's line has none`
     }
-  )
-  gap(
-    `[app-chat] known gap, not a result: a visitor's appChat under the name of an app it did not script was ${
-      appLinesRelayed
-        ? 'relayed to the others'
-        : appLinesRelayed === 0
-          ? 'not relayed'
-          : 'not tried (the case failed first)'
-    } (CHANGELOG, Security, the world.chat() entry: "What remains")`
   )
 
   // ---------- builder ----------

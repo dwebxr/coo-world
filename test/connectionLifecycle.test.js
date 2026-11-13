@@ -5,8 +5,7 @@ import { SNAPSHOT_CAP } from '../src/core/extras/writeLedger.js'
 import { readPacket } from '../src/core/packets.js'
 import { createConnectionLimits, readConnectionLimitsEnv } from '../src/server/connectionLimits.js'
 import { fakeWs, inside, loadNetwork, makeNetwork } from './lib/network.mjs'
-// (the route is still cut out of src/server/index.js's text, test/lib/wsRoute.mjs: it moves to a module of its own
-// later)
+// (the route is imported from src/server/wsRoute.js, test/lib/wsRoute.mjs)
 import { loadRoute } from './lib/wsRoute.mjs'
 
 // The real network (test/lib/network.mjs), its own onConnection and onDisconnect. What the old harness injected

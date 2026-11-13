@@ -191,7 +191,8 @@ const setEnv = (name, value) => {
 // Test files as they are against another commit's product code: every loadNetwork without a `sourceRoot` of its own
 // bundles from that checkout's src/core and src/server when this hook, written to a file of one's own with the
 // checkout's path in it, is given on the command line (`node --import ./baseline.mjs --test <files>`; the checkout
-// needs its src/ only: `git archive <commit> src | tar -x -C <dir>`). Nothing reads the environment for it.
+// needs its src/ only: `git archive <commit> src | tar -x -C <dir>`). The helper reads no environment variable that
+// selects sources; Node itself can preload a hook through NODE_OPTIONS, as it can any `--import`.
 //   import { register } from 'node:module'
 //   const root = '/path/to/the/checkout'
 //   // (the text replaced, in two parts: this comment must not hold it)

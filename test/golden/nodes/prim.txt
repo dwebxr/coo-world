@@ -54,8 +54,10 @@ b get reads E(0,0,0,YXZ)S: rotation
 b get reads V3(1,1,1)S: scale
 b get reads view:M4(I)S: matrixWorld
 b get reads []: children
-b stopped through _created: 39 of 39 setters throw Error: "[app] this app has stopped"
-b stopped through a parent: 39 of 39 setters throw Error: "[app] this app has stopped"
+b through _created set throws Error: "[app] this app has stopped": all 39
+b through _created method throws Error: "[app] this app has stopped": all 7
+b through a parent set throws Error: "[app] this app has stopped": all 39
+b through a parent method throws Error: "[app] this app has stopped": all 7
 b a live run: each setter with a sample value takes it
 b receiver Object.create(proxy): as through the proxy: 39 of 39
 b receiver a plain object: throws TypeError: "[node] not a node": all 39
@@ -75,7 +77,7 @@ c type pc throw Error: "[prim] type invalid" <- null NaN Infinity -Infinity -1 -
 c type pc read $in <- 'box'
 c type pc read $in Δ{_type:$in needsRebuild:true} calls[setDirty] <- 'sphere' 'cylinder' 'cone' 'torus' 'plane'
 c size pc read [1,1,1] fresh <- undefined null
-c size pc throw Error: "[prim] size must be an array of finite numbers" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws} [1,1,1,…,1](len 17) [1,"2",3] [<hole>,<hole>,<hole>]
+c size pc throw Error: "[prim] size must be an array of finite numbers" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws} [1,1,1,…,1](len 17 #cf9c1c1ae448) [1,"2",3] [<hole>,<hole>,<hole>]
 c size pc read $in~ fresh Δ{needsRebuild:true _size:$in~} calls[setDirty] <- [] [1,2,3] [0.5] [1,2]
 c size pc read [1,2,3] fresh Δ{needsRebuild:true _size:[1,2,3]} calls[setDirty] traps[get:length,get:0,get:1,get:2] <- Proxy[1,2,3]
 c color pc read "#ffffff" <- undefined
@@ -366,14 +368,49 @@ g field n = 0
 g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
 g full: 32 properties set (type size color emissive emissiveIntensity metalness roughness opacity texture castShadow receiveShadow physics mass linearDamping angularDamping staticFriction dynamicFriction restitution layer trigger tag onContactStart onContactEnd onTriggerEnter onTriggerLeave doubleside active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
 g no sample value (no value accepted reads otherwise than the default): transparent id position quaternion rotation scale parent
-g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _type="sphere" _size=[1,2,3] _color="red" _emissive="red" _emissiveIntensity=0.5 _metalness=0.5 _roughness=0.5 _opacity=0.5 _texture="asset://t.png" _castShadow=false _receiveShadow=false _doubleside=true _physics="static" _mass=1e-9 _linearDamping=0.5 _angularDamping=0.5 _staticFriction=0.5 _dynamicFriction=0.5 _restitution=0.5 _layer="prop" _trigger=true _tag="t" _onContactStart=fn:hostileFn _onContactEnd=fn:hostileFn _onTriggerEnter=fn:hostileFn _onTriggerLeave=fn:hostileFn
+g full fields unlike a new node's: children=[node:node#child(below)] position=V3(1,2,3)S rotation=E(-0,1.2870022175865687,0,YXZ)S quaternion=Q(0,0.6,0,0.8)S scale=V3(2,3,4)S _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _created=owner#full _type="sphere" _size=[1,2,3] _color="red" _emissive="red" _emissiveIntensity=0.5 _metalness=0.5 _roughness=0.5 _opacity=0.5 _texture="asset://t.png" _castShadow=false _receiveShadow=false _doubleside=true _physics="static" _mass=1e-9 _linearDamping=0.5 _angularDamping=0.5 _staticFriction=0.5 _dynamicFriction=0.5 _restitution=0.5 _layer="prop" _trigger=true _tag="t" _onContactStart=fn:hostileFn _onContactEnd=fn:hostileFn _onTriggerEnter=fn:hostileFn _onTriggerLeave=fn:hostileFn
+g full fields at a new node's value: name parent ctx matrix matrixWorld isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting onInterpolate needsRebuild shapes _tm tempVec3 tempQuat matrixWorldOffset scaleOffset n
 g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type needsRebuild _size _color _emissive _emissiveIntensity _metalness _roughness _opacity _texture _castShadow _receiveShadow _doubleside _physics _mass _linearDamping _angularDamping _staticFriction _dynamicFriction _restitution _layer _trigger _tag _onContactStart _onContactEnd _onTriggerEnter _onTriggerLeave _tm n
-g full clone(false) copy: position quaternion scale matrix matrixWorld onInterpolate shapes tempVec3 tempQuat matrixWorldOffset scaleOffset
-g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) copy: position rotation quaternion scale matrix matrixWorld onInterpolate shapes tempVec3 tempQuat matrixWorldOffset scaleOffset
+g full clone(false) differs: children([node:node#child(below)] -> [])
 g full clone(false) source only: _proxy
 g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type needsRebuild _size _color _emissive _emissiveIntensity _metalness _roughness _opacity _texture _castShadow _receiveShadow _doubleside _physics _mass _linearDamping _angularDamping _staticFriction _dynamicFriction _restitution _layer _trigger _tag _onContactStart _onContactEnd _onTriggerEnter _onTriggerLeave _tm n
-g full clone(true) copy: children position quaternion scale matrix matrixWorld onInterpolate shapes tempVec3 tempQuat matrixWorldOffset scaleOffset
-g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) copy: children position rotation quaternion scale matrix matrixWorld onInterpolate shapes tempVec3 tempQuat matrixWorldOffset scaleOffset
 g full clone(true) source only: _proxy
 g full clone(true) children: node#child -> node#child
 g a clone reads as its source, each sample property alone (64 clones): yes
+== h. two instances alive at once, a write through each in turn: each write reaches its own node only
+h each write reached its own node only: type size color emissive emissiveIntensity metalness roughness opacity texture castShadow receiveShadow physics mass linearDamping angularDamping staticFriction dynamicFriction restitution layer trigger tag onContactStart onContactEnd onTriggerEnter onTriggerLeave doubleside active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== i. every getter on a node whose backing values are distinct
+i type = "box"
+i size = [1,1,1]
+i color = "#ffffff"
+i emissive = null
+i emissiveIntensity = 0
+i metalness = 0.2
+i roughness = 0.8
+i opacity = 1
+i transparent = undefined
+i texture = null
+i castShadow = true
+i receiveShadow = true
+i physics = null
+i mass = 1
+i linearDamping = 0
+i angularDamping = 0.05
+i staticFriction = 0.6
+i dynamicFriction = 0.6
+i restitution = 0
+i layer = "environment"
+i trigger = false
+i tag = null
+i onContactStart = null
+i onContactEnd = null
+i onTriggerEnter = null
+i onTriggerLeave = null
+i doubleside = false
+i name = "prim"
+i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== x. the console outside the cases (the generator's own probing and set-up), by row
+x b: warn:"prim.transparent deprecated"×29
+x d: warn:"prim.transparent deprecated"×4

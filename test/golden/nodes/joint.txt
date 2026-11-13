@@ -42,8 +42,10 @@ b get reads view:M4(I)S: matrixWorld
 b get reads true: active _isRef
 b get reads undefined: parent cursor
 b get reads []: children
-b stopped through _created: 24 of 24 setters throw Error: "[app] this app has stopped"
-b stopped through a parent: 24 of 24 setters throw Error: "[app] this app has stopped"
+b through _created set throws Error: "[app] this app has stopped": all 24
+b through _created method throws Error: "[app] this app has stopped": all 7
+b through a parent set throws Error: "[app] this app has stopped": all 24
+b through a parent method throws Error: "[app] this app has stopped": all 7
 b a live run: each setter with a sample value takes it
 b receiver Object.create(proxy): as through the proxy: 24 of 24
 b receiver a plain object: throws TypeError: "[node] not a node": all 24
@@ -197,14 +199,38 @@ g field attachedBodies = []
 g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
 g full: 18 properties set (type body0 body1 breakForce breakTorque limitY limitZ limitMin limitMax limitStiffness limitDamping collide active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
 g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
-g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false type="socket" body0=node:rigidbody body1=node:rigidbody breakForce=0.5 breakTorque=0.5 limitY=false limitZ=false limitMin=false limitMax=false limitStiffness=false limitDamping=false collide=true needsRebuild=true
+g full fields unlike a new node's: children=[node:node#child(below)] position=V3(1,2,3)S rotation=E(-0,1.2870022175865687,0,YXZ)S quaternion=Q(0,0.6,0,0.8)S scale=V3(2,3,4)S _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _created=owner#full type="socket" body0=node:rigidbody offset0=V3(1,2,3)S quaternion0=Q(0,0.6,0,0.8)S rotation0=E(-0,1.2870022175865687,0,YXZ)S body1=node:rigidbody offset1=V3(4,5,6)S quaternion1=Q(0.6,0,0,0.8)S rotation1=E(1.2870022175865685,0,0,YXZ)S breakForce=0.5 breakTorque=0.5 axis=V3(0,0,1)S limitY=false limitZ=false limitMin=false limitMax=false limitStiffness=false limitDamping=false collide=true needsRebuild=true
+g full fields at a new node's value: name parent ctx matrix matrixWorld isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting attachedBodies
 g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created type body0 body1 breakForce breakTorque limitY limitZ limitMin limitMax limitStiffness limitDamping collide
-g full clone(false) copy: position quaternion scale matrix matrixWorld offset0 quaternion0 offset1 quaternion1 axis attachedBodies
-g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S) rotation0(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S) rotation1(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) copy: position rotation quaternion scale matrix matrixWorld offset0 quaternion0 rotation0 offset1 quaternion1 rotation1 axis attachedBodies
+g full clone(false) differs: children([node:node#child(below)] -> [])
 g full clone(false) source only: _proxy needsRebuild
 g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created type body0 body1 breakForce breakTorque limitY limitZ limitMin limitMax limitStiffness limitDamping collide
-g full clone(true) copy: children position quaternion scale matrix matrixWorld offset0 quaternion0 offset1 quaternion1 axis attachedBodies
-g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S) rotation0(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S) rotation1(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) copy: children position rotation quaternion scale matrix matrixWorld offset0 quaternion0 rotation0 offset1 quaternion1 rotation1 axis attachedBodies
 g full clone(true) source only: _proxy needsRebuild
 g full clone(true) children: node#child -> node#child
 g a clone reads as its source, each sample property alone (36 clones): yes
+== h. two instances alive at once, a write through each in turn: each write reaches its own node only
+h each write reached its own node only: type body0 body1 breakForce breakTorque limitY limitZ limitMin limitMax limitStiffness limitDamping collide active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== i. every getter on a node whose backing values are distinct
+i type = "fixed"
+i body0 = null
+i offset0 = view:V3(1,2,3)S
+i quaternion0 = view:Q(0.04997916927067833,0,0,0.9987502603949663)S
+i rotation0 = view:E(0.1,0,0,YXZ)S
+i body1 = null
+i offset1 = view:V3(4,5,6)S
+i quaternion1 = view:Q(0,0.09983341664682815,0,0.9950041652780257)S
+i rotation1 = view:E(0,0.2,0,YXZ)S
+i breakForce = Infinity
+i breakTorque = Infinity
+i limitY = null
+i axis = view:V3(0,0,1)S
+i limitZ = null
+i limitMin = null
+i limitMax = null
+i limitStiffness = null
+i limitDamping = null
+i collide = false
+i name = "joint"
+i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor

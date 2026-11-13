@@ -31,8 +31,10 @@ b get reads view:M4(I)S: matrixWorld
 b get reads true: active _isRef
 b get reads undefined: parent cursor
 b get reads []: children
-b stopped through _created: 19 of 19 setters throw Error: "[app] this app has stopped"
-b stopped through a parent: 19 of 19 setters throw Error: "[app] this app has stopped"
+b through _created set throws Error: "[app] this app has stopped": all 19
+b through _created method throws Error: "[app] this app has stopped": all 9
+b through a parent set throws Error: "[app] this app has stopped": all 19
+b through a parent method throws Error: "[app] this app has stopped": all 9
 b a live run: each setter with a sample value takes it
 b receiver Object.create(proxy): as through the proxy: 19 of 19
 b receiver a plain object: throws TypeError: "[node] not a node": all 19
@@ -144,14 +146,28 @@ g field _onContactEnd = null
 g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
 g full: 13 properties set (radius height visible layer tag onContactStart onContactEnd active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
 g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
-g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _radius=0.5 _height=0.5 _visible=true _layer="prop" _tag="t" _onContactStart=fn:hostileFn _onContactEnd=fn:hostileFn
+g full fields unlike a new node's: children=[node:node#child(below)] position=V3(1,2,3)S rotation=E(-0,1.2870022175865687,0,YXZ)S quaternion=Q(0,0.6,0,0.8)S scale=V3(2,3,4)S _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _created=owner#full _radius=0.5 _height=0.5 _visible=true _layer="prop" _tag="t" _onContactStart=fn:hostileFn _onContactEnd=fn:hostileFn
+g full fields at a new node's value: name parent ctx matrix matrixWorld isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting needsRebuild
 g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _radius needsRebuild _height _visible _layer _tag _onContactStart _onContactEnd
-g full clone(false) copy: position quaternion scale matrix matrixWorld
-g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) copy: position rotation quaternion scale matrix matrixWorld
+g full clone(false) differs: children([node:node#child(below)] -> [])
 g full clone(false) source only: _proxy
 g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _radius needsRebuild _height _visible _layer _tag _onContactStart _onContactEnd
-g full clone(true) copy: children position quaternion scale matrix matrixWorld
-g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) copy: children position rotation quaternion scale matrix matrixWorld
 g full clone(true) source only: _proxy
 g full clone(true) children: node#child -> node#child
 g a clone reads as its source, each sample property alone (26 clones): yes
+== h. two instances alive at once, a write through each in turn: each write reaches its own node only
+h each write reached its own node only: radius height visible layer tag onContactStart onContactEnd active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== i. every getter on a node whose backing values are distinct
+i radius = 0.4
+i height = 1
+i visible = false
+i layer = "environment"
+i tag = null
+i onContactStart = null
+i onContactEnd = null
+i isGrounded = true
+i isCeiling = false
+i name = "controller"
+i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor

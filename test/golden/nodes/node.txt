@@ -39,8 +39,10 @@ b get reads true: active _isRef
 b get reads undefined: parent cursor
 b get reads []: children
 b get reads null: _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
-b stopped through _created: 12 of 12 setters throw Error: "[app] this app has stopped"
-b stopped through a parent: 12 of 12 setters throw Error: "[app] this app has stopped"
+b through _created set throws Error: "[app] this app has stopped": all 12
+b through _created method throws Error: "[app] this app has stopped": all 7
+b through a parent set throws Error: "[app] this app has stopped": all 12
+b through a parent method throws Error: "[app] this app has stopped": all 7
 b a live run: each setter with a sample value takes it
 b receiver Object.create(proxy): as through the proxy: 12 of 12
 b receiver a plain object: throws TypeError: "[node] not a node": all 12
@@ -77,7 +79,7 @@ c onPointerUp pc read $in <- undefined
 c onPointerUp pc read $in Δ{_onPointerUp:$in} <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
 c cursor pc read $in <- undefined
 c cursor pc read $in Δ{_cursor:$in} <- null 'pointer'
-c cursor pc throw Error: "[node] cursor must be a string of at most 128 characters" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} "wwwwwwww…"(len 129)
+c cursor pc throw Error: "[node] cursor must be a string of at most 128 characters" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} "wwwwwwww…"(len 129 #48e5dabd1113)
 c cursor pc read null Δ{_cursor:null} <- 'x'
 c cursor pc read "grab" Δ{_cursor:"grab"} <- 'url(hand.png), grab'
 c cursor p read null Δ{_cursor:null} log[warn:"[node] cursor: only CSS cursor keywords are used (pointer, grab, crosshair, ...), not images"] <- ''
@@ -165,7 +167,7 @@ f onPointerLeave: through data as through the class (all 27)
 f onPointerDown: through data as through the class (all 27)
 f onPointerUp: through data as through the class (all 27)
 f cursor data $in <- undefined null 'pointer'
-f cursor data null <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} "wwwwwwww…"(len 129)
+f cursor data null <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} "wwwwwwww…"(len 129 #48e5dabd1113)
 f cursor data "grab" <- 'url(hand.png), grab'
 == g. own fields after construction, and what clone() and clone(true) make of them
 g field id = <auto id>
@@ -196,14 +198,34 @@ g field _unmounting = false
 g field _created = null
 g full: 6 properties set (active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
 g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
-g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false
+g full fields unlike a new node's: children=[node:node#child(below)] position=V3(1,2,3)S rotation=E(-0,1.2870022175865687,0,YXZ)S quaternion=Q(0,0.6,0,0.8)S scale=V3(2,3,4)S _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _created=owner#full
+g full fields at a new node's value: name parent ctx matrix matrixWorld isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting
 g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
-g full clone(false) copy: position quaternion scale matrix matrixWorld
-g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) copy: position rotation quaternion scale matrix matrixWorld
+g full clone(false) differs: children([node:node#child(below)] -> [])
 g full clone(false) source only: _proxy
 g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
-g full clone(true) copy: children position quaternion scale matrix matrixWorld
-g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) copy: children position rotation quaternion scale matrix matrixWorld
 g full clone(true) source only: _proxy
 g full clone(true) children: node#child -> node#child
 g a clone reads as its source, each sample property alone (12 clones): yes
+== h. two instances alive at once, a write through each in turn: each write reaches its own node only
+h each write reached its own node only: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== i. every getter on a node whose backing values are distinct
+i id = "node-i"
+i name = "node"
+i position = V3(1,2,3)S
+i quaternion = Q(0.06407134770607115,0.09115754934299071,0.1435721750273919,0.9833474432563557)S
+i rotation = E(0.1,0.2,0.3,YXZ)S
+i scale = V3(2,3,4)S
+i matrixWorld = view:M4(1.8843093270227367,0.5880876731037117,-0.3217627213313923,0,-0.8120444651757103,2.85169135776619,0.456552501492564,0,0.7907072466163354,-0.39933366658731245,3.9006813088072634,0,11,22,33,1)S
+i active = false
+i parent = proxy:node#parent
+i children = [proxy:node#child-a,proxy:node#child-b]
+i _ref = null
+i _isRef = true
+i onPointerEnter = fn:enter
+i onPointerLeave = fn:leave
+i onPointerDown = fn:down
+i onPointerUp = fn:up
+i cursor = "pointer"

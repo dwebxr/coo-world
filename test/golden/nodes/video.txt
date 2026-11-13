@@ -66,8 +66,10 @@ b get reads E(0,0,0,YXZ)S: rotation
 b get reads V3(1,1,1)S: scale
 b get reads view:M4(I)S: matrixWorld
 b get reads []: children
-b stopped through _created: 42 of 42 setters throw Error: "[app] this app has stopped"
-b stopped through a parent: 42 of 42 setters throw Error: "[app] this app has stopped"
+b through _created set throws Error: "[app] this app has stopped": all 42
+b through _created method throws Error: "[app] this app has stopped": all 10
+b through a parent set throws Error: "[app] this app has stopped": all 42
+b through a parent method throws Error: "[app] this app has stopped": all 10
 b a live run: each setter with a sample value takes it
 b receiver Object.create(proxy): as through the proxy: 42 of 42
 b receiver a plain object: throws TypeError: "[node] not a node": all 42
@@ -478,14 +480,14 @@ g field n = 0
 g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
 g full: 33 properties set (screenId src linked loop visible color lit doubleside castShadow receiveShadow aspect fit width height pivot geometry volume group spatial distanceModel refDistance maxDistance rolloffFactor coneInnerAngle coneOuterAngle coneOuterGain onLoad active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
 g no sample value (no value accepted reads otherwise than the default): time currentTime material id position quaternion rotation scale parent
-g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _screenId="screen-1" _src="asset://v.mp4" _linked="tag" _loop=true _visible=false _color="red" _lit=true _doubleside=true _castShadow=true _receiveShadow=true _aspect=0.5 _fit="none" _width=0.5 _height=0.5 _pivot="top-left" _geometry=geometry#A _volume=0.5 _group="sfx" _spatial=false _distanceModel="linear" _refDistance=0.5 _maxDistance=0.5 _rolloffFactor=0.5 _coneInnerAngle=0.5 _coneOuterAngle=0.5 _coneOuterGain=0.5 _onLoad=fn:hostileFn
+g full fields unlike a new node's: children=[node:node#child(below)] position=V3(1,2,3)S rotation=E(-0,1.2870022175865687,0,YXZ)S quaternion=Q(0,0.6,0,0.8)S scale=V3(2,3,4)S _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _created=owner#full _screenId="screen-1" _src="asset://v.mp4" _linked="tag" _loop=true _visible=false _color="red" _lit=true _doubleside=true _castShadow=true _receiveShadow=true _aspect=0.5 _fit="none" _width=0.5 _height=0.5 _pivot="top-left" _geometry=geometry#A _volume=0.5 _group="sfx" _spatial=false _distanceModel="linear" _refDistance=0.5 _maxDistance=0.5 _rolloffFactor=0.5 _coneInnerAngle=0.5 _coneOuterAngle=0.5 _coneOuterGain=0.5 _onLoad=fn:hostileFn
+g full fields at a new node's value: name parent ctx matrix matrixWorld isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting needsRebuild _loading n
 g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _screenId needsRebuild _src _loading _linked _loop _visible _color _lit _doubleside _castShadow _receiveShadow _aspect _fit _width _height _pivot _geometry _volume _group _spatial _distanceModel _refDistance _maxDistance _rolloffFactor _coneInnerAngle _coneOuterAngle _coneOuterGain n _onLoad
-g full clone(false) copy: position quaternion scale matrix matrixWorld
-g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) copy: position rotation quaternion scale matrix matrixWorld
+g full clone(false) differs: children([node:node#child(below)] -> [])
 g full clone(false) source only: _proxy
 g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _screenId needsRebuild _src _loading _linked _loop _visible _color _lit _doubleside _castShadow _receiveShadow _aspect _fit _width _height _pivot _geometry _volume _group _spatial _distanceModel _refDistance _maxDistance _rolloffFactor _coneInnerAngle _coneOuterAngle _coneOuterGain n _onLoad
-g full clone(true) copy: children position quaternion scale matrix matrixWorld
-g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) copy: children position rotation quaternion scale matrix matrixWorld
 g full clone(true) source only: _proxy
 g full clone(true) children: node#child -> node#child
 g host video (onLoad) fields unlike a new node's: _onLoad=fn:onLoad
@@ -497,3 +499,45 @@ g host video (onLoad) clone(true) copy: children position quaternion scale matri
 g host video (onLoad) clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
 g host video (onLoad) clone(true) children: -
 g a clone reads as its source, each sample property alone (66 clones): yes
+== h. two instances alive at once, a write through each in turn: each write reaches its own node only
+h each write reached its own node only: screenId src linked loop visible color lit doubleside castShadow receiveShadow aspect fit width height pivot geometry volume group spatial distanceModel refDistance maxDistance rolloffFactor coneInnerAngle coneOuterAngle coneOuterGain onLoad active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== i. every getter on a node whose backing values are distinct
+i screenId = null
+i src = null
+i linked = false
+i loop = false
+i visible = true
+i color = "black"
+i lit = false
+i doubleside = false
+i castShadow = false
+i receiveShadow = false
+i aspect = 1.7777777777777777
+i fit = "contain"
+i width = null
+i height = 1
+i pivot = "center"
+i geometry = ref(null)
+i volume = 1
+i group = "music"
+i spatial = true
+i distanceModel = "inverse"
+i refDistance = 1
+i maxDistance = 40
+i rolloffFactor = 3
+i coneInnerAngle = 360
+i coneOuterAngle = 360
+i coneOuterGain = 0
+i loading = false
+i duration = 12
+i playing = true
+i isPlaying = true
+i time = 3
+i currentTime = 3
+i material = {textureX:<accessor>,textureY:<accessor>}F reads{textureX=0.25 textureY=0.75} (class: {textureX:<accessor>,textureY:<accessor>} reads{textureX=0.25 textureY=0.75})
+i onLoad = undefined
+i name = "video"
+i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+i the same value: playing isPlaying = true
+== x. the console outside the cases (the generator's own probing and set-up), by row
+x d: error:"[video] geometry invalid"×4

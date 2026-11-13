@@ -53,8 +53,10 @@ b get reads V3(1,1,1)S: scale
 b get reads view:M4(I)S: matrixWorld
 b get reads undefined: parent cursor
 b get reads []: children
-b stopped through _created: 36 of 36 setters throw Error: "[app] this app has stopped"
-b stopped through a parent: 36 of 36 setters throw Error: "[app] this app has stopped"
+b through _created set throws Error: "[app] this app has stopped": all 36
+b through _created method throws Error: "[app] this app has stopped": all 7
+b through a parent set throws Error: "[app] this app has stopped": all 36
+b through a parent method throws Error: "[app] this app has stopped": all 7
 b a live run: each setter with a sample value takes it
 b receiver Object.create(proxy): as through the proxy: 36 of 36
 b receiver a plain object: throws TypeError: "[node] not a node": all 36
@@ -425,14 +427,45 @@ g field ui = self
 g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
 g full: 30 properties set (space width height size res lit doubleside billboard pivot offset scaler pointerEvents transparent backgroundColor borderWidth borderColor borderRadius padding flexDirection justifyContent alignItems alignContent flexWrap gap active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
 g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
-g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _space="screen" _width=0.5 _height=0.5 _size=0.5 _res=0.5 _lit=true _doubleside=false _billboard="full" _pivot="top-left" _offset=V3(1,2,3)S _scaler=[1,10]F _pointerEvents=false _transparent=false _backgroundColor="red" _borderWidth=0.5 _borderColor="red" _borderRadius=0.5 _padding=[1,2,3,4]F _flexDirection="column-reverse" _justifyContent="flex-end" _alignItems="flex-start" _alignContent="flex-end" _flexWrap="wrap" _gap=0.5
+g full fields unlike a new node's: children=[node:node#child(below)] position=V3(1,2,3)S rotation=E(-0,1.2870022175865687,0,YXZ)S quaternion=Q(0,0.6,0,0.8)S scale=V3(2,3,4)S _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _created=owner#full _space="screen" _width=0.5 _height=0.5 _size=0.5 _res=0.5 _lit=true _doubleside=false _billboard="full" _pivot="top-left" _offset=V3(1,2,3)S _scaler=[1,10]F _pointerEvents=false _transparent=false _backgroundColor="red" _borderWidth=0.5 _borderColor="red" _borderRadius=0.5 _padding=[1,2,3,4]F _flexDirection="column-reverse" _justifyContent="flex-end" _alignItems="flex-start" _alignContent="flex-end" _flexWrap="wrap" _gap=0.5
+g full fields at a new node's value: name parent ctx matrix matrixWorld isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting needsRebuild needsRedraw ui
 g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _space needsRebuild needsRedraw _width _height _size _res _lit _doubleside _billboard _pivot _scaler _pointerEvents _transparent _backgroundColor _borderWidth _borderColor _borderRadius _flexDirection _justifyContent _alignItems _alignContent _flexWrap _gap
-g full clone(false) copy: position quaternion scale matrix matrixWorld _offset _padding ui
-g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) copy: position rotation quaternion scale matrix matrixWorld _offset _padding ui
+g full clone(false) differs: children([node:node#child(below)] -> [])
 g full clone(false) source only: _proxy
 g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _space needsRebuild needsRedraw _width _height _size _res _lit _doubleside _billboard _pivot _scaler _pointerEvents _transparent _backgroundColor _borderWidth _borderColor _borderRadius _flexDirection _justifyContent _alignItems _alignContent _flexWrap _gap
-g full clone(true) copy: children position quaternion scale matrix matrixWorld _offset _padding ui
-g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) copy: children position rotation quaternion scale matrix matrixWorld _offset _padding ui
 g full clone(true) source only: _proxy
 g full clone(true) children: node#child -> node#child
 g a clone reads as its source, each sample property alone (60 clones): yes
+== h. two instances alive at once, a write through each in turn: each write reaches its own node only
+h each write reached its own node only: space width height size res lit doubleside billboard pivot offset scaler pointerEvents transparent backgroundColor borderWidth borderColor borderRadius padding flexDirection justifyContent alignItems alignContent flexWrap gap active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== i. every getter on a node whose backing values are distinct
+i space = "world"
+i width = 100
+i height = 100
+i size = 0.01
+i res = 2
+i lit = false
+i doubleside = true
+i billboard = "none"
+i pivot = "center"
+i offset = view:V3(0,0,0)S (class: V3(0,0,0)S)
+i scaler = null
+i pointerEvents = true
+i transparent = true
+i backgroundColor = null
+i borderWidth = 0
+i borderColor = null
+i borderRadius = 0
+i padding = 0
+i flexDirection = "column"
+i justifyContent = "flex-start"
+i alignItems = "stretch"
+i alignContent = "flex-start"
+i flexWrap = "no-wrap"
+i gap = 0
+i name = "ui"
+i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== x. the console outside the cases (the generator's own probing and set-up), by row
+x b: warn:"prim.transparent deprecated"

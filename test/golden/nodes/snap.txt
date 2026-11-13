@@ -16,8 +16,10 @@ b get reads true: active _isRef
 b get reads undefined: parent cursor
 b get reads []: children
 b get reads null: _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
-b stopped through _created: 12 of 12 setters throw Error: "[app] this app has stopped"
-b stopped through a parent: 12 of 12 setters throw Error: "[app] this app has stopped"
+b through _created set throws Error: "[app] this app has stopped": all 12
+b through _created method throws Error: "[app] this app has stopped": all 7
+b through a parent set throws Error: "[app] this app has stopped": all 12
+b through a parent method throws Error: "[app] this app has stopped": all 7
 b a live run: each setter with a sample value takes it
 b receiver Object.create(proxy): as through the proxy: 12 of 12
 b receiver a plain object: throws TypeError: "[node] not a node": all 12
@@ -39,22 +41,27 @@ g field worldPosition = V3(0,0,0)
 g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
 g full: 6 properties set (active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
 g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
-g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false
+g full fields unlike a new node's: children=[node:node#child(below)] position=V3(1,2,3)S rotation=E(-0,1.2870022175865687,0,YXZ)S quaternion=Q(0,0.6,0,0.8)S scale=V3(2,3,4)S _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _created=owner#full
+g full fields at a new node's value: name parent ctx matrix matrixWorld isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting worldPosition
 g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
-g full clone(false) copy: position quaternion scale matrix matrixWorld worldPosition
-g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) copy: position rotation quaternion scale matrix matrixWorld worldPosition
+g full clone(false) differs: children([node:node#child(below)] -> [])
 g full clone(false) source only: _proxy
 g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
-g full clone(true) copy: children position quaternion scale matrix matrixWorld worldPosition
-g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) copy: children position rotation quaternion scale matrix matrixWorld worldPosition
 g full clone(true) source only: _proxy
 g full clone(true) children: node#child -> node#child
-g glb glbSnap fields unlike a new node's: parent=node:group rotation=E(-0,0,0,YXZ)S
+g glb glbSnap fields unlike a new node's: parent=node:group#$root position=V3(6,7,8)S rotation=E(-0,1.2870022175865687,0,YXZ)S quaternion=Q(0,0.6,0,0.8)S scale=V3(7,7,7)S
 g glb glbSnap clone(false) same: id name ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
 g glb glbSnap clone(false) copy: children position rotation quaternion scale matrix matrixWorld worldPosition
-g glb glbSnap clone(false) differs: parent(node:group -> null)
+g glb glbSnap clone(false) differs: parent(node:group#$root -> null)
 g glb glbSnap clone(true) same: id name ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
 g glb glbSnap clone(true) copy: children position rotation quaternion scale matrix matrixWorld worldPosition
-g glb glbSnap clone(true) differs: parent(node:group -> null)
+g glb glbSnap clone(true) differs: parent(node:group#$root -> null)
 g glb glbSnap clone(true) children: -
 g a clone reads as its source, each sample property alone (12 clones): yes
+== h. two instances alive at once, a write through each in turn: each write reaches its own node only
+h each write reached its own node only: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== i. every getter on a node whose backing values are distinct
+i name = "snap"
+i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor

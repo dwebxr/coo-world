@@ -43,8 +43,10 @@ b get reads V3(1,1,1)S: scale
 b get reads view:M4(I)S: matrixWorld
 b get reads undefined: parent cursor
 b get reads []: children
-b stopped through _created: 25 of 25 setters throw Error: "[app] this app has stopped"
-b stopped through a parent: 25 of 25 setters throw Error: "[app] this app has stopped"
+b through _created set throws Error: "[app] this app has stopped": all 25
+b through _created method throws Error: "[app] this app has stopped": all 11
+b through a parent set throws Error: "[app] this app has stopped": all 25
+b through a parent method throws Error: "[app] this app has stopped": all 11
 b a live run: each setter with a sample value takes it
 b receiver Object.create(proxy): as through the proxy: 25 of 25
 b receiver a plain object: throws TypeError: "[node] not a node": all 25
@@ -336,14 +338,33 @@ g field startTime = null
 g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
 g full: 18 properties set (src volume loop group spatial distanceModel refDistance maxDistance rolloffFactor coneInnerAngle coneOuterAngle coneOuterGain active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
 g no sample value (no value accepted reads otherwise than the default): currentTime id position quaternion rotation scale parent
-g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _src="asset://a.mp3" _volume=0.5 _loop=true _group="sfx" _spatial=false _distanceModel="linear" _refDistance=0.5 _maxDistance=0.5 _rolloffFactor=0.5 _coneInnerAngle=0.5 _coneOuterAngle=0.5 _coneOuterGain=0.5
+g full fields unlike a new node's: children=[node:node#child(below)] position=V3(1,2,3)S rotation=E(-0,1.2870022175865687,0,YXZ)S quaternion=Q(0,0.6,0,0.8)S scale=V3(2,3,4)S _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _created=owner#full _src="asset://a.mp3" _volume=0.5 _loop=true _group="sfx" _spatial=false _distanceModel="linear" _refDistance=0.5 _maxDistance=0.5 _rolloffFactor=0.5 _coneInnerAngle=0.5 _coneOuterAngle=0.5 _coneOuterGain=0.5
+g full fields at a new node's value: name parent ctx matrix matrixWorld isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting offset needsRebuild n source sourceStarted gainNode pannerNode shouldPlay startTime
 g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _src offset needsRebuild _volume _loop _group _spatial _distanceModel _refDistance _maxDistance _rolloffFactor _coneInnerAngle _coneOuterAngle _coneOuterGain n source sourceStarted gainNode pannerNode shouldPlay startTime
-g full clone(false) copy: position quaternion scale matrix matrixWorld
-g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) copy: position rotation quaternion scale matrix matrixWorld
+g full clone(false) differs: children([node:node#child(below)] -> [])
 g full clone(false) source only: _proxy
 g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _src offset needsRebuild _volume _loop _group _spatial _distanceModel _refDistance _maxDistance _rolloffFactor _coneInnerAngle _coneOuterAngle _coneOuterGain n source sourceStarted gainNode pannerNode shouldPlay startTime
-g full clone(true) copy: children position quaternion scale matrix matrixWorld
-g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) copy: children position rotation quaternion scale matrix matrixWorld
 g full clone(true) source only: _proxy
 g full clone(true) children: node#child -> node#child
 g a clone reads as its source, each sample property alone (36 clones): yes
+== h. two instances alive at once, a write through each in turn: each write reaches its own node only
+h each write reached its own node only: src volume loop group spatial distanceModel refDistance maxDistance rolloffFactor coneInnerAngle coneOuterAngle coneOuterGain active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== i. every getter on a node whose backing values are distinct
+i src = null
+i volume = 1
+i loop = false
+i group = "music"
+i spatial = true
+i distanceModel = "inverse"
+i refDistance = 1
+i maxDistance = 40
+i rolloffFactor = 3
+i coneInnerAngle = 360
+i coneOuterAngle = 360
+i coneOuterGain = 0
+i currentTime = 6
+i isPlaying = true
+i name = "audio"
+i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor

@@ -48,8 +48,10 @@ b get reads view:M4(I)S: matrixWorld
 b get reads true: active _isRef
 b get reads undefined: parent cursor
 b get reads []: children
-b stopped through _created: 32 of 32 setters throw Error: "[app] this app has stopped"
-b stopped through a parent: 32 of 32 setters throw Error: "[app] this app has stopped"
+b through _created set throws Error: "[app] this app has stopped": all 32
+b through _created method throws Error: "[app] this app has stopped": all 7
+b through a parent set throws Error: "[app] this app has stopped": all 32
+b through a parent method throws Error: "[app] this app has stopped": all 7
 b a live run: each setter with a sample value takes it
 b receiver Object.create(proxy): as through the proxy: 32 of 32
 b receiver a plain object: throws TypeError: "[node] not a node": all 32
@@ -121,7 +123,7 @@ c value pc read "1" Δ{_value:"1"} <- 1
 c value pc read "1000000000" Δ{_value:"1000000000"} <- 1e9
 c value pc read $in <- ''
 c value pc read $in Δ{_value:$in} <- 'x' 'Hello'
-c value pc read "wwwwwwww…"(len 10000) Δ{_value:"wwwwwwww…"(len 10000)} <- "wwwwwwww…"(len 10001)
+c value pc read "wwwwwwww…"(len 10000 #7d965a128fcb) Δ{_value:"wwwwwwww…"(len 10000 #7d965a128fcb)} <- "wwwwwwww…"(len 10001 #6212e5802bb8)
 c fontSize pc read 16 <- undefined NaN
 c fontSize pc throw Error: "[uitext] fontSize not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
 c fontSize pc read 1024 Δ{_fontSize:1024} <- Infinity 1e9
@@ -235,7 +237,7 @@ e value pc read "0.5" Δ{_value:"0.5"} stub[ui.redraw()] <- 0.5
 e value pc read "1" Δ{_value:"1"} stub[ui.redraw()] <- 1
 e value pc read "1000000000" Δ{_value:"1000000000"} stub[ui.redraw()] <- 1e9
 e value pc read $in Δ{_value:$in} stub[ui.redraw()] <- 'x' 'Hello'
-e value pc read "wwwwwwww…"(len 10000) Δ{_value:"wwwwwwww…"(len 10000)} stub[ui.redraw()] <- "wwwwwwww…"(len 10001)
+e value pc read "wwwwwwww…"(len 10000 #7d965a128fcb) Δ{_value:"wwwwwwww…"(len 10000 #7d965a128fcb)} stub[ui.redraw()] <- "wwwwwwww…"(len 10001 #6212e5802bb8)
 e value: the other 17 as in c
 e fontSize pc read 1024 Δ{_fontSize:1024} stub[ui.redraw()] <- Infinity 1e9
 e fontSize pc read 0 Δ{_fontSize:0} stub[ui.redraw()] <- -Infinity -1
@@ -337,7 +339,7 @@ e value pc read "0.5" Δ{_value:"0.5"} stub[yoga.markDirty() ui.redraw()] <- 0.5
 e value pc read "1" Δ{_value:"1"} stub[yoga.markDirty() ui.redraw()] <- 1
 e value pc read "1000000000" Δ{_value:"1000000000"} stub[yoga.markDirty() ui.redraw()] <- 1e9
 e value pc read $in Δ{_value:$in} stub[yoga.markDirty() ui.redraw()] <- 'x' 'Hello'
-e value pc read "wwwwwwww…"(len 10000) Δ{_value:"wwwwwwww…"(len 10000)} stub[yoga.markDirty() ui.redraw()] <- "wwwwwwww…"(len 10001)
+e value pc read "wwwwwwww…"(len 10000 #7d965a128fcb) Δ{_value:"wwwwwwww…"(len 10000 #7d965a128fcb)} stub[yoga.markDirty() ui.redraw()] <- "wwwwwwww…"(len 10001 #6212e5802bb8)
 e value: the other 17 as in c
 e fontSize pc read 1024 Δ{_fontSize:1024} stub[yoga.markDirty() ui.redraw()] <- Infinity 1e9
 e fontSize pc read 0 Δ{_fontSize:0} stub[yoga.markDirty() ui.redraw()] <- -Infinity -1
@@ -524,14 +526,39 @@ g field _flexShrink = 1
 g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
 g full: 26 properties set (display absolute top right bottom left backgroundColor borderRadius margin padding value fontSize color lineHeight textAlign fontFamily fontWeight flexBasis flexGrow flexShrink active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
 g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
-g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _display="none" _absolute=true _top=5 _right=5 _bottom=5 _left=5 _backgroundColor="red" _borderRadius=0.5 _margin=[1,2,3,4]F _padding=[1,2,3,4]F _value="Hello" _fontSize=0.5 _color="red" _lineHeight=0.5 _textAlign="center" _fontFamily="x" _fontWeight="bold" _flexBasis=10 _flexGrow=0.5 _flexShrink=0.5
+g full fields unlike a new node's: children=[node:node#child(below)] position=V3(1,2,3)S rotation=E(-0,1.2870022175865687,0,YXZ)S quaternion=Q(0,0.6,0,0.8)S scale=V3(2,3,4)S _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _created=owner#full _display="none" _absolute=true _top=5 _right=5 _bottom=5 _left=5 _backgroundColor="red" _borderRadius=0.5 _margin=[1,2,3,4]F _padding=[1,2,3,4]F _value="Hello" _fontSize=0.5 _color="red" _lineHeight=0.5 _textAlign="center" _fontFamily="x" _fontWeight="bold" _flexBasis=10 _flexGrow=0.5 _flexShrink=0.5
+g full fields at a new node's value: name parent ctx matrix matrixWorld isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting
 g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _display _absolute _top _right _bottom _left _backgroundColor _borderRadius _value _fontSize _color _lineHeight _textAlign _fontFamily _fontWeight _flexBasis _flexGrow _flexShrink
-g full clone(false) copy: position quaternion scale matrix matrixWorld _margin _padding
-g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) copy: position rotation quaternion scale matrix matrixWorld _margin _padding
+g full clone(false) differs: children([node:node#child(below)] -> [])
 g full clone(false) source only: _proxy
 g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _display _absolute _top _right _bottom _left _backgroundColor _borderRadius _value _fontSize _color _lineHeight _textAlign _fontFamily _fontWeight _flexBasis _flexGrow _flexShrink
-g full clone(true) copy: children position quaternion scale matrix matrixWorld _margin _padding
-g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) copy: children position rotation quaternion scale matrix matrixWorld _margin _padding
 g full clone(true) source only: _proxy
 g full clone(true) children: node#child -> node#child
 g a clone reads as its source, each sample property alone (52 clones): yes
+== h. two instances alive at once, a write through each in turn: each write reaches its own node only
+h each write reached its own node only: display absolute top right bottom left backgroundColor borderRadius margin padding value fontSize color lineHeight textAlign fontFamily fontWeight flexBasis flexGrow flexShrink active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== i. every getter on a node whose backing values are distinct
+i display = "flex"
+i absolute = false
+i top = null
+i right = null
+i bottom = null
+i left = null
+i backgroundColor = null
+i borderRadius = 0
+i margin = 0
+i padding = 0
+i value = ""
+i fontSize = 16
+i color = "#000000"
+i lineHeight = 1.2
+i textAlign = "left"
+i fontFamily = "Rubik"
+i fontWeight = "normal"
+i flexBasis = "auto"
+i flexGrow = 0
+i flexShrink = 1
+i name = "uitext"
+i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor

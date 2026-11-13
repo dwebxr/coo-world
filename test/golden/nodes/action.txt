@@ -26,8 +26,10 @@ b get reads true: active _isRef
 b get reads undefined: parent cursor
 b get reads []: children
 b get reads null: _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
-b stopped through _created: 18 of 18 setters throw Error: "[app] this app has stopped"
-b stopped through a parent: 18 of 18 setters throw Error: "[app] this app has stopped"
+b through _created set throws Error: "[app] this app has stopped": all 18
+b through _created method throws Error: "[app] this app has stopped": all 7
+b through a parent set throws Error: "[app] this app has stopped": all 18
+b through a parent method throws Error: "[app] this app has stopped": all 7
 b a live run: each setter with a sample value takes it
 b receiver Object.create(proxy): as through the proxy: 18 of 18
 b receiver a plain object: throws TypeError: "[node] not a node": all 18
@@ -49,7 +51,7 @@ c label pc read "0.5" Δ{_label:"0.5"} <- 0.5
 c label pc read "1" Δ{_label:"1"} <- 1
 c label pc read "1000000000" Δ{_label:"1000000000"} <- 1e9
 c label pc read $in Δ{_label:$in} <- '' 'x' 'Use'
-c label pc read "wwwwwwww…"(len 256) Δ{_label:"wwwwwwww…"(len 256)} <- "wwwwwwww…"(len 257)
+c label pc read "wwwwwwww…"(len 256 #38bc2286bb38) Δ{_label:"wwwwwwww…"(len 256 #38bc2286bb38)} <- "wwwwwwww…"(len 257 #c46ff51985ea)
 c distance pc read 3 <- undefined
 c distance pc throw Error: "[action] distance not a number" <- null NaN Infinity -Infinity '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
 c distance pc read $in Δ{_distance:$in} <- -1 -0 0 0.5 1 1e9
@@ -106,14 +108,25 @@ g field progress = 0
 g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
 g full: 12 properties set (label distance duration onStart onTrigger onCancel active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
 g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
-g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _label="Use" _distance=0.5 _duration=1 _onStart=fn:hostileFn _onTrigger=fn:hostileFn _onCancel=fn:hostileFn
+g full fields unlike a new node's: children=[node:node#child(below)] position=V3(1,2,3)S rotation=E(-0,1.2870022175865687,0,YXZ)S quaternion=Q(0,0.6,0,0.8)S scale=V3(2,3,4)S _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _created=owner#full _label="Use" _distance=0.5 _duration=1 _onStart=fn:hostileFn _onTrigger=fn:hostileFn _onCancel=fn:hostileFn
+g full fields at a new node's value: name parent ctx matrix matrixWorld isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting worldPos progress
 g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _label _distance _duration _onStart _onTrigger _onCancel progress
-g full clone(false) copy: position quaternion scale matrix matrixWorld worldPos
-g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) copy: position rotation quaternion scale matrix matrixWorld worldPos
+g full clone(false) differs: children([node:node#child(below)] -> [])
 g full clone(false) source only: _proxy
 g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _label _distance _duration _onStart _onTrigger _onCancel progress
-g full clone(true) copy: children position quaternion scale matrix matrixWorld worldPos
-g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) copy: children position rotation quaternion scale matrix matrixWorld worldPos
 g full clone(true) source only: _proxy
 g full clone(true) children: node#child -> node#child
 g a clone reads as its source, each sample property alone (24 clones): yes
+== h. two instances alive at once, a write through each in turn: each write reaches its own node only
+h each write reached its own node only: label distance duration onStart onTrigger onCancel active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== i. every getter on a node whose backing values are distinct
+i label = "Interact"
+i distance = 3
+i duration = 0.5
+i onStart = fn:<anon>F
+i onTrigger = fn:<anon>F
+i onCancel = fn:<anon>F
+i name = "action"
+i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor

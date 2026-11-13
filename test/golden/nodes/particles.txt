@@ -46,7 +46,7 @@ b get reads []F: bursts
 b get reads 5: duration
 b get reads 1000: max
 b get reads 1: timescale
-b get reads <auto id>: life id
+b get reads "5": life
 b get reads "1": speed size alpha emissive
 b get reads "0": rotate
 b get reads "white": color
@@ -56,6 +56,7 @@ b get reads "normal": blending
 b get reads false: lit
 b get reads "full": billboard
 b get reads "world": space
+b get reads <auto id>: id
 b get reads "particles": name
 b get reads V3(0,0,0)S: position
 b get reads Q(0,0,0,1)S: quaternion
@@ -64,8 +65,10 @@ b get reads V3(1,1,1)S: scale
 b get reads view:M4(I)S: matrixWorld
 b get reads undefined: parent cursor
 b get reads []: children
-b stopped through _created: 45 of 45 setters throw Error: "[app] this app has stopped"
-b stopped through a parent: 45 of 45 setters throw Error: "[app] this app has stopped"
+b through _created set throws Error: "[app] this app has stopped": all 45
+b through _created method throws Error: "[app] this app has stopped": all 7
+b through a parent set throws Error: "[app] this app has stopped": all 45
+b through a parent method throws Error: "[app] this app has stopped": all 7
 b a live run: each setter with a sample value takes it
 b receiver Object.create(proxy): as through the proxy: 45 of 45
 b receiver a plain object: throws TypeError: "[node] not a node": all 45
@@ -103,7 +106,7 @@ c bursts pc throw Error: "[particles] bursts invalid" <- null NaN Infinity -Infi
 c bursts pc throw Error: "[particles] bursts invalid" traps[get:length,get:0,get:1,get:2] <- Proxy[1,2,3]
 c bursts pc read [{time:1,count:5}F]F Δ{needsRebuild:true _bursts:[{time:1,count:5}F]F} calls[setDirty] <- [{time:1,count:5}]
 c bursts pc read [{time:1000000,count:20000}F]F Δ{needsRebuild:true _bursts:[{time:1000000,count:20000}F]F} calls[setDirty] <- [{time:2000000,count:1000000000}]
-c bursts pc read [{time:0,count:1}F,{time:1,count:1}F,{time:2,count:1}F,…,{time:63,count:1}F](len 64)F Δ{needsRebuild:true _bursts:[{time:0,count:1}F,{time:1,count:1}F,{time:2,count:1}F,…,{time:63,count:1}F](len 64)F} calls[setDirty] <- [{time:0,count:1},{time:1,count:1},{time:2,count:1},…,{time:64,count:1}](len 65)
+c bursts pc read [{time:0,count:1}F,{time:1,count:1}F,{time:2,count:1}F,…,{time:63,count:1}F](len 64 #dc3ae0cec63a)F Δ{needsRebuild:true _bursts:[{time:0,count:1}F,{time:1,count:1}F,{time:2,count:1}F,…,{time:63,count:1}F](len 64 #dc3ae0cec63a)F} calls[setDirty] <- [{time:0,count:1},{time:1,count:1},{time:2,count:1},…,{time:64,count:1}](len 65 #004413850301)
 c duration pc read 5 Δ{needsRebuild:true} calls[setDirty] <- undefined NaN
 c duration pc throw Error: "[particles] duration not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
 c duration pc read 1000000 Δ{needsRebuild:true _duration:1000000} calls[setDirty] <- Infinity 1e9
@@ -127,7 +130,7 @@ c timescale pc read $in Δ{needsRebuild:true} calls[setDirty] <- 1
 c life pc read "5" Δ{needsRebuild:true} calls[setDirty] <- undefined
 c life pc throw Error: "[particles] life invalid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
 c life pc read $in Δ{needsRebuild:true _life:$in} calls[setDirty] <- '' 'x' '1~3'
-c life pc read "wwwwwwww…"(len 256) Δ{needsRebuild:true _life:"wwwwwwww…"(len 256)} calls[setDirty] <- "wwwwwwww…"(len 257)
+c life pc read "wwwwwwww…"(len 256 #38bc2286bb38) Δ{needsRebuild:true _life:"wwwwwwww…"(len 256 #38bc2286bb38)} calls[setDirty] <- "wwwwwwww…"(len 257 #c46ff51985ea)
 c speed pc read "1" Δ{needsRebuild:true} calls[setDirty] <- undefined
 c speed pc throw Error: "[particles] speed invalid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
 c speed pc read $in Δ{needsRebuild:true _speed:$in} calls[setDirty] <- '' 'x' '1-3'
@@ -200,7 +203,7 @@ c sizeOverLife pc read null Δ{needsRebuild:true} calls[setDirty] <- undefined
 c sizeOverLife pc read $in Δ{needsRebuild:true} calls[setDirty] <- null
 c sizeOverLife pc throw Error: "[particles] sizeOverLife invalid" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
 c sizeOverLife pc read $in Δ{needsRebuild:true _sizeOverLife:$in} calls[setDirty] <- '' 'x' '0,1|1,0'
-c sizeOverLife pc read "wwwwwwww…"(len 4096) Δ{needsRebuild:true _sizeOverLife:"wwwwwwww…"(len 4096)} calls[setDirty] <- "wwwwwwww…"(len 4097)
+c sizeOverLife pc read "wwwwwwww…"(len 4096 #7b962f03e77f) Δ{needsRebuild:true _sizeOverLife:"wwwwwwww…"(len 4096 #7b962f03e77f)} calls[setDirty] <- "wwwwwwww…"(len 4097 #0f1a87133411)
 c rotateOverLife pc read null Δ{needsRebuild:true} calls[setDirty] <- undefined
 c rotateOverLife pc read $in Δ{needsRebuild:true} calls[setDirty] <- null
 c rotateOverLife pc throw Error: "[particles] rotateOverLife invalid" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
@@ -404,14 +407,52 @@ g field _onEnd = null
 g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
 g full: 39 properties set (emitting shape direction rate bursts duration loop max timescale life speed size rotate color alpha emissive image spritesheet blending lit billboard space force velocityLinear velocityOrbital velocityRadial rateOverDistance sizeOverLife rotateOverLife colorOverLife alphaOverLife emissiveOverLife onEnd active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
 g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
-g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _emitting=false _shape=["sphere",2,0.5]F _direction=0.5 _rate=0.5 _bursts=[{time:1,count:5}F]F _duration=0.5 _loop=false _max=0 _timescale=0.5 _life="1~3" _speed="1-3" _size="x" _rotate="x" _color="red" _alpha="x" _emissive="x" _image="asset://p.png" _spritesheet=[2,2,10,10]F _blending="additive" _lit=true _billboard="y" _space="local" _force=V3(1,2,3)S _velocityLinear=V3(1,2,3)S _velocityOrbital=V3(1,2,3)S _velocityRadial=0.5 _rateOverDistance=0.5 _sizeOverLife="0,1|1,0" _rotateOverLife="x" _colorOverLife="x" _alphaOverLife="x" _emissiveOverLife="x" _onEnd=fn:hostileFn
+g full fields unlike a new node's: children=[node:node#child(below)] position=V3(1,2,3)S rotation=E(-0,1.2870022175865687,0,YXZ)S quaternion=Q(0,0.6,0,0.8)S scale=V3(2,3,4)S _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _created=owner#full _emitting=false _shape=["sphere",2,0.5]F _direction=0.5 _rate=0.5 _bursts=[{time:1,count:5}F]F _duration=0.5 _loop=false _max=0 _timescale=0.5 _life="1~3" _speed="1-3" _size="x" _rotate="x" _color="red" _alpha="x" _emissive="x" _image="asset://p.png" _spritesheet=[2,2,10,10]F _blending="additive" _lit=true _billboard="y" _space="local" _force=V3(1,2,3)S _velocityLinear=V3(1,2,3)S _velocityOrbital=V3(1,2,3)S _velocityRadial=0.5 _rateOverDistance=0.5 _sizeOverLife="0,1|1,0" _rotateOverLife="x" _colorOverLife="x" _alphaOverLife="x" _emissiveOverLife="x" _onEnd=fn:hostileFn
+g full fields at a new node's value: name parent ctx matrix matrixWorld isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting needsRebuild
 g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _emitting needsRebuild _direction _rate _duration _loop _max _timescale _life _speed _size _rotate _color _alpha _emissive _image _spritesheet _blending _lit _billboard _space _velocityRadial _rateOverDistance _sizeOverLife _rotateOverLife _colorOverLife _alphaOverLife _emissiveOverLife _onEnd
-g full clone(false) copy: position quaternion scale matrix matrixWorld _shape _bursts _force _velocityLinear _velocityOrbital
-g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) copy: position rotation quaternion scale matrix matrixWorld _shape _bursts _force _velocityLinear _velocityOrbital
+g full clone(false) differs: children([node:node#child(below)] -> [])
 g full clone(false) source only: _proxy
 g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _emitting needsRebuild _direction _rate _duration _loop _max _timescale _life _speed _size _rotate _color _alpha _emissive _image _spritesheet _blending _lit _billboard _space _velocityRadial _rateOverDistance _sizeOverLife _rotateOverLife _colorOverLife _alphaOverLife _emissiveOverLife _onEnd
-g full clone(true) copy: children position quaternion scale matrix matrixWorld _shape _bursts _force _velocityLinear _velocityOrbital
-g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) copy: children position rotation quaternion scale matrix matrixWorld _shape _bursts _force _velocityLinear _velocityOrbital
 g full clone(true) source only: _proxy
 g full clone(true) children: node#child -> node#child
 g a clone reads as its source, each sample property alone (78 clones): yes
+== h. two instances alive at once, a write through each in turn: each write reaches its own node only
+h each write reached its own node only: emitting shape direction rate bursts duration loop max timescale life speed size rotate color alpha emissive image spritesheet blending lit billboard space force velocityLinear velocityOrbital velocityRadial rateOverDistance sizeOverLife rotateOverLife colorOverLife alphaOverLife emissiveOverLife onEnd active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== i. every getter on a node whose backing values are distinct
+i emitting = true
+i shape = ["cone",1,1,25]F
+i direction = 0
+i rate = 10
+i bursts = []F
+i duration = 5
+i loop = true
+i max = 1000
+i timescale = 1
+i life = "5"
+i speed = "1"
+i size = "1"
+i rotate = "0"
+i color = "white"
+i alpha = "1"
+i emissive = "1"
+i image = "/particle.png"
+i spritesheet = null
+i blending = "normal"
+i lit = false
+i billboard = "full"
+i space = "world"
+i force = null
+i velocityLinear = null
+i velocityOrbital = null
+i velocityRadial = null
+i rateOverDistance = 0
+i sizeOverLife = null
+i rotateOverLife = null
+i colorOverLife = null
+i alphaOverLife = null
+i emissiveOverLife = null
+i onEnd = null
+i name = "particles"
+i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor

@@ -254,8 +254,10 @@ for (const phase of ['in-flight save', 'final save', 'config']) {
     t.mock.method(console, 'error', line => lines.push(line))
     t.mock.timers.enable({ apis: ['setTimeout'] })
     const { db, writes } = database()
-    const { network, socket, world, exits } = fixture(t, db)
+    const { network, socket, world, entity, exits } = fixture(t, db)
     await network.onEntityModified(socket, { id: 'app', position: [1, 0, 0] })
+    // a second row, behind the one whose write is held: the save comes to it once that write returns
+    network.markAppDirty({ ...entity.data, id: 'next' })
     const held = db.pause(phase === 'config' ? 'config' : 'entities')
     t.after(() => held.release.resolve())
     if (phase === 'in-flight save') {
@@ -278,7 +280,8 @@ for (const phase of ['in-flight save', 'final save', 'config']) {
     if (phase === 'config') assert.ok(lines.some(line => line.includes('config=["settings"]')))
     const count = writes.length
     held.release.resolve()
-    for (let i = 0; i < 20; i++) await Promise.resolve()
+    // the turns the row writer yields before the next row (saveDirty)
+    for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve))
     assert.equal(writes.length, count, 'expired flush must not start more writes after exit')
   })
 }

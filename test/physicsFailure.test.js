@@ -433,12 +433,13 @@ test('client fatal stops animation, worker and visibility restart; close cannot 
 test('fatal stop suppresses save rearming and refuses mutating packets', async t => {
   // the real network (test/lib/network.mjs), against the REAL_PHYSX_SOURCE_ROOT checkout when it is set (where this
   // test read the class from before); it saves on a timer (SAVE_INTERVAL 60), which the stop must not set again. The
-  // token gate's module is a stand-in (below)
+  // token gate's module and the EVM sign-in's are stand-ins (below)
   const SOLANA = 'src/server/solana-gating.js'
+  const EVM = 'src/server/evm-gating.js'
   const net = await loadNetwork({
     sourceRoot: process.env.REAL_PHYSX_SOURCE_ROOT,
     env: { SAVE_INTERVAL: 60 },
-    standIns: [SOLANA],
+    standIns: [SOLANA, EVM],
   })
   t.after(() => net.destroy())
   const handlers = [
@@ -456,10 +457,17 @@ test('fatal stop suppresses save rearming and refuses mutating packets', async t
     'onRequestBuilderRecheck',
     'onTokenBalanceRequest',
     'onRevokeBuilderByToken',
+    'onRequestEvmNonce',
+    'onRequestEvmVerify',
+    'onRevokeEvmWallet',
+    'onSetEvmTipReceive',
+    'onRequestEvmTipIntent',
+    'onEvmTip',
   ]
   // Once stopped, a handler returns before it touches anything: the connection, the payload and its meta, the world
-  // and the token gate's module fail the test when they are read or called (and are recorded, for a handler that
-  // catches the throw), and so does a line of the network's log (a packet the flush took would be refused with one).
+  // and the gating modules (the token gate's, the EVM sign-in's and tips') fail the test when they are read or called
+  // (and are recorded, for a handler that catches the throw), and so does a line of the network's log (a packet the
+  // flush took would be refused with one).
   // (The class this test cut out of its file before had none of these, and a handler that went on threw there.)
   const touched = []
   const tripwire = label =>
@@ -489,8 +497,22 @@ test('fatal stop suppresses save rearming and refuses mutating packets', async t
       },
     }
   )
+  const evmGating = new Proxy(
+    {},
+    {
+      has: () => stopped,
+      get(_, key) {
+        touched.push(`evmGating.${String(key)}`)
+        throw new Error('the EVM sign-in was read while stopping')
+      },
+    }
+  )
   const timers = clock(t)
-  const network = makeNetwork(t, { net, modules: { [SOLANA]: gating }, log: line => touched.push(`log: ${line}`) })
+  const network = makeNetwork(t, {
+    net,
+    modules: { [SOLANA]: gating, [EVM]: evmGating },
+    log: line => touched.push(`log: ${line}`),
+  })
   network.stopForFatal()
   stopped = true
   network.world = tripwire('world')
@@ -501,11 +523,35 @@ test('fatal stop suppresses save rearming and refuses mutating packets', async t
   network.scheduler = { flush: fn => fn({}, {}) }
   network.flush()
   // (two handlers check the payload's type first: they are given one of that type, an id and an event, which a
-  // handler that went on would look up in the world)
-  const payloads = { onEntityRemoved: 'app', onEntityEvent: ['app', 0, 'probe', null] }
+  // handler that went on would look up in the world. The EVM and tip handlers check that the payload is a plain object
+  // of their fields, which a function is not: they are given one each, of the shape they take, so that a handler that
+  // went on would read on, the gating module first)
+  const payloads = {
+    onEntityRemoved: 'app',
+    onEntityEvent: ['app', 0, 'probe', null],
+    onRequestEvmNonce: { address: `0x${'12'.repeat(20)}`, attempt: 1 },
+    onRequestEvmVerify: {
+      address: `0x${'12'.repeat(20)}`,
+      signature: `0x${'ab'.repeat(65)}`,
+      nonce: 'a'.repeat(64),
+      attempt: 1,
+    },
+    onRevokeEvmWallet: {},
+    onSetEvmTipReceive: { enabled: true },
+    onRequestEvmTipIntent: { id: 1, to: 'other', token: 'JPYC', amount: '100' },
+    onEvmTip: { ticket: 'a'.repeat(32), txHash: `0x${'cd'.repeat(32)}` },
+  }
   for (const name of handlers) {
     await network[name](tripwire('socket'), payloads[name] ?? tripwire('data'), tripwire('meta'))
   }
+  // a tip announcement that waits is not sent once the network has stopped, and no timer is set for it: the drain
+  // (which the announcement's timer runs) returns before it reads the clock, the world or the gating module
+  network.tipAnnounce.queue.push('a tipped b 100 JPYC')
+  network.tipAnnounce.tokens = 3
+  network.drainTipAnnouncements()
+  assert.deepEqual(network.tipAnnounce.queue, ['a tipped b 100 JPYC'])
+  assert.equal(network.tipAnnounce.timer, null)
+  assert.equal(timers.tasks.size, 0)
   assert.deepEqual(touched, [])
 })
 

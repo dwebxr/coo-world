@@ -148,6 +148,8 @@ test('/admin: toggles decided while a statement of the row is held go out as one
   const release = deferred()
   f.holdNext(release.promise)
   await f.admin(socket, CODE)
+  // (under way is not stored: the change counts as unwritten until its statement has come back)
+  assert.equal(f.network.userRows().unstored(), 1)
   // decided while that statement (admin) is under way: visitor, admin, visitor
   for (let i = 0; i < 3; i++) await f.admin(socket, CODE)
   assert.deepEqual(f.writes, [{ id: socket.id, rank: Ranks.ADMIN }])

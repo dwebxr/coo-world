@@ -245,16 +245,22 @@ test('network helper: entityClasses gives Entities the classes a file of the tes
 // test's end runs them, where the test failed before.)
 function handedContext(t) {
   const hooks = []
-  const context = { after: hook => hooks.push(hook), mock: t.mock }
+  // (the signal node:test aborts when a test is over, whatever its hooks did)
+  const over = new AbortController()
+  const context = { after: hook => hooks.push(hook), mock: t.mock, signal: over.signal }
   const end = async () => {
-    for (const hook of hooks.splice(0)) {
-      try {
-        await hook()
-      } catch (error) {
-        return { threw: true, error }
+    try {
+      for (const hook of hooks.splice(0)) {
+        try {
+          await hook()
+        } catch (error) {
+          return { threw: true, error }
+        }
       }
+      return { threw: false }
+    } finally {
+      over.abort()
     }
-    return { threw: false }
   }
   t.after(end)
   return { context, end }
@@ -314,6 +320,42 @@ test('network helper: a test that makes a network while another one holds the he
   makeNetwork(second.context, { net, env: { ADMIN_CODE: 'second' } })
   assert.equal(process.env.ADMIN_CODE, 'second')
   assert.deepEqual(await second.end(), { threw: false })
+})
+
+test("network helper: a hook that throws before the helper's own does not leave the helper held", async t => {
+  const saved = process.env.ADMIN_CODE
+  const before = timers()
+  const failing = handedContext(t)
+  // registered first, so it runs first; node:test then runs none of the test's later hooks
+  failing.context.after(() => {
+    throw new Error('the test’s own hook')
+  })
+  const network = makeNetwork(failing.context, { net, env: { ADMIN_CODE: 'during' } })
+  assert.ok(network.socketIntervalId)
+  const ended = await failing.end()
+  assert.equal(ended.threw, true)
+  assert.equal(ended.error.message, 'the test’s own hook')
+  // the end of the test did what the skipped hook would have: timers, environment, and the helper is free
+  assert.deepEqual(timers(), before)
+  assert.equal(process.env.ADMIN_CODE, saved)
+  const next = handedContext(t)
+  makeNetwork(next.context, { net })
+  assert.deepEqual(await next.end(), { threw: false })
+})
+
+test('network helper: a network cannot be made for a test that is over', async t => {
+  const done = handedContext(t)
+  makeNetwork(done.context, { net })
+  assert.deepEqual(await done.end(), { threw: false })
+  // (from a hook registered late, say: it would be left running, with the environment it set)
+  const before = timers()
+  assert.throws(() => makeNetwork(done.context, { net, env: { ADMIN_CODE: 'late' } }), /after the end of its test/)
+  assert.deepEqual(timers(), before)
+  assert.notEqual(process.env.ADMIN_CODE, 'late')
+  // and the helper is not held by it
+  const next = handedContext(t)
+  makeNetwork(next.context, { net })
+  assert.deepEqual(await next.end(), { threw: false })
 })
 
 test('network helper: env varies a constant read at import, in one call that restores the environment', async t => {

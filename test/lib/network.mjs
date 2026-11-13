@@ -163,22 +163,26 @@ export async function importNetwork({ url, env }) {
 const CONCURRENT = 'the network helper holds process-wide state: tests that use it must not run concurrently'
 let holder = null
 const tests = new WeakMap()
+const ENDED = 'makeNetwork after the end of its test: the network would not be stopped, nor the environment put back'
 function testState(t) {
   let state = tests.get(t)
+  // (a test's state is used up at its end: a network made later, from another hook of the test, would be left)
+  if (state?.ended) throw new Error(ENDED)
   if (state) return state
   if (holder) throw new Error(CONCURRENT)
-  state = { networks: [], modules: new Map(), env: new Map() }
+  state = { networks: [], modules: new Map(), env: new Map(), ended: false, threw: false, failure: undefined }
   tests.set(t, state)
   holder = t
-  t.after(() => {
-    let threw = false
-    let failure
+  // the end, once
+  const end = () => {
+    if (state.ended) return
+    state.ended = true
     for (const network of state.networks) {
       try {
         network.stopForFatal()
       } catch (err) {
-        if (!threw) failure = err
-        threw = true
+        if (!state.threw) state.failure = err
+        state.threw = true
       } finally {
         clearTimeout(network.saveTimerId)
         clearInterval(network.socketIntervalId)
@@ -191,8 +195,17 @@ function testState(t) {
     }
     for (const [name, value] of state.env) setEnv(name, value)
     holder = null
-    if (threw) throw failure
+  }
+  t.after(() => {
+    end()
+    if (state.threw) throw state.failure
   })
+  // node:test runs no later hook of a test once one has thrown: a hook registered BEFORE the first makeNetwork that
+  // throws would leave all of this standing, and the next test would be refused as concurrent. The test's signal
+  // is aborted when the test is over, whatever its hooks did; what a stop threw is then no longer reported (the
+  // test has failed already, with the hook's own error). (A stand-in context without a signal, as a child process
+  // that makes one network and exits hands in, has no later test to protect.)
+  t.signal?.addEventListener('abort', end)
   return state
 }
 

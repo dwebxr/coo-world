@@ -211,6 +211,8 @@ test('own player: names decided while a statement of the row is held go out as o
   const release = deferred()
   s.f.store.holdUserUpdate = release.promise
   await modify({ name: 'first' }, 1000)
+  // (under way is not stored: the change counts as unwritten until its statement has come back)
+  assert.equal(s.f.network.userRows().unstored(), 1)
   // decided while the first statement is under way
   for (const name of ['second', 'third', 'last']) await modify({ name }, 1000)
   assert.deepEqual(

@@ -587,6 +587,7 @@ test('network helper: the ported files pass with those settings in their environ
     'persistedHydration',
     'playerCoalescing',
     'scriptChat',
+    'serverEvmWallet',
     'serverFileRead',
     'serverWallet',
     'sharedObjects',

@@ -2,18 +2,28 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import nacl from 'tweetnacl'
 import { PublicKey } from '@solana/web3.js'
-import moment from 'moment'
 import { privateKeyToAccount } from 'viem/accounts'
-import { connectionMethod, fakeWs, makeNetwork } from './lib/networkHarness.mjs'
+import { fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
 import { readPacket } from '../src/core/packets.js'
 import { Ranks } from '../src/core/extras/ranks.js'
-import { sanitizeName, isAvatarUrl } from '../src/core/extras/entityModifyPolicy.js'
-import * as solana from '../src/server/solana-gating.js'
-import * as evm from '../src/server/evm-gating.js'
 import { parseTipTokens } from '../src/core/extras/evmTokens.js'
 import { TRANSFER_TOPIC, encodeAddressWord, encodeUintWord } from '../src/core/extras/evmAbi.js'
 import { RpcError } from '../src/server/evmRpc.js'
 import { createTipWatcher } from '../src/server/evmTipWatcher.js'
+
+// The real network (test/lib/network.mjs). What the old harness injected into the class is given per test through
+// stand-in modules: the two gating modules (the bundle's own, with their switches set), the chain RPCs init() makes
+// (RpcError stays the bundle's), and a session token that is the id of its user. `solana` and `evm` are the
+// bundle's modules, evaluated in a known environment: their limits (TIP_WATCH_MAX from WS_MAX_SOCKETS) are the
+// network's, whatever the shell sets
+const SOLANA = 'src/server/solana-gating.js'
+const EVM = 'src/server/evm-gating.js'
+const EVM_RPC = 'src/server/evmRpc.js'
+const SESSION = 'src/core/utils-server.js'
+const net = await loadNetwork({ standIns: [SOLANA, EVM, EVM_RPC, SESSION] })
+const { solanaGating: solana, evmGating: evm } = net
+// (as the old harness's join had it: no token ever renewed, none taken for an expired session)
+const session = { readJWT: async userId => ({ userId }), expiredSessionUser: async () => null }
 
 const host = { WALLET_HOST: 'test.example', WALLET_URI: 'https://test.example' }
 const solanaEnabled = { ...solana, ...host, TOKEN_GATING_ENABLED: true, REQUIRED_TOKEN_AMOUNT: 10000 }
@@ -35,10 +45,12 @@ const clear = socket => {
 }
 
 // now: the mocked clock at which this network starts. null: the test's clock is already mocked (a second network
-// in one test, a restart)
+// in one test, a restart). env: the environment the network sees on top of the known one; rpcs: what
+// createEvmRpcs() gives init() (the real one by default: no RPC in the known environment); timers: the class's
+// setTimeout and clearTimeout (makeNetwork's `timers`)
 function fixture(
   t,
-  { evmGating = evmEnabled, balance = 0, evmHoldings, tipWatcher, timers, context, now = 1_000_000 } = {}
+  { evmGating = evmEnabled, balance = 0, evmHoldings, tipWatcher, timers, env, rpcs, now = 1_000_000 } = {}
 ) {
   if (now !== null) t.mock.timers.enable({ apis: ['Date'], now })
   const users = new Map()
@@ -52,19 +64,26 @@ function fixture(
     },
   }
   const chat = []
-  const network = makeNetwork(() => {}, {
-    tokenBalanceService: service,
-    evmHoldings,
-    tipWatcher,
-    context: { solanaGating: solanaEnabled, evmGating, process: { env: {} }, ...timers, ...context },
-  })
-  network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
-  network.db = () => ({
+  const db = () => ({
     where: (column, id) => ({
       first: async () => users.get(id),
       update: async patch => Object.assign(users.get(id), patch),
     }),
   })
+  const network = makeNetwork(t, {
+    net,
+    log: () => {},
+    init: { tokenBalanceService: service, evmHoldings, tipWatcher, db },
+    env,
+    timers,
+    modules: {
+      [SOLANA]: solanaEnabled,
+      [EVM]: evmGating,
+      [EVM_RPC]: rpcs ? { createEvmRpcs: rpcs } : null,
+      [SESSION]: session,
+    },
+  })
+  network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
   Object.assign(network.world, {
     settings: { serialize: () => ({}), effectiveRank: 0 },
     livekit: { serialize: async () => ({}), clearModifiers() {} },
@@ -90,18 +109,6 @@ function fixture(
       get: id => entities.get(id),
       serialize: () => [...entities.values()].map(player => ({ ...player.data })),
     },
-  })
-  network.onConnection = connectionMethod({
-    solanaGating: solanaEnabled,
-    evmGating,
-    moment,
-    sanitizeName,
-    isAvatarUrl,
-    isNumber: value => typeof value === 'number',
-    readJWT: async userId => ({ userId }),
-    HEALTH_MAX: 100,
-    process: { env: {} },
-    performance,
   })
   const f = { network, calls, events, chat }
   f.connect = async (id = 'visitor', rank = Ranks.VISITOR) => {
@@ -377,7 +384,8 @@ test('evm wallet: a socket that disconnected mid-verify gets no reply', async t 
 
 const third = privateKeyToAccount(`0x${'33'.repeat(32)}`)
 const modified = socket => replies(socket, 'onEntityModified')
-// ServerNetwork runs in its own vm realm: copy its objects before a strict deep comparison
+// a JSON copy before a strict deep comparison (from when ServerNetwork ran in a vm realm of its own; it now runs in
+// this one, and the copy changes nothing the comparisons see)
 const plain = value => JSON.parse(JSON.stringify(value))
 
 test('evm tips: receiving needs a verified wallet, broadcasts only a boolean and is rate limited', async t => {
@@ -688,7 +696,7 @@ function holdingsFromEnv(t, env) {
   }
   const lines = []
   t.mock.method(console, 'warn', line => lines.push(line))
-  const f = fixture(t, { context: { process: { env }, createEvmRpcs: () => new Map([[137, rpc]]) } })
+  const f = fixture(t, { env, rpcs: () => new Map([[137, rpc]]) })
   const spec = (contract, tokenId) => ({ chainId: 137, contract, standard: 'erc1155', tokenId })
   return { f, calls, lines, spec }
 }

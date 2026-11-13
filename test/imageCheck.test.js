@@ -12,10 +12,12 @@ import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   MODELS,
+  SIGNAL_BUDGET,
   STOPS,
   UsageError,
   buildRunArgs,
   classifyProcess,
+  commandKind,
   classifyTree,
   containerEnv,
   describeTree,
@@ -752,38 +754,77 @@ test('something this run created that cannot be removed is a failure', async () 
   assert.deepEqual(summary.failures, ['cleanup: the volume was not removed (exit 1: volume is in use)'])
 })
 
-test('an interruption ends the run without a verdict on the image, and the cleanup still runs', async () => {
-  // the docker function of the script: after the signal it refuses every command but the cleanup's
+test('an interruption ends the run without a verdict on the image, and the cleanup goes straight to the removals', async () => {
+  // the docker function of the script, in short: after the signal it refuses every command but the removals
   const inner = simulatedDocker({ commitHash: HASH })
-  let interrupted = false
-  const cleanups = []
-  const docker = async (args, options = {}) => {
-    if (interrupted && !options.cleanup) {
-      throw Object.assign(new Error('stopped by SIGINT'), { interrupted: 'SIGINT' })
+  let interrupted = null
+  const afterSignal = []
+  const docker = async args => {
+    if (interrupted && commandKind(args) !== 'remove') {
+      throw Object.assign(new Error(`stopped by ${interrupted}`), { interrupted })
     }
-    if (options.cleanup) cleanups.push(args)
+    if (interrupted) afterSignal.push(args)
     const result = await inner(args)
-    if (args[0] === 'exec' && args[2] === 'ps') interrupted = true
+    if (args[0] === 'exec' && args[2] === 'ps') interrupted = 'SIGINT'
     return result
   }
+  const commands = []
+  const said = []
   const summary = await runImageCheck({
     docker,
     names: NAMES,
     repoDir: '/repo',
     commitHash: HASH,
     env: ENV,
-    report: { command: () => {}, info: () => {} },
+    report: { command: args => commands.push(args), info: text => said.push(text) },
     sleep: async () => {},
+    interrupted: () => interrupted,
   })
   assert.equal(summary.ok, false)
   assert.equal(summary.interrupted, 'SIGINT')
   assert.deepEqual(summary.failures, [])
-  assert.deepEqual(cleanups.map(brief), [
-    'logs --timestamps sigterm',
+  // the running container's log is not taken: the removals come first, and only they are printed after the signal
+  assert.deepEqual(afterSignal.map(brief), ['rm -f sigterm', 'volume rm world', 'image rm RUN:check'])
+  assert.deepEqual(commands.slice(-4).map(brief), [
+    'exec sigterm ps -o pid,ppid,user,args',
     'rm -f sigterm',
     'volume rm world',
     'image rm RUN:check',
   ])
+  assert.ok(said.includes(`  (${NAMES.containers.sigterm}'s log is not taken after SIGINT: the removals go first)`))
+  assert.deepEqual(
+    summary.cleanup.map(step => step.code),
+    [0, 0, 0]
+  )
+})
+
+test('what a signal does to each docker command of a run', async () => {
+  const { commands } = await simulate()
+  const kinds = commands.map(args => [brief(args).split(' ').slice(0, 2).join(' '), commandKind(args)])
+  // the removals are the cleanup's three, last; the creating commands are the volume and the three containers
+  assert.deepEqual(
+    kinds.filter(([, kind]) => kind === 'remove').map(([command]) => command),
+    ['rm -f', 'volume rm', 'image rm']
+  )
+  assert.deepEqual(
+    kinds.filter(([, kind]) => kind === 'create').map(([command]) => command),
+    ['volume create', 'run -d', 'run -d', 'run -d']
+  )
+  // everything else only reads or waits, the build and the stops among them
+  const waiting = new Set(kinds.filter(([, kind]) => kind === 'wait').map(([command]) => command.split(' ')[0]))
+  assert.deepEqual([...waiting].sort(), ['build', 'container', 'exec', 'image', 'logs', 'stop', 'version'])
+  assert.equal(commandKind(['image', 'inspect', '--format', '{{json .Config}}', 'x']), 'wait')
+})
+
+test('the cleanup after a signal fits in GitHub\u2019s cancellation: SIGTERM after 7.5 s, the tree killed at 10 s', () => {
+  const budget = SIGNAL_BUDGET
+  assert.equal(budget.secondSignalMs, 7500)
+  assert.equal(budget.treeKilledMs, 10_000)
+  // a creating command's wait and the three removals, one after the other
+  assert.equal(budget.createWaitMs + 3 * budget.removeTimeoutMs, budget.cleanupMs)
+  assert.ok(budget.cleanupMs <= budget.secondSignalMs)
+  // a removal that ran out of time is killed after killAfterMs: still before the tree is
+  assert.ok(budget.cleanupMs + budget.killAfterMs < budget.treeKilledMs)
 })
 
 test('a docker command that throws (not found, out of time) is a failed step', async () => {
@@ -1037,6 +1078,117 @@ test('a SIGINT to the script during the build ends the build, cleans up and exit
     fs.rmSync(fake.dir, { recursive: true, force: true })
   }
 })
+
+// the script as a process of its own, its output collected as it comes
+function spawnScript(args, env) {
+  const child = spawn(process.execPath, [script, ...args], {
+    env: { ...process.env, ...env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  const run = { child, output: '' }
+  child.stdout.on('data', data => (run.output += data))
+  child.stderr.on('data', data => (run.output += data))
+  run.ended = new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal, at: Date.now() })))
+  // (a script that never ends would hold the test run: it is killed long after any bound asserted here)
+  const killer = setTimeout(() => child.kill('SIGKILL'), 60_000)
+  run.ended.then(() => clearTimeout(killer))
+  return run
+}
+async function waitFor(check, what, ms = 30_000) {
+  const deadline = Date.now() + ms
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`no ${what} within ${ms} ms`)
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+}
+const isAlive = pid => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return err.code === 'EPERM'
+  }
+}
+const readIfThere = file => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '')
+// the commands given to docker after the first `docker stop`, as `stop -t`, `rm -f`, …
+const afterStop = fake => {
+  const calls = fake.calls().map(args => args.slice(0, 2).join(' '))
+  return calls.slice(calls.indexOf('stop -t') + 1)
+}
+
+test(
+  'a SIGINT while `docker stop` hangs: the stop is killed, the removals run at once and in order, exit 130',
+  posixOnly,
+  async () => {
+    const fake = fakeDockerBin('hang-stop')
+    try {
+      const summaryFile = path.join(fake.dir, 'image-check.json')
+      const run = spawnScript(['--summary', summaryFile], fake.env)
+      await waitFor(() => readIfThere(path.join(fake.dir, 'stop.pid')), 'docker stop')
+      const stopPid = Number(readIfThere(path.join(fake.dir, 'stop.pid')))
+      const signalled = Date.now()
+      run.child.kill('SIGINT')
+      const end = await run.ended
+      assert.deepEqual({ code: end.code, signal: end.signal }, { code: 130, signal: null }, run.output.slice(-2000))
+      // the stop was told to end, did not, and was killed
+      assert.equal(readIfThere(path.join(fake.dir, 'stop.signals')), 'SIGTERM\n')
+      assert.equal(isAlive(stopPid), false, 'the hung `docker stop` is not running any more')
+      // after the stop: the three removals, once each, in this order, and nothing else (no log is taken first)
+      assert.deepEqual(afterStop(fake), ['rm -f', 'volume rm', 'image rm'])
+      // The bound GitHub sets is 10 s. This one is looser, for a loaded machine, and still far below the 40 s a
+      // script that waited for the stop's own timeout would take.
+      assert.ok(end.at - signalled < 15_000, `${end.at - signalled} ms`)
+      assert.match(run.output, /\[image-check\] SIGINT: ending the run and removing what it created/)
+      assert.match(run.output, /\[image-check\] stopped by SIGINT after \d+ s/)
+      const summary = JSON.parse(fs.readFileSync(summaryFile, 'utf8'))
+      assert.equal(summary.interrupted, 'SIGINT')
+      assert.deepEqual(summary.failures, [])
+      assert.deepEqual(
+        summary.cleanup.map(step => [step.what, step.code]),
+        [
+          ['the containers', 0],
+          ['the volume', 0],
+          ['the image tag', 0],
+        ]
+      )
+    } finally {
+      fs.rmSync(fake.dir, { recursive: true, force: true })
+    }
+  }
+)
+
+test(
+  'a second signal during the cleanup does not stop it, and the first signal gives the exit code (143)',
+  posixOnly,
+  async () => {
+    const fake = fakeDockerBin('hang-stop')
+    try {
+      const summaryFile = path.join(fake.dir, 'image-check.json')
+      // `docker rm` waits for the file `release`, so that the second signal surely comes while it runs
+      const run = spawnScript(['--summary', summaryFile], { ...fake.env, FAKE_DOCKER_HOLD_RM: '1' })
+      await waitFor(() => readIfThere(path.join(fake.dir, 'stop.pid')), 'docker stop')
+      run.child.kill('SIGTERM')
+      await waitFor(() => fake.calls().some(args => args[0] === 'rm'), 'docker rm')
+      run.child.kill('SIGINT')
+      await waitFor(() => run.output.includes('SIGINT again'), 'the second signal')
+      fs.writeFileSync(path.join(fake.dir, 'release'), '')
+      const end = await run.ended
+      assert.deepEqual({ code: end.code, signal: end.signal }, { code: 143, signal: null }, run.output.slice(-2000))
+      assert.match(run.output, /\[image-check\] SIGINT again: the cleanup goes on \(it is over within 7\.5 s/)
+      // the removal in flight ran to its end, and the two after it ran
+      assert.ok(fs.existsSync(path.join(fake.dir, 'rm.done')), '`docker rm` was not cut short')
+      assert.deepEqual(afterStop(fake), ['rm -f', 'volume rm', 'image rm'])
+      const summary = JSON.parse(fs.readFileSync(summaryFile, 'utf8'))
+      assert.equal(summary.interrupted, 'SIGTERM')
+      assert.deepEqual(
+        summary.cleanup.map(step => step.code),
+        [0, 0, 0]
+      )
+    } finally {
+      fs.rmSync(fake.dir, { recursive: true, force: true })
+    }
+  }
+)
 
 // --- the workflow ---------------------------------------------------------------------------------------------
 

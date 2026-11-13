@@ -16,6 +16,10 @@
 //   g. a third container on the same volume becomes healthy: the world the first two wrote loads;
 //   h. always, also after a failure or a SIGINT/SIGTERM to this script: the containers, the volume and the image
 //      tag of this run are removed. Their names carry a random id of the run; nothing else is touched.
+// A SIGINT or SIGTERM (a cancelled workflow run) ends the docker command in flight unless it creates or removes
+// something, and the cleanup starts at once; a second signal does not stop the cleanup. Each of its commands is
+// bounded so that it is over before GitHub kills the process tree: SIGNAL_BUDGET in the library says how. The exit
+// code is then 130 (SIGINT) or 143 (SIGTERM), after the first signal.
 // A failed stop (e, f) does not end the run: the remaining steps still say what they see, and the exit code is 1.
 //
 // Asserted: the build; `healthy` three times; a `node build/index.js` process; /status carrying the COMMIT_HASH;
@@ -39,7 +43,9 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   COMMAND_TIMEOUT_MS,
+  SIGNAL_BUDGET,
   UsageError,
+  commandKind,
   containerEnv,
   formatCommand,
   parseArgs,
@@ -50,7 +56,8 @@ import {
 
 const USAGE = 'usage: node scripts/image-check.mjs [--model=current] [--summary <file>] [--logs <dir>] [--dry-run]'
 const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 }
-// how long a docker command that ran out of time gets to end on SIGTERM before it is killed
+// how long a docker command that ran out of time gets to end on SIGTERM before it is killed (after a signal to this
+// script: SIGNAL_BUDGET.killAfterMs)
 const KILL_AFTER_MS = 5000
 // the most of one command's output that is kept
 const OUTPUT_LIMIT = 4 * 1024 * 1024
@@ -68,7 +75,8 @@ const commitHash = `image-check-${id}`
 const env = containerEnv(`made-up-for-this-run-${crypto.randomBytes(16).toString('hex')}`)
 
 let interrupted = null // 'SIGINT' or 'SIGTERM' once one has arrived
-let running = null // { child, interruptible } while a docker command runs
+// what a signal has to reach: the docker commands in flight and the wait between two health polls
+const inFlight = new Set()
 
 function interruption() {
   const err = new Error(`stopped by ${interrupted}`)
@@ -78,35 +86,66 @@ function interruption() {
 
 // One docker command: an argument array given to the docker binary, never a shell string. Resolves with its exit
 // code and output whatever the code is; rejects when docker cannot be started, when the command ran out of time,
-// and (outside the cleanup) once this script was told to stop.
-function docker(
-  args,
-  { timeoutMs = COMMAND_TIMEOUT_MS, inherit = false, interruptible = false, cleanup = false } = {}
-) {
-  if (interrupted && !cleanup) return Promise.reject(interruption())
+// and once this script was told to stop, unless it is one of the cleanup's removals (commandKind):
+//   'wait'    not started after a signal; in flight, it gets SIGTERM (SIGKILL after killAfterMs) and the promise
+//             rejects at once, without waiting for the process to end
+//   'create'  not started after a signal; in flight, it has createWaitMs to finish, and is then ended the same way
+//   'remove'  started after a signal too, and never ended by one: its time is cut to removeTimeoutMs from the signal
+// The creating and removing commands run in a process group of their own, so that a Ctrl-C in a terminal (which
+// the terminal sends to the whole foreground group) reaches this script only.
+function docker(args, { timeoutMs = COMMAND_TIMEOUT_MS, inherit = false } = {}) {
+  const kind = commandKind(args)
+  if (interrupted && kind !== 'remove') return Promise.reject(interruption())
+  if (interrupted) timeoutMs = Math.min(timeoutMs, SIGNAL_BUDGET.removeTimeoutMs)
   return new Promise((resolve, reject) => {
     const began = Date.now()
     const output = inherit ? 'inherit' : 'pipe'
-    const child = spawn('docker', args, { stdio: ['ignore', output, output] })
-    const entry = { child, interruptible }
-    running = entry
+    const child = spawn('docker', args, { stdio: ['ignore', output, output], detached: kind !== 'wait' })
     let stdout = ''
     let stderr = ''
-    let timedOut = false
+    let settled = false
+    let timer = null
     child.stdout?.on('data', data => (stdout = (stdout + data).slice(-OUTPUT_LIMIT)))
     child.stderr?.on('data', data => (stderr = (stderr + data).slice(-OUTPUT_LIMIT)))
-    const timer = setTimeout(() => {
-      timedOut = true
-      child.kill('SIGTERM')
-      setTimeout(() => child.kill('SIGKILL'), KILL_AFTER_MS).unref()
-    }, timeoutMs)
-    const done = () => {
+    const entry = {}
+    const settle = (fn, value) => {
+      if (settled) return
+      settled = true
       clearTimeout(timer)
-      if (running === entry) running = null
+      inFlight.delete(entry)
+      fn(value)
     }
+    // (the process is not waited for: the SIGKILL timer does not keep this script alive, the child's handle does)
+    const end = () => {
+      child.kill('SIGTERM')
+      setTimeout(() => child.kill('SIGKILL'), interrupted ? SIGNAL_BUDGET.killAfterMs : KILL_AFTER_MS).unref()
+    }
+    const limit = ms => {
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        end()
+        settle(reject, new Error(`\`docker ${formatCommand(args)}\` was not done within ${ms / 1000} s`))
+      }, ms)
+    }
+    limit(timeoutMs)
+    entry.interrupt = () => {
+      if (kind === 'wait') {
+        end()
+        settle(reject, interruption())
+      } else if (kind === 'create') {
+        clearTimeout(timer)
+        timer = setTimeout(() => {
+          end()
+          settle(reject, interruption())
+        }, SIGNAL_BUDGET.createWaitMs)
+      } else {
+        limit(Math.min(SIGNAL_BUDGET.removeTimeoutMs, Math.max(0, began + timeoutMs - Date.now())))
+      }
+    }
+    inFlight.add(entry)
     child.once('error', err => {
-      done()
-      reject(
+      settle(
+        reject,
         new Error(
           err.code === 'ENOENT'
             ? 'the `docker` command was not found: this check needs Docker (it runs in the image.yml workflow)'
@@ -115,24 +154,44 @@ function docker(
       )
     })
     child.once('close', (code, signal) => {
-      done()
-      if (interrupted && !cleanup) return reject(interruption())
-      if (timedOut) {
-        return reject(new Error(`\`docker ${formatCommand(args)}\` was not done within ${timeoutMs / 1000} s`))
-      }
-      resolve({ code: code ?? `signal ${signal}`, stdout, stderr, ms: Date.now() - began })
+      // (what a creating command made is removed by the cleanup in any case: after a signal it only ends the run)
+      if (interrupted && kind !== 'remove') return settle(reject, interruption())
+      settle(resolve, { code: code ?? `signal ${signal}`, stdout, stderr, ms: Date.now() - began })
     })
+  })
+}
+
+// the wait between two health polls: a signal ends it at once
+function sleep(ms) {
+  if (interrupted) return Promise.reject(interruption())
+  return new Promise((resolve, reject) => {
+    const entry = {
+      interrupt() {
+        clearTimeout(timer)
+        inFlight.delete(entry)
+        reject(interruption())
+      },
+    }
+    const timer = setTimeout(() => {
+      inFlight.delete(entry)
+      resolve()
+    }, ms)
+    inFlight.add(entry)
   })
 }
 
 for (const signal of Object.keys(SIGNAL_EXIT_CODES)) {
   process.on(signal, () => {
-    if (interrupted) return // (the cleanup of the first one is running)
+    if (interrupted) {
+      // (GitHub's SIGTERM 7.5 s after its SIGINT, or a second Ctrl-C: the cleanup is bounded, and goes on)
+      console.error(
+        `[image-check] ${signal} again: the cleanup goes on (it is over within ${SIGNAL_BUDGET.cleanupMs / 1000} s of the first signal)`
+      )
+      return
+    }
     interrupted = signal
     console.error(`[image-check] ${signal}: ending the run and removing what it created`)
-    // The build is the one long command: it is told to end. A short one is left to finish, so that what it was
-    // creating exists (or does not) by the time the cleanup removes it by name.
-    if (running?.interruptible) running.child.kill('SIGTERM')
+    for (const entry of [...inFlight]) entry.interrupt()
   })
 }
 
@@ -193,6 +252,8 @@ async function main() {
       env,
       report: { command: args => say(`$ docker ${formatCommand(args)}`), info: say },
       saveLog,
+      sleep,
+      interrupted: () => interrupted,
     })
   } catch (err) {
     // (runImageCheck reports failed steps itself: this is a mistake in the script)

@@ -25,6 +25,51 @@ export const HEALTH_INTERVAL_MS = 1000
 export const BUILD_TIMEOUT_MS = 25 * 60 * 1000
 export const COMMAND_TIMEOUT_MS = 60 * 1000
 
+// ---------------------------------------------------------------------------------------------------------------
+// A SIGINT or SIGTERM to the script (scripts/image-check.mjs). GitHub cancels a run that way (docs.github.com,
+// "Workflow cancellation"): SIGINT to the step's entry process (Node, through the `exec` in image.yml); SIGTERM
+// 7.5 s later if it is still running; the process tree is killed 2.5 s after that, 10 s after the first signal.
+// What the run created has to be removed within that, so on the first signal the docker command in flight is ended
+// (unless it creates something, or is one of the removals), the cleanup starts at once, and each of its commands is
+// bounded. The worst case, from the first signal:
+//   a `docker run -d` or `docker volume create` in flight finishes, or is ended    createWaitMs          1.5 s
+//   `docker rm -f` of the containers, `docker volume rm`, `docker image rm`        3 x removeTimeoutMs   6.0 s
+//                                                         the cleanup is over by   cleanupMs             7.5 s
+// which is when GitHub's SIGTERM comes (a second signal changes nothing: the cleanup goes on). A command that ran
+// out of time gets SIGTERM, and SIGKILL killAfterMs later, by 8.5 s; the tree is killed at 10 s.
+// ---------------------------------------------------------------------------------------------------------------
+export const SIGNAL_BUDGET = {
+  // GitHub's: the SIGTERM after the SIGINT, and the kill of the process tree
+  secondSignalMs: 7500,
+  treeKilledMs: 10_000,
+  // a command that only reads or waits, in flight at the signal: SIGTERM at once, SIGKILL this much later. Its end
+  // is not waited for: the cleanup starts at once
+  killAfterMs: 1000,
+  // a command that creates something, in flight at the signal: this long to finish, so that what it makes exists
+  // (or not) when the cleanup removes it by name; then it is ended like the others
+  createWaitMs: 1500,
+  // each of the cleanup's three removals, after a signal (without one: COMMAND_TIMEOUT_MS)
+  removeTimeoutMs: 2000,
+  // the sum of the two above, by which the cleanup is over
+  cleanupMs: 7500,
+}
+
+/**
+ * What a docker command does, and so what a SIGINT/SIGTERM to the script does to it (scripts/image-check.mjs):
+ *   'remove'  the cleanup's `rm -f`, `volume rm`, `image rm`: never interrupted, and run after a signal too, each
+ *             within SIGNAL_BUDGET.removeTimeoutMs
+ *   'create'  `run -d`, `volume create`: not started after a signal; one in flight gets createWaitMs to finish
+ *   'wait'    the rest only reads or waits (`version`, `build`, `image inspect`, `container inspect`, `exec`, `logs`,
+ *             `stop`, `events`): not started after a signal, and one in flight is ended at once. `build` makes the
+ *             image tag and `stop` stops a container, but the cleanup removes both in whatever state they are left.
+ */
+export function commandKind(args) {
+  const [first, second] = args
+  if (first === 'rm' || ((first === 'volume' || first === 'image') && second === 'rm')) return 'remove'
+  if (first === 'run' || (first === 'volume' && second === 'create')) return 'create'
+  return 'wait'
+}
+
 export class UsageError extends Error {}
 // a step that did not do what the rest needs: the run goes straight to its cleanup
 class StepFailed extends Error {}
@@ -476,10 +521,12 @@ export function simulatedDocker({ commitHash = 'simulated', respond = () => unde
  * Builds the image, runs it three times on one volume and stops it. Resolves with the summary (`ok`, `failures` and
  * what was seen); it does not throw for a failed step. Whatever happens, what it created is removed at the end.
  *
- *   docker(args, { timeoutMs, inherit, interruptible, cleanup }) -> { code, stdout, stderr, ms }
+ *   docker(args, { timeoutMs, inherit }) -> { code, stdout, stderr, ms }
  *     the docker CLI. It may throw: an error with `interrupted` set (the signal's name) ends the run without
- *     counting as a failure of the image; any other error is a failed step. `cleanup: true` marks the commands of
- *     the cleanup, which have to run even after an interruption.
+ *     counting as a failure of the image; any other error is a failed step. What a signal does to a command is the
+ *     caller's to decide, by commandKind(args).
+ *   interrupted() -> the signal's name once the script was told to stop, else null: the cleanup then goes straight
+ *     to the removals. sleep(ms) may throw such an error too (the wait between health polls).
  *   report.command(args) / report.info(text): the output. saveLog(role, text): a container's whole log.
  */
 export async function runImageCheck({
@@ -493,6 +540,7 @@ export async function runImageCheck({
   saveLog = () => {},
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
   now = Date.now,
+  interrupted = () => null,
 }) {
   const model = modelFor(modelName)
   const summary = {
@@ -516,7 +564,8 @@ export async function runImageCheck({
     report.info(`FAILED: ${reason}`)
   }
   const run = (args, { quiet = false, ...options } = {}) => {
-    if (!quiet) report.command(args)
+    // (after a signal only the removals run: another command is not printed, and the docker function refuses it)
+    if (!quiet && !(interrupted() && commandKind(args) !== 'remove')) report.command(args)
     return docker(args, options)
   }
   const said = result => tailOf(result.stderr || result.stdout, 6, 1200) || 'no output'
@@ -539,9 +588,9 @@ export async function runImageCheck({
   const indented = text => report.info(text.replace(/^/gm, '    '))
 
   // The container's whole output, kept for the artifact. `final` once the container has stopped.
-  const collectLog = async (record, { final = false, cleanup = false } = {}) => {
+  const collectLog = async (record, { final = false } = {}) => {
     if (logs.get(record.name)?.final) return logs.get(record.name).text
-    const result = await run(['logs', '--timestamps', record.name], { cleanup })
+    const result = await run(['logs', '--timestamps', record.name])
     if (result.code !== 0) {
       report.info(`  (no logs: exited ${result.code}: ${said(result)})`)
       return logs.get(record.name)?.text ?? ''
@@ -695,7 +744,7 @@ export async function runImageCheck({
     const remove = async (what, args, state) => {
       let result
       try {
-        result = await run(args, { cleanup: true })
+        result = await run(args)
       } catch (err) {
         result = { code: null, stdout: '', stderr: err.message }
       }
@@ -706,9 +755,14 @@ export async function runImageCheck({
       else report.info(`  (${what}: exit ${result.code}; its creation had not finished)`)
     }
     for (const record of summary.containers) {
-      if (created.containers.get(record.name) !== 'yes') continue
+      if (created.containers.get(record.name) !== 'yes' || logs.get(record.name)?.final) continue
+      // (after a signal the removals go first: the logs not yet taken are left)
+      if (interrupted()) {
+        report.info(`  (${record.name}'s log is not taken after ${interrupted()}: the removals go first)`)
+        continue
+      }
       // (a container that was never stopped here: its log is taken before it goes)
-      await collectLog(record, { cleanup: true }).catch(() => {})
+      await collectLog(record).catch(() => {})
     }
     const containers = [...created.containers.keys()]
     const certain = [...created.containers.values()].every(state => state === 'yes') ? 'yes' : 'maybe'
@@ -728,7 +782,6 @@ export async function runImageCheck({
     const built = await must(['build', '--build-arg', `COMMIT_HASH=${commitHash}`, '-t', names.image, repoDir], {
       timeoutMs: BUILD_TIMEOUT_MS,
       inherit: true,
-      interruptible: true,
     })
     created.image = 'yes'
     summary.image = { tag: names.image, buildSeconds: Math.round(built.ms / 1000), config: null }

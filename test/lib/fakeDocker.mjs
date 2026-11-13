@@ -5,6 +5,9 @@
 // FAKE_DOCKER_MODE changes one thing:
 //   killed      the first container does not end on SIGTERM: exit code 137 and no line of the final save
 //   hang-build  `docker build` never returns (until it is signalled)
+//   hang-stop   `docker stop` never returns and ignores SIGTERM (an unresponsive daemon): it writes its pid to
+//               stop.pid and each SIGTERM it gets to stop.signals. With FAKE_DOCKER_HOLD_RM set, `docker rm` waits
+//               until the file `release` exists (at most 1.5 s), and writes rm.done when it has waited.
 import fs from 'node:fs'
 import path from 'node:path'
 import { simulatedDocker } from '../../scripts/lib/imageCheck.mjs'
@@ -21,6 +24,18 @@ if (args[0] === 'build') {
   saved.commitHash = args.find(arg => arg.startsWith('COMMIT_HASH='))?.slice('COMMIT_HASH='.length)
   process.stderr.write('#1 [internal] load build definition from Dockerfile\n')
   if (mode === 'hang-build') await new Promise(() => setInterval(() => {}, 1000))
+}
+if (args[0] === 'stop' && mode === 'hang-stop') {
+  process.on('SIGTERM', () => fs.appendFileSync(path.join(dir, 'stop.signals'), 'SIGTERM\n'))
+  fs.writeFileSync(path.join(dir, 'stop.pid'), String(process.pid))
+  await new Promise(() => setInterval(() => {}, 1000))
+}
+if (args[0] === 'rm' && process.env.FAKE_DOCKER_HOLD_RM) {
+  const until = Date.now() + 1500
+  while (!fs.existsSync(path.join(dir, 'release')) && Date.now() < until) {
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  fs.writeFileSync(path.join(dir, 'rm.done'), '')
 }
 
 const stopped = new Map(saved.stopped)

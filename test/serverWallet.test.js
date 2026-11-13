@@ -1023,6 +1023,9 @@ test('wallet grant: a new sign-in ends it, a request the cooldown refuses does n
   assert.equal(socket.player.data.rank, Ranks.BUILDER)
   assert.equal(socket.player.tokenGrantedRank, true)
   assert.equal(gating.walletOf(socket.id), address)
+  // the others are told of the rank the grant gave (nothing looked at this before: with the grant's broadcast
+  // removed, every wallet test passed)
+  assert.deepEqual(replies(watcher, 'onEntityModified'), [{ id: socket.player.data.id, rank: Ranks.BUILDER }])
   clear(socket)
   clear(watcher)
   // inside the cooldown: refused, and nothing is taken

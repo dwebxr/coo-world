@@ -2,7 +2,8 @@
 // ledger (writeLedger.js), through the network's write. It reads every file of src/server with its subfolders (the
 // network's modules of src/server/network/ among them), core/Socket.js and the Server*/Apps systems, and fails on:
 // - a `send` or `ping` called on anything but the receivers allowed below: `x.send(…)`, `x?.send(…)`,
-//   `x['send'](…)`, `` x[`send`](…) `` (a computed key that is a string, or a template without substitutions);
+//   `x['send'](…)`, `` x[`send`](…) `` (a computed key that is a string, or a template without substitutions); a
+//   receiver is its whole expression, so a call's result is not the name it is called by (`socket().send(…)`);
 // - a `send` or `ping` member referred to without being called there, whatever its object (`x.send.bind(x)`,
 //   `x.send.call(x, …)`, `const s = x.send`), or taken out of an object (`const { send } = x`);
 // - a transport handed to a function as its `this` (`f.call(ws, …)`, `f.apply(ws, …)`, `f.bind(ws)`,
@@ -11,14 +12,15 @@
 //   it is not the network's (the class's members and the module's top-level functions have it, with the arrows inside
 //   them; a non-arrow function nested in another has its own, and the module's top level has none); and `socket` or
 //   `tSocket` when any binding or write of that name in the unit of the send or ping (the class member, field's
-//   function or module's top-level function that holds it, nested functions included, whatever each resolves to) is
-//   not an origin on the list at refusedWrite below, the ones today's class binds its sent-to connections by: a plain
+//   function or module's top-level function that holds it, nested functions included, whatever each resolves to) is not
+//   an origin on the list at refusedWrite below, the ones today's class binds its sent-to connections by: a plain
 //   parameter of the unit; a plain parameter of a function passed directly to `this.sockets.forEach`, or to `forEach`
-//   of a local array declared in the unit's body that only receives that name from such parameters; a declaration or
-//   assignment of `this.sockets.get(…)`. Where an origin reads `this.sockets`, that `this` is the unit's own. A
-//   binding or write of either name at a network module's top level is refused outright. Nothing on the right of a
-//   binding is followed, and no use is matched to the binding it resolves to: shadowing, or a write in a nested
-//   function, can only refuse more.
+//   of a local array declared in the unit's body that only receives that name from such parameters (its `forEach`
+//   callbacks arrows written there with one plain parameter; the array not read or written by index, assigned, spread,
+//   passed or called by another method); a declaration or assignment of `this.sockets.get(…)`. Where an origin reads
+//   `this.sockets`, that `this` is the unit's own. A binding or write of either name at a network module's top level is
+//   refused outright. Nothing on the right of a binding is followed, and no use is matched to the binding it resolves
+//   to: shadowing, or a write in a nested function, can only refuse more.
 // The parser is @babel/parser. It is a tripwire for a maintainer's mistake, not a proof. What it cannot see, said
 // plainly:
 // - a transport handed in as an argument where an allowed parameter takes it (`tell(ws)` for `function tell(socket)`,
@@ -71,11 +73,13 @@ const keyOf = member => {
   }
   return null
 }
+// what a send or ping is called on, as text: `socket`, `this`, `reply.code()` (a call's result is marked `()`, so that
+// `socket().send(…)` is not taken for `socket.send(…)`)
 const receiver = node => {
   if (node.type === 'Identifier') return node.name
   if (node.type === 'ThisExpression') return 'this'
   if (isMember(node)) return `${receiver(node.object)}.${keyOf(node) ?? '?'}`
-  if (isCall(node)) return receiver(node.callee)
+  if (isCall(node)) return `${receiver(node.callee)}()`
   return '?'
 }
 // a transport: `ws`, or an expression that ends in `.ws`
@@ -217,11 +221,13 @@ function ownThis(parents, unit) {
 }
 
 // a local array of the unit's that only ever holds connections, for `forEach` callbacks whose parameter is `name`
-// (socket or tSocket): `const <array> = []` as a statement of the unit's own body (so that no other binding of that
-// name is seen in the unit), and every other use of the array's name in the unit `<array>.forEach(…)` or
-// `<array>.push(<name>)` made in a function whose own plain parameter is `name` (so the element is one of the unit's
-// bindings of `name`, every one of which is checked with this one, and not a binding outside the unit):
-// checkSockets' `dead`
+// (socket or tSocket), in checkSockets' shape exactly: `const <array> = []` as a statement of the unit's own body (so
+// that no other binding of that name is seen in the unit), and every other use of the array's name in the unit
+// either `<array>.push(<name>)` made in a function whose own plain parameter is `name` (so the element is one of the
+// unit's bindings of `name`, every one of which is checked with this one, and not a binding outside the unit) or
+// `<array>.forEach(…)` with one argument, an arrow written there with one plain parameter (no index or array
+// parameter, no `arguments`, no callback passed by name); not read or written by index, assigned, spread, passed, or
+// called by another method. checkSockets' `dead`
 function onlyConnections(unit, array, name) {
   const body = unitFunction(unit)?.body
   if (body?.type !== 'BlockStatement') return false
@@ -252,7 +258,11 @@ function onlyConnections(unit, array, name) {
           parents.some(
             at => isFunction(at) && at.params.some(param => param.type === 'Identifier' && param.name === name)
           )
-        if (!(key === 'forEach' || (key === 'push' && pushed))) other++
+        const inline =
+          argument?.type === 'ArrowFunctionExpression' &&
+          argument.params.length === 1 &&
+          argument.params[0].type === 'Identifier'
+        if (!((key === 'forEach' && inline) || (key === 'push' && pushed))) other++
       } else if (!(isMember(parent) && parent.property === node && !parent.computed)) other++
     }
     const inner = [...parents, node]
@@ -446,6 +456,9 @@ test("server writes: the network's own receivers are allowed in its files only, 
 
 test('server writes: what escaped before (an alias, an extracted or bound send, a transport as this, a template key) is caught', () => {
   const file = 'src/server/network/tips.js'
+  // checkSockets' local array, filled from the connections and sent to, with something in between
+  const withDead = between =>
+    `export function f(peer, data) {\n  const dead = []\n  this.sockets.forEach(socket => dead.push(socket))\n${between}\n  dead.forEach(socket => socket.send(data))\n}`
   const caught = {
     'an alias under an allowed name': 'export function f(ws, data) {\n  const socket = ws\n  socket.send(data)\n}',
     'an alias of a transport field':
@@ -530,6 +543,24 @@ test('server writes: what escaped before (an alias, an extracted or bound send, 
       'export function f() {\n  const dead = []\n  ;[this.raw].forEach(tSocket => dead.push(tSocket))\n  dead.forEach(socket => socket.send(1))\n}',
     "a local array declared in a block, under a module's of that name":
       'const dead = [raw]\nexport function f() {\n  {\n    const dead = []\n  }\n  dead.forEach(socket => socket.send(1))\n}',
+    'a callback of the local array with its index and array (Codex)': withDead(
+      '  dead.forEach((socket, i, array) => {\n    array[i] = socket.ws\n  })'
+    ),
+    'a function callback of the local array, through arguments': withDead(
+      '  dead.forEach(function (socket) {\n    arguments[2][0] = peer\n  })'
+    ),
+    'a callback of the local array passed by name': withDead('  dead.forEach(swap)'),
+    'the local array read by index': withDead('  const first = dead[0]'),
+    'the local array written by index': withDead('  dead[0] = peer'),
+    'the local array given another value': withDead('  dead = [peer]'),
+    'the local array spread': withDead('  const all = [...dead, peer]'),
+    'spread into the local array': withDead('  dead.push(...peer)'),
+    'the local array passed on': withDead('  fill(dead)'),
+    'another method of the local array': withDead('  dead.splice(0, 0, peer)'),
+    'a call result under an allowed name (Codex)': 'export function f(socket, data) {\n  socket().send(data)\n}',
+    'the same, called optionally': 'export function f(socket, data) {\n  socket?.()?.send(data)\n}',
+    'the same in the class': 'class N {\n  tell(tSocket) {\n    tSocket().ping()\n  }\n}',
+    'a call of this': 'export function f(data) {\n  this().send(data)\n}',
     // shapes no unit that sends on the name has today: not on the list
     'its connections, iterated':
       'export function f() {\n  for (const socket of this.sockets.values()) socket.ping()\n}',
@@ -551,6 +582,7 @@ test('server writes: what escaped before (an alias, an extracted or bound send, 
     'a callback of its connections': 'export function f() {\n  this.sockets.forEach(socket => socket.send("x"))\n}',
     'a local array of connections (checkSockets)':
       'export function f() {\n  const dead = []\n  this.sockets.forEach(socket => {\n    if (socket.alive) socket.ping()\n    else dead.push(socket)\n  })\n  dead.forEach(socket => socket.disconnect())\n}',
+    'the same filled from the connections, then sent to': withDead(''),
   }
   for (const [what, source] of Object.entries(fine)) {
     assert.deepEqual(bypasses(file, source), [], `${what}:\n${source}`)

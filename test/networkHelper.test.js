@@ -75,10 +75,14 @@ test('network helper: a packet from a socket the test makes goes through the rea
   socket.ws.emit('message', writeClientPacket('ping', 42))
   network.flush()
   assert.deepEqual(socket.ws.packets.map(readPacket), [['onPong', 42]])
-  // the network's own lines go to `log`
+  // the network's own lines go to `log`: its inbound gate's
   socket.ws.emit('message', Uint8Array.of(0xff))
   network.flush()
   assert.equal(logs.length, 1)
+  // and its write ledger's
+  assert.equal(network.write(socket.ws, new Uint8Array(512 * 1024 + 1)), false)
+  assert.equal(logs.length, 2)
+  assert.match(logs[1], /refused: packet too large/)
 })
 
 test('network helper: no timer of the class outlives the test that made it', async t => {

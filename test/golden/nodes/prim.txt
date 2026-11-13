@@ -87,10 +87,11 @@ c emissive pc read null <- undefined
 c emissive pc read $in <- null
 c emissive pc throw Error: "[prim] emissive must be string or null" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
 c emissive pc read $in Δ{_emissive:$in} <- '' 'x' 'red'
-c emissiveIntensity pc read 0 <- undefined -0
+c emissiveIntensity pc read 0 <- undefined NaN -0
 c emissiveIntensity pc throw Error: "[prim] emissiveIntensity must be positive number" <- null -Infinity -1 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
-c emissiveIntensity pc read $in Δ{_emissiveIntensity:$in} <- NaN Infinity 0.5 1 1e9
+c emissiveIntensity pc read 3.4028234663852886e+38 Δ{_emissiveIntensity:3.4028234663852886e+38} <- Infinity
 c emissiveIntensity pc read $in <- 0
+c emissiveIntensity pc read $in Δ{_emissiveIntensity:$in} <- 0.5 1 1e9
 c metalness pc read 0.2 <- undefined
 c metalness pc throw Error: "[prim] metalness must be number between 0 and 1" <- null NaN Infinity -Infinity -1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
 c metalness pc read $in Δ{needsRebuild:true _metalness:$in} calls[setDirty] <- -0 0 0.5 1
@@ -185,7 +186,7 @@ d type same: - | NaN,NaN: first throws Error: "[prim] type invalid" | 0,-0: firs
 d size same: read $in~ fresh | copy: read $in~ fresh | NaN,NaN: first throws Error: "[prim] size must be an array of finite numbers" | 0,-0: first throws Error: "[prim] size must be an array of finite numbers"
 d color same: - | NaN,NaN: first throws Error: "[prim] color must be string" | 0,-0: first throws Error: "[prim] color must be string"
 d emissive same: - | NaN,NaN: first throws Error: "[prim] emissive must be string or null" | 0,-0: first throws Error: "[prim] emissive must be string or null"
-d emissiveIntensity same: - | NaN,NaN: - | 0,-0: read 0
+d emissiveIntensity same: - | NaN,NaN: read 0 | 0,-0: read 0
 d metalness same: - | NaN,NaN: first throws Error: "[prim] metalness must be number between 0 and 1" | 0,-0: read 0
 d roughness same: - | NaN,NaN: first throws Error: "[prim] roughness must be number between 0 and 1" | 0,-0: read 0
 d opacity same: - | NaN,NaN: first throws Error: "[prim] opacity must be number between 0 and 1" | 0,-0: read 0
@@ -212,7 +213,7 @@ d type [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] type in
 d size [mounted (handle)] same: read $in~ fresh | copy: read $in~ fresh | NaN,NaN: first throws Error: "[prim] size must be an array of finite numbers" | 0,-0: first throws Error: "[prim] size must be an array of finite numbers"
 d color [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] color must be string" | 0,-0: first throws Error: "[prim] color must be string"
 d emissive [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] emissive must be string or null" | 0,-0: first throws Error: "[prim] emissive must be string or null"
-d emissiveIntensity [mounted (handle)] same: - | NaN,NaN: stub[handle.setEmissiveIntensity(NaN)] | 0,-0: read 0
+d emissiveIntensity [mounted (handle)] same: - | NaN,NaN: read 0 | 0,-0: read 0
 d metalness [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] metalness must be number between 0 and 1" | 0,-0: read 0
 d roughness [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] roughness must be number between 0 and 1" | 0,-0: read 0
 d opacity [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] opacity must be number between 0 and 1" | 0,-0: read 0
@@ -241,12 +242,11 @@ e color pc read $in Δ{_color:$in} stub[handle.setColor($in)] <- '' 'x' 'red'
 e color: the other 25 as in c
 e emissive pc read $in Δ{_emissive:$in} stub[handle.setEmissive($in)] <- '' 'x' 'red'
 e emissive: the other 25 as in c
-e emissiveIntensity pc read $in Δ{_emissiveIntensity:$in} stub[handle.setEmissiveIntensity(NaN)] <- NaN
-e emissiveIntensity pc read $in Δ{_emissiveIntensity:$in} stub[handle.setEmissiveIntensity(Infinity)] <- Infinity
+e emissiveIntensity pc read 3.4028234663852886e+38 Δ{_emissiveIntensity:3.4028234663852886e+38} stub[handle.setEmissiveIntensity(3.4028234663852886e+38)] <- Infinity
 e emissiveIntensity pc read $in Δ{_emissiveIntensity:$in} stub[handle.setEmissiveIntensity(0.5)] <- 0.5
 e emissiveIntensity pc read $in Δ{_emissiveIntensity:$in} stub[handle.setEmissiveIntensity(1)] <- 1
 e emissiveIntensity pc read $in Δ{_emissiveIntensity:$in} stub[handle.setEmissiveIntensity(1000000000)] <- 1e9
-e emissiveIntensity: the other 22 as in c
+e emissiveIntensity: the other 23 as in c
 e as in c: type size metalness roughness opacity transparent texture castShadow receiveShadow physics mass linearDamping angularDamping staticFriction dynamicFriction restitution layer trigger tag onContactStart onContactEnd onTriggerEnter onTriggerLeave doubleside
 e [_type sphere]
 e size pc read [0.5] fresh Δ{needsRebuild:true _size:[0.5]} calls[setDirty] <- undefined null
@@ -297,9 +297,10 @@ f type: through data as through the class (all 34)
 f size: through data as through the class (all 32)
 f color: through data as through the class (all 28)
 f emissive: through data as through the class (all 28)
-f emissiveIntensity data 0 <- undefined
+f emissiveIntensity data 0 <- undefined NaN
 f emissiveIntensity data throw Error: "[prim] emissiveIntensity must be positive number" <- null -Infinity -1 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
-f emissiveIntensity data $in <- NaN Infinity -0 0 0.5 1 1e9
+f emissiveIntensity data 3.4028234663852886e+38 <- Infinity
+f emissiveIntensity data $in <- -0 0 0.5 1 1e9
 f metalness: through data as through the class (all 27)
 f roughness: through data as through the class (all 27)
 f opacity: through data as through the class (all 27)

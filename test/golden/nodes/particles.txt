@@ -92,9 +92,11 @@ c shape pc throw Error: "[particles] shape invalid" <- null NaN Infinity -Infini
 c shape pc throw Error: "[particles] shape invalid" traps[get:@Symbol.iterator,get:length,get:0,get:length,get:1,get:length,get:2,get:length] <- Proxy[1,2,3]
 c shape pc read ["sphere",2,0.5]F Δ{_shape:["sphere",2,0.5]F needsRebuild:true} calls[setDirty] <- ["sphere",2,0.5]
 c shape pc read ["point"]F Δ{_shape:["point"]F needsRebuild:true} calls[setDirty] <- ["point"]
-c direction pc read 0 Δ{needsRebuild:true} calls[setDirty] <- undefined
+c direction pc read 0 Δ{needsRebuild:true} calls[setDirty] <- undefined NaN
 c direction pc throw Error: "[particles] direction not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
-c direction pc read $in Δ{needsRebuild:true _direction:$in} calls[setDirty] <- NaN Infinity -Infinity -1 -0 0.5 1 1e9
+c direction pc read 3.4028234663852886e+38 Δ{needsRebuild:true _direction:3.4028234663852886e+38} calls[setDirty] <- Infinity
+c direction pc read -3.4028234663852886e+38 Δ{needsRebuild:true _direction:-3.4028234663852886e+38} calls[setDirty] <- -Infinity
+c direction pc read $in Δ{needsRebuild:true _direction:$in} calls[setDirty] <- -1 -0 0.5 1 1e9
 c direction pc read $in Δ{needsRebuild:true} calls[setDirty] <- 0
 c rate pc read 10 Δ{needsRebuild:true} calls[setDirty] <- undefined NaN
 c rate pc throw Error: "[particles] rate not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
@@ -191,9 +193,11 @@ c velocityOrbital pc throw Error: "[particles] velocityOrbital not a Vector3" <-
 c velocityOrbital pc throw Error: "[particles] velocityOrbital not a Vector3" traps[get:isVector3] <- Proxy[1,2,3]
 c velocityOrbital p read view:V3(1,2,3)S Δ{needsRebuild:true _velocityOrbital:V3(1,2,3)S} calls[setDirty] <- V3(1,2,3)
 c velocityOrbital c read V3(1,2,3)S Δ{needsRebuild:true _velocityOrbital:V3(1,2,3)S} calls[setDirty] <- V3(1,2,3)
-c velocityRadial pc read null Δ{needsRebuild:true} calls[setDirty] <- undefined
+c velocityRadial pc read null Δ{needsRebuild:true} calls[setDirty] <- undefined NaN
 c velocityRadial pc read $in Δ{needsRebuild:true} calls[setDirty] <- null
-c velocityRadial pc read $in Δ{needsRebuild:true _velocityRadial:$in} calls[setDirty] <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+c velocityRadial pc read 3.4028234663852886e+38 Δ{needsRebuild:true _velocityRadial:3.4028234663852886e+38} calls[setDirty] <- Infinity
+c velocityRadial pc read -3.4028234663852886e+38 Δ{needsRebuild:true _velocityRadial:-3.4028234663852886e+38} calls[setDirty] <- -Infinity
+c velocityRadial pc read $in Δ{needsRebuild:true _velocityRadial:$in} calls[setDirty] <- -1 -0 0 0.5 1 1e9
 c velocityRadial pc throw Error: "[particles] velocityRadial not a number" <- '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
 c rateOverDistance pc read 0 Δ{needsRebuild:true} calls[setDirty] <- undefined
 c rateOverDistance pc read 0 <- null NaN Infinity -Infinity -1 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
@@ -227,7 +231,7 @@ c as on node: id position quaternion rotation scale active parent onPointerEnter
 == d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
 d emitting same: - | NaN,NaN: first throws Error: "[particles] emitting not a boolean" | 0,-0: first throws Error: "[particles] emitting not a boolean"
 d shape same: read ["sphere",2,0.5]F Δ{_shape:["sphere",2,0.5]F needsRebuild:true} calls[setDirty] | copy: read ["sphere",2,0.5]F Δ{_shape:["sphere",2,0.5]F needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] shape invalid" | 0,-0: first throws Error: "[particles] shape invalid"
-d direction same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _direction:$in} calls[setDirty]
+d direction same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 0 Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _direction:$in} calls[setDirty]
 d rate same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 10 Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _rate:$in} calls[setDirty]
 d bursts same: read [{time:1,count:5}F]F Δ{needsRebuild:true _bursts:[{time:1,count:5}F]F} calls[setDirty] | copy: read [{time:1,count:5}F]F Δ{needsRebuild:true _bursts:[{time:1,count:5}F]F} calls[setDirty] | NaN,NaN: first throws Error: "[particles] bursts invalid" | 0,-0: first throws Error: "[particles] bursts invalid"
 d duration same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 5 Δ{needsRebuild:true} calls[setDirty] | 0,-0: read 0.01 Δ{needsRebuild:true} calls[setDirty]
@@ -250,7 +254,7 @@ d space same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Erro
 d force same: read view:V3(1,2,3)S Δ{needsRebuild:true _force:V3(1,2,3)S} calls[setDirty] | copy: read view:V3(1,2,3)S Δ{needsRebuild:true _force:V3(1,2,3)S} calls[setDirty] | NaN,NaN: first throws Error: "[particles] force not a Vector3" | 0,-0: first throws Error: "[particles] force not a Vector3"
 d velocityLinear same: read view:V3(1,2,3)S Δ{needsRebuild:true _velocityLinear:V3(1,2,3)S} calls[setDirty] | copy: read view:V3(1,2,3)S Δ{needsRebuild:true _velocityLinear:V3(1,2,3)S} calls[setDirty] | NaN,NaN: first throws Error: "[particles] velocityLinear not a Vector3" | 0,-0: first throws Error: "[particles] velocityLinear not a Vector3"
 d velocityOrbital same: read view:V3(1,2,3)S Δ{needsRebuild:true _velocityOrbital:V3(1,2,3)S} calls[setDirty] | copy: read view:V3(1,2,3)S Δ{needsRebuild:true _velocityOrbital:V3(1,2,3)S} calls[setDirty] | NaN,NaN: first throws Error: "[particles] velocityOrbital not a Vector3" | 0,-0: first throws Error: "[particles] velocityOrbital not a Vector3"
-d velocityRadial same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _velocityRadial:$in} calls[setDirty]
+d velocityRadial same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read null Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _velocityRadial:$in} calls[setDirty]
 d rateOverDistance same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 0 | 0,-0: Δ{needsRebuild:true _rateOverDistance:$in} calls[setDirty]
 d sizeOverLife same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] sizeOverLife invalid" | 0,-0: first throws Error: "[particles] sizeOverLife invalid"
 d rotateOverLife same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] rotateOverLife invalid" | 0,-0: first throws Error: "[particles] rotateOverLife invalid"
@@ -260,7 +264,7 @@ d emissiveOverLife same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first 
 d onEnd same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _onEnd:$in} calls[setDirty]
 d emitting [mounted (emitter)] same: - | NaN,NaN: first throws Error: "[particles] emitting not a boolean" | 0,-0: first throws Error: "[particles] emitting not a boolean"
 d shape [mounted (emitter)] same: read ["sphere",2,0.5]F Δ{_shape:["sphere",2,0.5]F needsRebuild:true} calls[setDirty] | copy: read ["sphere",2,0.5]F Δ{_shape:["sphere",2,0.5]F needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] shape invalid" | 0,-0: first throws Error: "[particles] shape invalid"
-d direction [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _direction:$in} calls[setDirty]
+d direction [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 0 Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _direction:$in} calls[setDirty]
 d rate [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 10 Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _rate:$in} calls[setDirty]
 d bursts [mounted (emitter)] same: read [{time:1,count:5}F]F Δ{needsRebuild:true _bursts:[{time:1,count:5}F]F} calls[setDirty] | copy: read [{time:1,count:5}F]F Δ{needsRebuild:true _bursts:[{time:1,count:5}F]F} calls[setDirty] | NaN,NaN: first throws Error: "[particles] bursts invalid" | 0,-0: first throws Error: "[particles] bursts invalid"
 d duration [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 5 Δ{needsRebuild:true} calls[setDirty] | 0,-0: read 0.01 Δ{needsRebuild:true} calls[setDirty]
@@ -283,7 +287,7 @@ d space [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,Na
 d force [mounted (emitter)] same: read view:V3(1,2,3)S Δ{needsRebuild:true _force:V3(1,2,3)S} calls[setDirty] | copy: read view:V3(1,2,3)S Δ{needsRebuild:true _force:V3(1,2,3)S} calls[setDirty] | NaN,NaN: first throws Error: "[particles] force not a Vector3" | 0,-0: first throws Error: "[particles] force not a Vector3"
 d velocityLinear [mounted (emitter)] same: read view:V3(1,2,3)S Δ{needsRebuild:true _velocityLinear:V3(1,2,3)S} calls[setDirty] | copy: read view:V3(1,2,3)S Δ{needsRebuild:true _velocityLinear:V3(1,2,3)S} calls[setDirty] | NaN,NaN: first throws Error: "[particles] velocityLinear not a Vector3" | 0,-0: first throws Error: "[particles] velocityLinear not a Vector3"
 d velocityOrbital [mounted (emitter)] same: read view:V3(1,2,3)S Δ{needsRebuild:true _velocityOrbital:V3(1,2,3)S} calls[setDirty] | copy: read view:V3(1,2,3)S Δ{needsRebuild:true _velocityOrbital:V3(1,2,3)S} calls[setDirty] | NaN,NaN: first throws Error: "[particles] velocityOrbital not a Vector3" | 0,-0: first throws Error: "[particles] velocityOrbital not a Vector3"
-d velocityRadial [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _velocityRadial:$in} calls[setDirty]
+d velocityRadial [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read null Δ{needsRebuild:true} calls[setDirty] | 0,-0: Δ{needsRebuild:true _velocityRadial:$in} calls[setDirty]
 d rateOverDistance [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read 0 | 0,-0: Δ{needsRebuild:true _rateOverDistance:$in} calls[setDirty]
 d sizeOverLife [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] sizeOverLife invalid" | 0,-0: first throws Error: "[particles] sizeOverLife invalid"
 d rotateOverLife [mounted (emitter)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[particles] rotateOverLife invalid" | 0,-0: first throws Error: "[particles] rotateOverLife invalid"

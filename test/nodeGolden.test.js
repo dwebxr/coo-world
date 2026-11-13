@@ -128,7 +128,9 @@ test('UPDATE_GOLDEN=1 is refused when CI is set', () => {
 })
 
 // a shard run with both set fails at once, and writes nothing
-test('a golden test file run with UPDATE_GOLDEN=1 and CI fails and rewrites no file', () => {
+test('a golden test file run with UPDATE_GOLDEN=1 and CI fails and rewrites no file', t => {
+  // (in a run that is itself rewriting the files, the shards beside this one change them meanwhile)
+  if (process.env.UPDATE_GOLDEN === '1') return t.skip('UPDATE_GOLDEN=1: this run rewrites the files')
   const before = goldenHashes()
   const file = fileURLToPath(new URL('nodeGoldenUi.test.js', import.meta.url))
   const { PATH, HOME, TMPDIR } = process.env

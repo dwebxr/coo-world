@@ -154,13 +154,16 @@ const names = (calls, stand) => calls.filter(call => call[0] === stand).map(call
 const lines = (dir, given, modes) =>
   `[entrypoint] entries given to 1001:1001 under ${dir}: ${given}\n` +
   `[entrypoint] entries given u+rw (files) or u+rwx (folders) under ${dir}: ${modes}\n`
-const checks = (dir, db = null) => [
+// (`dbDir`: the folder of the file the database really is, where SQLite keeps its journal)
+const checks = (dir, db = null, dbDir = dir) => [
   ['1001:1001', 'test', '-w', dir],
   ['1001:1001', 'test', '-x', dir],
   ...(db
     ? [
         ['1001:1001', 'test', '-r', db],
         ['1001:1001', 'test', '-w', db],
+        ['1001:1001', 'test', '-w', dbDir],
+        ['1001:1001', 'test', '-x', dbDir],
       ]
     : []),
 ]
@@ -431,6 +434,34 @@ for (const shell of SHELLS) {
       )
       assert.deepEqual(names(out.calls, 'su-exec'), checks(world, path.join(world, 'db.sqlite')).slice(0, 4))
       assert.equal(modeOf(elsewhere), 0o400)
+      // db.sqlite is a link to a file that can be written, in a folder that cannot: SQLite could not keep its
+      // journal beside it, so the database would load and nothing would be saved
+      fs.rmSync(path.join(world, 'db.sqlite'))
+      const locked = path.join(box.dir, 'locked')
+      fs.mkdirSync(locked)
+      fs.writeFileSync(path.join(locked, 'world.sqlite'), 'x')
+      fs.symlinkSync(path.join(locked, 'world.sqlite'), path.join(world, 'db.sqlite'))
+      fs.chmodSync(locked, 0o500)
+      try {
+        const kept = box.run(shell, { world: worldFor(world) })
+        assert.equal(kept.status, 1)
+        assert.ok(
+          kept.stderr.endsWith(
+            `[entrypoint] 1001:1001 cannot write or search ${locked}, the folder of the database (${world}/db.sqlite): SQLite keeps its journal there; not starting\n`
+          ),
+          kept.stderr
+        )
+        assert.deepEqual(
+          names(kept.calls, 'su-exec'),
+          checks(world, path.join(world, 'db.sqlite'), locked).slice(0, 5),
+          'it stopped at the folder: the server was not started'
+        )
+      } finally {
+        fs.chmodSync(locked, 0o700)
+      }
+      // ... and in a folder that can: started
+      const fine = box.run(shell, { world: worldFor(world) })
+      assert.equal(fine.status, 0, fine.stderr)
     } finally {
       box.remove()
     }

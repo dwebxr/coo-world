@@ -147,6 +147,12 @@ db="$dir/db.sqlite"
 if [ -e "$db" ] || [ -L "$db" ]; then
   { as_service test -r "$db" && as_service test -w "$db"; } ||
     die "1001:1001 cannot read and write $db; not starting"
+  # SQLite keeps its journal beside the database it has open, which is beside the file a link leads to when
+  # db.sqlite is one. A database that can be written in a folder that cannot loads, and then no change is saved.
+  db_real=$(readlink -f "$db") || die "$db cannot be resolved; not starting"
+  db_dir=$(dirname "$db_real")
+  { as_service test -w "$db_dir" && as_service test -x "$db_dir"; } ||
+    die "1001:1001 cannot write or search $db_dir, the folder of the database ($db): SQLite keeps its journal there; not starting"
 fi
 
 exec su-exec 1001:1001 "$@"

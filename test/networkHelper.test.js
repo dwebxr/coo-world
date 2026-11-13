@@ -10,8 +10,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import { bundleServer, heldBundles } from './lib/serverBundle.mjs'
-import { fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
+import { entityClasses, fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
 import { readPacket, writeClientPacket } from '../src/core/packets.js'
+import { readKickEnv } from '../src/server/kickList.js'
 
 const net = await loadNetwork()
 const timers = () => process.getActiveResourcesInfo().filter(name => name === 'Timeout').length
@@ -137,6 +138,141 @@ test('network helper: replace keeps the real module and overrides one export, ch
   // the rest of the module is the real one
   assert.equal(gated.solanaGating.isWalletAddress('11111111111111111111111111111111'), true)
   assert.equal(gated.solanaGating.REQUIRED_TOKEN_AMOUNT, net.solanaGating.REQUIRED_TOKEN_AMOUNT)
+})
+
+test('network helper: a stand-in reads each export from the object the test gives, each time the code uses it', async t => {
+  const SOLANA = 'src/server/solana-gating.js'
+  const swapped = await loadNetwork({ standIns: [SOLANA] })
+  t.after(swapped.destroy)
+  // none given: the real module
+  assert.equal(makeNetwork(t, { net: swapped }).tokenBalanceService, null)
+  assert.equal(swapped.solanaGating.REQUIRED_TOKEN_AMOUNT, net.solanaGating.REQUIRED_TOKEN_AMOUNT)
+  const reads = []
+  const gate = new Proxy(
+    { TOKEN_GATING_ENABLED: true, WALLET_HOST: 'stand-in.example' },
+    { get: (target, name) => (reads.push(name), target[name]) }
+  )
+  const service = { get: () => ({ known: true, balance: 0 }) }
+  await t.test('a test that gives one', t => {
+    const network = makeNetwork(t, {
+      net: swapped,
+      init: { tokenBalanceService: service },
+      modules: { [SOLANA]: gate },
+    })
+    // init read the switch from it, once
+    assert.equal(network.tokenBalanceService, service)
+    assert.deepEqual(reads, ['TOKEN_GATING_ENABLED'])
+    // a name it lacks is the real module's (and was not asked of it)
+    assert.equal(swapped.solanaGating.REQUIRED_TOKEN_AMOUNT, net.solanaGating.REQUIRED_TOKEN_AMOUNT)
+    assert.deepEqual(reads, ['TOKEN_GATING_ENABLED'])
+    // another module of the bundle that imports it reads it too (evm-gating.js re-exports the host)
+    assert.equal(swapped.evmGating.WALLET_HOST, 'stand-in.example')
+    // the last one given is the one read, by every network
+    makeNetwork(t, { net: swapped, modules: { [SOLANA]: { TOKEN_GATING_ENABLED: false } } })
+    assert.equal(swapped.solanaGating.TOKEN_GATING_ENABLED, false)
+    assert.equal(network.tokenBalanceService, service, 'what init made stays')
+  })
+  // the test's end gives the real module back
+  assert.equal(swapped.solanaGating.TOKEN_GATING_ENABLED, false)
+  assert.equal(swapped.evmGating.WALLET_HOST, net.evmGating.WALLET_HOST)
+  assert.equal(makeNetwork(t, { net: swapped, init: { tokenBalanceService: service } }).tokenBalanceService, null)
+  // a module that is no stand-in of the bundle is refused, and so is one both replaced and a stand-in
+  assert.throws(() => makeNetwork(t, { net, modules: { [SOLANA]: gate } }), /not a stand-in of this bundle/)
+  await assert.rejects(
+    loadNetwork({ replace: { [SOLANA]: `export * from 'real:'` }, standIns: [SOLANA] }),
+    /both replaced and a stand-in/
+  )
+})
+
+test('server bundle: a CommonJS replacement is read by property each time an export is used', async t => {
+  const counted = await bundleServer(
+    `import { readKickEnv } from './src/server/kickList.js'
+    export const use = () => readKickEnv
+    export * as kickList from './src/server/kickList.js'`,
+    {
+      replace: {
+        'src/server/kickList.js': {
+          commonjs: `
+            const real = require('real:')
+            let reads = 0
+            module.exports = {
+              get readKickEnv() {
+                reads++
+                return real.readKickEnv
+              },
+              get reads() {
+                return reads
+              },
+            }
+          `,
+        },
+      },
+    }
+  )
+  t.after(counted.destroy)
+  const { use, kickList } = counted.module
+  const before = kickList.reads
+  // the real module behind it, read again at each use (an ES module's import would be one binding)
+  assert.deepEqual(use()({ KICK_MINUTES: '5' }), readKickEnv({ KICK_MINUTES: '5' }))
+  use()
+  assert.equal(kickList.reads, before + 2)
+  await assert.rejects(
+    bundleServer(`export * from './src/server/kickList.js'`, {
+      replace: { 'src/server/kickList.js': `export * from 'commonjs:'` },
+    }),
+    /only for a CommonJS replacement/
+  )
+})
+
+test('network helper: entityClasses gives Entities the classes a file of the tests exports', async t => {
+  const own = await loadNetwork({ replace: entityClasses(new URL('./lib/joinEntities.mjs', import.meta.url)) })
+  t.after(own.destroy)
+  // (a world that hears of its own player: the local one)
+  const world = makeNetwork(t, { net: own, world: { emit() {} } }).world
+  world.entities = new own.Entities(world)
+  const app = world.entities.add({ id: 'app', type: 'app', blueprint: 'bp', state: {} })
+  const player = world.entities.add({ id: 'player', type: 'player', owner: 'someone', rank: 1 })
+  assert.equal(app.constructor.name, 'FakeApp')
+  assert.equal(player.constructor.name, 'FakePlayer')
+  assert.equal(player.isBuilder(), true)
+  // the local player is the same class, from one copy of the file in the bundle
+  world.network.id = 'me'
+  const local = world.entities.add({ id: 'me', type: 'player', owner: 'me', rank: 0 })
+  assert.equal(local.constructor, player.constructor)
+})
+
+test('network helper: every network of a test is stopped at its end, whatever one of them throws while it stops', async t => {
+  // a test context as node:test hands it to the helper: its hooks are run here, in order, and as node:test runs
+  // them none after one that threw
+  const hooks = []
+  const context = { after: hook => hooks.push(hook), mock: t.mock }
+  const SOLANA = 'src/server/solana-gating.js'
+  const swapped = await loadNetwork({ standIns: [SOLANA] })
+  t.after(swapped.destroy)
+  const saved = process.env.ADMIN_CODE
+  const before = timers()
+  const first = makeNetwork(context, { net: swapped, env: { ADMIN_CODE: 'during' } })
+  first.tipWatcher = {
+    stop() {
+      throw new Error('a stand-in that fails when it is touched')
+    },
+  }
+  const second = makeNetwork(context, { net: swapped, modules: { [SOLANA]: { TOKEN_GATING_ENABLED: true } } })
+  assert.equal(timers(), before + 2)
+  let failure = null
+  for (const hook of hooks) {
+    try {
+      await hook()
+    } catch (err) {
+      failure = err
+      break
+    }
+  }
+  assert.match(failure?.message ?? '', /fails when it is touched/)
+  assert.equal(first.stopping && second.stopping, true)
+  assert.equal(timers(), before)
+  assert.equal(process.env.ADMIN_CODE, saved)
+  assert.equal(swapped.solanaGating.TOKEN_GATING_ENABLED, false)
 })
 
 test('network helper: env varies a constant read at import, in one call that restores the environment', async t => {

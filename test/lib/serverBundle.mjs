@@ -8,6 +8,11 @@
 //   of it (a name the source declares itself wins over the star export). A setter the source exports (`export
 //   function setName(value) { name = value }`) changes the override between two calls without bundling again:
 //   importers see `let` exports as live bindings. A replaced module the bundle never imports is an error.
+//   `{ commonjs: source }` instead of the source: the module is that CommonJS source (`module.exports`;
+//   `require('real:')` is the real module), which the bundle reads by property each time the code uses an export of
+//   it (where an import of an ES module is a binding), so its exports can be getters or the traps of a Proxy. (A file
+//   of this package is an ES module by its package.json: the CommonJS source is a module of its own, which the
+//   module in the file's place re-exports, without a default export.)
 // - `sourceRoot`: a checkout whose src/core and src/server files are read instead of this one's where they exist
 //   (REAL_PHYSX_SOURCE_ROOT, as in persistedStartup.test.js); `replace` wins over it.
 // - `evaluate(env)` → { module, url }: the bundle evaluated with `env` in process.env, for constants a module
@@ -32,19 +37,22 @@ import * as esbuild from 'esbuild'
 const root = fileURLToPath(new URL('../../', import.meta.url))
 
 const REAL = 'real:'
+const COMMONJS = 'commonjs:'
 const cache = new Map()
 process.once('exit', () => {
   for (const entry of cache.values()) if (entry.dir) fs.rmSync(entry.dir, { recursive: true, force: true })
 })
 
-// replace: repository-relative path → absolute path of the file it replaces (which must exist)
+// replace: repository-relative path → absolute path of the file it replaces (which must exist) → { source, commonjs }
 function replacements(replace = {}) {
   const map = new Map()
-  for (const [file, source] of Object.entries(replace)) {
+  for (const [file, value] of Object.entries(replace)) {
+    const commonjs = typeof value?.commonjs === 'string'
+    const source = commonjs ? value.commonjs : value
     if (typeof source !== 'string') throw new TypeError(`replace: the source for ${file} is not text`)
     const absolute = path.resolve(root, file)
     if (!fs.existsSync(absolute)) throw new Error(`replace: ${file} is not a file of this repository`)
-    map.set(absolute, source)
+    map.set(absolute, { source, commonjs })
   }
   return map
 }
@@ -72,9 +80,21 @@ function plugin(replaced, sourceRoot) {
         resolveDir: path.dirname(args.path),
         loader: 'js',
       }))
+      // a CommonJS replacement: its source, as a module outside the package (which would make it an ES module)
+      build.onResolve({ filter: /^commonjs:$/ }, args => {
+        if (!replaced.get(args.importer)?.commonjs) throw new Error(`'${COMMONJS}' is only for a CommonJS replacement`)
+        return { path: args.importer, namespace: 'commonjs' }
+      })
+      build.onLoad({ filter: /.*/, namespace: 'commonjs' }, args => ({
+        contents: replaced.get(args.path).source,
+        resolveDir: path.dirname(args.path),
+        loader: 'js',
+      }))
       build.onLoad({ filter: /\.(m?js|jsx)$/ }, args => {
         if (replaced.has(args.path)) {
-          return { contents: replaced.get(args.path), resolveDir: path.dirname(args.path), loader: 'js' }
+          const { source, commonjs } = replaced.get(args.path)
+          const contents = commonjs ? `export * from '${COMMONJS}'` : source
+          return { contents, resolveDir: path.dirname(args.path), loader: 'js' }
         }
         const contents = read(args.path)
         if (contents !== null) return { contents, loader: 'js' }

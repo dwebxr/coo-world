@@ -462,6 +462,26 @@ for (const shell of SHELLS) {
       // ... and in a folder that can: started
       const fine = box.run(shell, { world: worldFor(world) })
       assert.equal(fine.status, 0, fine.stderr)
+      // a folder whose name ends in a newline, locked, beside one of the same name without it, open: the check is
+      // of the folder the database is in (a command substitution would have dropped the newline)
+      fs.rmSync(path.join(world, 'db.sqlite'))
+      const open = path.join(box.dir, 'ends')
+      const closed = `${open}\n`
+      fs.mkdirSync(open)
+      fs.mkdirSync(closed)
+      fs.writeFileSync(path.join(closed, 'world.sqlite'), 'x')
+      fs.symlinkSync(path.join(closed, 'world.sqlite'), path.join(world, 'db.sqlite'))
+      fs.chmodSync(closed, 0o500)
+      try {
+        const newline = box.run(shell, { world: worldFor(world) })
+        assert.equal(newline.status, 1, newline.stderr)
+        assert.ok(
+          newline.stderr.includes(`cannot write or search ${closed}, the folder of the database`),
+          newline.stderr
+        )
+      } finally {
+        fs.chmodSync(closed, 0o700)
+      }
     } finally {
       box.remove()
     }

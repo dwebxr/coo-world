@@ -1,7 +1,9 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # Goal 4C — client systems 重複統合
 
 **Phase 4 (重複整理) | 実装: Sonnet | Risk: 低〜中 | Effort: M | upstream_divergence: low**
-まず `goals/_CONTEXT.md` を読むこと。
+まず `goals/archive/_CONTEXT.md` を読むこと。
 
 ## 目的
 ClientControls (XR)・ClientLoader・ClientLiveKit の verbatim 重複を parameterize して単一化。挙動を厳密に保つ。

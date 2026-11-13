@@ -1,7 +1,9 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # Goal 2B — client UI クラッシュバグ修正
 
 **Phase 2 (正当性バグ) | 実装: Sonnet | Risk: 低 | Effort: S | upstream_divergence: low**
-まず `goals/_CONTEXT.md` を読むこと。
+まず `goals/archive/_CONTEXT.md` を読むこと。
 
 ## 目的
 lint 復旧で顕在化した client UI の未定義参照クラッシュを修正。いずれも `no-undef` / `react/jsx-no-undef` の実バグ。

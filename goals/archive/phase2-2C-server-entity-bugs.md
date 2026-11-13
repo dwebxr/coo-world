@@ -1,7 +1,9 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # Goal 2C — server / entity バグ修正
 
 **Phase 2 (正当性バグ) | 実装: Sonnet | Risk: 低〜中 | Effort: S | upstream_divergence: low**
-まず `goals/_CONTEXT.md` を読むこと。
+まず `goals/archive/_CONTEXT.md` を読むこと。
 
 ## 目的
 サーバ永続化・チャット・エンティティ modify 経路の実バグを修正。特に autosave 恒久停止 (2.0) は永続化データ喪失につながるため優先。

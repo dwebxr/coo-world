@@ -109,20 +109,24 @@ test('errorHandler: a 416 keeps the Content-Range header the error carries', asy
   assert.equal(r.headers['content-range'], 'bytes */6')
 })
 
-test(
-  'errorHandler: an unreadable static directory surfaces as a logged 403',
-  { skip: process.getuid?.() === 0 },
-  async t => {
-    // static 10 answers 403 with the cause discarded when its spelling check cannot list a directory, so the
-    // one-line log is what shows a storage fault (EIO, EMFILE or, here, EACCES) on an ordinary path
-    const { logged, port } = await server(t)
-    assert.equal((await raw(port, '/locked/a.css')).statusCode, 403)
-    assert.deepEqual(
-      logged.map(args => args.join(' ')),
-      ['[http] 403 GET /locked/a.css']
-    )
+test('errorHandler: an unreadable static directory surfaces as a logged 403', async t => {
+  // root lists a directory whatever its mode says, so there is no unreadable directory to serve from. Said, and a
+  // failure in CI: a run that skips this has not checked it (the pattern of test/wsTransport.test.js)
+  if (process.getuid?.() === 0) {
+    const reason = 'running as root: a directory without read permission is still listed, so there is no 403 to see'
+    if (process.env.CI) assert.fail(reason)
+    t.skip(reason)
+    return
   }
-)
+  // static 10 answers 403 with the cause discarded when its spelling check cannot list a directory, so the
+  // one-line log is what shows a storage fault (EIO, EMFILE or, here, EACCES) on an ordinary path
+  const { logged, port } = await server(t)
+  assert.equal((await raw(port, '/locked/a.css')).statusCode, 403)
+  assert.deepEqual(
+    logged.map(args => args.join(' ')),
+    ['[http] 403 GET /locked/a.css']
+  )
+})
 
 test('errorHandler: anything else is logged and answered 500 with no body', async t => {
   const { fastify, logged } = await server(t)

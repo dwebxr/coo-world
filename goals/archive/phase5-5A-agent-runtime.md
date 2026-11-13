@@ -1,3 +1,5 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # Goal 5A — AI エージェント runtime 化 (agent.mjs)
 
 **Phase 5 (AI 基盤) | 実装: Fable 5 (直接) | Risk: 低 | Effort: L | upstream_divergence: none**

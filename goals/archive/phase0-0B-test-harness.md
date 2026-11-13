@@ -1,7 +1,9 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # Goal 0B — テストハーネス導入 (node:test)
 
 **Phase 0 (安全網) | 実装: Sonnet | Risk: 低 | Effort: S | upstream_divergence: none/low**
-まず `goals/_CONTEXT.md` を読むこと。
+まず `goals/archive/_CONTEXT.md` を読むこと。
 
 ## 目的
 現在テストはゼロ。Node 組込みの `node:test` + `node:assert` (追加依存ゼロ) で最初のテストを導入し、純粋・依存の薄いコアモジュールから安全網を張る。特に wire protocol (`packets.js`) の回帰を捕捉できるようにする。

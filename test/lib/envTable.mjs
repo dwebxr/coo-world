@@ -126,6 +126,10 @@ export const ENV_TABLE = {
   FLY_APP_NAME: { class: 'platform', why: 'set by Fly: client addresses are then read from fly-client-ip' },
   CLIENT: { class: 'platform', why: "a define key of the server's build (scripts/lib/buildDefines.mjs), not a read" },
   SERVER: { class: 'platform', why: "a define key of the server's build (scripts/lib/buildDefines.mjs), not a read" },
+  // (scripts/prod-smoke.mjs hands these three of its own environment to the server it starts, and nothing else)
+  PATH: { class: 'platform', why: "the system's; passed on by scripts/prod-smoke.mjs to the server it starts" },
+  HOME: { class: 'platform', why: "the system's; passed on by scripts/prod-smoke.mjs to the server it starts" },
+  TMPDIR: { class: 'platform', why: "the system's; passed on by scripts/prod-smoke.mjs to the server it starts" },
 }
 
 // the entry of a name: its own, or that of the `STEM_*` entry it falls under

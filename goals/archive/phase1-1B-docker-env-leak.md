@@ -1,7 +1,9 @@
+> Historical: archived, last changed 2026-07-07 (its last commit). What it states as facts describes the repository at that date, not as it is now.
+
 # Goal 1B — Docker/env 漏出修正 (インフラのみ・1A と並列安全)
 
 **Phase 1 (セキュリティ) | 実装: Sonnet | Risk: 低 | Effort: S | upstream_divergence: none**
-まず `goals/_CONTEXT.md` を読むこと。
+まず `goals/archive/_CONTEXT.md` を読むこと。
 
 ## 目的
 `.env` (実在, `SOLANA_PKEY_ARRAY` / `JWT_SECRET` / `AI_API_KEY` / `DB_URI` / `LIVEKIT_*` 等を含む) が `.dockerignore` の `.env.*` パターンに**一致せず** (素の `.env` にはマッチしない)、`Dockerfile` の `COPY . .` で Docker ビルドコンテキストに混入している (finding 0.1)。これはイメージレイヤーへの秘密漏洩リスク。

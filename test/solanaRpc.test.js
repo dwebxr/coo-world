@@ -85,6 +85,20 @@ test('RPC: null account becomes known zero', async () => {
   assert.deepEqual(await service.get(wallet), { known: true, balance: 0 })
 })
 
+test('RPC: an owner off the ed25519 curve asks no node and its balance is unknown', async () => {
+  // (a program-derived address is off the curve by construction; as a 32-byte public key it is valid)
+  const [offCurve] = PublicKey.findProgramAddressSync([Buffer.from('an owner off the curve')], TOKEN_PROGRAM_ID)
+  assert.equal(PublicKey.isOnCurve(offCurve.toBuffer()), false)
+  const f = fixture()
+  // (with spl-token's getAssociatedTokenAddressSync this was its TokenOwnerOffCurveError; the service reads no error)
+  await assert.rejects(f.readRaw(offCurve.toBase58()), Error)
+  assert.equal(f.calls.length, 0)
+  const service = createTokenBalanceService({ readRaw: f.readRaw, decimals: 6 })
+  assert.deepEqual(await service.get(offCurve.toBase58()), { known: false })
+  assert.deepEqual(await service.get(offCurve.toBase58(), { fresh: true }), { known: false })
+  assert.equal(f.calls.length, 0, 'no request left the process')
+})
+
 const invalidPayloads = [
   ['null response', () => null],
   ['array response', () => []],

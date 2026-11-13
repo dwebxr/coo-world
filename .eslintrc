@@ -49,6 +49,7 @@
     "no-console": ["warn", { "allow": ["warn", "error"] }],
     "prefer-const": "error",
     "no-var": "error",
+    "no-eval": "error",
     "no-implied-eval": "error",
     "no-new-func": "error",
     "react/no-danger": "error"
@@ -71,6 +72,7 @@
     {
       "files": ["test/**"],
       "rules": {
+        "no-eval": "off",
         "no-implied-eval": "off",
         "no-new-func": "off",
         "react/no-danger": "off"

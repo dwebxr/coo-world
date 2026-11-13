@@ -9,7 +9,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { parseSiweMessage } from 'viem/siwe'
 
 import { REPO_ROOT, TIMEOUT_SCALE, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
-import { REPORTED_INLINE, launchBrowser, runInlineScript, saveArtifacts } from './lib/browser.mjs'
+import { REFUSED_INLINE, launchBrowser, runInlineScript, saveArtifacts } from './lib/browser.mjs'
 import { startServer } from './lib/server.mjs'
 import { WireClient } from './lib/ws.mjs'
 
@@ -410,14 +410,15 @@ try {
     eq(pageErrors.length, 0, pageErrors.join('\n'))
   })
 
-  // the wallet flows above (an injected provider, the WalletConnect sheet) are inside the policy the page is tried
-  // against: no browser posted a report (they are posted a moment after the event)
-  await step('the report-only policy: nothing the wallet flows did is outside it', async () => {
+  // the wallet flows above (an injected provider, the WalletConnect sheet) are inside the world page's policy, which
+  // the harness's server enforces (lib/server.mjs): no browser posted a report (they are posted a moment after the
+  // event), and a refusal would have broken the flow that needed it
+  await step('the enforced policy: nothing the wallet flows did is outside it', async () => {
     await sleep(3000)
     eq(server.lines(/\[csp\]/).join('\n'), '')
-    // and a report would have come: a script outside the policy runs, and the server writes the report of it
-    eq(await runInlineScript(page), 1, 'the inline script ran')
-    await waitUntil(() => server.lines(REPORTED_INLINE).length === 1, { timeout: 15000, message: 'the report' })
+    // and a report would have come: a script outside the policy is refused, and the server writes the report of it
+    eq(await runInlineScript(page), undefined, 'the inline script did not run')
+    await waitUntil(() => server.lines(REFUSED_INLINE).length === 1, { timeout: 15000, message: 'the report' })
     eq(server.lines(/\[csp\]/).length, 1, 'that report and no other')
   })
 } catch (err) {

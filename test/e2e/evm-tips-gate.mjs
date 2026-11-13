@@ -37,7 +37,7 @@ import {
   sleep,
   waitUntil,
 } from './lib/common.mjs'
-import { REPORTED_INLINE, launchBrowser, runInlineScript, saveArtifacts } from './lib/browser.mjs'
+import { REFUSED_INLINE, launchBrowser, runInlineScript, saveArtifacts } from './lib/browser.mjs'
 import { installAsset, startServer, worldAssetsDir } from './lib/server.mjs'
 import { WireClient } from './lib/ws.mjs'
 
@@ -1073,14 +1073,15 @@ try {
     for (const entry of pages) eq(entry.pageErrors.length, 0, entry.pageErrors.join('\n'))
   })
 
-  // tips and the gate above are inside the policy the page is tried against: no browser posted a report (they are
-  // posted a moment after the event)
-  await step('the report-only policy: nothing the tips and the gate did is outside it', async () => {
+  // tips and the gate above are inside the world page's policy, which the harness's server enforces
+  // (lib/server.mjs): no browser posted a report (they are posted a moment after the event), and a refusal would have
+  // broken the step that needed it
+  await step('the enforced policy: nothing the tips and the gate did is outside it', async () => {
     await sleep(3000)
     eq(server.lines(/\[csp\]/).join('\n'), '')
-    // and a report would have come: a script outside the policy runs, and the server writes the report of it
-    eq(await runInlineScript(pages[0].page), 1, 'the inline script ran')
-    await waitUntil(() => server.lines(REPORTED_INLINE).length === 1, { timeout: 15000, message: 'the report' })
+    // and a report would have come: a script outside the policy is refused, and the server writes the report of it
+    eq(await runInlineScript(pages[0].page), undefined, 'the inline script did not run')
+    await waitUntil(() => server.lines(REFUSED_INLINE).length === 1, { timeout: 15000, message: 'the report' })
     eq(server.lines(/\[csp\]/).length, 1, 'that report and no other')
   })
 } catch (err) {

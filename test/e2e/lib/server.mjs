@@ -51,6 +51,9 @@ export function serverEnv(port, world, extra = {}) {
     WS_CONNECT_RATE_PER_MIN_56: '0',
     WS_CONNECT_RATE_PER_MIN_48: '0',
     WS_CONNECT_CONCURRENT_PER_IP: '0',
+    // the world page's policy enforced (the mode with the risk): what a run does that the policy refuses breaks the
+    // step that needed it. gate-extras.mjs starts one server of its own in report mode (pass 'report' or '' for it)
+    CSP_MODE: 'enforce',
     ...extra,
   }
 }

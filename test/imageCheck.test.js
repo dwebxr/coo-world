@@ -1059,9 +1059,10 @@ test('image.yml: read-only, pinned to the commits ci.yml uses, no Docker action,
   assert.match(workflow, /runs-on: ubuntu-24\.04/)
   assert.match(workflow, /timeout-minutes: \d+/)
   assert.match(workflow, /node-version-file: '\.nvmrc'/)
+  // `exec`: Node, not Bash, is the step's process, so a cancel's SIGINT reaches the script and its cleanup runs
   assert.match(
     workflow,
-    /run: node scripts\/image-check\.mjs --model=current --summary image-check\.json --logs image-check-logs/
+    /\n {8}run: exec node scripts\/image-check\.mjs --model=current --summary image-check\.json --logs image-check-logs\n/
   )
   assert.match(workflow, /if: \$\{\{ always\(\) \}\}\n\s+uses: actions\/upload-artifact@/)
   // what the image is built from, the harness and the workflow itself, for pull requests and for main alike
@@ -1076,6 +1077,8 @@ test('image.yml: read-only, pinned to the commits ci.yml uses, no Docker action,
     'scripts/lib/**',
     'scripts/image-check.mjs',
     'src/server/**',
+    // bundled into the server (build/index.js): the final save is in src/core/systems/ServerNetwork.js
+    'src/core/**',
     '.github/workflows/image.yml',
   ]
   assert.deepEqual(paths, [...wanted, ...wanted])

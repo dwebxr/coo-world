@@ -212,3 +212,46 @@ test("node: the handle's pointer-callback getters ask the node, not the object t
       }
     }
   }))
+
+// `play()` with no options threw a TypeError (it destructured `undefined`); `stop()` has had a default. It is now
+// `play({})`: a play with no name, which is a clip not found (said once a play, as for any name the model lacks).
+test('skinnedmesh: play() with no options is play({}) (it threw)', () =>
+  runProbe(bundle, ({ createNode, Apps, THREE }) => {
+    const apps = new Apps({ network: {}, events: {} })
+    const app = { deadHook: { dead: false }, createNode: (type, data) => createNode(type, data) }
+    // not mounted: nothing to play
+    assert.equal(createNode('skinnedmesh').getProxy().play(), undefined)
+    assert.equal(apps.appMethods.create(app, 'skinnedmesh').play(), undefined)
+    // mounted, playing a clip of its model
+    const warned = []
+    console.warn = (...args) => warned.push(args.join(' '))
+    const playing = () => {
+      const clip = new THREE.AnimationClip('walk', 1, [new THREE.NumberKeyframeTrack('.position[x]', [0, 1], [0, 1])])
+      const node = createNode('skinnedmesh', { object3d: new THREE.Object3D(), animations: [clip] })
+      const world = { stage: { scene: { add() {}, remove() {} }, dirtyNodes: new Set() }, setHot() {} }
+      node.activate({ world, entity: {} })
+      const handle = node.getProxy()
+      handle.play({ name: 'walk' })
+      assert.equal(node.action?.getClip().name, 'walk')
+      return { node, handle, walk: node.action }
+    }
+    const results = []
+    for (const opts of [[], [{}]]) {
+      const { node, handle, walk } = playing()
+      warned.length = 0
+      assert.equal(handle.play(...opts), undefined)
+      // a second on (past the fade of 0.15 s)
+      node.update(1)
+      results.push({ action: node.action, warned: [...warned], walkRunning: walk.isRunning() })
+      node.deactivate()
+    }
+    // (control: a clip left playing still runs a second on)
+    const control = playing()
+    control.node.update(1)
+    assert.equal(control.walk.isRunning(), true)
+    control.node.deactivate()
+    assert.deepEqual(results[0], results[1])
+    assert.deepEqual(results[0].warned, ['[skinnedmesh] animation not found: undefined'])
+    assert.equal(results[0].action, undefined)
+    assert.equal(results[0].walkRunning, false, 'the clip that played faded out, as for any name not found')
+  }))

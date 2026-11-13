@@ -15,6 +15,8 @@ const defaults = {
 
 const m1 = new THREE.Matrix4()
 
+// play() with no options is a play with no name, as `play({})`
+const defaultPlayOpts = {}
 const defaultStopOpts = { fade: 0.15 }
 
 export class SkinnedMesh extends Node {
@@ -156,7 +158,7 @@ export class SkinnedMesh extends Node {
   // only a mounted skinned mesh animates (its mixer, and its place in world.hot, go with its unmount). The options are
   // read once, into primitives, before that is checked: a getter, a toString or a valueOf on them is script code, which
   // could end the run (an object used as a clip name would otherwise be converted after the check)
-  play(opts) {
+  play(opts = defaultPlayOpts) {
     const { name: rawName, fade: rawFade = 0.15, speed: rawSpeed, loop = true } = opts
     const name = typeof rawName === 'string' ? rawName : String(rawName)
     const fade = Number(rawFade)

@@ -29,7 +29,7 @@ Inherits all [Node](/docs/scripting/nodes/Node.md) properties
 Plays an animation. 
 If a previous animation was playing it will stop/fade.
 
-**name**: The name of the animation to play
+**name**: The name of the animation to play. A name the model has no animation of fades out what plays and warns that the animation was not found; so does `play()` with no options, which is `play({})`.
 
 **fade**: The fade time in seconds, into this animation and out of any previous animation. Defaults to `0.15`
 

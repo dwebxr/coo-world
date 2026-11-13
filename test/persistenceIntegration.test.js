@@ -140,6 +140,9 @@ test('persistence: real server SQLite and PhysX world recover a just-acknowledge
         // The server's broadcast is the acknowledgement boundary, before native-capable modify.
         world.network.send = name => {
           assert.equal(name, 'entityModified')
+          // what is acknowledged is already recorded for the save
+          const dirty = world.network.dirtyApps.get(entity.data.id)
+          assert.deepEqual(JSON.parse(dirty.record.data).position, [12, 3, 4])
           world.fatal('test')
         }
         await world.network.onEntityModified(socket, { id: entity.data.id, position: [12, 3, 4] })

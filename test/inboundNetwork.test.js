@@ -143,26 +143,35 @@ test('enqueue: late packets for a disconnected socket are counted as disconnecte
 })
 
 test('onDisconnect: release queued and deferred credit synchronously, with lazy skipping on the next flush', t => {
-  const { network, ws, socket } = make(t)
+  const { network, ws, socket, logs } = make(t)
   const packet = writeClientPacket('entityEvent', 'x'.repeat(60000))
   for (let i = 0; i < 5; i++) ws.emit('message', packet)
   const entries = [...socket.inbox]
   let dispatched = 0
+  // What the handler sees is asserted after the flush: the flush catches what a handler throws and only logs it, so
+  // an assertion made in the handler could not fail the test. The close itself gives the socket's credit back (its
+  // inbox and the arrivals deferred during this flush) to the pool every connection reserves from, before any later
+  // flush would skip the socket.
+  const during = []
   network.onEntityEvent = () => {
     dispatched++
-    assert.equal(entries[0].released, true)
+    during.push({ released: entries[0].released })
     ws.emit('message', packet)
     ws.emit('message', packet)
-    assert.equal(socket.inboxCost, 6 * (packet.length + 160))
+    during.push({ inboxCost: socket.inboxCost })
     ws.emit('close')
-    assert.equal(socket.disconnected, true)
-    assert.equal(socket.inboxCost, 0)
-    assert.equal(network.scheduler.pool, 0)
+    during.push({ disconnected: socket.disconnected, inboxCost: socket.inboxCost, pool: network.scheduler.pool })
     ws.emit('close')
     network.scheduler.purge(socket)
   }
   network.flush()
   network.flush()
+  assert.deepEqual(during, [
+    { released: true },
+    { inboxCost: 6 * (packet.length + 160) },
+    { disconnected: true, inboxCost: 0, pool: 0 },
+  ])
+  assert.deepEqual(logs, [])
   assert.equal(dispatched, 1)
   assert.equal(socket.inbox.length, 0)
   assert.equal(socket.inboxCost, 0)

@@ -497,7 +497,12 @@ test('fatal stop suppresses save rearming and refuses mutating packets', async t
   assert.equal(network.enqueue(), false)
   network.scheduler = { flush: fn => fn({}, {}) }
   network.flush()
-  for (const name of handlers) await network[name](tripwire('socket'), tripwire('data'), tripwire('meta'))
+  // (two handlers check the payload's type first: they are given one of that type, an id and an event, which a
+  // handler that went on would look up in the world)
+  const payloads = { onEntityRemoved: 'app', onEntityEvent: ['app', 0, 'probe', null] }
+  for (const name of handlers) {
+    await network[name](tripwire('socket'), payloads[name] ?? tripwire('data'), tripwire('meta'))
+  }
   assert.deepEqual(touched, [])
 })
 

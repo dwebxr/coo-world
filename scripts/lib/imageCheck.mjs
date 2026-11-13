@@ -17,8 +17,14 @@ export const STOPS = {
   sigint: { signal: 'SIGINT', timeoutS: 5 },
 }
 // a stop counts as "well under" its timeout up to this part of it: 8 s of the 10 s, 4 s of the 5 s. The server's
-// own limit for the final save is 3.5 s (SHUTDOWN_DEADLINE_MS in src/server/shutdown.js), after which it exits 1
+// own limit for the final save is 3.5 s (SHUTDOWN_DEADLINE_MS in src/server/shutdown.js), after which it exits 1.
+// It is judged on Docker's own timestamps (stopTiming): from the kill Docker records when it sends the signal to
+// the container's exit. When those cannot be read, the `docker stop` command's own duration is judged instead,
+// against the whole timeout: it holds the CLI's start and the runner's scheduling too, but a container killed after
+// the timeout still fails it.
 const STOP_ELAPSED_PART = 0.8
+// `docker events --since` is this much before the `docker stop` is started (the daemon's clock is this machine's)
+const EVENTS_SINCE_MARGIN_MS = 1000
 
 export const HEALTH_POLLS = 120
 export const HEALTH_INTERVAL_MS = 1000
@@ -156,6 +162,32 @@ export function stopArgs({ signal, timeoutS }, name) {
 
 // (an argv element, not a shell word: the template needs no quotes of its own)
 const stateArgs = name => ['container', 'inspect', '--format', '{{json .State}}', name]
+
+// A time for `docker events --since/--until`: Unix seconds with nine digits of fraction, the form the docker CLI
+// documents ("seconds[.nanoseconds]") and itself sends to the daemon.
+export function unixTimestamp(ms) {
+  const whole = Math.floor(ms)
+  return `${Math.floor(whole / 1000)}.${String(whole % 1000).padStart(3, '0')}000000`
+}
+
+// What Docker recorded of one container between two times: its container events (kill, die, stop, exec_…, …), one
+// JSON object per line. With an --until in the past the daemon prints what it holds and ends; it holds the last 256
+// events of all containers, and between a stop and this command there are a handful.
+export function eventsArgs(name, { sinceMs, untilMs }) {
+  return [
+    'events',
+    '--since',
+    unixTimestamp(sinceMs),
+    '--until',
+    unixTimestamp(untilMs),
+    '--filter',
+    `container=${name}`,
+    '--filter',
+    'type=container',
+    '--format',
+    '{{json .}}',
+  ]
+}
 
 // For reading only: the command as one would type it in a shell. Nothing is ever run through a shell.
 export function formatCommand(args) {
@@ -337,6 +369,93 @@ export function parseState(text) {
 }
 
 /**
+ * The lines of `docker events --format '{{json .}}'`, each an event as the Engine API describes it (EventMessage):
+ * `Action` ('kill', 'die', 'stop', 'exec_die', …), `Actor.Attributes` (strings: `signal` on a kill, `exitCode` on a
+ * die), `timeNano` (nanoseconds since the epoch, on the daemon's clock). An event without an Action or a timeNano
+ * is not used: it is counted in `unreadable`. (timeNano is above 2^53, so as a JS number it loses a few hundred
+ * nanoseconds: nothing that shows in milliseconds.)
+ */
+export function parseEvents(text) {
+  const events = []
+  let unreadable = 0
+  for (const line of String(text ?? '').split('\n')) {
+    if (!line.trim()) continue
+    let event
+    try {
+      event = JSON.parse(line)
+    } catch {
+      event = null
+    }
+    if (typeof event?.Action !== 'string' || !Number.isFinite(event?.timeNano)) {
+      unreadable++
+      continue
+    }
+    const raw = event.Actor?.Attributes
+    const attributes = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+    events.push({ type: event.Type ?? null, action: event.Action, ms: event.timeNano / 1e6, attributes })
+  }
+  return { events, unreadable }
+}
+
+/** A time as `docker inspect` gives it (RFC 3339 with up to nine digits of fraction), in ms; null for Docker's zero time. */
+export function parseDockerTime(text) {
+  const match = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(Z|[+-]\d\d:\d\d)$/.exec(String(text ?? ''))
+  if (!match) return null
+  const seconds = Date.parse(`${match[1]}${match[3]}`)
+  // ("0001-01-01T00:00:00Z": the container has not exited)
+  if (!Number.isFinite(seconds) || seconds <= 0) return null
+  return seconds + Number(`0.${match[2] ?? '0'}`) * 1000
+}
+
+// a signal as a kill event names it: its number, as text
+const SIGNAL_NAMES = { 2: 'SIGINT', 9: 'SIGKILL', 15: 'SIGTERM' }
+const signalName = value => SIGNAL_NAMES[value] ?? (value === undefined ? 'unknown' : String(value))
+
+/**
+ * How long a stop took by Docker's own clock, and what Docker did:
+ *   source 'events'             from the stop's first `kill` event (Docker sends the stop signal and records it) to
+ *                               the container's `die` event after it;
+ *   source 'events+FinishedAt'  the same, to the container's State.FinishedAt when no `die` event was read;
+ *   source 'cli'                Docker's pair could not be had (`why`): `ms` is then `cliMs`, how long the
+ *                               `docker stop` command took in this script, which stopExpectation judges more loosely.
+ * Always recorded: `cliMs`, `signals` (every kill of the stop: one, or the signal and then SIGKILL after the timeout)
+ * and `dieExitCode` (the exit code the die event carries; null without one).
+ */
+export function stopTiming({ events = [], finishedAt = null, cliMs, unavailable = null }) {
+  const kills = events.filter(event => event.action === 'kill')
+  const first = kills[0] ?? null
+  // (the events come in the order Docker recorded them)
+  const die = first ? (events.slice(events.indexOf(first) + 1).find(event => event.action === 'die') ?? null) : null
+  const exitCode = die?.attributes.exitCode
+  const record = {
+    cliMs,
+    signals: kills.map(event => signalName(event.attributes.signal)),
+    dieExitCode: /^-?\d+$/.test(exitCode ?? '') ? Number(exitCode) : null,
+  }
+  const finishedMs = parseDockerTime(finishedAt)
+  // (to the microsecond: what is below it is the rounding of timeNano to a double)
+  const between = (from, to) => Math.max(0, Math.round((to - from) * 1000) / 1000)
+  if (first && die) return { source: 'events', ms: between(first.ms, die.ms), ...record }
+  if (first && finishedMs !== null) return { source: 'events+FinishedAt', ms: between(first.ms, finishedMs), ...record }
+  const why =
+    unavailable ?? (first ? 'no `die` event and no State.FinishedAt after the kill' : 'no `kill` event in the window')
+  return { source: 'cli', ms: cliMs, why, ...record }
+}
+
+/** One line about a stop's timing, for the output. */
+export function describeTiming(timing) {
+  const cli = `the \`docker stop\` command took ${(timing.cliMs / 1000).toFixed(1)} s`
+  if (timing.source === 'cli') {
+    return `Docker's own times not read (${timing.why}): ${cli}, judged against the whole timeout`
+  }
+  const end =
+    timing.source === 'events'
+      ? `its die event (exitCode ${timing.dieExitCode ?? 'unknown'})`
+      : 'its State.FinishedAt (no die event read)'
+  return `by Docker's clock ${timing.signals.join(', then ')} sent, and ${end} ${(timing.ms / 1000).toFixed(3)} s later; ${cli}`
+}
+
+/**
  * `docker logs --timestamps` gives the container's stdout and stderr on two streams; this puts their lines back in
  * the order of their timestamps (fixed-width, so they sort as text). A line without one stays behind the line
  * before it.
@@ -419,6 +538,8 @@ export function stopExpectation({ signal, timeoutS }) {
     signal,
     timeoutS,
     maxElapsedMs: Math.round(timeoutS * 1000 * STOP_ELAPSED_PART),
+    // the bound on the `docker stop` command's own duration, when Docker's times could not be read
+    maxCliMs: timeoutS * 1000,
     required: [`[server] ${signal}: saving the world before exit`, '[network] final save complete'],
     forbidden: [...NOT_STOPPED_OR_SAVED],
   }
@@ -440,17 +561,35 @@ function exitCodeMeaning(code, timeoutS) {
  * The verdict on one stop: `ok` and, when it is not, every reason. `log` is the container's whole output.
  * A stop is good when the container was gone well before the timeout, PID 1 exited 0, and the server said that it
  * got this signal and that the final save completed, without any of the lines that say otherwise.
+ * `elapsedFrom`: 'docker' when `elapsedMs` is Docker's own (stopTiming), 'cli' when it is the `docker stop`
+ * command's duration, which is held to the whole timeout only.
  */
-export function judgeStop({ signal, timeoutS, exitCode, running = false, oomKilled = false, elapsedMs, log }) {
+export function judgeStop({
+  signal,
+  timeoutS,
+  exitCode,
+  running = false,
+  oomKilled = false,
+  elapsedMs,
+  elapsedFrom = 'docker',
+  log,
+}) {
   const expected = stopExpectation({ signal, timeoutS })
   const lines = String(log ?? '').split('\n')
   const reasons = []
   if (running) reasons.push('the container is still running after `docker stop`')
   if (exitCode !== 0) reasons.push(`exit code ${exitCode}, expected 0 (${exitCodeMeaning(exitCode, timeoutS)})`)
   if (oomKilled) reasons.push('Docker reports the container as killed for memory (OOMKilled)')
-  if (!(elapsedMs < expected.maxElapsedMs)) {
+  const seconds = (elapsedMs / 1000).toFixed(1)
+  if (elapsedFrom === 'cli') {
+    if (!(elapsedMs < expected.maxCliMs)) {
+      reasons.push(
+        `the \`docker stop\` command took ${seconds} s (Docker's own times were not read): not under ${timeoutS} s, the timeout itself`
+      )
+    }
+  } else if (!(elapsedMs < expected.maxElapsedMs)) {
     reasons.push(
-      `the stop took ${(elapsedMs / 1000).toFixed(1)} s: not under ${expected.maxElapsedMs / 1000} s (the timeout is ${timeoutS} s, after which the container is killed)`
+      `the stop took ${seconds} s by Docker's clock, from its kill to the container's exit: not under ${expected.maxElapsedMs / 1000} s (the timeout is ${timeoutS} s, after which the container is killed)`
     )
   }
   const found = {}
@@ -460,7 +599,7 @@ export function judgeStop({ signal, timeoutS, exitCode, running = false, oomKill
   }
   const unwanted = lines.filter(line => expected.forbidden.some(part => line.includes(part)))
   for (const line of unwanted) reasons.push(`the log says: ${line.trim().slice(0, 300)}`)
-  return { ok: reasons.length === 0, reasons, signal, timeoutS, exitCode, elapsedMs, found, unwanted }
+  return { ok: reasons.length === 0, reasons, signal, timeoutS, exitCode, elapsedMs, elapsedFrom, found, unwanted }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -485,6 +624,33 @@ export const SIMULATED_STATUS = [
   'SigIgn:\t0000000001001000',
   'SigCgt:\t0000000188004a03',
 ].join('\n')
+
+/**
+ * The lines `docker events --format '{{json .}}'` prints for a stop, in the shape of the Engine API's EventMessage
+ * (with the fields the CLI has long printed beside it: status, id, from): a kill with the signal's number, a second
+ * kill with 9 when `killedAfterMs` is given, the die with its exit code, the stop. Times in ms since the epoch.
+ */
+export function simulatedStopEvents({ name, signal, killAtMs, exitAfterMs, exitCode = 0, killedAfterMs = null }) {
+  const id = '4f1c9e0b7a2d'.repeat(5).slice(0, 64)
+  const image = 'image-check-simulated:check'
+  const event = (action, atMs, extra = {}) =>
+    JSON.stringify({
+      status: action,
+      id,
+      from: image,
+      Type: 'container',
+      Action: action,
+      Actor: { ID: id, Attributes: { image, name, ...extra } },
+      scope: 'local',
+      time: Math.floor(atMs / 1000),
+      timeNano: Math.round(atMs) * 1e6,
+    })
+  const lines = [event('kill', killAtMs, { signal: String(SIGNAL_NUMBERS[signal] ?? signal) })]
+  if (killedAfterMs !== null) lines.push(event('kill', killAtMs + killedAfterMs, { signal: '9' }))
+  lines.push(event('die', killAtMs + exitAfterMs, { execDuration: '9', exitCode: String(exitCode) }))
+  lines.push(event('stop', killAtMs + exitAfterMs + 2))
+  return lines.join('\n')
+}
 
 export function simulatedDocker({ commitHash = 'simulated', respond = () => undefined, stopped = new Map() } = {}) {
   const calls = []
@@ -522,6 +688,14 @@ export function simulatedDocker({ commitHash = 'simulated', respond = () => unde
       const at = args.indexOf('--signal')
       state.stopped.set(name, at === -1 ? 'SIGTERM' : args[at + 1])
       return ok(name, 400)
+    }
+    if (first === 'events') {
+      // the stop was sent a second into the window (EVENTS_SINCE_MARGIN_MS); the container exits 0.2 s later
+      const container = args.find(arg => arg.startsWith('container='))?.slice('container='.length)
+      const signal = state.stopped.get(container)
+      if (!signal) return ok()
+      const killAtMs = Number(args[args.indexOf('--since') + 1]) * 1000 + EVENTS_SINCE_MARGIN_MS
+      return ok(simulatedStopEvents({ name: container, signal, killAtMs, exitAfterMs: 200 }))
     }
     if (first === 'logs') {
       const signal = state.stopped.get(name)
@@ -739,21 +913,33 @@ export async function runImageCheck({
     const { name, role } = record
     const { signal, timeoutS } = expectation
     report.info(`${role}: stopping with ${signal}, ${timeoutS} s before the kill`)
+    const sinceMs = now() - EVENTS_SINCE_MARGIN_MS
     const stopped = await must(stopArgs(expectation, name), { timeoutMs: (timeoutS + 30) * 1000 })
     const state = parseState((await must(stateArgs(name))).stdout)
     const log = await collectLog(record, { final: !state.running })
+    // what Docker itself recorded of the stop, on its own clock: the kill it sent and the container's exit
+    const eventLines = await look(eventsArgs(name, { sinceMs, untilMs: now() }))
+    const events = parseEvents(eventLines)
+    if (events.unreadable) report.info(`  (${events.unreadable} line(s) of \`docker events\` were not read as events)`)
+    const timing = stopTiming({
+      events: events.events,
+      finishedAt: state.finishedAt,
+      cliMs: stopped.ms,
+      unavailable: eventLines === null ? '`docker events` failed' : null,
+    })
     const verdict = judgeStop({
       signal,
       timeoutS,
       exitCode: state.exitCode,
       running: state.running,
       oomKilled: state.oomKilled,
-      elapsedMs: stopped.ms,
+      elapsedMs: timing.ms,
+      elapsedFrom: timing.source === 'cli' ? 'cli' : 'docker',
       log,
     })
-    record.stop = { ...verdict, startedAt: state.startedAt, finishedAt: state.finishedAt }
+    record.stop = { ...verdict, startedAt: state.startedAt, finishedAt: state.finishedAt, timing }
     report.info(
-      `  \`docker stop\` returned after ${(stopped.ms / 1000).toFixed(1)} s; exit code ${state.exitCode}; ` +
+      `  ${describeTiming(timing)}; exit code ${state.exitCode}; ` +
         Object.entries(verdict.found)
           .map(([line, there]) => `\`${line}\`: ${there ? 'in the log' : 'MISSING'}`)
           .join('; ')

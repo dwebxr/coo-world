@@ -18,23 +18,30 @@ import {
   UsageError,
   buildRunArgs,
   classifyProcess,
-  commandKind,
   classifyTree,
+  commandKind,
   containerEnv,
+  describeTiming,
   describeTree,
+  eventsArgs,
   formatCommand,
   judgeStop,
   mergeLogs,
   modelFor,
   parseArgs,
+  parseDockerTime,
+  parseEvents,
   parseProcStatus,
   parsePs,
   parseState,
   runImageCheck,
   runNames,
   simulatedDocker,
+  simulatedStopEvents,
   stopArgs,
   stopExpectation,
+  stopTiming,
+  unixTimestamp,
 } from '../scripts/lib/imageCheck.mjs'
 import { serverStartEnv } from '../scripts/lib/startEnv.mjs'
 import { installShutdown } from '../src/server/shutdown.js'
@@ -303,7 +310,10 @@ test('stop: exit 137 is a kill, whatever else is there', () => {
   assert.equal(verdict.ok, false)
   assert.equal(verdict.reasons.length, 4)
   assert.match(verdict.reasons[0], /^exit code 137, expected 0 \(128 \+ 9: killed\. Nothing in the container ended/)
-  assert.match(verdict.reasons[1], /^the stop took 10\.4 s: not under 8 s \(the timeout is 10 s/)
+  assert.match(
+    verdict.reasons[1],
+    /^the stop took 10\.4 s by Docker's clock, from its kill to the container's exit: not under 8 s \(the timeout is 10 s/
+  )
   assert.match(verdict.reasons[2], /no `\[server\] SIGTERM: saving the world before exit` line/)
   assert.match(verdict.reasons[3], /no `\[network\] final save complete` line/)
   // 143 and 130: the signal ended the process itself
@@ -455,6 +465,7 @@ test('stop: with SIGINT the server has to name SIGINT, within 4 of the 5 seconds
     signal: 'SIGINT',
     timeoutS: 5,
     maxElapsedMs: 4000,
+    maxCliMs: 5000,
     required: ['[server] SIGINT: saving the world before exit', '[network] final save complete'],
     forbidden: stopExpectation(STOPS.sigterm).forbidden,
   })
@@ -467,7 +478,7 @@ test('stop: with SIGINT the server has to name SIGINT, within 4 of the 5 seconds
   assert.equal(stopOf(STOPS.sigint, { log: savedLog('SIGINT'), elapsedMs: 3999 }).ok, true)
   assert.match(
     stopOf(STOPS.sigint, { log: savedLog('SIGINT'), elapsedMs: 4000 }).reasons[0],
-    /^the stop took 4\.0 s: not under 4 s/
+    /^the stop took 4\.0 s by Docker's clock, from its kill to the container's exit: not under 4 s/
   )
   // still running, or killed for memory
   assert.match(stopOf(STOPS.sigint, { log: savedLog('SIGINT'), running: true }).reasons[0], /still running/)
@@ -594,6 +605,142 @@ test('stop: every log line of the stop and save paths is forbidden, required or 
   for (const { reason } of STOP_PATH_ALLOWED) assert.ok(reason.length > 10)
 })
 
+// --- how long a stop took, by Docker's clock ------------------------------------------------------------------
+
+// `docker events --filter container=… --filter type=container --format '{{json .}}'` over a SIGTERM stop that went
+// well, written out as the Engine API describes an event (EventMessage: Type, Action, Actor.ID, Actor.Attributes,
+// scope, time, timeNano) with the CLI's older status/id/from beside them. The health check's exec events and the
+// stop event are in the window too.
+const ID64 = '9c4b2f6e1d3a'.repeat(6).slice(0, 64)
+const STOP_EVENTS_OK = [
+  `{"status":"exec_create: /bin/sh -c curl -f http://localhost:3000/health || exit 1","id":"${ID64}","from":"image-check-0123456789ab:check","Type":"container","Action":"exec_create: /bin/sh -c curl -f http://localhost:3000/health || exit 1","Actor":{"ID":"${ID64}","Attributes":{"execID":"77aa","image":"image-check-0123456789ab:check","name":"image-check-0123456789ab-sigterm"}},"scope":"local","time":1794534188,"timeNano":1794534188910228811}`,
+  `{"status":"exec_die","id":"${ID64}","from":"image-check-0123456789ab:check","Type":"container","Action":"exec_die","Actor":{"ID":"${ID64}","Attributes":{"execID":"77aa","exitCode":"0","image":"image-check-0123456789ab:check","name":"image-check-0123456789ab-sigterm"}},"scope":"local","time":1794534189,"timeNano":1794534189003118734}`,
+  `{"status":"kill","id":"${ID64}","from":"image-check-0123456789ab:check","Type":"container","Action":"kill","Actor":{"ID":"${ID64}","Attributes":{"image":"image-check-0123456789ab:check","name":"image-check-0123456789ab-sigterm","signal":"15"}},"scope":"local","time":1794534189,"timeNano":1794534189473104512}`,
+  `{"status":"die","id":"${ID64}","from":"image-check-0123456789ab:check","Type":"container","Action":"die","Actor":{"ID":"${ID64}","Attributes":{"execDuration":"9","exitCode":"0","image":"image-check-0123456789ab:check","name":"image-check-0123456789ab-sigterm"}},"scope":"local","time":1794534189,"timeNano":1794534189680512991}`,
+  `{"status":"stop","id":"${ID64}","from":"image-check-0123456789ab:check","Type":"container","Action":"stop","Actor":{"ID":"${ID64}","Attributes":{"image":"image-check-0123456789ab:check","name":"image-check-0123456789ab-sigterm"}},"scope":"local","time":1794534189,"timeNano":1794534189682240115}`,
+].join('\n')
+
+test('docker events: the kill with its signal and the die with its exit code, on Docker’s clock', () => {
+  const { events, unreadable } = parseEvents(STOP_EVENTS_OK)
+  assert.equal(unreadable, 0)
+  assert.deepEqual(
+    events.map(event => event.action),
+    ['exec_create: /bin/sh -c curl -f http://localhost:3000/health || exit 1', 'exec_die', 'kill', 'die', 'stop']
+  )
+  assert.equal(events[2].attributes.signal, '15')
+  assert.equal(events[3].attributes.exitCode, '0')
+  const timing = stopTiming({ events, finishedAt: '2026-11-13T10:23:09.680400000Z', cliMs: 3900 })
+  assert.equal(timing.source, 'events')
+  // 1794534189.680512991 - 1794534189.473104512 s, to within what a double holds of timeNano
+  assert.ok(Math.abs(timing.ms - 207.408) < 0.01, String(timing.ms))
+  assert.deepEqual(timing.signals, ['SIGTERM'])
+  assert.equal(timing.dieExitCode, 0)
+  assert.equal(timing.cliMs, 3900)
+  assert.equal(
+    describeTiming(timing),
+    "by Docker's clock SIGTERM sent, and its die event (exitCode 0) 0.207 s later; the `docker stop` command took 3.9 s"
+  )
+  // the exec's own exit code is not the container's
+  assert.equal(stopTiming({ events: events.filter(event => event.action !== 'die'), cliMs: 1 }).dieExitCode, null)
+})
+
+test('docker events: a container killed after the timeout shows both kills, and fails on Docker’s clock', () => {
+  const lines = [
+    `{"Type":"container","Action":"kill","Actor":{"ID":"${ID64}","Attributes":{"name":"c","signal":"2"}},"scope":"local","time":1794534189,"timeNano":1794534189000000000}`,
+    `{"Type":"container","Action":"kill","Actor":{"ID":"${ID64}","Attributes":{"name":"c","signal":"9"}},"scope":"local","time":1794534194,"timeNano":1794534194001000000}`,
+    `{"Type":"container","Action":"die","Actor":{"ID":"${ID64}","Attributes":{"name":"c","exitCode":"137"}},"scope":"local","time":1794534194,"timeNano":1794534194052000000}`,
+  ].join('\n')
+  const timing = stopTiming({ events: parseEvents(lines).events, cliMs: 5300 })
+  assert.equal(timing.source, 'events')
+  assert.equal(Math.round(timing.ms), 5052)
+  assert.deepEqual(timing.signals, ['SIGINT', 'SIGKILL'])
+  assert.equal(timing.dieExitCode, 137)
+  const verdict = judgeStop({ ...STOPS.sigint, exitCode: 137, elapsedMs: timing.ms, log: savedLog('SIGINT') })
+  assert.match(verdict.reasons[1], /^the stop took 5\.1 s by Docker's clock/)
+  // what the simulated docker prints for such a stop reads the same
+  const simulated = simulatedStopEvents({
+    name: 'c',
+    signal: 'SIGINT',
+    killAtMs: 1_794_534_189_000,
+    exitAfterMs: 5052,
+    exitCode: 137,
+    killedAfterMs: 5001,
+  })
+  assert.deepEqual(stopTiming({ events: parseEvents(simulated).events, cliMs: 5300 }), timing)
+})
+
+test('the stop is judged on Docker’s clock: a 0.2 s stop is good however late the CLI returns', () => {
+  // the case this is for: Docker saw 0.2 s, the `docker stop` process ended 4.6 s after it was started
+  const timing = stopTiming({ events: parseEvents(STOP_EVENTS_OK).events, cliMs: 4600 })
+  const verdict = judgeStop({
+    ...STOPS.sigint,
+    exitCode: 0,
+    elapsedMs: timing.ms,
+    elapsedFrom: 'docker',
+    log: savedLog('SIGINT'),
+  })
+  assert.equal(verdict.ok, true, verdict.reasons.join('; '))
+  assert.equal(verdict.elapsedFrom, 'docker')
+})
+
+test('without Docker’s pair: FinishedAt as the end, else the CLI’s time against the whole timeout', () => {
+  const { events } = parseEvents(STOP_EVENTS_OK)
+  const kill = events.filter(event => event.action === 'kill')
+  // no die event read: the container's FinishedAt is the end
+  const finished = stopTiming({ events: kill, finishedAt: '2026-11-13T10:23:09.900104512Z', cliMs: 1200 })
+  assert.equal(finished.source, 'events+FinishedAt')
+  assert.ok(Math.abs(finished.ms - (parseDockerTime('2026-11-13T10:23:09.900104512Z') - kill[0].ms)) < 0.001)
+  assert.match(describeTiming(finished), /its State\.FinishedAt \(no die event read\)/)
+  // no kill event: the CLI's own time, said so
+  for (const [given, why] of [
+    [{ events: [], finishedAt: '2026-11-13T10:23:09.9Z' }, 'no `kill` event in the window'],
+    [{ events: kill, finishedAt: '0001-01-01T00:00:00Z' }, 'no `die` event and no State.FinishedAt after the kill'],
+    [{ events: [], unavailable: '`docker events` failed' }, '`docker events` failed'],
+  ]) {
+    const timing = stopTiming({ ...given, cliMs: 4600 })
+    assert.equal(timing.source, 'cli', why)
+    assert.equal(timing.ms, 4600)
+    assert.equal(timing.why, why)
+    assert.match(describeTiming(timing), /^Docker's own times not read \(.*\): the `docker stop` command took 4\.6 s/)
+  }
+  // the CLI's time is held to the timeout itself: 4.6 s of SIGINT's 5 passes, 5 s does not
+  const cli = (elapsedMs, rest = {}) =>
+    judgeStop({ ...STOPS.sigint, exitCode: 0, elapsedMs, elapsedFrom: 'cli', log: savedLog('SIGINT'), ...rest })
+  assert.equal(cli(4600).ok, true)
+  assert.deepEqual(cli(5000).reasons, [
+    "the `docker stop` command took 5.0 s (Docker's own times were not read): not under 5 s, the timeout itself",
+  ])
+  // a kill after the timeout still fails it: by the code, and by the time the CLI took
+  assert.equal(cli(5300, { exitCode: 137 }).reasons.length, 2)
+  // lines that are not events are counted, not used
+  const odd = parseEvents('Error response from daemon: oops\n{"Action":"kill"}\n[]\n\n')
+  assert.deepEqual(odd, { events: [], unreadable: 3 })
+})
+
+test('times for docker events, and from docker inspect', () => {
+  assert.equal(unixTimestamp(1_794_534_189_473), '1794534189.473000000')
+  assert.equal(unixTimestamp(1_794_534_189_005.7), '1794534189.005000000')
+  assert.deepEqual(eventsArgs('c', { sinceMs: 1_794_534_188_000, untilMs: 1_794_534_190_250 }), [
+    'events',
+    '--since',
+    '1794534188.000000000',
+    '--until',
+    '1794534190.250000000',
+    '--filter',
+    'container=c',
+    '--filter',
+    'type=container',
+    '--format',
+    '{{json .}}',
+  ])
+  assert.equal(parseDockerTime('2026-11-13T10:23:09.680400000Z'), Date.parse('2026-11-13T10:23:09.680Z') + 0.4)
+  assert.equal(parseDockerTime('2026-11-13T10:23:09Z'), Date.parse('2026-11-13T10:23:09Z'))
+  assert.equal(parseDockerTime('2026-11-13T19:23:09.5+09:00'), Date.parse('2026-11-13T10:23:09.500Z'))
+  assert.equal(parseDockerTime('0001-01-01T00:00:00Z'), null)
+  assert.equal(parseDockerTime(null), null)
+  assert.equal(parseDockerTime('yesterday'), null)
+})
+
 // --- the commands ---------------------------------------------------------------------------------------------
 
 const ID = '0123456789ab'
@@ -714,6 +861,7 @@ const brief = args =>
     .join(' ')
     .replaceAll(`${NAMES.prefix}-`, '')
     .replaceAll(NAMES.prefix, 'RUN')
+    .replace(/\b\d{10}\.\d{9}\b/g, 'TIME')
 
 test('a run in which everything goes well: the docker commands, in order', async () => {
   const { summary, commands, calls, logs } = await simulate()
@@ -735,12 +883,15 @@ test('a run in which everything goes well: the docker commands, in order', async
     'stop -t 10 sigterm',
     'container inspect --format {{json .State}} sigterm',
     'logs --timestamps sigterm',
+    // what Docker recorded of the stop: its kill and the container's die, on its own clock
+    'events --since TIME --until TIME --filter container=sigterm --filter type=container --format {{json .}}',
     // a fresh one on the same volume, stopped as Fly stops
     'run -d --name sigint -v world:/app/world RUN:check',
     'container inspect --format {{json .State}} sigint',
     'stop --signal SIGINT -t 5 sigint',
     'container inspect --format {{json .State}} sigint',
     'logs --timestamps sigint',
+    'events --since TIME --until TIME --filter container=sigint --filter type=container --format {{json .}}',
     // a third start on the volume
     'run -d --name restart -v world:/app/world RUN:check',
     'container inspect --format {{json .State}} restart',
@@ -799,6 +950,15 @@ test('a run in which everything goes well: the docker commands, in order', async
   )
   assert.deepEqual(Object.keys(logs), ['sigterm', 'sigint', 'restart'])
   assert.match(logs.sigint, /\[server\] SIGINT: saving the world before exit/)
+  // each stop judged on Docker's clock (0.2 s in the simulated events), the CLI's 0.4 s kept beside it
+  assert.deepEqual(
+    summary.containers.slice(0, 2).map(record => record.stop.timing),
+    [
+      { source: 'events', ms: 200, cliMs: 400, signals: ['SIGTERM'], dieExitCode: 0 },
+      { source: 'events', ms: 200, cliMs: 400, signals: ['SIGINT'], dieExitCode: 0 },
+    ]
+  )
+  assert.equal(summary.containers[0].stop.elapsedFrom, 'docker')
   // nothing of the made-up secret is in the summary
   assert.ok(!JSON.stringify(summary).includes('a-made-up-secret'))
 })
@@ -806,6 +966,12 @@ test('a run in which everything goes well: the docker commands, in order', async
 test('a container that is killed on SIGTERM fails the run, which still does the rest and cleans up', async () => {
   const killed = name => name === NAMES.containers.sigterm
   const { summary, commands, said } = await simulate((args, state) => {
+    if (args[0] === 'events' && args.includes(`container=${NAMES.containers.sigterm}`)) {
+      // Docker's record: SIGTERM, SIGKILL after the 10 s, the die with 137
+      const killAtMs = Number(args[args.indexOf('--since') + 1]) * 1000 + 1000
+      const stop = { killAtMs, exitAfterMs: 10_200, exitCode: 137, killedAfterMs: 10_000 }
+      return { stdout: simulatedStopEvents({ name: NAMES.containers.sigterm, signal: 'SIGTERM', ...stop }) }
+    }
     const name = args[args.length - 1]
     if (!killed(name)) return undefined
     if (args[0] === 'stop') return { ms: 10_300 }
@@ -822,12 +988,15 @@ test('a container that is killed on SIGTERM fails the run, which still does the 
     summary.failures.map(failure => failure.slice(0, 60)),
     [
       'sigterm (SIGTERM, 10 s): exit code 137, expected 0 (128 + 9: ',
-      'sigterm (SIGTERM, 10 s): the stop took 10.3 s: not under 8 s',
+      "sigterm (SIGTERM, 10 s): the stop took 10.2 s by Docker's clock",
       'sigterm (SIGTERM, 10 s): the log has no `[server] SIGTERM: s',
       'sigterm (SIGTERM, 10 s): the log has no `[network] final sav',
     ].map(failure => failure.slice(0, 60))
   )
   assert.equal(summary.containers[0].stop.exitCode, 137)
+  assert.deepEqual(summary.containers[0].stop.timing.signals, ['SIGTERM', 'SIGKILL'])
+  assert.equal(summary.containers[0].stop.timing.dieExitCode, 137)
+  assert.equal(summary.containers[0].stop.timing.cliMs, 10_300)
   // the end of the container's log is shown
   assert.ok(said.some(line => line.includes("the end of image-check-0123456789ab-sigterm's log:")))
   assert.ok(said.some(line => line.includes('server listening on port 3000')))
@@ -838,6 +1007,34 @@ test('a container that is killed on SIGTERM fails the run, which still does the 
     'rm -f sigterm sigint restart',
     'volume rm world',
     'image rm RUN:check',
+  ])
+})
+
+test('when `docker events` fails, the stop is judged on the CLI\u2019s time against the whole timeout', async () => {
+  const { summary, said } = await simulate(args =>
+    args[0] === 'events' ? { code: 1, stderr: 'Error response from daemon: unsupported' } : undefined
+  )
+  assert.equal(summary.ok, true, summary.failures.join('; '))
+  const timing = summary.containers[0].stop.timing
+  assert.deepEqual(timing, {
+    source: 'cli',
+    ms: 400,
+    why: '`docker events` failed',
+    cliMs: 400,
+    signals: [],
+    dieExitCode: null,
+  })
+  assert.equal(summary.containers[0].stop.elapsedFrom, 'cli')
+  assert.ok(said.some(line => line.includes('not available: exited 1: Error response from daemon: unsupported')))
+  assert.ok(said.some(line => line.includes("Docker's own times not read (`docker events` failed)")))
+  // and a CLI that took 5 s for SIGINT's 5 s timeout fails it
+  const slow = await simulate(args => {
+    if (args[0] === 'events') return { code: 1, stderr: 'no' }
+    if (args[0] === 'stop' && args.includes('SIGINT')) return { ms: 5000 }
+    return undefined
+  })
+  assert.deepEqual(slow.summary.failures, [
+    "sigint (SIGINT, 5 s): the `docker stop` command took 5.0 s (Docker's own times were not read): not under 5 s, the timeout itself",
   ])
 })
 
@@ -1008,7 +1205,7 @@ test('what a signal does to each docker command of a run', async () => {
   )
   // everything else only reads or waits, the build and the stops among them
   const waiting = new Set(kinds.filter(([, kind]) => kind === 'wait').map(([command]) => command.split(' ')[0]))
-  assert.deepEqual([...waiting].sort(), ['build', 'container', 'exec', 'image', 'logs', 'stop', 'version'])
+  assert.deepEqual([...waiting].sort(), ['build', 'container', 'events', 'exec', 'image', 'logs', 'stop', 'version'])
   assert.equal(commandKind(['image', 'inspect', '--format', '{{json .Config}}', 'x']), 'wait')
 })
 
@@ -1101,7 +1298,7 @@ test('--dry-run prints the commands of a run and starts no docker', () => {
     const out = runScript(['--dry-run', '--model=current', '--summary', path.join(bin, 'summary.json')], { PATH: bin })
     assert.equal(out.status, 0, out.stderr)
     const commands = out.stdout.split('\n').filter(line => line.startsWith('docker '))
-    assert.equal(commands.length, 26)
+    assert.equal(commands.length, 28)
     assert.match(
       commands[1],
       /^docker build --build-arg COMMIT_HASH=image-check-[0-9a-f]{12} -t image-check-[0-9a-f]{12}:check \S+$/
@@ -1112,9 +1309,20 @@ test('--dry-run prints the commands of a run and starts no docker', () => {
     )
     assert.ok(commands.some(line => /^docker stop -t 10 image-check-[0-9a-f]{12}-sigterm$/.test(line)))
     assert.ok(commands.some(line => /^docker stop --signal SIGINT -t 5 image-check-[0-9a-f]{12}-sigint$/.test(line)))
-    assert.match(commands[25], /^docker image rm image-check-[0-9a-f]{12}:check$/)
+    assert.match(commands[27], /^docker image rm image-check-[0-9a-f]{12}:check$/)
+    // Docker's record of each stop, over a window around it
+    const events = commands.filter(line => line.startsWith('docker events '))
+    assert.equal(events.length, 2)
+    for (const [i, role] of ['sigterm', 'sigint'].entries()) {
+      assert.match(
+        events[i],
+        new RegExp(
+          `^docker events --since \\d{10}\\.\\d{9} --until \\d{10}\\.\\d{9} --filter container=image-check-[0-9a-f]{12}-${role} --filter type=container --format '\\{\\{json \\.\\}\\}'$`
+        )
+      )
+    }
     assert.ok(!commands.some(line => / (-p|--publish)[ =]/.test(line)))
-    assert.match(out.stdout, /dry run: 26 docker commands, none was run/)
+    assert.match(out.stdout, /dry run: 28 docker commands, none was run/)
     assert.ok(!fs.existsSync(path.join(bin, 'summary.json')), 'a dry run writes no summary')
   } finally {
     fs.rmSync(bin, { recursive: true, force: true })
@@ -1187,6 +1395,10 @@ test('the script against a fake docker: it passes, and writes the summary and th
       /PID 1: executable \/usr\/local\/bin\/node, name "npm run start", uid 0, SIGTERM handled, SIGINT handled/
     )
     assert.match(out.stdout, /SIGINT: the server saved and the container exited 0 by itself/)
+    assert.match(
+      out.stdout,
+      /by Docker's clock SIGINT sent, and its die event \(exitCode 0\) 0\.200 s later; the `docker stop` command took \d+\.\d s/
+    )
     // the build's own output goes straight to the script's (here: stderr, as BuildKit writes it)
     assert.match(out.stderr, /#1 \[internal\] load build definition from Dockerfile/)
     const summary = JSON.parse(fs.readFileSync(summaryFile, 'utf8'))
@@ -1197,7 +1409,7 @@ test('the script against a fake docker: it passes, and writes the summary and th
     )
     assert.match(fs.readFileSync(path.join(logs, 'sigterm.log'), 'utf8'), /\[network\] final save complete/)
     const calls = fake.calls()
-    assert.equal(calls.length, 26)
+    assert.equal(calls.length, 28)
     // every command the output shows was given to docker with these very arguments
     const shown = out.stdout.split('\n').filter(line => line.startsWith('[image-check] $ docker '))
     assert.deepEqual(
@@ -1225,6 +1437,10 @@ test(
       const summary = JSON.parse(fs.readFileSync(summaryFile, 'utf8'))
       assert.equal(summary.ok, false)
       assert.equal(summary.containers[0].stop.exitCode, 137)
+      // Docker's own record of it: SIGTERM, SIGKILL at the timeout, the die with 137
+      assert.match(out.stderr, / {3}- sigterm \(SIGTERM, 10 s\): the stop took 10\.1 s by Docker's clock/)
+      assert.deepEqual(summary.containers[0].stop.timing.signals, ['SIGTERM', 'SIGKILL'])
+      assert.equal(summary.containers[0].stop.timing.dieExitCode, 137)
       assert.equal(summary.containers[1].stop.ok, true)
       const calls = fake.calls()
       assert.deepEqual(

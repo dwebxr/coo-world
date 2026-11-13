@@ -8,9 +8,11 @@
 //      the world's path (/app/world) and the settings the server refuses to start without, all made up;
 //   c. a bounded wait for the image's own health check to say `healthy`;
 //   d. the process tree (BusyBox `ps`), PID 1 from /proc/1/status and /proc/1/exe, GET /status from inside;
-//   e. THE STOP: `docker stop -t 10`. The container has to exit 0 by itself well before the 10 s, and its log has
-//      to hold the server's `[server] SIGTERM: saving the world before exit` and `[network] final save complete`
-//      and no line saying that something was not stopped or not saved (NOT_STOPPED_OR_SAVED in the library);
+//   e. THE STOP: `docker stop -t 10`. The container has to exit 0 by itself well before the 10 s, timed on Docker's
+//      own clock (its `kill` and `die` events, read with `docker events` after the stop; the `docker stop`
+//      command's own time, against the whole timeout, only when those cannot be read), and its log has to hold
+//      the server's `[server] SIGTERM: saving the world before exit` and `[network] final save complete` and no
+//      line saying that something was not stopped or not saved (NOT_STOPPED_OR_SAVED in the library);
 //   f. a second container on the same volume, stopped with `docker stop --signal SIGINT -t 5` (Fly's documented
 //      default signal and timeout): the same, with SIGINT in the server's line;
 //   g. a third container on the same volume becomes healthy: the world the first two wrote loads;
@@ -25,7 +27,8 @@
 // Asserted: the build; `healthy` three times; a `node build/index.js` process; /status carrying the COMMIT_HASH;
 // the two stops as described. Recorded only (in the output and in the --summary file): the image's configuration,
 // who PID 1 is and which signals it handles, whether a shell sits between it and the server, the uids, how long
-// each step took, what is in the world folder.
+// each step took, the signals Docker sent at each stop and the exit code of its `die` event, what is in the world
+// folder.
 //
 // `--model` names how the image is expected to start. `current` (the default) is the image as it is today. An
 // unknown model is an error, and so is `nonroot` until it is implemented (see MODELS in the library).

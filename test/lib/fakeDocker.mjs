@@ -3,14 +3,15 @@
 // its signal handling. It answers like the library's simulatedDocker (every step goes well), keeps what has to last
 // from one command to the next in FAKE_DOCKER_DIR/state.json, and appends each command to FAKE_DOCKER_DIR/calls.jsonl.
 // FAKE_DOCKER_MODE changes one thing:
-//   killed      the first container does not end on SIGTERM: exit code 137 and no line of the final save
+//   killed      the first container does not end on SIGTERM: exit code 137, no line of the final save, and
+//               Docker's events say SIGTERM, then SIGKILL 10 s later, and the die with 137
 //   hang-build  `docker build` never returns (until it is signalled)
 //   hang-stop   `docker stop` never returns and ignores SIGTERM (an unresponsive daemon): it writes its pid to
 //               stop.pid and each SIGTERM it gets to stop.signals. With FAKE_DOCKER_HOLD_RM set, `docker rm` waits
 //               until the file `release` exists (at most 1.5 s), and writes rm.done when it has waited.
 import fs from 'node:fs'
 import path from 'node:path'
-import { simulatedDocker } from '../../scripts/lib/imageCheck.mjs'
+import { simulatedDocker, simulatedStopEvents } from '../../scripts/lib/imageCheck.mjs'
 
 const dir = process.env.FAKE_DOCKER_DIR
 const mode = process.env.FAKE_DOCKER_MODE || 'ok'
@@ -44,7 +45,13 @@ const docker = simulatedDocker({
   commitHash: saved.commitHash,
   stopped,
   respond(command) {
-    if (mode !== 'killed' || stopped.get(name) !== 'SIGTERM') return undefined
+    const target = command[0] === 'events' ? command.find(arg => arg.startsWith('container='))?.slice(10) : name
+    if (mode !== 'killed' || stopped.get(target) !== 'SIGTERM') return undefined
+    if (command[0] === 'events') {
+      const killAtMs = Number(command[command.indexOf('--since') + 1]) * 1000 + 1000
+      const killed = { killAtMs, exitAfterMs: 10_080, exitCode: 137, killedAfterMs: 10_000 }
+      return { stdout: simulatedStopEvents({ name: target, signal: 'SIGTERM', ...killed }) }
+    }
     if (command[0] === 'container') {
       return {
         stdout: JSON.stringify({ Status: 'exited', Running: false, ExitCode: 137, Health: { Status: 'healthy' } }),

@@ -144,8 +144,7 @@ test('network helper: a stand-in reads each export from the object the test give
   const SOLANA = 'src/server/solana-gating.js'
   const swapped = await loadNetwork({ standIns: [SOLANA] })
   t.after(swapped.destroy)
-  // none given: the real module
-  assert.equal(makeNetwork(t, { net: swapped }).tokenBalanceService, null)
+  // none given: the real module (this test makes its own networks after its subtest's: one test at a time)
   assert.equal(swapped.solanaGating.REQUIRED_TOKEN_AMOUNT, net.solanaGating.REQUIRED_TOKEN_AMOUNT)
   const reads = []
   const gate = new Proxy(
@@ -241,38 +240,80 @@ test('network helper: entityClasses gives Entities the classes a file of the tes
   assert.equal(local.constructor, player.constructor)
 })
 
-test('network helper: every network of a test is stopped at its end, whatever one of them throws while it stops', async t => {
-  // a test context as node:test hands it to the helper: its hooks are run here, in order, and as node:test runs
-  // them none after one that threw
+// A test context as node:test hands it to the helper, whose hooks the test runs itself with `end()`: in order, and,
+// as node:test runs them, none after one that threw. -> { context, end }; end() -> { threw, error }. (The real
+// test's end runs them, where the test failed before.)
+function handedContext(t) {
   const hooks = []
   const context = { after: hook => hooks.push(hook), mock: t.mock }
+  const end = async () => {
+    for (const hook of hooks.splice(0)) {
+      try {
+        await hook()
+      } catch (error) {
+        return { threw: true, error }
+      }
+    }
+    return { threw: false }
+  }
+  t.after(end)
+  return { context, end }
+}
+
+test('network helper: every network of a test is stopped at its end, whatever one of them throws while it stops', async t => {
   const SOLANA = 'src/server/solana-gating.js'
   const swapped = await loadNetwork({ standIns: [SOLANA] })
   t.after(swapped.destroy)
   const saved = process.env.ADMIN_CODE
   const before = timers()
+  const { context, end } = handedContext(t)
   const first = makeNetwork(context, { net: swapped, env: { ADMIN_CODE: 'during' } })
   first.tipWatcher = {
     stop() {
       throw new Error('a stand-in that fails when it is touched')
     },
   }
+  // a tip announcement waiting (announceTip's timer), which stopForFatal clears after the tip watcher's stop
+  first.tipAnnounce.timer = setTimeout(() => assert.fail('a tip announcement outlived the test'), 60_000)
   const second = makeNetwork(context, { net: swapped, modules: { [SOLANA]: { TOKEN_GATING_ENABLED: true } } })
-  assert.equal(timers(), before + 2)
-  let failure = null
-  for (const hook of hooks) {
-    try {
-      await hook()
-    } catch (err) {
-      failure = err
-      break
-    }
-  }
-  assert.match(failure?.message ?? '', /fails when it is touched/)
+  assert.equal(timers(), before + 3)
+  const ended = await end()
+  assert.equal(ended.threw, true)
+  assert.match(ended.error?.message ?? '', /fails when it is touched/)
   assert.equal(first.stopping && second.stopping, true)
-  assert.equal(timers(), before)
+  assert.equal(timers(), before, 'the timers of both, the one whose stop threw included')
   assert.equal(process.env.ADMIN_CODE, saved)
   assert.equal(swapped.solanaGating.TOKEN_GATING_ENABLED, false)
+})
+
+test('network helper: a stop that throws a falsy value fails the end of the test as well', async t => {
+  const before = timers()
+  const { context, end } = handedContext(t)
+  const network = makeNetwork(context, { net })
+  network.tipWatcher = {
+    stop() {
+      throw 0
+    },
+  }
+  const ended = await end()
+  assert.deepEqual(ended, { threw: true, error: 0 })
+  assert.equal(timers(), before)
+})
+
+test('network helper: a test that makes a network while another one holds the helper is refused', async t => {
+  const first = handedContext(t)
+  const second = handedContext(t)
+  makeNetwork(first.context, { net, env: { ADMIN_CODE: 'first' } })
+  assert.throws(
+    () => makeNetwork(second.context, { net, env: { ADMIN_CODE: 'second' } }),
+    /the network helper holds process-wide state: tests that use it must not run concurrently/
+  )
+  // nothing of the second was put in place, and the first's end gives the helper back
+  assert.equal(process.env.ADMIN_CODE, 'first')
+  assert.deepEqual(await first.end(), { threw: false })
+  makeNetwork(second.context, { net, env: { ADMIN_CODE: 'second' } })
+  assert.equal(process.env.ADMIN_CODE, 'second')
+  assert.deepEqual(await second.end(), { threw: false })
 })
 
 test('network helper: env varies a constant read at import, in one call that restores the environment', async t => {

@@ -9,6 +9,10 @@
 // (plus loadNetwork's `env`), and process.env holds it (plus makeNetwork's `env`) from makeNetwork to the test's end,
 // when the values the test found are put back. What a developer's shell sets changes nothing in these tests.
 //
+// That environment, and the objects of the stand-ins (below), are the process's: tests that make networks must not
+// run concurrently. One test holds them from its first makeNetwork to its end, and a makeNetwork of another test in
+// that time throws ("the network helper holds process-wide state: …").
+//
 // loadNetwork({ replace, env, sourceRoot, standIns }) → net: the bundle's exports (below) plus `url` and `env` (the
 //   evaluation these exports come from, and the environment it was evaluated with: a worker or a child process imports
 //   that one with importNetwork({ url, env })) and `destroy`. `replace` and `sourceRoot` as buildServer takes them; a
@@ -16,8 +20,9 @@
 //   `standIns`: modules (repository paths) a test gives per network, as the old harness's `context` gave names to the
 //   class: each becomes a CommonJS stand-in (serverBundle.mjs) whose every export, each time the bundle's code uses
 //   it, is read from the object makeNetwork's `modules` gave for that path last, where that object has the name, and
-//   from the real module otherwise (or when no object is given). A Proxy given there sees each of those reads. The
-//   stand-in is the module's, for the whole bundle: where another module of the bundle imports it too (evm-gating.js
+//   from the real module otherwise (or when no object is given). A Proxy given there sees each of those reads that is
+//   left in the bundle: esbuild removes a read of a module's export whose value is not used (a bare
+//   `void solanaGating.WALLET_HOST`), as the server's own build does. The stand-in is the module's, for the whole bundle: where another module of the bundle imports it too (evm-gating.js
 //   imports solana-gating.js), that one reads the object as well.
 //   The classes a test constructs (Socket, RpcError, Settings, …) are taken from `net`: they are the ones the
 //   network's code sees, so identity and instanceof hold. One build per distinct (replace, sourceRoot) and process,
@@ -146,24 +151,38 @@ export async function importNetwork({ url, env }) {
 }
 
 // What a test changes through makeNetwork, undone in one hook at its end (node:test runs no hook of a test after one
-// that threw): each network it made is stopped (stopForFatal: the constructor's socket check, a save timer after
-// start(), a tip announcement), whatever another one's stop threw (a test's stand-in that fails when it is
-// touched), so that none of their timers outlives the test; then each stand-in's object and each name of the
-// environment the test changed is what it was before the test's first change of it. The hook throws the first
-// error a stop threw, once all that is done.
+// that threw): each network it made is stopped (stopForFatal), whatever another one's stop threw (a test's stand-in
+// that fails when it is touched); the timers the class keeps in its fields (the socket check, a save timer, a tip
+// announcement) are cleared even where its stop threw part way (a collaborator's own, such as those of a tip watcher
+// whose stop threw, are not); then each stand-in's object and each name of the environment the test changed is what
+// it was before the test's first change of it. The hook throws what the first stop that failed threw (`throw 0`
+// included), once all that is done.
+// That state is the process's (process.env, and the objects the stand-ins read): one test holds it, from its first
+// makeNetwork to its end, and a makeNetwork of another test meanwhile throws. node:test runs a file's tests one after
+// another unless they ask for concurrency; a test whose subtest makes networks makes its own after that subtest.
+const CONCURRENT = 'the network helper holds process-wide state: tests that use it must not run concurrently'
+let holder = null
 const tests = new WeakMap()
 function testState(t) {
   let state = tests.get(t)
   if (state) return state
+  if (holder) throw new Error(CONCURRENT)
   state = { networks: [], modules: new Map(), env: new Map() }
   tests.set(t, state)
+  holder = t
   t.after(() => {
-    let failure = null
+    let threw = false
+    let failure
     for (const network of state.networks) {
       try {
         network.stopForFatal()
       } catch (err) {
-        failure ??= err
+        if (!threw) failure = err
+        threw = true
+      } finally {
+        clearTimeout(network.saveTimerId)
+        clearInterval(network.socketIntervalId)
+        if (network.tipAnnounce?.timer) clearTimeout(network.tipAnnounce.timer)
       }
     }
     for (const [file, object] of state.modules) {
@@ -171,7 +190,8 @@ function testState(t) {
       else given.set(file, object)
     }
     for (const [name, value] of state.env) setEnv(name, value)
-    if (failure) throw failure
+    holder = null
+    if (threw) throw failure
   })
   return state
 }

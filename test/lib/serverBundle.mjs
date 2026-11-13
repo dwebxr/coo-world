@@ -10,7 +10,8 @@
 //   importers see `let` exports as live bindings. A replaced module the bundle never imports is an error.
 //   `{ commonjs: source }` instead of the source: the module is that CommonJS source (`module.exports`;
 //   `require('real:')` is the real module), which the bundle reads by property each time the code uses an export of
-//   it (where an import of an ES module is a binding), so its exports can be getters or the traps of a Proxy. (A file
+//   it (where an import of an ES module is a binding), so its exports can be getters or the traps of a Proxy: they see
+//   every such use that is left in the bundle (esbuild removes a read of an export whose value is not used). (A file
 //   of this package is an ES module by its package.json: the CommonJS source is a module of its own, which the
 //   module in the file's place re-exports, without a default export.)
 // - `sourceRoot`: a checkout whose src/core and src/server files are read instead of this one's where they exist

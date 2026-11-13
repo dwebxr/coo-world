@@ -46,7 +46,11 @@
 //   ServerNetwork.js (serverBundle.mjs `prepend`). Only that file's calls: the modules it imports (a tip watcher,
 //   the admin code's brake) call the globals. Set before the constructor runs (its socket check is a setInterval)
 //   and kept until the test ends, after its networks are stopped (stopForFatal clears with it); every network of
-//   the test uses the last one given. (Date is the global one: node:test's mock timers reach it in this realm.)
+//   the test makes its timers with the last one given (there is one table for the process). A timer whose handle
+//   is an object or a function is cancelled by the object that made it, whichever is the last one by then (a test
+//   with two networks, each with its own fake); a handle that is a number, or one the class did not make through
+//   here, is cancelled by the last one given: two fakes that hand out numbers leave the first one's timers.
+//   (Date is the global one: node:test's mock timers reach it in this realm.)
 //   log: where the network's own once-per-subject lines go: the console its constructor wires them to is `log`
 //   (console.warn while the constructor runs, which its logOnce, inbound gate and relay drop keep; console.error for
 //   the rest of the test, which its write ledger calls, as does every other line the class writes there, whichever
@@ -214,8 +218,8 @@ function testState(t) {
         if (!state.threw) state.failure = err
         state.threw = true
         // the stop ended half way: what it had not reached is cancelled as the class would have, with the timers
-        // the test gave (still in the table here; a handle of the test's own means nothing to the global functions
-        // below).
+        // the test gave (each by the object that made it, or by the one in the table, still the test's here; a
+        // handle of the test's own means nothing to the global functions below).
         for (const cancel of [
           () => classTimers.clearTimeout(network.saveTimerId),
           () => classTimers.clearInterval(network.socketIntervalId),

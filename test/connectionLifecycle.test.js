@@ -5,8 +5,9 @@ import { SNAPSHOT_CAP } from '../src/core/extras/writeLedger.js'
 import { readPacket } from '../src/core/packets.js'
 import { createConnectionLimits, readConnectionLimitsEnv } from '../src/server/connectionLimits.js'
 import { fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
-// (the route is still cut out of src/server/index.js's text: it moves to a module of its own later)
-import { loadRoute } from './lib/networkHarness.mjs'
+// (the route is still cut out of src/server/index.js's text, test/lib/wsRoute.mjs: it moves to a module of its own
+// later)
+import { loadRoute } from './lib/wsRoute.mjs'
 
 // The real network (test/lib/network.mjs), its own onConnection and onDisconnect. What the old harness injected
 // into the join is given per test through stand-in modules: the session tokens (each step of the join can be held,

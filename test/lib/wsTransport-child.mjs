@@ -11,9 +11,12 @@ import WebSocket from 'ws'
 import { createConnectionLimits, readConnectionLimitsEnv } from '../../src/server/connectionLimits.js'
 import { BACKLOG_CAP, PACKET_CAP, WRITE_OVERHEAD } from '../../src/core/extras/writeLedger.js'
 import { PROTOCOL_VERSION, writeClientPacket } from '../../src/core/packets.js'
-import { loadRoute, makeNetwork, Socket } from './networkHarness.mjs'
+import { importNetwork, makeNetwork } from './network.mjs'
+import { loadRoute } from './wsRoute.mjs'
 
+// argv[2]: the case; argv[3]: the network the test built ({ url, env } of loadNetwork), whose evaluation this imports
 const name = process.argv[2]
+const bundle = await importNetwork(JSON.parse(process.argv[3]))
 assert.equal(createRequire(import.meta.url)('ws/package.json').version, '8.22.0')
 const until = async (fn, timeout = 5000) => {
   const start = performance.now()
@@ -33,10 +36,19 @@ const frame = (opcode, fin, payload) => {
 }
 const limits = createConnectionLimits({ ...readConnectionLimitsEnv({}), ratePerMin: 0, concurrentPerIp: 1 })
 const logs = []
-const network = makeNetwork(line => logs.push(line))
+// A network of the real class (test/lib/network.mjs), with its own write ledger, which writes its lines on
+// console.error: `log` takes them. A plain process, not a test: the stand-in context has no hooks to run, and the
+// console's error is `log` until the process ends. The socket check the constructor starts (every 10 s) is not: the
+// old harness never ran it, and its pings would be data on the raw connections these cases count.
+const context = { after() {}, mock: { method: (object, key, fn) => (object[key] = fn) } }
+const network = makeNetwork(context, {
+  net: bundle,
+  log: line => logs.push(line),
+  timers: { setInterval: () => null, clearInterval() {} },
+})
 const connections = []
 network.onConnection = ws => {
-  const socket = new Socket({ id: String(connections.length), ws, network })
+  const socket = new bundle.Socket({ id: String(connections.length), ws, network })
   ws.on('error', () => {})
   network.sockets.set(socket.id, socket)
   connections.push(socket)

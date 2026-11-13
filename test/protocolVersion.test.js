@@ -4,17 +4,22 @@ import { EventEmitter } from 'node:events'
 
 import { PROTOCOL_VERSION, readPacket } from '../src/core/packets.js'
 import { createConnectionLimits, readConnectionLimitsEnv } from '../src/server/connectionLimits.js'
-import { fakeWs, loadRoute, makeNetwork } from './lib/networkHarness.mjs'
+import { fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
+import { loadRoute } from './lib/wsRoute.mjs'
 import { WireClient } from './e2e/lib/ws.mjs'
 
-async function makeRoute() {
+// the real network (test/lib/network.mjs), whose onConnection a test takes over: the route's own write of the kick
+// is the class's
+const net = await loadNetwork()
+
+async function makeRoute(t) {
   const limits = createConnectionLimits({
     ...readConnectionLimitsEnv({}),
     ratePerMin: 0,
     concurrentPerIp: 1,
   })
   const connections = []
-  const network = makeNetwork()
+  const network = makeNetwork(t, { net })
   network.onConnection = (ws, params) => connections.push({ ws, params })
   const { register, preValidation } = loadRoute(limits, network)
   let handler
@@ -58,9 +63,9 @@ async function makeRoute() {
   }
 }
 
-test('protocol version: missing or mismatched versions are kicked before world admission', async () => {
+test('protocol version: missing or mismatched versions are kicked before world admission', async t => {
   for (const v of [undefined, '', '1', '02', '2.0', '3', ['2', '2']]) {
-    const route = await makeRoute()
+    const route = await makeRoute(t)
     const ws = route.connect(v === undefined ? {} : { v })
     assert.deepEqual(ws.packets, [['onKick', 'outdated']])
     assert.equal(ws.closeCode, 1008)
@@ -70,9 +75,9 @@ test('protocol version: missing or mismatched versions are kicked before world a
   }
 })
 
-test('protocol version: v=2 reaches the world with the original connection params', async () => {
+test('protocol version: v=2 reaches the world with the original connection params', async t => {
   assert.equal(PROTOCOL_VERSION, 2)
-  const route = await makeRoute()
+  const route = await makeRoute(t)
   const params = { v: '2', authToken: 'token', name: 'player' }
   const ws = route.connect(params)
   assert.deepEqual(ws.packets, [])
@@ -81,8 +86,8 @@ test('protocol version: v=2 reaches the world with the original connection param
   ws.transport.emit('close')
 })
 
-test('protocol version: address admission runs first and an outdated socket holds its slot until close', async () => {
-  const route = await makeRoute()
+test('protocol version: address admission runs first and an outdated socket holds its slot until close', async t => {
+  const route = await makeRoute(t)
   const outdated = route.connect()
   assert.equal(route.limits.stats().active, 1)
   const refused = route.connect()

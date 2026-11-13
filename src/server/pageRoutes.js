@@ -60,8 +60,10 @@ export const MONACO_SOURCE = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-edit
 //   code still runs; and whoever controls that cdnjs folder still runs code in a builder's page.
 // - App scripts are not limited by it at all: they are text the page itself evaluates, and what they ask for (a
 //   fetch, an image) goes to hosts the policy allows anyway. Nor does it limit a visitor's browser extensions: their
-//   own scripts run outside it (a script element one writes into the page is checked, and refused without the nonce:
-//   that is what the owner's manual check with real wallets is to find).
+//   own scripts run outside it. A script element one writes into the page is checked as any other: an inline one
+//   without the nonce, an inline handler and a script of another host are refused (that is what the owner's manual
+//   check with real wallets is to find), while one whose `src` is on the page's own origin or in the cdnjs folder
+//   runs.
 // - style-src keeps `'unsafe-inline'` (the interface writes style elements and attributes): injected CSS is not
 //   stopped. img-src, media-src and connect-src allow every host (a world shows images and video from anywhere, and
 //   app scripts fetch from anywhere): nothing here stops a page that was got into from sending data out.

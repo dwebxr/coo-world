@@ -414,12 +414,50 @@ test('the scene replacement takes only the assets stored under their hashes', as
   assert.equal(g.sent(), 1, 'blueprintModified')
 })
 
-// uploads that finish when the test says so: each entry resolves or rejects the upload it stands for
+// Uploads that finish when the test says so: each entry resolves or rejects the upload it stands for, and `done` is
+// that upload's promise as the builder holds it. `pending.asked(n, adding)` resolves as soon as the builder has asked
+// for n uploads (in the call that asks for the n-th, before the builder goes on), and fails with a reason when addApp
+// (`adding`) ends first or the limit passes. Before it asks, importApp reads the file and hashes assets with
+// WebCrypto: how many turns that takes is the platform's (CI's Linux and Node 22 took more than a fixed wait gave it).
 function deferUploads(world) {
   const pending = []
-  world.network.upload = (file, options) =>
-    new Promise((resolve, reject) => pending.push({ name: file.name, batch: options?.batch, resolve, reject }))
+  const waiting = []
+  world.network.upload = (file, options) => {
+    const entry = { name: file.name, batch: options?.batch }
+    entry.done = new Promise((resolve, reject) => Object.assign(entry, { resolve, reject }))
+    // (a failed upload's promise is the builder's to handle; the test awaits it only to know it has settled)
+    entry.done.catch(() => {})
+    pending.push(entry)
+    for (const waiter of waiting) if (pending.length >= waiter.n) waiter.resolve()
+    return entry.done
+  }
+  pending.asked = (n, adding, limit = 30_000) =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`the builder asked for ${pending.length} of ${n} uploads in ${limit} ms`)),
+        limit
+      )
+      const end = settle => value => {
+        clearTimeout(timer)
+        settle(value)
+      }
+      if (pending.length >= n) return end(resolve)()
+      waiting.push({ n, resolve: end(resolve) })
+      adding.then(
+        end(() => reject(new Error(`addApp ended after asking for ${pending.length} of ${n} uploads`))),
+        end(reject)
+      )
+    })
   return pending
+}
+
+// Every reaction the builder can have to an upload settling has run: the test waits for that upload's promise, which
+// the builder awaits through Promise.all, and then for the next macrotask, before which every promise reaction it
+// started has run (nothing between the two is real asynchronous work: no hashing, no reading, no timer). Used where
+// the test checks that nothing has happened yet, which has no event of its own.
+async function reactedTo(upload) {
+  await upload.done.catch(() => {})
+  await new Promise(resolve => setImmediate(resolve))
 }
 
 // the names of the packets the builder sends, in order
@@ -446,9 +484,6 @@ function mixedFile(blueprint) {
   ])
   return { file, taken: [model, script].map(url => url.slice('asset://'.length)) }
 }
-const settle = async () => {
-  for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve))
-}
 
 test('a new app with assets taken and left out is announced only when the last taken upload has finished', async t => {
   const errors = []
@@ -464,7 +499,7 @@ test('a new app with assets taken and left out is announced only when the last t
     }
     const { file, taken } = mixedFile({ name: 'mixed' })
     const adding = f.builder.addApp(file, at)
-    await settle()
+    await uploads.asked(2, adding)
     assert.deepEqual(
       uploads.map(u => u.name),
       taken,
@@ -472,9 +507,10 @@ test('a new app with assets taken and left out is announced only when the last t
     )
     assert.equal(uploads[0].batch, uploads[1].batch)
     assert.equal(app.local, false, 'added here, not announced')
+    assert.deepEqual(sent, [], 'nothing announced while the uploads run')
     // the last one asked for finishes first: nothing yet
     uploads[1].resolve()
-    await settle()
+    await reactedTo(uploads[1])
     assert.deepEqual(sent, [])
     assert.equal(app.uploaded, 0)
     if (outcome === 'uploaded') {
@@ -516,15 +552,16 @@ test('a scene replacement with assets taken and left out is announced only when 
     })
     const { file, taken } = mixedFile({ name: 'New scene', scene: true })
     const adding = f.builder.addApp(file, at)
-    await settle()
+    await uploads.asked(2, adding)
     assert.deepEqual(
       uploads.map(u => u.name),
       taken
     )
     assert.equal(uploads[0].batch, uploads[1].batch)
     assert.equal(f.world.blueprints.getScene().name, 'New scene', 'changed here at once')
+    assert.deepEqual(sent, [], 'nothing announced while the uploads run')
     uploads[1].resolve()
-    await settle()
+    await reactedTo(uploads[1])
     assert.deepEqual(sent, [])
     if (outcome === 'uploaded') {
       uploads[0].resolve()

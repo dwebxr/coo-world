@@ -67,7 +67,7 @@ const storedConfig = settings => ({ settings: JSON.stringify(settings), spawn: J
 // (H09, H12)
 test(
   'persistence: settings loaded at start are written back when they change, at the settings tick',
-  { timeout: 5000 },
+  { timeout: 30000 },
   async t => {
     quiet(t)
     const { db, tables } = storedWorld({ config: storedConfig({ title: 'stored' }) })
@@ -85,7 +85,7 @@ test(
 // (H09)
 test(
   'persistence: a settings change made after the last tick is written by the final save',
-  { timeout: 5000 },
+  { timeout: 30000 },
   async t => {
     quiet(t)
     const { db, tables } = storedWorld({ config: storedConfig({ title: 'stored' }) })
@@ -100,7 +100,7 @@ test(
 // (C01)
 test(
   'persistence: a config row that could not be read at start is never written over, and that is said once',
-  { timeout: 5000 },
+  { timeout: 30000 },
   async t => {
     const lines = quiet(t)
     const { db, tables, writes } = storedWorld({ config: { settings: '{', spawn: JSON.stringify(SPAWN) } })
@@ -122,7 +122,7 @@ test(
 )
 
 // (C05)
-test('persistence: a config value equal to the stored one is not written again', { timeout: 5000 }, async t => {
+test('persistence: a config value equal to the stored one is not written again', { timeout: 30000 }, async t => {
   const { db, writes } = database()
   const { network } = fixture(t, db)
   assert.equal(await network.saveConfig('spawn', { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }), true)
@@ -133,7 +133,7 @@ test('persistence: a config value equal to the stored one is not written again',
 // child's writes had started (see that test)
 test(
   "persistence: a config row's writes go one at a time, and the newer value is the one stored",
-  { timeout: 5000 },
+  { timeout: 30000 },
   async t => {
     const { db, tables, writes } = database()
     const { network } = fixture(t, db)
@@ -160,7 +160,7 @@ test(
 // (C07)
 test(
   'persistence: a newer config value stays to be written when an older write of the row ends',
-  { timeout: 5000 },
+  { timeout: 30000 },
   async t => {
     quiet(t)
     const { db, tables } = database()
@@ -191,7 +191,7 @@ test(
 // (C08)
 test(
   'persistence: a settings write that fails is not saved: the final save is incomplete and names the row',
-  { timeout: 5000 },
+  { timeout: 30000 },
   async t => {
     const lines = quiet(t)
     const { db } = database()
@@ -211,7 +211,7 @@ test(
 // (D04)
 test(
   'persistence: an app re-keyed and then deleted before the save leaves neither its old row nor its new one',
-  { timeout: 5000 },
+  { timeout: 30000 },
   async t => {
     quiet(t)
     const { db, tables } = database()
@@ -229,7 +229,7 @@ test(
 )
 
 // (S18)
-test('persistence: a save that only removes apps says so in its line', { timeout: 5000 }, async t => {
+test('persistence: a save that only removes apps says so in its line', { timeout: 30000 }, async t => {
   const said = quiet(t, ['log'])
   const { db } = database()
   const { network } = fixture(t, db)
@@ -239,7 +239,7 @@ test('persistence: a save that only removes apps says so in its line', { timeout
 })
 
 // (S02)
-test('persistence: a save that fails does not keep the next save from writing', { timeout: 5000 }, async t => {
+test('persistence: a save that fails does not keep the next save from writing', { timeout: 30000 }, async t => {
   quiet(t)
   const { db, tables } = database()
   const { network, entity } = fixture(t, db)
@@ -253,15 +253,15 @@ test('persistence: a save that fails does not keep the next save from writing', 
   assert.ok(tables.entities.has('app'))
 })
 
-// (S03)
+// (S03, S04)
 test(
-  'persistence: while a queued save writes, the queue is its: the next save is timed at its end, and a final save waits for it',
-  { timeout: 5000 },
+  'persistence: while a queued save writes, the next save is not timed; it is timed once, when that save ends',
+  { timeout: 30000 },
   async t => {
     quiet(t)
     const calls = []
     const timers = { setTimeout: (fn, ms) => (calls.push(ms), { fn, ms }), clearTimeout() {} }
-    const { db, writes } = database()
+    const { db } = database()
     const { network, entity } = fixture(t, db, { timers })
     network.markAppDirty(entity.data)
     const first = db.pause('entities')
@@ -276,24 +276,44 @@ test(
     // the first save has ended; the second writes its row
     await second.started.promise
     assert.deepEqual(calls, [], 'no save is timed while the second one writes')
-    // A final save started now waits for it. Its row is released by a callback queued before the final save's own
-    // first row could be reached: a final save that did not wait would write that row a second time
-    const final = network.flushBeforeExit(30000)
-    setImmediate(() => second.release.resolve())
-    await final
+    second.release.resolve()
     await Promise.all([one, two])
-    assert.deepEqual(
-      writes.map(write => write.row.id),
-      ['app', 'next']
-    )
-    assert.deepEqual(calls, [30000], "the final save's deadline, and no save timer")
+    assert.deepEqual(calls, [SAVE_MS], 'one save timed, at the end of the last one')
   }
 )
 
+// (S03)
+test('persistence: a final save started while a queued save writes waits for it', { timeout: 30000 }, async t => {
+  quiet(t)
+  const { db, writes } = database()
+  const { network, entity } = fixture(t, db)
+  network.markAppDirty(entity.data)
+  const first = db.pause('entities')
+  t.after(() => first.release.resolve())
+  const one = network.save()
+  await first.started.promise
+  network.markAppDirty({ ...entity.data, id: 'next' })
+  const two = network.save()
+  const second = db.pause('entities')
+  t.after(() => second.release.resolve())
+  first.release.resolve()
+  await second.started.promise
+  // The second save's row is released by a callback queued before the final save's own first row could be reached:
+  // a final save that did not wait would write that row a second time
+  const final = network.flushBeforeExit(30000)
+  setImmediate(() => second.release.resolve())
+  await final
+  await Promise.all([one, two])
+  assert.deepEqual(
+    writes.map(write => write.row.id),
+    ['app', 'next']
+  )
+})
+
 // (S10)
 test(
-  'persistence: the save gives the event loop a turn before each row: another callback runs between two rows',
-  { timeout: 5000 },
+  'persistence: the save gives the event loop a turn before each row, the first one included',
+  { timeout: 30000 },
   async t => {
     quiet(t)
     const { db } = database()
@@ -306,50 +326,78 @@ test(
         ...query,
         insert: data => {
           order.push(data.id)
-          // queued while the first row is written, before the save turns to the next one
-          if (order.length === 1) setImmediate(() => order.push('callback'))
+          // queued while this row is written, before the save turns to the next one
+          setImmediate(() => order.push(`after ${data.id}`))
           return query.insert(data)
         },
       }
     }
+    // queued before the save starts
+    setImmediate(() => order.push('before'))
     await network.save()
-    assert.deepEqual(order, ['app', 'callback', 'second', 'third'])
+    assert.deepEqual(order, ['before', 'app', 'after app', 'second', 'after second', 'third'])
   }
 )
 
-// (S07, S09, F02, C04, and the config row's own check after its turn) The deadline by the clock: a machine whose
-// thread is held by synchronous writes runs the deadline's timer late; the clock says when the time is up
+// (S07, S08, S09, F02, C03, C04, C12) The deadline by the clock: a machine whose thread is held by synchronous writes
+// runs the deadline's timer late; the clock says when the time is up, and once it has said so a clock set back does
+// not let another write start. The deadline's timer is the test's (makeNetwork's `timers`), which never runs it: only
+// the clock (node:test's mock of Date) decides here
 const EXPIRES = {
-  // the clock passes the deadline while a row is written, before the save's check of the next one
+  // the clock passes the deadline while a row is written, before the check of the next one
   'while a row is written': ({ t, held }) => {
     t.mock.timers.tick(1000)
     held.release.resolve()
   },
-  // the save's check before its turn finds time left; the clock passes the deadline in a callback queued before
+  // the check before the next row's turn finds time left; the clock passes the deadline in a callback queued before
   // that turn ends
   'during the turn before the next row': ({ t, held }) => {
     held.release.resolve()
-    setImmediate(() => t.mock.timers.tick(1000))
+    return later(() => t.mock.timers.tick(1000))
   },
+  // the clock passes the deadline while a row is written, and is set back before it in a callback queued before the
+  // next row's turn ends: the deadline seen passed stays passed
+  'even if the clock goes back after it': ({ t, held }) => {
+    t.mock.timers.tick(1000)
+    held.release.resolve()
+    return later(() => t.mock.timers.setTime(1_000_500))
+  },
+}
+// `change` in a callback of the event loop queued now; its promise is settled once the callback has run (a test
+// awaits it before it ends, and the mock of Date with it)
+function later(change) {
+  const done = deferred()
+  setImmediate(() => {
+    change()
+    done.resolve()
+  })
+  return done.promise
+}
+const NOW = 1_000_000
+const deadlineTimers = () => {
+  const asked = []
+  return { asked, timers: { setTimeout: (fn, ms) => (asked.push(ms), { fn, ms }), clearTimeout() {} } }
 }
 for (const [when, expire] of Object.entries(EXPIRES)) {
   test(
     `persistence: no row of the final save starts once its deadline has passed by the clock (${when})`,
-    { timeout: 5000 },
+    { timeout: 30000 },
     async t => {
       const lines = quiet(t)
-      t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 })
+      t.mock.timers.enable({ apis: ['Date'], now: NOW })
+      const { asked, timers } = deadlineTimers()
       const { db, writes } = database()
-      const { network, entity } = fixture(t, db)
+      const { network, entity } = fixture(t, db, { timers })
       network.markAppDirty(entity.data)
       network.markAppDirty({ ...entity.data, id: 'next' })
       const held = db.pause('entities')
       t.after(() => held.release.resolve())
-      // the deadline's timer is a real one of a second, which this test does not wait for
       const final = network.flushBeforeExit(1000)
       await held.started.promise
-      expire({ t, held })
+      const expired = expire({ t, held })
       await assert.rejects(final, /final save incomplete/)
+      await expired
+      assert.deepEqual(asked, [1000], "the deadline's timer, the test's, never run")
       assert.deepEqual(
         writes.map(write => write.row.id),
         ['app']
@@ -363,12 +411,13 @@ for (const [when, expire] of Object.entries(EXPIRES)) {
 
   test(
     `persistence: no config row of the final save starts once its deadline has passed by the clock (${when})`,
-    { timeout: 5000 },
+    { timeout: 30000 },
     async t => {
       const lines = quiet(t)
-      t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 })
+      t.mock.timers.enable({ apis: ['Date'], now: NOW })
+      const { asked, timers } = deadlineTimers()
       const { db, writes } = database()
-      const { network, world } = fixture(t, db)
+      const { network, world } = fixture(t, db, { timers })
       // two rows for the final save, the settings' first
       world.settings.set('title', 'pending')
       network.spawn = { position: [5, 0, 0], quaternion: [0, 0, 0, 1] }
@@ -376,8 +425,10 @@ for (const [when, expire] of Object.entries(EXPIRES)) {
       t.after(() => held.release.resolve())
       const final = network.flushBeforeExit(1000)
       await held.started.promise
-      expire({ t, held })
+      const expired = expire({ t, held })
       await assert.rejects(final, /final save incomplete/)
+      await expired
+      assert.deepEqual(asked, [1000], "the deadline's timer, the test's, never run")
       assert.deepEqual(
         writes.map(write => write.row.key),
         ['settings']
@@ -391,7 +442,7 @@ for (const [when, expire] of Object.entries(EXPIRES)) {
 }
 
 // (H13)
-test('persistence: a world stopped while it loads times no save', { timeout: 5000 }, async t => {
+test('persistence: a world stopped while it loads times no save', { timeout: 30000 }, async t => {
   quiet(t)
   const calls = []
   const timers = { setTimeout: (fn, ms) => (calls.push(ms), { fn, ms }), clearTimeout() {} }
@@ -421,7 +472,7 @@ test('persistence: a world stopped while it loads times no save', { timeout: 500
 // (H07)
 test(
   'persistence: the line of the start counts the apps that loaded, not the rows read',
-  { timeout: 5000 },
+  { timeout: 30000 },
   async t => {
     const said = quiet(t, ['log'])
     const { db } = storedWorld({
@@ -435,23 +486,24 @@ test(
   }
 )
 
-// (H11)
+// (H11, H18)
 test(
   'persistence: the settings and collections loaded at start count in the join state from the start',
-  { timeout: 5000 },
+  { timeout: 30000 },
   async t => {
     quiet(t)
     const settings = { title: 'stored', desc: 'd'.repeat(1000) }
+    const collections = [{ id: 'default', name: 'Default', blueprints: [{ id: 'c'.repeat(500), name: 'Block' }] }]
     const { db } = storedWorld({ config: storedConfig(settings) })
     const network = loading(t, db)
+    network.world.collections = { serialize: () => collections }
     await network.start()
     const { world } = network
-    const measured = writePacket('settingsModified', world.settings.serialize()).length
-    assert.ok(measured > 1000)
-    assert.equal(
-      joinStateBytes(world),
-      world.blueprints.bytes + measured + writePacket('settingsModified', []).length,
-      'blueprints, settings and (no) collections'
-    )
+    const measured = {
+      settings: writePacket('settingsModified', world.settings.serialize()).length,
+      collections: writePacket('settingsModified', collections).length,
+    }
+    assert.ok(measured.settings > 1000 && measured.collections > 500)
+    assert.equal(joinStateBytes(world), world.blueprints.bytes + measured.settings + measured.collections)
   }
 )

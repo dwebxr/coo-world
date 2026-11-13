@@ -2,7 +2,8 @@
 // `stall` never settles, `reject` fails, `ok` resolves; `early` never attaches a world (a signal during start-up);
 // `slowdb` runs the real ServerNetwork final save against a database whose every write blocks the thread for 50 ms
 // (as better-sqlite3 does on a slow disk), with 40 dirty blueprints; `slowconfig` the same with 200 queued config
-// writes. Prints `ready` once the handlers are in. argv[4]: the network the test built ({ url, env } of loadNetwork).
+// writes, the first of which returns only once the stop signal has been taken. Prints `ready` once the handlers are
+// in. argv[4]: the network the test built ({ url, env } of loadNetwork).
 import { installShutdown } from '../../src/server/shutdown.js'
 
 const mode = process.argv[2]
@@ -19,7 +20,11 @@ async function realNetwork(db) {
 
 let network
 if (mode === 'slowconfig') {
-  // 200 config writes queued (saveConfig), each blocking the thread for 50 ms
+  // 200 config writes queued (saveConfig), each blocking the thread for 50 ms. The first one, once written, does not
+  // return until the stop signal has been taken (`holding the first write`): what is queued behind it cannot start
+  // before the final save has its deadline, however late the signal comes
+  const signalled = new Promise(resolve => process.once('SIGTERM', resolve))
+  let first = true
   network = await realNetwork(() => ({
     insert: () => ({
       onConflict: () => ({
@@ -29,6 +34,10 @@ if (mode === 'slowconfig') {
             // a synchronous write
           }
           say('config written')
+          if (!first) return
+          first = false
+          say('holding the first write')
+          await signalled
         },
       }),
     }),

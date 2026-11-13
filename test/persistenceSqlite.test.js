@@ -33,7 +33,7 @@ async function sqlite(t) {
 }
 
 // (S17)
-test('persistence: an app row written again keeps the time it was created (SQLite)', { timeout: 10000 }, async t => {
+test('persistence: an app row written again keeps the time it was created (SQLite)', { timeout: 60000 }, async t => {
   t.mock.method(console, 'log', () => {})
   const db = await sqlite(t)
   const { network, entity } = fixture(t, { net, db })

@@ -440,11 +440,10 @@ test('stop: `during start-up, before the world was loaded` (shutdown.js:36) fail
 // The log calls of a function (a definition as findFunction gives it: its node, its file's tree and source), read
 // from the syntax tree: every call whose callee is a member named error, warn, log, info, debug, trace or logOnce, of
 // any object (`console`, a `log` handed in, `audit` where `const audit = console`), its key written or a computed
-// string; and every call of a name the file binds to such a member (`const { error } = console`,
-// `const report = console.error`, `= console.warn.bind(console)`) or named logOnce. -> [{ call, line }]: the call's
-// text, from its callee to its closing parenthesis, and the line it starts on. What it does not see: a message built
-// elsewhere and logged through a variable, and a logger reached through another module or a call (`get().error(…)`
-// is seen; `const f = pick(console); f(…)` is not).
+// string; every call of a name the file binds to such a member (`const { error } = console`,
+// `const report = console.error`, `= console.warn.bind(console)`) or named logOnce; and such a member or name called
+// through `.call`, `.apply`, `Reflect.apply` or a `.bind(…)` called at once. -> [{ call, line }]: the call's text, from
+// its callee to its closing parenthesis, and the line it starts on. (What it does not see: the tripwire's comment.)
 const LOG_MEMBERS = new Set(['error', 'warn', 'log', 'info', 'debug', 'trace', 'logOnce'])
 const isMember = node => node?.type === 'MemberExpression' || node?.type === 'OptionalMemberExpression'
 const memberKey = node => {
@@ -484,14 +483,30 @@ function loggerNames(ast) {
   loggers.set(ast, names)
   return names
 }
+const isCallNode = node => node?.type === 'CallExpression' || node?.type === 'OptionalCallExpression'
 function logCalls({ node, ast, source }) {
   const names = loggerNames(ast)
+  const isLogger = at => isLogMember(at) || (at?.type === 'Identifier' && names.has(at.name))
   const calls = []
   const visit = at => {
-    if (at.type === 'CallExpression' || at.type === 'OptionalCallExpression') {
-      if (isLogMember(at.callee) || (at.callee.type === 'Identifier' && names.has(at.callee.name))) {
-        calls.push({ call: source.slice(at.start, at.end), line: at.loc.start.line })
-      }
+    if (isCallNode(at)) {
+      const callee = at.callee
+      const key = isMember(callee) ? memberKey(callee) : null
+      const logs =
+        isLogger(callee) ||
+        // console.warn.call(console, …), .apply(console, […])
+        (['call', 'apply'].includes(key) && isLogger(callee.object)) ||
+        // Reflect.apply(console.warn, console, […])
+        (key === 'apply' &&
+          callee.object.type === 'Identifier' &&
+          callee.object.name === 'Reflect' &&
+          isLogger(at.arguments[0])) ||
+        // console.warn.bind(console)(…)
+        (isCallNode(callee) &&
+          isMember(callee.callee) &&
+          memberKey(callee.callee) === 'bind' &&
+          isLogger(callee.callee.object))
+      if (logs) calls.push({ call: source.slice(at.start, at.end), line: at.loc.start.line })
     }
     children(at).forEach(visit)
   }
@@ -631,8 +646,16 @@ test('stop: the lines looked for are the ones the server prints', async () => {
 // tested above. It is kept to the named functions: the rest of the network logs plenty that has nothing to do with a
 // stop. Each is found by parsing (test/lib/networkSource.mjs) wherever it is written; the network's in all of its
 // files, the class and the modules of src/server/network/ that parts of it move to, every definition of the name (a
-// member of the class that hands its call on to a module's function is one too). Its weak spot, said plainly: a
-// message built elsewhere and logged through a variable is not seen.
+// member of the class that hands its call on to a module's function is one too), and its log calls are read from the
+// syntax tree (logCalls, above; the parser is @babel/parser). What it cannot see, said plainly:
+// - a function the named ones call: a helper that logs (briefError, the user rows' own module, Storage's other
+//   methods) is not read;
+// - a logger reached through a call or another module (`const f = pick(console); f(…)`, `import { warn } from …`),
+//   a level computed at run time (`console[level](…)`), console methods outside the set (`dir`, `table`, `assert`,
+//   `count`, `timeLog`), and output by other means (`process.stderr.write`, `process.emitWarning`, `util.debuglog`);
+// - what a line says beyond its call's text: a call is sorted by the parts its text carries, so a message built
+//   elsewhere and passed in a variable is unsorted (and fails the test) unless the call's text carries a known part,
+//   and a call that carries a known part passes whatever else it says.
 const STOP_PATH_FUNCTIONS = [
   // the signal handler: stopWorld, closeServer, the final save, its deadline, a second signal
   ['installShutdown', ['src/server/shutdown.js']],
@@ -707,6 +730,17 @@ test('stop: every log line of the stop and save paths is forbidden, required or 
     ['a computed key', `export async function saveDirty(logger) {\n  logger['debug'](${line})\n}\n`],
     ['another level', `export async function saveDirty() {\n  console.trace(${line})\n}\n`],
     ['an optional call', `export async function saveDirty(log) {\n  log?.info(${line})\n}\n`],
+    ['through call', `export async function saveDirty() {\n  console.warn.call(console, ${line})\n}\n`],
+    ['through apply', `export async function saveDirty() {\n  console.error.apply(console, [${line}])\n}\n`],
+    [
+      'through Reflect.apply',
+      `export async function saveDirty() {\n  Reflect.apply(console.warn, console, [${line}])\n}\n`,
+    ],
+    ['bound and called at once', `export async function saveDirty() {\n  console.warn.bind(console)(${line})\n}\n`],
+    [
+      'a logger taken out, through call',
+      `const report = console.error\nexport async function saveDirty() {\n  report.call(console, ${line})\n}\n`,
+    ],
   ]) {
     const added = definitionsIn(source, 'saveDirty').flatMap(definition => logCalls(definition).map(at => at.call))
     assert.equal(added.length, 1, `${shape}: ${added}`)

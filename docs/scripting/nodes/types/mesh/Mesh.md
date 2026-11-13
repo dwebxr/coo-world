@@ -20,10 +20,10 @@ To see something:
   `app.create('prim', { type: 'box' })` is drawn.
 - To show a mesh of the app's model once more, clone it: `app.get('Cube').clone()` (for a mesh named `Cube` in the
   model), added to the app, is drawn with the model's geometry and material.
-- A mesh made with `app.create('mesh')` is drawn once it has a `geometry` (another mesh's, `app.get('Cube').geometry`)
-  and `linked: false`, with a plain white material. With a geometry set, `type: 'box'` draws a box of `width`, `height`
-  and `depth`, `type: 'sphere'` a sphere of `radius` (the geometry given is not drawn), and `type: 'geometry'` draws the
-  geometry given.
+- A mesh made with `app.create('mesh')` is drawn once it has a `geometry` (another mesh's, `app.get('Cube').geometry`),
+  with a plain white material. With a geometry set, `type: 'box'` draws a box of `width`, `height` and `depth`,
+  `type: 'sphere'` a sphere of `radius` (the geometry given is not drawn), and `type: 'geometry'` draws the geometry
+  given.
 
 ```javascript
 const box = app.create('mesh', {
@@ -31,15 +31,16 @@ const box = app.create('mesh', {
   width: 2,
   height: 3,
   depth: 4,
-  linked: false,
   geometry: app.get('Cube').geometry,
 })
 app.add(box)
 ```
 
-With `linked: true` (the default), giving a `geometry` to a mesh the script made crashes the app
-(`TypeError: Cannot read properties of null (reading 'uuid')`). From the code: a linked mesh is drawn with the
-meshes that share its geometry and its material, found by the material's id, and a mesh the script made has no material.
+With `linked: true` (the default), the meshes scripts made that draw the same geometry (the same box size, sphere
+radius or geometry given), in any app, are drawn together as one batch with one white material, apart from the meshes
+of a model that have that geometry and a material of their own. They share that material: its `color`, for one, is the
+same for all of them. With `linked: false` each has a white material of its own. (Until this was corrected, giving a
+`geometry` to a script's mesh with `linked: true` crashed the app.)
 
 These were observed in a test that runs a script with the engine's app, stage and mesh node, not in a browser ("drawn"
 here: put into the scene). The default is left as it is on purpose: drawing a box for a mesh without a geometry would put

@@ -223,7 +223,9 @@ export class Stage extends System {
     uberShader = uberShader === true
     castShadow = castShadow === true
     receiveShadow = receiveShadow === true
-    const id = `${geometry.uuid}/${material.uuid}/${uberShader}/${castShadow}/${receiveShadow}`
+    // a mesh a script made has no material: such meshes of one geometry share one batch, drawn with the white standard
+    // material linkedMaterial makes for it
+    const id = `${geometry.uuid}/${material ? material.uuid : 'none'}/${uberShader}/${castShadow}/${receiveShadow}`
     if (!this.models.has(id)) {
       const model = new Model(
         this,

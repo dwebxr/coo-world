@@ -125,10 +125,11 @@ export class Mesh extends Node {
         node: this,
       })
     } else {
+      // (a ray through the item reads its material's side: a mesh a script made has none, the stage's default stands in)
       const sItem = {
         matrix: this.matrixWorld,
         geometry,
-        material: this._material,
+        material: this._material || this.ctx.world.stage.getDefaultMaterial().raw,
         getEntity: () => this.ctx.entity,
         node: this,
       }

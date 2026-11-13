@@ -67,10 +67,10 @@ b receiver a group's proxy: throws Error: "Setting ID not currently supported": 
 b receiver a group's proxy: throws Error: "Cannot replace node <key>": position quaternion rotation scale
 b receiver a group's proxy: runs: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
 b receiver a group's proxy: throws Error: "Cannot set <key> directly": parent
-b receiver another type's proxy with the key: sets that node: type(collider) color(image) emissive(particles) mass(rigidbody) staticFriction(collider) dynamicFriction(collider) restitution(collider) layer(collider) trigger(collider) tag(controller) onContactStart(controller) onContactEnd(controller) onTriggerEnter(rigidbody) onTriggerLeave(rigidbody) doubleside(image)
+b receiver another type's proxy with the key: sets that node: type(collider) color(image) emissive(particles) mass(rigidbody) linearDamping(rigidbody) angularDamping(rigidbody) staticFriction(collider) dynamicFriction(collider) restitution(collider) layer(collider) trigger(collider) tag(controller) onContactStart(controller) onContactEnd(controller) onTriggerEnter(rigidbody) onTriggerLeave(rigidbody) doubleside(image)
 b receiver another type's proxy with the key: throws Error: "[particles] size invalid": size(particles)
 b receiver another type's proxy with the key: throws Error: "[ui] transparent not a boolean": transparent(ui)
-b receiver another type's proxy with the key: leaves that node as it was: castShadow(image) receiveShadow(image) linearDamping(rigidbody) angularDamping(rigidbody)
+b receiver another type's proxy with the key: leaves that node as it was: castShadow(image) receiveShadow(image)
 == c. one set on a fresh unmounted node: pc the proxy and the class alike, p the proxy, c the class
 c type pc read "box" <- undefined
 c type pc throw Error: "[prim] type invalid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} 'bogus'

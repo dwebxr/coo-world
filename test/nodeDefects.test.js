@@ -70,3 +70,38 @@ test('audio: before it is in a world, currentTime reads 0 and pause() and stop()
     await direct.play()
     assert.deepEqual(started, [5])
   }))
+
+test('rigidbody: linearDamping and angularDamping read back through the handle (they read undefined)', () =>
+  runProbe(bundle, ({ createNode, Apps }) => {
+    const apps = new Apps({ network: {}, events: {} })
+    const app = { deadHook: { dead: false }, createNode: (type, data) => createNode(type, data) }
+    const proxy = createNode('rigidbody').getProxy()
+    assert.equal(proxy.linearDamping, 0, 'the default')
+    assert.equal(proxy.angularDamping, 0.05, 'the default')
+    proxy.linearDamping = 2
+    proxy.angularDamping = 3
+    assert.equal(proxy.linearDamping, 2)
+    assert.equal(proxy.angularDamping, 3)
+    // a refused value leaves what was kept
+    assert.throws(() => (proxy.linearDamping = -1), /linearDamping cannot be less than zero/)
+    assert.equal(proxy.linearDamping, 2)
+    const created = apps.appMethods.create(app, 'rigidbody', { linearDamping: 0.5, angularDamping: 0.25 })
+    assert.equal(created.linearDamping, 0.5)
+    assert.equal(created.angularDamping, 0.25)
+    // a clone's handle reads its own
+    assert.equal(created.clone().linearDamping, 0.5)
+    // each a getter and a setter, where the setter alone was (the key order is the same)
+    for (const key of ['linearDamping', 'angularDamping']) {
+      const desc = Object.getOwnPropertyDescriptor(proxy, key)
+      assert.equal(typeof desc.get, 'function', key)
+      assert.equal(typeof desc.set, 'function', key)
+    }
+    assert.deepEqual(Object.keys(proxy).slice(0, 6), [
+      'type',
+      'mass',
+      'linearDamping',
+      'angularDamping',
+      'tag',
+      'onContactStart',
+    ])
+  }))

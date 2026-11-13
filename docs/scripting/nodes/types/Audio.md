@@ -66,6 +66,8 @@ When spatial is enabled, the cone inner angle to use. Defaults to `0`.
 
 Gets and sets the current playback time, in seconds. Kept finite and not negative (`NaN` is `0`).
 
+Before the audio is added to the world it reads `0`, and `pause()` and `stop()` do nothing; a time set then is where `play()` starts once it is added.
+
 ### `.{...Node}`
 
 Inherits all [Node](/docs/scripting/nodes/Node.md) properties

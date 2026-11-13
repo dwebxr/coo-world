@@ -303,8 +303,9 @@ export class Audio extends Node {
     }
   }
 
+  // (a node not yet placed in a world has no context: it reads and acts as one in a world without audio, the server)
   get currentTime() {
-    const audio = this.ctx.world.audio
+    const audio = this.ctx?.world?.audio
     if (!audio) {
       return 0
     }
@@ -398,7 +399,7 @@ export class Audio extends Node {
   }
 
   pause() {
-    const audio = this.ctx.world.audio
+    const audio = this.ctx?.world?.audio
     if (!audio) return
     // also when there is no source yet: a play still waiting for its file is called off, as stop() calls it off (a src
     // set while the node played starts one at once, and `src = …; pause()` played the new file when it arrived)
@@ -411,7 +412,7 @@ export class Audio extends Node {
   }
 
   stop() {
-    const audio = this.ctx.world.audio
+    const audio = this.ctx?.world?.audio
     if (!audio) return
     this.n++
     this.offset = 0

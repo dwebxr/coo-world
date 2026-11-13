@@ -58,9 +58,9 @@ export const PARTICLES_MAX_START_LENGTH = 256
 export const PARTICLES_MAX_CURVE_LENGTH = 4096
 // `direction` and `velocityRadial`, which the worker multiplies by, are kept within the largest float32 (the most its
 // Float32Array buffers hold), so an Infinity there becomes this number; as Infinity it gave the worker 0 * Infinity
-// and Infinity / Infinity, which are NaN. This does not keep the worker free of NaN in general (a timescale of 0 with a
-// radial velocity still gives it). A direction of this size randomizes completely: the shape's own direction is lost in
-// the rounding.
+// and Infinity / Infinity, which are NaN. This does not keep the worker free of NaN in general (a start text such as
+// speed 'Infinity' still gives it). A direction of this size randomizes completely: the shape's own direction is lost
+// in the rounding.
 export const PARTICLES_MAX_FACTOR = FLOAT32_MAX
 
 // prettier-ignore

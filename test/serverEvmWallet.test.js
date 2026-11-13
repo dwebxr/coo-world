@@ -496,6 +496,22 @@ test('evm tips: an intent gives only the verified sender the opted-in recipient 
   assert.equal(a.ws.packets.length, 0)
 })
 
+test('evm tips: a verified player who has not opted in is no recipient', async t => {
+  const f = fixture(t, { evmGating: tipsEnabled })
+  const a = await f.connect('a')
+  const b = await f.connect('b')
+  await f.verify(a)
+  await f.verify(b, { signer: other })
+  clear(a)
+  f.network.onRequestEvmTipIntent(a, { id: 1, to: 'b', token: 'JPYC', amount: '100' })
+  assert.deepEqual(replies(a, 'onEvmTipIntent'), [{ id: 1, ok: false, reason: 'recipient_unavailable' }])
+  // opted in, the same player is
+  f.network.onSetEvmTipReceive(b, { enabled: true })
+  clear(a)
+  f.network.onRequestEvmTipIntent(a, { id: 2, to: 'b', token: 'JPYC', amount: '100' })
+  assert.equal(replies(a, 'onEvmTipIntent')[0].recipient, other.address)
+})
+
 test('evm tips: the same wallet on two connections cannot tip itself', async t => {
   const f = fixture(t, { evmGating: tipsEnabled })
   const a = await f.connect('a')
@@ -615,6 +631,22 @@ test('evm holdings: a read still pending when the same address signs in again as
   await f.network.onRequestEvmVerify(a, request)
   assert.equal(a.evmWallet.verified, account.address)
   assert.equal(a.evmWallet.verifiedContract, true)
+  release({ known: true, balance: 1 })
+  assert.deepEqual(plain(await pending), { verified: false, known: false, balance: 0 })
+})
+
+test('evm holdings: a read still pending when the same address signs in again the same way is dropped', async t => {
+  let release
+  const evmHoldings = { get: () => new Promise(resolve => (release = resolve)) }
+  const f = fixture(t, { evmHoldings })
+  const a = await f.connect('a')
+  await f.verify(a)
+  // on the sign-in chain, where nothing but the new sign-in tells the two reads apart
+  const pending = f.network.evmHolding('a', { chainId: 137, contract: `0x${'ab'.repeat(20)}`, standard: 'erc721' })
+  f.advance(5000)
+  await f.verify(a, { attempt: 2 })
+  assert.equal(a.evmWallet.verified, account.address)
+  assert.equal(a.evmWallet.verifiedContract, false)
   release({ known: true, balance: 1 })
   assert.deepEqual(plain(await pending), { verified: false, known: false, balance: 0 })
 })
@@ -1080,6 +1112,19 @@ test('evm tip result: confirmed tips reply, fire a frozen tip event without addr
   assert.equal(f.a.evmWallet.tickets.has(ticket), false, 'the ticket is used up')
 })
 
+test('evm tip result: a tip announced to the world is not told to its recipient a second time', async t => {
+  const f = await tipFixture(t)
+  const ticket = f.ticket()
+  f.report(f.a, { ticket, txHash: hashOf(43) })
+  clear(f.b)
+  f.watcher.jobs.pop().onDone({ state: 'confirmed' })
+  assert.deepEqual(
+    f.chat.map(entry => entry.msg.body),
+    ['a tipped b 100 JPYC']
+  )
+  assert.deepEqual(replies(f.b, 'onChatAdded'), [])
+})
+
 test('evm tip result: a confirmed transaction is counted once, and only once confirmed', async t => {
   const f = await tipFixture(t)
   const c = await f.connect('c')
@@ -1494,6 +1539,20 @@ test('evm tips: stopping for a fatal error stops the watcher and the announcemen
   const before = f.events.length
   f.network.onTipResult(f.a, 'x', hashOf(1), { state: 'confirmed' })
   assert.equal(f.events.length, before)
+})
+
+test('evm tips: a watched tip whose result comes after a fatal stop is neither counted, told nor announced', async t => {
+  const f = await tipFixture(t)
+  const ticket = f.ticket()
+  f.report(f.a, { ticket, txHash: hashOf(42) })
+  const [job] = f.watcher.jobs
+  f.network.stopForFatal()
+  clear(f.a)
+  const before = f.events.length
+  job.onDone({ state: 'confirmed' })
+  assert.equal(f.events.length, before)
+  assert.deepEqual(replies(f.a, 'onEvmTipStatus'), [])
+  assert.equal(f.chat.length, 0)
 })
 
 test('evm tips: a revoke that reaches the server before the report keeps the payment watched', async t => {

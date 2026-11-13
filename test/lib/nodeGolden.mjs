@@ -47,23 +47,25 @@ export const NODE_TYPES = [
 ]
 
 // the test files that compare the golden files, and the node types each generates (each file runs in its own process,
-// so the three run side by side; each also generates the node type, which the others refer to)
+// so they run side by side; each also generates the node type, which the others refer to)
 export const SHARDS = {
   'nodeGolden.test.js': [
     'node',
     'action',
     'anchor',
-    'audio',
     'avatar',
-    'collider',
-    'controller',
     'group',
     'image',
-    'joint',
     'lod',
+    'nametag',
+    'skinnedmesh',
+    'snap',
   ],
-  'nodeGoldenScene.test.js': ['mesh', 'nametag', 'particles', 'prim', 'rigidbody', 'skinnedmesh', 'sky', 'snap'],
-  'nodeGoldenUi.test.js': ['ui', 'uiimage', 'uitext', 'uiview', 'video'],
+  'nodeGoldenPhysics.test.js': ['collider', 'controller', 'joint', 'rigidbody'],
+  'nodeGoldenScene.test.js': ['mesh', 'prim', 'sky'],
+  'nodeGoldenEffects.test.js': ['audio', 'particles'],
+  'nodeGoldenUi.test.js': ['ui', 'uiimage', 'uitext'],
+  'nodeGoldenView.test.js': ['uiview', 'video'],
 }
 
 export const GOLDEN_DIR = fileURLToPath(new URL('../golden/nodes/', import.meta.url))

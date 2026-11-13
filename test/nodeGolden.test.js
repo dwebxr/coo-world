@@ -1,8 +1,8 @@
 // The golden characterization of the node classes (P17-0). test/lib/nodeGolden.mjs runs every node type (Node and
 // the 23 exports of src/core/nodes/index.js) through a fixed list of cases and writes what happened as text, one file
 // per type in test/golden/nodes/. This test generates that text again and compares it with the files; a difference
-// fails, with the first differing lines. The types are shared among three files that run side by side (SHARDS in
-// test/lib/nodeGolden.mjs): this one, nodeGoldenScene.test.js and nodeGoldenUi.test.js.
+// fails, with the first differing lines. The types are shared among six files that run side by side (SHARDS in
+// test/lib/nodeGolden.mjs): this one and nodeGolden{Physics,Scene,Effects,Ui,View}.test.js.
 // `UPDATE_GOLDEN=1 node --test test/nodeGolden*.test.js` rewrites the files; the diff of the rewritten files is then
 // the record of what a change did, to be read line by line. A run with CI set refuses UPDATE_GOLDEN=1 (a failing test,
 // nothing generated or written).

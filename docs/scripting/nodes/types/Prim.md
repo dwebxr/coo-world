@@ -46,7 +46,7 @@ The emissive (glow) color of the primitive. Defaults to `null` (no glow).
 
 ### `.emissiveIntensity`: Number
 
-The intensity of the emissive glow: a number from `0` up to the largest float32 (about 3.4e38); `NaN`, `Infinity`, a larger number or a negative one throws. Defaults to `0`.
+The intensity of the emissive glow, a number of `0` or more: a negative number (`-Infinity` included) or anything that is not a number throws. `NaN` becomes the default, and a number past the largest float32 (about 3.4e38), `Infinity` included, becomes that number. Reading the property back gives what was kept. Defaults to `0`.
 
 ### `.metalness`: Number
 

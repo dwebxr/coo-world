@@ -1,23 +1,43 @@
-// Two setters that kept NaN or Infinity (17-F). A prim's `emissiveIntensity` refuses a number that is not finite as a
-// float32, as it refuses -1: the value is written to a Float32Array the shader reads. A particles node's `direction`
-// and `velocityRadial` follow the rule of their bounded neighbours (boundedValue.js): NaN is the default, a number
-// past the largest float32 is that bound, a finite value inside it is kept as it is. Each is tried through the
-// script's handle (the proxy), the class's setter and the options of app.create; a clone keeps what was kept.
+// Three node properties that kept NaN or Infinity (17-F) now follow the rule of the bounded neighbours
+// (boundedValue.js: no bound throws): NaN is the property's default, a number past the largest float32 is that bound,
+// a number inside it is kept as it is. A prim's `emissiveIntensity` still throws for what it threw for before (a
+// negative number, -Infinity included, and anything that is not a number). A particles node's `direction` and
+// `velocityRadial` are bounded on both sides.
+//
+// Each value is given four ways: the script's handle (the proxy), app.create (the real Apps hook: the node is
+// constructed from host-safe keys and the rest goes through the proxy, createOptions.js), and on the host side the
+// class's setter and the constructor's data. A clone keeps what was kept. The particle worker is run in a worker
+// thread with a seeded Math.random, on the config the node gives it.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { bundleProbe, runProbe } from './lib/workerProbe.mjs'
 
 let bundle
+let m
+let apps
 before(async () => {
   bundle = await bundleProbe(`
     import './src/client/particles'
     export { createNode } from './src/core/extras/createNode'
+    export { FLOAT32_MAX } from './src/core/extras/boundedValue.js'
     export { PARTICLES_MAX_FACTOR } from './src/core/nodes/Particles'
+    export { Apps } from './src/core/systems/Apps'
     export { Stage } from './src/core/systems/Stage'
     export * as THREE from './src/core/extras/three'
     export { Object3D } from 'three'
   `)
+  // the particle worker's module expects a worker's global
+  const hadSelf = 'self' in globalThis
+  const realSelf = globalThis.self
+  globalThis.self = {}
+  try {
+    m = await import(bundle.url)
+  } finally {
+    if (hadSelf) globalThis.self = realSelf
+    else delete globalThis.self
+  }
+  apps = new m.Apps({ network: {}, events: {} })
 })
 after(() => bundle?.destroy())
 
@@ -27,181 +47,189 @@ const FLOAT32_MAX = 3.4028234663852886e38
 const LAST_TO_FLOAT32_MAX = 3.4028235677973362e38
 const FIRST_TO_INFINITY = 3.4028235677973366e38
 const ABOVE_FLOAT32_MAX = 3.402823466385289e38
-const bounds = { FLOAT32_MAX, LAST_TO_FLOAT32_MAX, FIRST_TO_INFINITY, ABOVE_FLOAT32_MAX }
 
-test('the boundary numbers are what their names say', () => {
+test('the boundary numbers are what their names say, and the bound is the largest float32', () => {
   assert.equal(Math.fround(FLOAT32_MAX), FLOAT32_MAX)
   assert.equal(Math.fround(LAST_TO_FLOAT32_MAX), FLOAT32_MAX)
   assert.equal(Math.fround(FIRST_TO_INFINITY), Infinity)
   assert.ok(ABOVE_FLOAT32_MAX > FLOAT32_MAX && LAST_TO_FLOAT32_MAX < FIRST_TO_INFINITY)
+  assert.equal(m.FLOAT32_MAX, FLOAT32_MAX)
+  assert.equal(m.PARTICLES_MAX_FACTOR, FLOAT32_MAX)
 })
 
-test('prim: emissiveIntensity refuses NaN, Infinity and a number past the float32 range, as it refuses -1', () =>
-  runProbe(
-    bundle,
-    ({ createNode }, { FLOAT32_MAX, LAST_TO_FLOAT32_MAX, FIRST_TO_INFINITY }) => {
-      // the class and the message of the refusal that was already there
-      let refusal
-      try {
-        createNode('prim').emissiveIntensity = -1
-      } catch (err) {
-        refusal = err
-      }
-      assert.equal(refusal?.constructor, Error)
-      assert.equal(refusal.message, '[prim] emissiveIntensity must be positive number')
-      const refused = err => err.constructor === Error && err.message === refusal.message
-      for (const value of [
-        NaN,
-        Infinity,
-        -Infinity,
-        FIRST_TO_INFINITY,
-        1e39,
-        Number.MAX_VALUE,
-        -1,
-        -Number.MIN_VALUE,
-      ]) {
-        const handle = createNode('prim', { emissiveIntensity: 3 }).getProxy()
-        assert.throws(() => (handle.emissiveIntensity = value), refused, `proxy: ${value}`)
-        assert.equal(handle.emissiveIntensity, 3, `proxy: ${value} leaves what was kept`)
-        const node = createNode('prim', { emissiveIntensity: 3 })
-        assert.throws(() => (node.emissiveIntensity = value), refused, `class: ${value}`)
-        assert.equal(node.emissiveIntensity, 3)
-        assert.throws(() => createNode('prim', { emissiveIntensity: value }), refused, `data: ${value}`)
-      }
-      // a number in range is kept as it is: zero, the smallest positive number, the largest float32 and the largest
-      // double that a Float32Array stores as it
-      for (const value of [0, Number.MIN_VALUE, 0.25, 2, FLOAT32_MAX, LAST_TO_FLOAT32_MAX]) {
-        const handle = createNode('prim').getProxy()
-        handle.emissiveIntensity = value
-        assert.equal(handle.emissiveIntensity, value, `proxy: ${value}`)
-        const node = createNode('prim')
-        node.emissiveIntensity = value
-        assert.equal(node.emissiveIntensity, value, `class: ${value}`)
-        const made = createNode('prim', { emissiveIntensity: value })
-        assert.equal(made.emissiveIntensity, value, `data: ${value}`)
-        assert.equal(made.clone().emissiveIntensity, value, `clone: ${value}`)
-      }
-      assert.equal(createNode('prim').emissiveIntensity, 0, 'the default')
-      assert.equal(createNode('prim', { emissiveIntensity: undefined }).emissiveIntensity, 0)
-      // what is not a number is refused as before
-      for (const value of ['2', null, new Number(2), {}]) {
-        assert.throws(() => (createNode('prim').getProxy().emissiveIntensity = value), refused, String(value))
-      }
-    },
-    bounds
-  ))
+// an app as Apps.create sees it: its run, and its createNode (App.createNode, without the run's bookkeeping)
+const app = () => ({ deadHook: { dead: false }, createNode: (type, data) => m.createNode(type, data) })
 
-// The Stage is the real one, and what the prim hands its instance is read back from the instance attribute. The
-// shader that reads the attribute is not run here.
-test('prim: only finite values reach the instance attribute of a mounted prim', () =>
-  runProbe(
-    bundle,
-    ({ createNode, Stage, Object3D }, { FLOAT32_MAX, LAST_TO_FLOAT32_MAX, FIRST_TO_INFINITY }) => {
-      const world = { rig: new Object3D(), camera: new Object3D(), setupMaterial() {} }
-      world.stage = new Stage(world)
-      const entity = { deadHook: { dead: false } }
-      const prim = createNode('prim', { emissive: '#ff0000', emissiveIntensity: 2 })
-      prim.activate({ world, entity, run: entity.deadHook })
-      assert.ok(prim.handle, 'mounted, with an instance')
-      const { iMesh } = [...world.stage.models.values()][0]
-      const written = []
-      const setAt = iMesh.setEmissiveIntensityAt
-      iMesh.setEmissiveIntensityAt = function (index, amount) {
-        written.push(amount)
-        return setAt.call(this, index, amount)
-      }
-      const attribute = () => iMesh.instanceEmissiveIntensity.array[0]
-      assert.equal(attribute(), 2)
-      const handle = prim.getProxy()
-      for (const value of [NaN, Infinity, FIRST_TO_INFINITY]) {
-        assert.throws(() => (handle.emissiveIntensity = value), /emissiveIntensity must be positive number/)
-        assert.equal(attribute(), 2, `${value} left the attribute as it was`)
-      }
-      handle.emissiveIntensity = LAST_TO_FLOAT32_MAX
-      assert.equal(attribute(), FLOAT32_MAX, 'stored as the largest float32')
-      handle.emissiveIntensity = 0.5
-      assert.equal(attribute(), 0.5)
-      assert.deepEqual(written, [LAST_TO_FLOAT32_MAX, 0.5], 'only the accepted values were written')
-      assert.ok(Array.from(iMesh.instanceEmissiveIntensity.array).every(Number.isFinite))
-      prim.deactivate()
-    },
-    bounds
-  ))
+// the four ways a value reaches a node; each gives back what the value can be read from
+const ways = (type, name) => ({
+  proxy: value => {
+    const handle = m.createNode(type).getProxy()
+    handle[name] = value
+    return handle
+  },
+  'app.create': value => apps.appMethods.create(app(), type, { [name]: value }),
+  class: value => {
+    const node = m.createNode(type)
+    node[name] = value
+    return node
+  },
+  data: value => m.createNode(type, { [name]: value }),
+})
 
-test('particles: direction and velocityRadial keep NaN and Infinity in range; a finite value is kept as it is', () =>
-  runProbe(
-    bundle,
-    ({ createNode, PARTICLES_MAX_FACTOR: max }, { FLOAT32_MAX, ABOVE_FLOAT32_MAX }) => {
-      assert.equal(max, FLOAT32_MAX, 'the bound is the largest float32')
-      // [value given, value kept]
-      const keeps = (name, pairs) => {
-        for (const [given, kept] of pairs) {
-          const label = `${name} = ${String(given)}`
-          const handle = createNode('particles').getProxy()
-          handle[name] = given
-          assert.ok(Object.is(handle[name], kept), `proxy: ${label} keeps ${kept}, got ${handle[name]}`)
-          const node = createNode('particles')
-          node[name] = given
-          assert.ok(Object.is(node[name], kept), `class: ${label} keeps ${kept}, got ${node[name]}`)
-          const made = createNode('particles', { [name]: given })
-          assert.ok(Object.is(made[name], kept), `data: ${label} keeps ${kept}, got ${made[name]}`)
-          assert.ok(Object.is(made.clone()[name], kept), `clone: ${label}`)
-          assert.ok(Object.is(made.getConfig()[name], kept), `the worker's config: ${label}`)
-        }
-      }
-      // finite values outside the documented 0 to 1 are kept: the worker does not clamp them (above 1 randomizes
-      // more, 0 and below not at all)
-      keeps('direction', [
-        [0, 0],
-        [0.2, 0.2],
-        [1, 1],
-        [2, 2],
-        [-1, -1],
-        [1e32, 1e32],
-        [max, max],
-        [-max, -max],
-        [NaN, 0],
-        [Infinity, max],
-        [-Infinity, -max],
-        [ABOVE_FLOAT32_MAX, max],
-        [-ABOVE_FLOAT32_MAX, -max],
-        [Number.MAX_VALUE, max],
-      ])
-      keeps('velocityRadial', [
-        [null, null],
-        [0, 0],
-        [3, 3],
-        [-3, -3],
-        [0.001, 0.001],
-        [1e6, 1e6],
-        [max, max],
-        [-max, -max],
-        [NaN, null],
-        [Infinity, max],
-        [-Infinity, -max],
-        [ABOVE_FLOAT32_MAX, max],
-        [-Number.MAX_VALUE, -max],
-      ])
-      assert.equal(createNode('particles').direction, 0)
-      assert.equal(createNode('particles').velocityRadial, null)
-      // what is not a number is refused as before (null too, for direction)
-      for (const value of ['1', null, new Number(1), {}]) {
-        assert.throws(() => (createNode('particles').getProxy().direction = value), /direction not a number/)
-      }
-      for (const value of ['1', new Number(1), {}]) {
-        assert.throws(() => (createNode('particles').getProxy().velocityRadial = value), /velocityRadial not a number/)
-      }
-    },
-    bounds
-  ))
+// [value given, value kept], every way, and the clone of each
+function keeps(type, name, pairs) {
+  for (const [given, kept] of pairs) {
+    for (const [way, give] of Object.entries(ways(type, name))) {
+      const label = `${way}: ${type}.${name} = ${String(given)}`
+      const node = give(given)
+      assert.ok(Object.is(node[name], kept), `${label} keeps ${kept}, got ${node[name]}`)
+      assert.ok(Object.is(node.clone()[name], kept), `${label}: the clone keeps ${kept}`)
+    }
+  }
+}
 
-// The particle worker with the config the node gives it (what the client sends): eight particles started at once,
-// `steps` steps at 60 a second. The probe checks the positions (and directions) of every step for `kind`.
+// every way throws `message` (the class Error), and a node that had a value keeps it
+function throws(type, name, values, message) {
+  const refused = err => err.constructor === Error && message.test(err.message)
+  for (const value of values) {
+    for (const [way, give] of Object.entries(ways(type, name))) {
+      assert.throws(() => give(value), refused, `${way}: ${type}.${name} = ${String(value)}`)
+    }
+    const handle = m.createNode(type, { [name]: 3 }).getProxy()
+    assert.throws(() => (handle[name] = value), refused)
+    assert.equal(handle[name], 3, `${String(value)} leaves what was kept`)
+  }
+}
+
+test('prim: emissiveIntensity keeps NaN as the default and a number past the largest float32 as that number', () => {
+  keeps('prim', 'emissiveIntensity', [
+    [0, 0],
+    [Number.MIN_VALUE, Number.MIN_VALUE],
+    [0.25, 0.25],
+    [2, 2],
+    [1e30, 1e30],
+    [FLOAT32_MAX, FLOAT32_MAX],
+    [NaN, 0],
+    [Infinity, FLOAT32_MAX],
+    [ABOVE_FLOAT32_MAX, FLOAT32_MAX],
+    [LAST_TO_FLOAT32_MAX, FLOAT32_MAX],
+    [FIRST_TO_INFINITY, FLOAT32_MAX],
+    [1e39, FLOAT32_MAX],
+    [Number.MAX_VALUE, FLOAT32_MAX],
+  ])
+  assert.equal(m.createNode('prim').emissiveIntensity, 0, 'the default')
+  assert.equal(m.createNode('prim', { emissiveIntensity: undefined }).emissiveIntensity, 0)
+})
+
+test('prim: emissiveIntensity throws what it threw before, with the same message', () => {
+  const message = /^\[prim\] emissiveIntensity must be positive number$/
+  throws('prim', 'emissiveIntensity', [-1, -Infinity, -Number.MIN_VALUE, -FLOAT32_MAX, -Number.MAX_VALUE], message)
+  throws('prim', 'emissiveIntensity', ['2', null, new Number(2), {}, true], message)
+})
+
+// The Stage is the real one; what the prim hands its instance is read back from the instance attribute. The shader
+// that reads the attribute is not run here.
+test('prim: only finite values reach the instance attribute of a mounted prim; Infinity reaches it as the bound', () => {
+  const world = { rig: new m.Object3D(), camera: new m.Object3D(), setupMaterial() {} }
+  world.stage = new m.Stage(world)
+  const entity = { deadHook: { dead: false } }
+  const prim = m.createNode('prim', { emissive: '#ff0000', emissiveIntensity: 2 })
+  prim.activate({ world, entity, run: entity.deadHook })
+  assert.ok(prim.handle, 'mounted, with an instance')
+  const { iMesh } = [...world.stage.models.values()][0]
+  const written = []
+  const setAt = iMesh.setEmissiveIntensityAt
+  iMesh.setEmissiveIntensityAt = function (index, amount) {
+    written.push(amount)
+    return setAt.call(this, index, amount)
+  }
+  const attribute = () => iMesh.instanceEmissiveIntensity.array[0]
+  assert.equal(attribute(), 2)
+  const handle = prim.getProxy()
+  handle.emissiveIntensity = NaN
+  assert.equal(attribute(), 0, 'NaN is the default')
+  handle.emissiveIntensity = Infinity
+  assert.equal(attribute(), FLOAT32_MAX, 'Infinity is the bound')
+  // the same kept value again: nothing is written
+  handle.emissiveIntensity = 1e39
+  handle.emissiveIntensity = LAST_TO_FLOAT32_MAX
+  assert.equal(attribute(), FLOAT32_MAX)
+  assert.throws(() => (handle.emissiveIntensity = -Infinity), /emissiveIntensity must be positive number/)
+  assert.equal(attribute(), FLOAT32_MAX, 'a refused value leaves the attribute as it was')
+  handle.emissiveIntensity = 0.5
+  assert.equal(attribute(), 0.5)
+  assert.deepEqual(written, [0, FLOAT32_MAX, 0.5], 'what was written')
+  assert.ok(written.every(Number.isFinite))
+  assert.ok(Array.from(iMesh.instanceEmissiveIntensity.array).every(Number.isFinite))
+  prim.deactivate()
+})
+
+test('particles: direction and velocityRadial keep NaN and Infinity in range; a finite value inside is kept as it is', () => {
+  const max = FLOAT32_MAX
+  // finite values outside the documented 0 to 1 are kept: the worker does not clamp them (above 1 randomizes more, 0
+  // and below not at all)
+  keeps('particles', 'direction', [
+    [0, 0],
+    [0.2, 0.2],
+    [1, 1],
+    [2, 2],
+    [-1, -1],
+    [1e32, 1e32],
+    [max, max],
+    [-max, -max],
+    [NaN, 0],
+    [Infinity, max],
+    [-Infinity, -max],
+    [ABOVE_FLOAT32_MAX, max],
+    [-ABOVE_FLOAT32_MAX, -max],
+    [Number.MAX_VALUE, max],
+  ])
+  keeps('particles', 'velocityRadial', [
+    [null, null],
+    [0, 0],
+    [3, 3],
+    [-3, -3],
+    [0.001, 0.001],
+    [1e6, 1e6],
+    [max, max],
+    [-max, -max],
+    [NaN, null],
+    [Infinity, max],
+    [-Infinity, -max],
+    [ABOVE_FLOAT32_MAX, max],
+    [-Number.MAX_VALUE, -max],
+  ])
+  // the worker gets what was kept
+  assert.equal(m.createNode('particles', { direction: Infinity }).getConfig().direction, max)
+  assert.equal(m.createNode('particles', { velocityRadial: -Infinity }).getConfig().velocityRadial, -max)
+  assert.equal(m.createNode('particles', { velocityRadial: NaN }).getConfig().velocityRadial, null)
+  assert.equal(m.createNode('particles').direction, 0)
+  assert.equal(m.createNode('particles').velocityRadial, null)
+  // what is not a number is refused as before (null too, for direction)
+  throws('particles', 'direction', ['1', null, new Number(1), {}], /direction not a number/)
+  throws('particles', 'velocityRadial', ['1', new Number(1), {}], /velocityRadial not a number/)
+})
+
+// The particle worker with the config the node gives it (what the client sends), in world space with the emitter at
+// the origin: eight particles started at once by a burst, `steps` steps at 60 a second, additive blending (no sort,
+// so the buffers are in pool order), and Math.random replaced by a fixed sequence. `kind` says what is checked.
 const runWorker = (kind, data, steps) =>
   runProbe(
     bundle,
     ({ createNode, THREE }, { kind, data, steps }) => {
-      const node = createNode('particles', { rate: 0, bursts: [{ time: 0, count: 8 }], max: 8, speed: '1', ...data })
+      const LCG = seed => () => {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+        return seed / 2 ** 32
+      }
+      Math.random = LCG(1)
+      const node = createNode('particles', {
+        rate: 0,
+        bursts: [{ time: 0, count: 8 }],
+        max: 8,
+        speed: '1',
+        blending: 'additive',
+        ...data,
+      })
       const outputs = []
       self.postMessage = msg => {
         if (msg.op === 'update') outputs.push(msg)
@@ -227,28 +255,61 @@ const runWorker = (kind, data, steps) =>
         })
       }
       assert.equal(outputs.length, steps)
-      outputs.forEach((out, step) => {
-        assert.equal(out.n, 8)
-        const positions = Array.from(out.aPosition)
-        if (kind === 'direction') {
-          assert.ok(positions.every(Number.isFinite), `step ${step}: ${positions}`)
-          for (let i = 0; i < 8; i++) {
-            const [x, y, z] = out.aDirection.slice(i * 3, i * 3 + 3)
-            assert.ok(Math.abs(Math.hypot(x, y, z) - 1) < 1e-6, `step ${step}: a unit direction, ${[x, y, z]}`)
+      for (const out of outputs) assert.equal(out.n, 8)
+      const particle = (array, i) => Array.from(array.slice(i * 3, i * 3 + 3))
+
+      if (kind === 'cone') {
+        // the default shape is a cone of 25 degrees: each particle's own direction has a y of cos(25 deg). For each
+        // particle the cone draws two numbers (an angle, a radius) and the randomization three more (x, y, z).
+        const cos25 = Math.cos((25 * Math.PI) / 180)
+        const drawn = LCG(1)
+        for (let i = 0; i < 8; i++) {
+          const got = particle(outputs[0].aDirection, i)
+          assert.ok(Math.abs(Math.hypot(...got) - 1) < 1e-6, `particle ${i}: a unit direction, ${got}`)
+          if (data.direction === 0) {
+            assert.ok(Math.abs(got[1] - cos25) < 1e-6, `particle ${i}: the cone's own direction, ${got}`)
+            continue
           }
-        } else {
-          // the first steps are finite (one radial step is the bound over 60); then the particles are farther away than
-          // a float32 holds, and the position buffer has Infinity for them, never NaN
-          if (step < 5) assert.ok(positions.every(Number.isFinite), `step ${step}: ${positions}`)
-          assert.ok(!positions.some(Number.isNaN), `step ${step}: no NaN`)
+          // the shape's own direction is lost: the direction is the three drawn offsets (2r - 1), normalized
+          drawn()
+          drawn()
+          const offset = [drawn() * 2 - 1, drawn() * 2 - 1, drawn() * 2 - 1]
+          const expected = offset.map(v => v / Math.hypot(...offset))
+          assert.ok(
+            expected.every((v, k) => Math.abs(v - got[k]) < 1e-6),
+            `particle ${i}: ${got}, expected ${expected}`
+          )
+          assert.ok(Math.abs(got[1] - cos25) > 0.01, `particle ${i} is not in the cone: ${got}`)
         }
-      })
+        for (const out of outputs) assert.ok(Array.from(out.aPosition).every(Number.isFinite), 'finite positions')
+      }
+
+      if (kind === 'radial') {
+        // a sphere of radius 1 around the emitter: a particle's own direction points away from the centre. Each step
+        // the radial velocity moves it by velocityRadial / 60 and adds velocityRadial to its velocity, so after the
+        // first step it is 2 * bound / 60 from the centre (the radius and the start speed are lost in the rounding).
+        // The worker's numbers are doubles; the position buffer is float32 and holds Infinity once a coordinate passes
+        // the largest float32, which in this configuration is on the tenth step. Never NaN.
+        const max = 3.4028234663852886e38
+        for (let i = 0; i < 8; i++) {
+          const distance = Math.hypot(...particle(outputs[0].aPosition, i))
+          assert.ok(Math.abs(distance / ((2 * max) / 60) - 1) < 1e-6, `particle ${i} after one step: ${distance}`)
+        }
+        const infinite = outputs.map(out => Array.from(out.aPosition).some(v => v === Infinity || v === -Infinity))
+        assert.equal(infinite.indexOf(true) + 1, 10, 'the first step with Infinity in the position buffer')
+        outputs.forEach((out, step) => {
+          assert.ok(!Array.from(out.aPosition).some(Number.isNaN), `step ${step + 1}: no NaN`)
+        })
+      }
     },
     { kind, data, steps }
   )
 
-test('particle worker: a direction of Infinity, kept as the bound, starts particles in finite unit directions', () =>
-  runWorker('direction', { direction: Infinity }, 5))
+test('particle worker: a direction of Infinity, kept as the bound, randomizes the directions completely', () =>
+  runWorker('cone', { direction: Infinity }, 5))
 
-test('particle worker: a radial velocity of Infinity, kept as the bound, leaves no NaN in the positions', () =>
-  runWorker('velocityRadial', { shape: ['sphere', 1, 1], velocityRadial: Infinity }, 120))
+test('particle worker (control): a direction of 0 keeps the cone directions the test above tells apart', () =>
+  runWorker('cone', { direction: 0 }, 1))
+
+test('particle worker: a radial velocity of Infinity, kept as the bound, moves the particles by the bound', () =>
+  runWorker('radial', { shape: ['sphere', 1, 1], velocityRadial: Infinity }, 120))

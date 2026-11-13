@@ -1,7 +1,7 @@
 import * as THREE from '../extras/three'
 import { every, isArray } from 'lodash-es'
 import { isBoolean, isNumber, isPrimitive, isString } from '../extras/scriptPrimitives.js'
-import { boundedInteger, boundedNumber, boundedText } from '../extras/boundedValue.js'
+import { boundedInteger, boundedNumber, boundedText, FLOAT32_MAX } from '../extras/boundedValue.js'
 
 import { Node } from './Node'
 import { scriptView, sealMath } from '../extras/sealMath.js'
@@ -57,10 +57,11 @@ export const PARTICLES_MAX_TIMESCALE = 100
 export const PARTICLES_MAX_START_LENGTH = 256
 export const PARTICLES_MAX_CURVE_LENGTH = 4096
 // `direction` and `velocityRadial`, which the worker multiplies by, are kept within the largest float32 (the most its
-// Float32Array buffers hold), so Infinity becomes this number and not a NaN in the worker. A direction of this size
-// randomizes completely (above about 1e32 the shape's own direction is lost in the rounding); a speed of this size
-// takes the particles out of view.
-export const PARTICLES_MAX_FACTOR = 3.4028234663852886e38
+// Float32Array buffers hold), so an Infinity there becomes this number; as Infinity it gave the worker 0 * Infinity
+// and Infinity / Infinity, which are NaN. This does not keep the worker free of NaN in general (a timescale of 0 with a
+// radial velocity still gives it). A direction of this size randomizes completely: the shape's own direction is lost in
+// the rounding.
+export const PARTICLES_MAX_FACTOR = FLOAT32_MAX
 
 // prettier-ignore
 const defaults = {

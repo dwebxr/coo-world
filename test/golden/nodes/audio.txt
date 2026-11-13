@@ -32,8 +32,7 @@ b get reads "inverse": distanceModel
 b get reads 40: maxDistance
 b get reads 3: rolloffFactor
 b get reads 360: coneInnerAngle coneOuterAngle
-b get reads 0: coneOuterGain
-b get throws TypeError: "Cannot read properties of undefined (reading 'audio')": currentTime
+b get reads 0: coneOuterGain currentTime
 b get reads <auto id>: id
 b get reads "audio": name
 b get reads V3(0,0,0)S: position
@@ -115,9 +114,10 @@ c coneOuterGain pc read 1 Δ{_coneOuterGain:1} <- Infinity 1e9
 c coneOuterGain pc read $in Δ{_coneOuterGain:$in} <- -0 0.5 1
 c coneOuterGain pc read $in <- 0
 c currentTime pc throw Error: "[audio] currentTime not a number" <- undefined null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
-c currentTime pc read throws TypeError: "Cannot read properties of null (reading 'world')" <- NaN -Infinity -1 0
-c currentTime pc read throws TypeError: "Cannot read properties of null (reading 'world')" Δ{offset:1000000000} <- Infinity
-c currentTime pc read throws TypeError: "Cannot read properties of null (reading 'world')" Δ{offset:$in} <- -0 0.5 1 1e9 3
+c currentTime pc read 0 <- NaN -Infinity -1
+c currentTime pc read 0 Δ{offset:1000000000} <- Infinity
+c currentTime pc read 0 Δ{offset:$in} <- -0 0.5 1 1e9 3
+c currentTime pc read $in <- 0
 c as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
 == d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
 d src same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[audio] src not a string" | 0,-0: first throws Error: "[audio] src not a string"
@@ -132,7 +132,7 @@ d rolloffFactor same: - | NaN,NaN: read 3 | 0,-0: Δ{_rolloffFactor:$in}
 d coneInnerAngle same: - | NaN,NaN: read 360 | 0,-0: Δ{_coneInnerAngle:$in}
 d coneOuterAngle same: - | NaN,NaN: read 360 | 0,-0: Δ{_coneOuterAngle:$in}
 d coneOuterGain same: - | NaN,NaN: read 0 | 0,-0: Δ{_coneOuterGain:$in}
-d currentTime NaN,NaN: read throws TypeError: "Cannot read properties of null (reading 'world')" | 0,-0: read throws TypeError: "Cannot read properties of null (reading 'world')" Δ{offset:$in}
+d currentTime NaN,NaN: read 0 | 0,-0: read 0 Δ{offset:$in}
 d src [an audio world, no source] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[audio] src not a string" | 0,-0: first throws Error: "[audio] src not a string"
 d volume [an audio world, no source] same: - | NaN,NaN: read 1 | 0,-0: Δ{_volume:$in}
 d loop [an audio world, no source] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[audio] loop not a boolean" | 0,-0: first throws Error: "[audio] loop not a boolean"
@@ -148,11 +148,9 @@ d coneOuterGain [an audio world, no source] same: - | NaN,NaN: read 0 | 0,-0: Δ
 d currentTime [an audio world, no source] NaN,NaN: read 0 | 0,-0: Δ{offset:$in}
 == e. the sets of c in a mounted-like state (stubs record what is done to them): what differs from c
 e [an audio world, no source]
-e currentTime pc read 0 <- NaN -Infinity -1
 e currentTime pc read 1000000000 Δ{offset:1000000000} <- Infinity
 e currentTime pc read $in Δ{offset:$in} <- -0 0.5 1 1e9 3
-e currentTime pc read $in <- 0
-e currentTime: the other 18 as in c
+e currentTime: the other 22 as in c
 e as in c: src volume loop group spatial distanceModel refDistance maxDistance rolloffFactor coneInnerAngle coneOuterAngle coneOuterGain
 e [a source waiting for the audio unlock (offset 2)]
 e src pc read $in Δ{_src:$in offset:0 n:1 source:null gainNode:null pannerNode:null} calls[stop,releaseSource,play] stub[source.onended=null gain.disconnect() panner.disconnect()] <- 'x' 'asset://a.mp3'
@@ -294,7 +292,7 @@ f default rolloffFactor = 3
 f default coneInnerAngle = 360
 f default coneOuterAngle = 360
 f default coneOuterGain = 0
-f default currentTime = read throws TypeError: "Cannot read properties of null (reading 'world')"
+f default currentTime = 0
 f default isPlaying = false
 f default name = "audio"
 f defaults as on node: id position quaternion rotation scale matrixWorld active parent children _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
@@ -310,7 +308,8 @@ f rolloffFactor: through data as through the class (all 27)
 f coneInnerAngle: through data as through the class (all 27)
 f coneOuterAngle: through data as through the class (all 27)
 f coneOuterGain: through data as through the class (all 27)
-f currentTime data read throws TypeError: "Cannot read properties of null (reading 'world')" <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} 3
+f currentTime data 0 <- undefined null NaN Infinity -Infinity -1 -0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} 3
+f currentTime data $in <- 0
 f as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
 == g. own fields after construction, and what clone() and clone(true) make of them
 g field name = "audio"

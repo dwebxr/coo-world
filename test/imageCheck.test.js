@@ -694,11 +694,11 @@ const STOP_PATH_REQUIRED = [': saving the world before exit', '[network] final s
 // What an inspected function may do with a logger, read whatever each name resolves to (no binding is followed):
 // - `console`, and a parameter that a function in it (its own, or a nested one) gives `console` as a default as a
 //   property of a destructured options parameter (`{ log = console } = {}`, installShutdown's; that shape only; a
-//   logger inside the function whose parameter it is), only as the object of a direct call by a written name (`console.error(…)`, `log.log(…)`, optional ones
-//   included): any other use of either is a violation (used as a value: assigned, passed, returned, put into another
-//   name; a member not called at once: taken, destructured, `.call`, `.apply`, `.bind`, `Reflect.apply`; a computed
-//   member, `console[level](…)` and `console['warn'](…)` alike; the parameter given another value; either name bound
-//   again);
+//   logger inside the function whose parameter it is), only as the object of a direct call by a written name
+//   (`console.error(…)`, `log.log(…)`, optional ones included): any other use of either is a violation (used as a
+//   value: assigned, passed, returned, put into another name; a member not called at once: taken, destructured,
+//   `.call`, `.apply`, `.bind`, `Reflect.apply`; a computed member, `console[level](…)` and `console['warn'](…)`
+//   alike; the parameter given another value; either name bound again);
 // - a member named error, warn, log, info, debug, trace or logOnce of anything else (`this.logOnce`, `audit.error`),
 //   only called at once by its written name: taken into a name, destructured, passed, returned, called through
 //   `.call`, `.apply`, `.bind` or `Reflect.apply`, or reached by a computed key, it is a violation. One shape is

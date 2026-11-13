@@ -221,6 +221,9 @@ test('AI: oversized create refuses before its placeholder; /fix truncates oversi
   assert.equal(scriptError.message.length, 140 * 1024)
 })
 
+// the content address of an asset, as importApp marks it (the hash is not checked by these stand-ins)
+const CONTENT_URL = `asset://${'0'.repeat(64)}.glb`
+
 test('.hyp import and scene replacement: refusal precedes caching, rebuilding and uploading', async () => {
   for (const scene of [false, true]) {
     const world = clientWorld()
@@ -236,7 +239,8 @@ test('.hyp import and scene replacement: refusal precedes caching, rebuilding an
     world.entities.add = () => assert.fail('spawned a refused import')
     const info = {
       blueprint: { scene, props: { text: 'x'.repeat(70 * 1024) } },
-      assets: [{ type: 'model', url: 'asset://a.glb', file: {} }],
+      // an asset the builder takes (importApp found it stored under the hash of its bytes)
+      assets: [{ type: 'model', url: CONTENT_URL, file: {}, contentAddressed: true }],
     }
     const Builder = loadClient('core/systems/ClientBuilder.js', 'ClientBuilder', { importApp: async () => info })
     const builder = Object.assign(Object.create(Builder.prototype), { world })
@@ -253,7 +257,7 @@ test('.hyp upload exception: preflight, local build, upload, then sanitized anno
   const order = []
   const info = {
     blueprint: { name: 'n'.repeat(300), props: { text: 'kept' } },
-    assets: [{ type: 'model', url: 'asset://a.glb', file: {} }],
+    assets: [{ type: 'model', url: CONTENT_URL, file: {}, contentAddressed: true }],
   }
   world.loader = {
     insert() {

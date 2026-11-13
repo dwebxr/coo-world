@@ -86,6 +86,8 @@ When reading a .hyp file:
    - The blueprint configuration
    - Array of asset files with their metadata
 
+An asset whose `url` is the address of an uploaded file, `asset://<sha256 of its bytes>.<ext>`, must hold exactly those bytes or the whole file is refused, and only such assets are cached by the client of the builder who drops the file and uploaded; any other `url` (a built-in such as `asset://ai.glb`, an `http(s)://` URL) stays in the blueprint and loads from its own address, as for everyone else. A `.hyp` file is still code: its blueprint's script runs with an app's powers once the builder adds it.
+
 ## Usage Example
 
 ```javascript

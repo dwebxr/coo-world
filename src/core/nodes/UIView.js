@@ -99,7 +99,6 @@ export class UIView extends Node {
       const thickness = this._borderWidth * this.ui._res
       ctx.strokeStyle = this._borderColor
       ctx.lineWidth = thickness
-      // todo: migrate to new roundRect { strokeRoundRect }
       if (this._borderRadius) {
         borderRoundRect(ctx, left, top, width, height, radius, thickness)
       } else {

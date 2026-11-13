@@ -26,14 +26,6 @@ export function fillRoundRect(ctx, x, y, width, height, radius, fillStyle) {
   ctx.fill()
 }
 
-export function strokeRoundRect(ctx, x, y, width, height, radius, strokeStyle, lineWidth = 1) {
-  ctx.beginPath()
-  roundRect(ctx, x, y, width, height, radius)
-  ctx.strokeStyle = strokeStyle
-  ctx.lineWidth = lineWidth
-  ctx.stroke()
-}
-
 export function imageRoundRect(ctx, x, y, width, height, radius, img, imgX, imgY, imgWidth, imgHeight) {
   ctx.save()
   ctx.beginPath()

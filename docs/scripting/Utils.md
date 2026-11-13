@@ -33,8 +33,8 @@ gave 0 6784 times, 1 13169 times, 2 13461 times and 3 6586 times; `num(0.5, 3.5)
 
 `prng(seed)` returns a function `rand(min, max, dp = 0)` that draws numbers from a sequence fixed by `seed`. `rand(max)`
 is `rand(0, max)`, `min` and `max` are swapped when `min` is the larger, and `dp` asks for that many decimal places.
-With `dp` 0 the result is `min` plus a whole number, up to `max`: a whole number from `min` to `max`, both included,
-when `min` and `max` are whole numbers, and otherwise not (`prng(42)` with `rand(0.5, 3.5)` gives 0.5, 1.5, 2.5 and
+With `dp` 0 the result is `min` plus a whole number, up to `max`: a whole number when `min` is one (from `min` to
+`max`, both included, when `max` is one too), and not when `min` is not (`prng(42)` with `rand(0.5, 3.5)` gives 0.5, 1.5, 2.5 and
 3.5).
 
 ```javascript
@@ -80,7 +80,7 @@ worlds built from a seed.
 When a script needs evenly spread numbers:
 
 - `Math.random()` works in a script (it is the engine's own `Math`). `Math.floor(Math.random() * (max - min + 1)) + min`
-  gives a whole number from `min` to `max`; measured for 0 to 3 over 40,000 calls: 10261, 9940, 9751, 10048. It has no
+  gives a whole number from `min` to `max` when both are whole numbers; measured for 0 to 3 over 40,000 calls: 10261, 9940, 9751, 10048. It has no
   seed: its numbers are not the same on the server and in each browser, and a number may come up again. `num` (above)
   favours the values between its ends.
 - For a sequence that repeats from a seed, a script can carry its own generator. The one below (known as Mulberry32)

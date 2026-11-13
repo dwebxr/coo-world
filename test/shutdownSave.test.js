@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 import * as esbuild from 'esbuild'
 import Database from 'better-sqlite3'
 import { WireClient } from './e2e/lib/ws.mjs'
+import { loadNetwork } from './lib/network.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -36,9 +37,23 @@ function run(args, { cwd = root, env = {} } = {}) {
   return proc
 }
 
+// the real network the `slowdb` and `slowconfig` children save with, built here and handed to them: a child that
+// is killed leaves no folder behind, and the folder goes once the children are gone
+let network
+before(async () => {
+  network = await loadNetwork()
+})
+after(() => network?.destroy())
+
 // the signal handling itself, in a process of its own (src/server/shutdown.js with a scripted final save). No
 // assertion depends on how fast a loaded machine runs: each test only bounds the whole run (its timeout)
-const child = (mode, deadline = 300) => run([path.join(root, 'test/lib/shutdownChild.mjs'), mode, String(deadline)])
+const child = (mode, deadline = 300) =>
+  run([
+    path.join(root, 'test/lib/shutdownChild.mjs'),
+    mode,
+    String(deadline),
+    JSON.stringify({ url: network.url, env: network.env }),
+  ])
 const lines = proc => proc.out.split('\n')
 
 test(

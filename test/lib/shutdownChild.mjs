@@ -2,18 +2,18 @@
 // `stall` never settles, `reject` fails, `ok` resolves; `early` never attaches a world (a signal during start-up);
 // `slowdb` runs the real ServerNetwork final save against a database whose every write blocks the thread for 50 ms
 // (as better-sqlite3 does on a slow disk), with 40 dirty blueprints; `slowconfig` the same with 200 queued config
-// writes. Prints `ready` once the handlers are in.
+// writes. Prints `ready` once the handlers are in. argv[4]: the network the test built ({ url, env } of loadNetwork).
 import { installShutdown } from '../../src/server/shutdown.js'
 
 const mode = process.argv[2]
 const say = line => process.stdout.write(`${line}\n`)
 const deadlineMs = Number(process.argv[3] || 3500)
 
-// the real network (test/lib/network.mjs) on `db`. No test ends here: the final save the signal starts stops it
-// (flushBeforeExit stops it for good first)
+// the real network (test/lib/network.mjs) the test built, on `db`. No test ends here: the final save the signal
+// starts stops it (flushBeforeExit stops it for good first)
 async function realNetwork(db) {
-  const { loadNetwork, makeNetwork } = await import('./network.mjs')
-  const net = await loadNetwork()
+  const { importNetwork, makeNetwork } = await import('./network.mjs')
+  const net = await importNetwork(JSON.parse(process.argv[4]))
   return makeNetwork({ after() {} }, { net, world: { settings: { serialize: () => ({}) } }, init: { db } })
 }
 

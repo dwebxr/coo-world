@@ -327,6 +327,8 @@ function MiniMessages({ world }) {
         return // skip first
       }
       const msg = msgs[msgs.length - 1]
+      // a cleared chat (Chat.clear, deserialize([])) has no last line: the line shown goes, as in the full chat
+      if (!msg) return setMsg(null)
       if (msg.fromId === world.network.id) return
       setMsg(msg)
     })

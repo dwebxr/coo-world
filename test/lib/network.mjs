@@ -1,7 +1,7 @@
 // The network system for tests: the REAL ServerNetwork (src/core/systems/ServerNetwork.js), bundled with its real
 // imports (serverBundle.mjs) and run in the test's own realm, as the server runs it. It replaces the cutting of the
-// class out of its source text (networkHarness.mjs, persistenceHarness.mjs), which ran it in another realm with
-// injected names.
+// class out of its source text (by networkHarness.mjs, since removed, and persistenceHarness.mjs), which ran it in
+// another realm with injected names.
 //
 // The environment is a known one. testEnvironment(): every name the server reads (envTable.mjs), but the system's
 // PATH, HOME and TMPDIR, unset, as the old harness gave the class (`process: { env: {} }`); the defaults the code
@@ -292,7 +292,7 @@ function testTimers(t, timers) {
   timerTable.current = timers
 }
 
-// The world the old harnesses gave the network (networkHarness.mjs's makeNetwork): the app event ledger and the
+// The world the old harnesses gave the network (the removed networkHarness.mjs's makeNetwork): the app event ledger and the
 // voice system the disconnect path and the socket check touch, and no entities unless a test brings its own
 export function stubWorld(net, fields = {}) {
   return {

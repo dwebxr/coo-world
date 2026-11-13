@@ -51,8 +51,6 @@ const buildConfig = () => {
   return { chainIds, tipTokens, walletConnectProjectId }
 }
 
-export const isEvmConfigured = () => buildConfig().chainIds.length > 0
-
 // personal_sign には UTF-8 の 16 進表現を渡す (ウォレットは復号して全文を表示する)
 const utf8ToHex = text => {
   let hex = '0x'

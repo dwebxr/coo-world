@@ -22,11 +22,6 @@ export function toNumber(value, fallback, allowInfinite = false) {
   return value
 }
 
-// a primitive boolean, or `fallback`
-export function toBool(value, fallback = false) {
-  return typeof value === 'boolean' ? value : fallback
-}
-
 // one read of `object[key]`; a getter or Proxy trap that throws reads as undefined
 export function readOnce(object, key) {
   try {

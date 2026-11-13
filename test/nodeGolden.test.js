@@ -26,6 +26,9 @@
 // - a once-only warning after its first time. Each node type starts from a fresh evaluation of the bundle and runs in
 //   a fixed order, so such a warning is written once: in the case that says it first, or, when the generator's own
 //   probing (sample values, set-up, the bundle's evaluation) says it first, in row x, and in no case after that.
+//   What is said before the characterization exists (the bundle's evaluation, the fixtures) is written with its
+//   text arguments as they are and the others by their type only: `console.warn(1)` and `console.warn(2)` at a
+//   module's top read alike there.
 // - a getter called with another receiver (on Object.create(proxy), through Reflect.get with a receiver, taken off the
 //   proxy and called on another object): only setters are called that way (row b).
 // - writes through an object a getter returns (`node.position.x = 1`, a returned array changed): only whether a getter
@@ -33,7 +36,10 @@
 // - a proxy getter that reads the node's private field where the class getter only returns that field (both read the
 //   same today), and a getter or setter that calls the class one more than once without a visible effect.
 // - a mistake that shows on a third node only (rows h pair two), or state shared between nodes of two types through
-//   something other than a key both have.
+//   something other than a key both have. Row h asks in one fixed order (a write through the first node's handle,
+//   its `getProxy()` again, a write through the second's): an accessor that remembers the node of the `getProxy()`
+//   call before the last one and writes it too is not seen, where the two writes follow each other without that
+//   call in between.
 // - of a thrown error, more than its class name and message (not its identity, stack or cause); of an accessor, more
 //   than its name, length, descriptor and sharing (not its source text); memory held and speed.
 //

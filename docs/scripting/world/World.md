@@ -197,10 +197,10 @@ A client script's broadcast line is shown with the name of the visitor whose bro
 browser by this app's script". The server sets this on every line it relays, from the connection the line came in
 on: the id and the name that visitor's player has in the world at that moment. Nothing in the packet can set or
 change it. The visitor's own client shows the same on its own copy, except a copy made before the local player is
-known (only a script that runs while the world is still loading can make one), which shows the app's name alone; the
-others' copies have it all the same. The `chat` event of such a line has it as `via: { id, name }` (frozen; `id` is
-the player's id, `name` is `''` when the player has none). A server script's line, and a client script's line that
-is not broadcast, has no `via` and shows the app's name alone, as before.
+known (only a script that runs while the world is still loading can make one), which has none and shows without the
+suffix; the others' copies have it all the same. The `chat` event of such a line has it as `via: { id, name }`
+(frozen; `id` is the player's id, `name` is `''` when the player has none). A server script's line, and a client
+script's line that is not broadcast, has no `via` and shows as before, without the suffix.
 
 App lines are untrusted text. The server names the app from its own blueprint, but it cannot tell an app's client
 script from a modified client: anyone in the world can post a line under the name of an app that exists in it, with

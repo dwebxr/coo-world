@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { SNAPSHOT_CAP } from '../src/core/extras/writeLedger.js'
-import { readPacket } from '../src/core/packets.js'
+import { PROTOCOL_VERSION, readPacket } from '../src/core/packets.js'
 import { createConnectionLimits, readConnectionLimitsEnv } from '../src/server/connectionLimits.js'
 import { fakeWs, inside, loadNetwork, makeNetwork } from './lib/network.mjs'
 // (the route is imported from src/server/wsRoute.js, test/lib/wsRoute.mjs)
@@ -216,11 +216,12 @@ for (const pause of stages) {
   })
 }
 
-// A stored admin past playerLimit on one of the places kept for ranked users, let in at the door on one too: a close
-// during each of its waits gives back the kept place, the user id and the transport lease, and the next connection
-// of that admin takes the place again
+// A stored admin past playerLimit on one of the places kept for ranked users, with `rankedUser` handed in as the route
+// hands it (the transport's lease here is an ordinary one: the ranked lease of the door is the tests below): a close
+// during each of its waits gives back the place past playerLimit and the user id, and the next connection of that
+// admin takes the place again
 for (const pause of ['readJWT', 'lookup', 'livekit']) {
-  test(`onConnection: close during ${pause} on a kept place releases it, the user id and the transport lease`, async t => {
+  test(`onConnection: close during ${pause} on a place kept past playerLimit releases it and the user id`, async t => {
     const f = fixture(t, { pause, existing: true, rank: 2, env: { ADMIN_CODE: 'code', WS_RESERVED_SOCKETS: '1' } })
     f.network.storedRanks.set('player', 2)
     f.network.world.settings.playerLimit = 1
@@ -256,6 +257,194 @@ for (const pause of ['readJWT', 'lookup', 'livekit']) {
     assert.equal(f.limits.stats().active, 0)
   })
 }
+
+// The door's ranked path for the join of fixture `f`: WS_MAX_SOCKETS 1, taken by a visitor's lease, and 2 places
+// kept for ranked users. The session token 'token' is the player's (the fixture's readJWT says so); the door's two
+// questions of it are answered by a stand-in that says the same. The ranked lease is taken by the route's own
+// preValidation and handed on by the route's own handler (`rankedUser` from the lease) to the real onConnection.
+// - connect(): an upgrade with that token at the cap -> { ws, transport, join }. Its transport closes when the server
+//   terminates the connection (a kick, a takeover: as the ws library's terminate destroys the socket) or when the
+//   test finishes the close (`finishClose`), and only then.
+// - readmitted(): the same user is let in twice more at the cap (the 2 of its own on that path: its count is back at
+//   0, and so is the count of ranked leases), not a third time, and gives both back.
+const KEPT_ENV = { ADMIN_CODE: 'code', WS_RESERVED_SOCKETS: '2' }
+function keptDoor(f) {
+  const limits = createConnectionLimits({ ...readConnectionLimitsEnv({}), ratePerMin: 0, maxSockets: 1, reserved: 2 })
+  const route = loadRoute(limits, f.network, undefined, {
+    claimedUserId: token => (token === 'token' ? 'player' : null),
+    readNow: token => (token === 'token' ? { userId: 'player', renew: false } : null),
+  })
+  let handler
+  route.register({ get: (_path, _options, fn) => (handler = fn) })
+  // the join the handler starts (it does not wait for it)
+  const joins = []
+  const onConnection = f.network.onConnection
+  f.network.onConnection = function (...args) {
+    const join = onConnection.apply(this, args)
+    joins.push(join)
+    return join
+  }
+  const upgrade = authToken => {
+    const transport = new EventEmitter()
+    const reply = { code: () => reply, header: () => reply, send() {} }
+    let passed = false
+    const request = { ws: true, raw: { socket: transport }, headers: {}, ip: '127.0.0.1', query: { authToken } }
+    route.preValidation(request, reply, () => (passed = true))
+    return { transport, passed }
+  }
+  assert.equal(upgrade(undefined).passed, true, 'a visitor takes the one place of WS_MAX_SOCKETS')
+  const connect = () => {
+    const { transport, passed } = upgrade('token')
+    assert.equal(passed, true, 'let in at the cap')
+    const ws = fakeWs()
+    ws.closeCodes = []
+    ws.close = code => {
+      ws.closeCodes.push(code)
+      ws.readyState = 2
+    }
+    const terminate = ws.terminate
+    ws.terminate = () => {
+      terminate()
+      transport.emit('close')
+    }
+    ws.finishClose = () => {
+      ws.drain()
+      ws.readyState = 3
+      transport.emit('close')
+      ws.emit('close', 1000)
+    }
+    const query = { v: String(PROTOCOL_VERSION), authToken: 'token' }
+    handler(ws, { query, headers: {}, ip: '127.0.0.1', raw: { socket: transport } })
+    return { ws, transport, join: joins.at(-1) }
+  }
+  const readmitted = () => {
+    const both = [upgrade('token'), upgrade('token')]
+    assert.deepEqual(
+      both.map(lease => lease.passed),
+      [true, true],
+      'let in at the cap again, twice: its own 2 on the ranked path'
+    )
+    assert.deepEqual(limits.stats(), { tracked: 1, active: 3, ranked: 2, users: 1 })
+    assert.equal(upgrade('token').passed, false, 'and not a third time')
+    for (const { transport } of both) transport.emit('close')
+    assert.deepEqual(limits.stats(), { tracked: 1, active: 1, ranked: 0, users: 1 })
+  }
+  return { limits, connect, readmitted }
+}
+const HELD = { tracked: 1, active: 2, ranked: 1, users: 1 } // the visitor and one ranked lease
+const BACK = { tracked: 1, active: 1, ranked: 0, users: 1 } // the visitor's alone (the user's entry waits for a sweep)
+// a stored admin on the list and in the row
+const keptFixture = (t, options = {}) => {
+  const f = fixture(t, { existing: true, rank: 2, env: KEPT_ENV, ...options })
+  f.network.storedRanks.set('player', 2)
+  return f
+}
+
+// an existing user has three waits: the token, the row, the voice token (no insert, no new token)
+for (const pause of ['readJWT', 'lookup', 'livekit']) {
+  test(`kept place at the door: a close during ${pause} gives back the ranked lease and the user's count`, async t => {
+    const f = keptFixture(t, { pause })
+    const door = keptDoor(f)
+    const { ws, join } = door.connect()
+    assert.deepEqual(door.limits.stats(), HELD)
+    const value = await f.reached.promise
+    ws.finishClose()
+    f.pending.resolve(value)
+    await join
+    assert.deepEqual(ws.packets, [])
+    assert.equal(f.network.sockets.size, 0)
+    assert.deepEqual(door.limits.stats(), BACK)
+    door.readmitted()
+  })
+
+  test(`kept place at the door: a join that fails at ${pause} holds its ranked lease until the transport closes`, async t => {
+    const f = keptFixture(t, { pause })
+    const door = keptDoor(f)
+    const { ws, join } = door.connect()
+    await f.reached.promise
+    f.pending.reject(f.failure)
+    await join
+    assert.deepEqual(ws.closeCodes, [1011])
+    assert.deepEqual(door.limits.stats(), HELD, 'a close asked for is not a closed transport')
+    ws.finishClose()
+    assert.deepEqual(door.limits.stats(), BACK)
+    door.readmitted()
+  })
+}
+
+test('kept place at the door: a join refused after the door (its row is not ranked) holds the lease until the close', async t => {
+  // the list says admin, the row says visitor (a database edit the server did not see)
+  const f = keptFixture(t, { rank: 0 })
+  const door = keptDoor(f)
+  const { ws, join } = door.connect()
+  await join
+  assert.deepEqual(readPacket(ws.packets[0]), ['onKick', 'player_limit'])
+  assert.deepEqual(ws.closeCodes, [undefined])
+  assert.equal(f.inserted.length, 0)
+  assert.deepEqual(door.limits.stats(), HELD)
+  ws.finishClose()
+  assert.deepEqual(door.limits.stats(), BACK)
+  door.readmitted()
+  assert.equal(f.logs.filter(line => line.includes('kept for ranked users is not one')).length, 1)
+})
+
+test('kept place at the door: a second connection refused as a duplicate holds its own lease until its close', async t => {
+  const f = keptFixture(t)
+  f.network.takeoverPingMs = 1000
+  const door = keptDoor(f)
+  const first = door.connect()
+  await first.join
+  assert.ok(f.network.sockets.get('player'))
+  const second = door.connect()
+  assert.deepEqual(door.limits.stats(), { tracked: 1, active: 3, ranked: 2, users: 1 })
+  await new Promise(resolve => setImmediate(resolve))
+  first.ws.emit('pong')
+  await second.join
+  assert.deepEqual(readPacket(second.ws.packets[0]), ['onKick', 'duplicate_user'])
+  assert.deepEqual(door.limits.stats(), { tracked: 1, active: 3, ranked: 2, users: 1 })
+  second.ws.finishClose()
+  assert.deepEqual(door.limits.stats(), HELD)
+  first.ws.finishClose()
+  assert.deepEqual(door.limits.stats(), BACK)
+  door.readmitted()
+})
+
+test('kept place at the door: a kick terminates the connection, and its ranked lease comes back with it', async t => {
+  const f = keptFixture(t)
+  t.mock.method(console, 'log', () => {})
+  const door = keptDoor(f)
+  const { ws, join } = door.connect()
+  await join
+  assert.deepEqual(door.limits.stats(), HELD)
+  // a moderator who outranks the player (the kick handler's own checks; its rank is not this test's subject)
+  f.network.world.entities.getPlayer = id => f.players.get(id)
+  const moderator = { id: 'moderator', player: { isAdmin: () => true, outranks: () => true }, send() {} }
+  f.network.onKick(moderator, 'player')
+  assert.equal(ws.terminations, 1, 'terminated')
+  assert.equal(f.network.sockets.size, 0)
+  assert.deepEqual(door.limits.stats(), BACK)
+  // (kicked: the same user is refused at the join for a while, not at the door)
+  door.readmitted()
+})
+
+test('kept place at the door: a takeover terminates the silent connection, whose lease comes back; the new one keeps its own', async t => {
+  const f = keptFixture(t)
+  f.network.takeoverPingMs = 20
+  f.network.takeoverCloseMs = 50
+  const door = keptDoor(f)
+  const first = door.connect()
+  await first.join
+  // the same user again, on the second of its own 2: the first is silent and gives way
+  const second = door.connect()
+  await second.join
+  assert.equal(readPacket(second.ws.packets[0])[0], 'onSnapshot')
+  assert.equal(first.ws.terminations, 1)
+  assert.equal(f.network.sockets.get('player').ws, second.ws)
+  assert.deepEqual(door.limits.stats(), HELD, "the old transport's lease is back, the new one holds its own")
+  second.ws.finishClose()
+  assert.deepEqual(door.limits.stats(), BACK)
+  door.readmitted()
+})
 
 for (const fail of ['add-before', 'add-after', 'snapshot', 'write', 'enter', 'cleanup']) {
   test(`onConnection: ${fail} failure after users insert cleans up before closing`, async t => {

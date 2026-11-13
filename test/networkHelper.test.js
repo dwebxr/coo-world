@@ -537,6 +537,39 @@ test('network helper: a check is synchronous; one that returns a thenable is ref
   assert.equal(ended.error.name, 'TypeError')
 })
 
+test("network helper: a check's result is read inside the report: a `then` getter that fails is reported", async t => {
+  const { context, end } = handedContext(t)
+  makeNetwork(context, { net })
+  // a caller that catches, as the class's catches do
+  try {
+    inside(context, () => ({
+      get then() {
+        return assert.fail('seen reading then')
+      },
+    }))
+  } catch {
+    // taken for its own failure
+  }
+  const ended = await end()
+  assert.equal(ended.threw, true)
+  assert.equal(ended.error.message, 'seen reading then')
+})
+
+test('network helper: a refused promise that rejects is not an unhandled rejection as well', async t => {
+  const unhandled = []
+  const onUnhandled = reason => unhandled.push(reason)
+  process.on('unhandledRejection', onUnhandled)
+  t.after(() => process.off('unhandledRejection', onUnhandled))
+  const { context, end } = handedContext(t)
+  makeNetwork(context, { net })
+  assert.throws(() => inside(context, () => Promise.reject(new Error('rejected later'))), TypeError)
+  // (a turn of the event loop and more: an unhandled rejection is said by then)
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.deepEqual(unhandled, [])
+  const ended = await end()
+  assert.equal(ended.error.name, 'TypeError')
+})
+
 // A test file of its own, run by `node --test` in a child process: what it reports (the reporter is named: with its
 // output piped, Node 22 would print TAP and Node 24 the spec lines read below)
 async function runTestFile(t, body) {
@@ -546,10 +579,12 @@ async function runTestFile(t, body) {
   const helper = new URL('./lib/network.mjs', import.meta.url).href
   fs.writeFileSync(
     file,
-    `import { test } from 'node:test'
+    `import { before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fakeWs, importNetwork, inside, makeNetwork } from ${JSON.stringify(helper)}
 const net = await importNetwork(JSON.parse(process.env.NETWORK_UNDER_TEST))
+// (a test that is still running when the deferred throw comes)
+const pending = () => new Promise(resolve => setTimeout(resolve, 100))
 ${body}
 `
   )
@@ -587,35 +622,53 @@ test(
 })`,
       ],
       [
-        "a ping of an earlier test's connection",
+        "a ping of an earlier test's connection, from a test still running when the throw comes",
         `let old
 test('first', t => {
   makeNetwork(t, { net })
   old = fakeWs()
 })
-test('second', t => {
+test('second', async t => {
   makeNetwork(t, { net })
   try {
     old.ping('seen by an earlier test', false, () => {})
   } catch {}
+  await pending()
 })`,
       ],
       [
-        'a connection of no test',
-        `test('nobody', () => {
-  const ws = fakeWs()
+        'a connection made outside every test',
+        `const loose = fakeWs()
+test('nobody', async t => {
+  makeNetwork(t, { net })
   try {
-    ws.ping('seen by nobody', false, () => {})
+    loose.ping('seen by nobody', false, () => {})
   } catch {}
+  await pending()
+})`,
+      ],
+      [
+        'a connection made in a before hook',
+        `let early
+before(() => {
+  early = fakeWs()
+})
+test('later', async t => {
+  makeNetwork(t, { net })
+  try {
+    early.ping('seen from before', false, () => {})
+  } catch {}
+  await pending()
 })`,
       ],
     ]) {
       const { code, out } = await runTestFile(t, body)
       assert.notEqual(code, 0, `${what}: ${out.slice(-1500)}`)
-      assert.match(out, /seen (after the end|by an earlier test|by nobody)/, what)
-      // thrown outside every test: no test of the file fails on it (not the one running when it came)
+      assert.match(out, /seen (after the end|by an earlier test|by nobody|from before)/, what)
+      // thrown outside every test: the file fails on it, and no test of it does (not the one running when it came)
       assert.match(out, /uncaughtException/, what)
-      assert.doesNotMatch(out, /^✖ (late|first|second|nobody) /m, what)
+      assert.doesNotMatch(out, /^✖ (late|first|second|nobody|later) /m, what)
+      assert.match(out, /^✔ (late|second|nobody|later) /m, what)
     }
   }
 )

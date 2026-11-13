@@ -59,16 +59,30 @@
 //   the environment and the stand-ins' objects back.
 // inside(t, check) → what `check` returns: for an assertion a test makes in code the network calls and catches (a
 //   handler the flush dispatches, a collaborator of a join, the write ledger's ping), which the class takes for a
-//   failure of its own and only logs or works around, so that the test would not fail on it. `check` runs as it is;
-//   what it throws is thrown on, as before, and is reported again: by the end of test `t` while that test holds the
-//   helper and its end has not reported yet (a check that fails while the end stops the networks is reported by it,
-//   after everything is put back, unless a stop failed there first); otherwise (a test that never made a network, or
-//   whose end has reported, as for a check in a later hook of it) it is thrown outside every catch of the class, from
-//   a turn of its own (setImmediate), where node:test reports it as an uncaught exception of the file. A check is
-//   synchronous: one that returns a thenable is refused with a TypeError (reported the same way), as its failure would
-//   come after the catch that should not have hidden it. fakeWs's own check of a ping is made this way, for the test
-//   that held the helper when the fake was made.
+//   failure of its own and only logs or works around, so that the test would not fail on it. `check` runs as it is,
+//   and so does reading what it returns (a `then` getter); what either throws is thrown on, as before, and is reported
+//   again: by the end of test `t` while that test holds the helper and its end has not reported yet (a check that fails
+//   while the end stops the networks is reported by it, after everything is put back, unless a stop failed there
+//   first); otherwise (a test that never made a network, or whose end has reported, as for a check in a later hook of
+//   it) it is thrown from a turn of its own, scheduled from the async context this module was evaluated in, where
+//   node:test reports it as an uncaught exception of the file and charges no test with it (not the one that happens
+//   to run then). A check is synchronous: one that returns a thenable is refused with a TypeError, reported the same
+//   way, and a rejection of it is handled (not an unhandled rejection besides). fakeWs's own check of a ping is made
+//   this way, for the test that held the helper when the fake was made.
+//   What it does not do, said plainly:
+//   - it sees only the checks written through it: an assertion in a stub that a catch hides, without it, stays hidden;
+//   - a failure that nothing catches on its way (it reaches the test) is reported twice: where it is thrown, and again
+//     by the end or as an uncaught exception;
+//   - the end reports the first failure it recorded, not every one;
+//   - a check that must wait is refused, not awaited: such a check is made after the act;
+//   - a failure thrown outside every test fails the file and names no test: which one caused it is in its stack;
+//   - it is per process: a check in a worker or a child process reports in that process only;
+//   - a fake connection made while no test holds the helper (at a file's top, in a `before` hook) has no owner: its
+//     failing check is an uncaught exception of the file;
+//   - it counts on this module being evaluated outside every test (a test file imports it at its top): imported for
+//     the first time from within a test, its throws outside would be charged to that test.
 import assert from 'node:assert/strict'
+import { AsyncResource } from 'node:async_hooks'
 import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { ENV_TABLE } from './envTable.mjs'
@@ -274,10 +288,7 @@ function testState(t) {
     // (the hook above did not run: a check that failed meanwhile is thrown outside, as one after the end is)
     if (state.reported) return
     state.reported = true
-    for (const err of state.inside)
-      setImmediate(() => {
-        throw err
-      })
+    for (const err of state.inside) throwOutside(err)
   })
   return state
 }
@@ -362,29 +373,42 @@ export function makeNetwork(t, { net, world: fields, log, init = {}, env, module
 const SYNCHRONOUS =
   'inside(): the check must be synchronous; it returned a thenable, whose failure would come after the catch it is for'
 export function inside(t, check) {
-  let result
   try {
-    result = check()
+    const result = check()
+    // (inside the try: reading `then` runs a getter, which can fail as the check does)
+    const then = result?.then
+    if (typeof then === 'function') {
+      // a refused promise that rejects would surface as an unhandled rejection as well: it is handled here
+      try {
+        then.call(result, undefined, () => {})
+      } catch {
+        // (a thenable whose `then` throws: refused all the same)
+      }
+      throw new TypeError(SYNCHRONOUS)
+    }
+    return result
   } catch (err) {
     report(t, err)
     throw err
   }
-  if (typeof result?.then === 'function') {
-    const err = new TypeError(SYNCHRONOUS)
-    report(t, err)
-    throw err
-  }
-  return result
 }
 
-// a failure inside() saw: to the end of the test that holds the helper and has not reported, else out of every catch
-function report(t, err) {
-  const state = t ? tests.get(t) : undefined
-  if (state && !state.reported) state.inside.push(err)
-  else
+// a failure inside() saw: to the end of the test that holds the helper and has not reported, else out of every catch.
+// The throw is scheduled from the async context this module was evaluated in (a test file imports it at its top, outside
+// every test): scheduled from the caller's, it would be charged by node:test to whatever test that context belongs to,
+// a later test that pinged an earlier test's connection, say.
+const outsideTests = new AsyncResource('network.mjs: outside every test')
+function throwOutside(err) {
+  outsideTests.runInAsyncScope(() =>
     setImmediate(() => {
       throw err
     })
+  )
+}
+function report(t, err) {
+  const state = t ? tests.get(t) : undefined
+  if (state && !state.reported) state.inside.push(err)
+  else throwOutside(err)
 }
 
 // a connection as the ws library gives it: what is written stays in `packets`, its write callbacks in `pending`

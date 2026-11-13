@@ -1,0 +1,2 @@
+# the entrypoint is run by sh in the image: a checkout that turned its line ends into CRLF would break it
+*.sh text eol=lf

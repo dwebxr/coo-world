@@ -6,6 +6,16 @@ const SPRITESHEET_MAX_SIDE = 256
 const SPRITESHEET_MAX_FPS = 1000
 // points of an over-life curve
 const CURVE_MAX_POINTS = 64
+// Attempts at a point of a `box` shape of origin `volume`: a point inside that is farther from every face than the
+// thickness allows (as a share of the half side) is drawn again, and the last attempt takes a point of the surface. A
+// side of 0, NaN or Infinity, or one whose half is 0 (Number.MIN_VALUE), gives a distance of NaN and leaves out every
+// point inside, as does a thickness of NaN; sides that are all negative give distances from 1 to 2 and leave out every
+// point at a thickness of 1. At a thickness of 1 or more (or NaN) no attempt draws the surface, and drawing again
+// without a bound recursed until the stack overflowed. For sides whose halves are normal numbers (from about 2.2e-308:
+// not 0 and not subnormal, where the distance takes only a few values) and a finite thickness, the distance is spread
+// evenly from 0 to 1: an attempt is drawn again with a chance of at most 0.11 (at a thickness of 0.25), and 15 in a
+// row for one particle with a chance below 1e-14.
+const BOX_VOLUME_ATTEMPTS = 16
 
 import { DEG2RAD } from '../core/extras/general'
 import { boundedInteger, boundedNumber } from '../core/extras/boundedValue.js'
@@ -392,8 +402,9 @@ function createEmitter(config) {
           v3.multiplyScalar(velocityRadial * delta)
           // Move particle along this radial direction
           particle.position.add(v3)
-          // Also add to velocity for consistency
-          particle.velocity.add(v3.divideScalar(delta))
+          // Also add to velocity for consistency (a step of no time, at a timescale of 0, moves nothing and adds
+          // nothing: its division is 0 / 0, which made the velocity and then the position NaN)
+          if (delta !== 0) particle.velocity.add(v3.divideScalar(delta))
         }
       }
       // move particles based on current velocity
@@ -732,13 +743,13 @@ function createShape(config) {
 
     case 'box':
       // Box shape - position on or within box, direction points outward
-      return (pos, dir) => {
+      return function box(pos, dir, attempt = 1) {
         const [width, height, depth, thickness, origin, spherize] = args
 
         // Handle different origin types: volume, edge, or shell
         if (origin === 'volume') {
-          // Full volume sampling with thickness consideration
-          if (thickness === 0 || Math.random() > thickness) {
+          // Full volume sampling with thickness consideration (the last attempt is a surface point: BOX_VOLUME_ATTEMPTS)
+          if (attempt >= BOX_VOLUME_ATTEMPTS || thickness === 0 || Math.random() > thickness) {
             // Surface point
             const face = Math.floor(Math.random() * 6)
             switch (face) {
@@ -811,9 +822,8 @@ function createShape(config) {
                 else if (distToFront === minDist) dir.set(0, 0, Math.sign(randomZ))
               }
             } else {
-              // If point is too far from surface, recursively try again
-              // Using a safer approach to avoid infinite recursion
-              return createShape(['box', width, height, depth, thickness, origin, spherize])(pos, dir)
+              // If point is too far from surface, try again (at most BOX_VOLUME_ATTEMPTS in all)
+              return box(pos, dir, attempt + 1)
             }
           }
         } else if (origin === 'edge') {

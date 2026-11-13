@@ -27,7 +27,7 @@ The shape that particles are emitted from
 
 **Cone**: Emits from cone radius at an angle (`['cone', radius, thickness, angle]`)
 
-**Box**: Emits from box volume/edge (`['box', width, height, depth, thickness, origin('volume|edge'), spherize]`)
+**Box**: Emits from box volume/edge (`['box', width, height, depth, thickness, origin('volume|edge'), spherize]`). A `volume` box with a side of `0` has no inside: it emits from its surface whatever the thickness.
 
 **Circle**: Emits from a flat circle (`['circle', radius, thickness, spherize]`)
 

@@ -3,8 +3,8 @@
 a proxy: prototype Object.prototype, extensible true, frozen false, 50 keys, getNodeRef(proxy) is the node: true
 a 1 type: get+set enum conf get:"get type"/0 per-instance set:"set"/1 shared
 a 2 mass: get+set enum conf get:"get mass"/0 per-instance set:"set"/1 shared
-a 3 linearDamping: set enum conf set:"set"/1 shared
-a 4 angularDamping: set enum conf set:"set"/1 shared
+a 3 linearDamping: get+set enum conf get:"get linearDamping"/0 per-instance set:"set"/1 shared
+a 4 angularDamping: get+set enum conf get:"get angularDamping"/0 per-instance set:"set"/1 shared
 a 5 tag: get+set enum conf get:"get tag"/0 per-instance set:"set"/1 shared
 a 6 onContactStart: get+set enum conf get:"get onContactStart"/0 per-instance set:"set"/1 shared
 a 7 onContactEnd: get+set enum conf get:"get onContactEnd"/0 per-instance set:"set"/1 shared
@@ -33,6 +33,8 @@ b set throws Error: "[app] this app has stopped": type mass linearDamping angula
 b method throws Error: "[app] this app has stopped": addForce addForceAtPos addForceAtLocalPos addTorque getPosition setPosition getQuaternion setQuaternion getLinearVelocity setLinearVelocity getAngularVelocity setAngularVelocity getVelocityAtPos getLocalVelocityAtLocalPos setCenterOfMass setKinematicTarget get getWorldMatrix add remove traverse clone clean
 b get reads "static": type
 b get reads 1: mass
+b get reads 0: linearDamping
+b get reads 0.05: angularDamping
 b get reads null: tag onContactStart onContactEnd onTriggerEnter onTriggerLeave _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
 b get reads false: sleeping
 b get reads <auto id>: id
@@ -75,20 +77,15 @@ c mass pc throw Error: "[rigidbody] mass cannot be less than zero" <- -1
 c mass pc read $in Δ{needsRebuild:true _mass:$in} calls[setDirty] <- -0 0 0.5 1e9 2 1e-9
 c mass pc read $in <- 1
 c mass pc throw Error: "[rigidbody] mass must be 0 or at least 1e-9" <- 1e-10
+c linearDamping pc read 0 <- undefined -0
 c linearDamping pc throw Error: "[rigidbody] linearDamping not a finite number" <- null NaN Infinity -Infinity '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
 c linearDamping pc throw Error: "[rigidbody] linearDamping cannot be less than zero" <- -1
-c linearDamping p read $in <- undefined
-c linearDamping p read undefined <- -0 0
-c linearDamping p read undefined Δ{needsRebuild:true _linearDamping:$in} calls[setDirty] <- 0.5 1 1e9
-c linearDamping c read 0 <- undefined -0
-c linearDamping c read $in <- 0
-c linearDamping c read $in Δ{needsRebuild:true _linearDamping:$in} calls[setDirty] <- 0.5 1 1e9
+c linearDamping pc read $in <- 0
+c linearDamping pc read $in Δ{needsRebuild:true _linearDamping:$in} calls[setDirty] <- 0.5 1 1e9
+c angularDamping pc read 0.05 <- undefined
 c angularDamping pc throw Error: "[rigidbody] angularDamping not a finite number" <- null NaN Infinity -Infinity '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
 c angularDamping pc throw Error: "[rigidbody] angularDamping cannot be less than zero" <- -1
-c angularDamping p read $in <- undefined
-c angularDamping p read undefined Δ{needsRebuild:true _angularDamping:$in} calls[setDirty] <- -0 0 0.5 1 1e9
-c angularDamping c read 0.05 <- undefined
-c angularDamping c read $in Δ{needsRebuild:true _angularDamping:$in} calls[setDirty] <- -0 0 0.5 1 1e9
+c angularDamping pc read $in Δ{needsRebuild:true _angularDamping:$in} calls[setDirty] <- -0 0 0.5 1 1e9
 c tag pc read null <- undefined
 c tag pc read $in <- null
 c tag pc read "NaN" Δ{_tag:"NaN"} <- NaN
@@ -125,8 +122,8 @@ c as on node: id position quaternion rotation scale active parent onPointerEnter
 == d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
 d type same: - | NaN,NaN: first throws Error: "[rigidbody] type invalid: NaN" | 0,-0: first throws Error: "[rigidbody] type invalid: 0"
 d mass same: - | NaN,NaN: first throws Error: "[rigidbody] mass not a finite number" | 0,-0: read 0
-d linearDamping same: read undefined | NaN,NaN: first throws Error: "[rigidbody] linearDamping not a finite number" | 0,-0: read undefined
-d angularDamping same: read undefined | NaN,NaN: first throws Error: "[rigidbody] angularDamping not a finite number" | 0,-0: read undefined
+d linearDamping same: - | NaN,NaN: first throws Error: "[rigidbody] linearDamping not a finite number" | 0,-0: read 0
+d angularDamping same: - | NaN,NaN: first throws Error: "[rigidbody] angularDamping not a finite number" | 0,-0: read 0
 d tag same: - | NaN,NaN: read "NaN" | 0,-0: read "0"
 d onContactStart same: - | NaN,NaN: first throws Error: "[rigidbody] onContactStart not a function" | 0,-0: first throws Error: "[rigidbody] onContactStart not a function"
 d onContactEnd same: - | NaN,NaN: first throws Error: "[rigidbody] onContactEnd not a function" | 0,-0: first throws Error: "[rigidbody] onContactEnd not a function"
@@ -135,6 +132,8 @@ d onTriggerLeave same: - | NaN,NaN: first throws Error: "[rigidbody] onTriggerLe
 == f. the constructor: defaults (read through the proxy); each key given through data
 f default type = "static"
 f default mass = 1
+f default linearDamping = 0
+f default angularDamping = 0.05
 f default tag = null
 f default onContactStart = null
 f default onContactEnd = null
@@ -211,6 +210,8 @@ h the same in both states (a constant): name _ref _isRef
 == i. every getter on a node whose backing values are distinct
 i type = "static"
 i mass = 1
+i linearDamping = 0
+i angularDamping = 0.05
 i tag = null
 i onContactStart = null
 i onContactEnd = null

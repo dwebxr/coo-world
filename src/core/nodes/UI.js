@@ -421,7 +421,7 @@ export class UI extends Node {
   unmount() {
     if (this.ctx.world.network.isServer) return
     this.unbuild()
-    this.needRebuild = false
+    this.needsRebuild = false
     this.needsRedraw = false
     this.yogaNode?.free()
     this.yogaNode = null

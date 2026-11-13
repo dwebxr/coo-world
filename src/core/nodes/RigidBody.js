@@ -689,8 +689,14 @@ export class RigidBody extends Node {
         set mass(value) {
           self.mass = value
         },
+        get linearDamping() {
+          return self.linearDamping
+        },
         set linearDamping(value) {
           self.linearDamping = value
+        },
+        get angularDamping() {
+          return self.angularDamping
         },
         set angularDamping(value) {
           self.angularDamping = value

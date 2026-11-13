@@ -4,9 +4,9 @@ name: Image
 # has to become healthy, and a `docker stop` (SIGTERM, 10 s) and a `docker stop --signal SIGINT -t 5` (Fly's
 # documented default signal and timeout) each have to end it with exit code 0 after the server's final save. The
 # server has to be PID 1 as uid and gid 1001, and the entrypoint (scripts/coo-entrypoint.sh) has to take over a
-# volume written by root, give back a file root wrote later, follow another PORT in the health check, let a
-# container started as another user fail in the server's start-up, and refuse a WORLD that names the image's code
-# (the script's header lists every assertion). Nothing is pushed anywhere, the containers publish no port, and every
+# volume written by root, give back a file root wrote later and modes root could live with, follow another PORT in
+# the health check, let a container started as another user fail in the server's start-up, and refuse a WORLD that
+# names the image's code, a system tree, or the code through a link (the script's header lists every assertion). Nothing is pushed anywhere, the containers publish no port, and every
 # setting is made up: there are no secrets here.
 #
 # NOT A REQUIRED CHECK, and it must not be made one: with a `paths` filter the workflow does not run for a pull
@@ -28,6 +28,7 @@ on:
       - 'scripts/lib/**'
       - 'scripts/image-check.mjs'
       - 'scripts/coo-entrypoint.sh'
+      - 'scripts/coo-world-folder.mjs'
       - 'src/server/**'
       - 'src/core/**'
       - '.github/workflows/image.yml'
@@ -43,6 +44,7 @@ on:
       - 'scripts/lib/**'
       - 'scripts/image-check.mjs'
       - 'scripts/coo-entrypoint.sh'
+      - 'scripts/coo-world-folder.mjs'
       - 'src/server/**'
       - 'src/core/**'
       - '.github/workflows/image.yml'

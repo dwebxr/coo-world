@@ -42,13 +42,20 @@
 //              entrypoint's line says it gave at least one entry to 1001:1001;
 //            - db.sqlite made root's through a throw-away root container (`--entrypoint chown`); the next start (the
 //              SIGINT stop's container) gives it back: nothing left that is not 1001's, and the line says >= 1;
-//            - a third start on the volume: the line says 0;
+//            - db.sqlite made root's with mode 0400 and assets 0500 (a throw-away `sh`); the next start gives both
+//              back: the owner line and the modes line say >= 1, `docker exec --user 1001:1001 … test -w` of both
+//              succeeds, and a `docker stop -t 10` saves as above;
+//            - a further start on the volume: both lines say 0;
 //            - `-e PORT=3100` (and the three addresses on it), no volume: healthy by the image's own health check;
 //            - `--user 2000:2000` on a fresh, root-owned volume: the container ends by itself with exit code 1 and
 //              the server's `[server] start-up failed; exiting with code 1: … EACCES` line, not healthy;
+//            - a link /app/world/link -> /app/build put on the fresh volume by a throw-away root container, and
+//              `-e WORLD=world/link/public`: exit code 1 with the refusal of /app/build/public; `docker diff` of that
+//              container shows nothing at or under /app/build;
 //            - `-e WORLD=build`: exit code 1 with the entrypoint's `refused` line; `docker diff` of that container
 //              shows nothing at or under /app/build, and a throw-away root container of the image finds nothing
-//              there that is not root's.
+//              there that is not root's;
+//            - `-e WORLD=../usr/local/bin`: exit code 1 with the refusal; `docker diff` shows nothing under /usr.
 // `--dry-run` prints the docker commands of a run of the model in which every step goes well, in order, and runs
 // none.
 //

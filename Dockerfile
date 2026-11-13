@@ -26,7 +26,7 @@ RUN apk add --no-cache --upgrade curl 'brotli-libs>=1.2.1' su-exec && \
     adduser -S -u 1001 -G nodeuser nodeuser
 
 # The entrypoint (scripts/coo-entrypoint.sh says what it does). Its mode is set by RUN, not by COPY --chmod, which
-# needs BuildKit
+# needs BuildKit. It runs /app/scripts/coo-world-folder.mjs, which the copy of scripts/ below puts in the image
 COPY scripts/coo-entrypoint.sh /usr/local/bin/coo-entrypoint.sh
 RUN chmod 755 /usr/local/bin/coo-entrypoint.sh
 

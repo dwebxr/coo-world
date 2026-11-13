@@ -17,16 +17,27 @@ export const OTHER_PORT = 3100
 // entrypoint refuses (it names /app/build)
 export const SERVICE_ID = 1001
 export const OTHER_USER = '2000:2000'
+// WORLD values the entrypoint refuses (scripts/lib/worldFolder.mjs): the image's code; a system tree, through `..`;
+// and the image's code reached through a link placed on the volume (LINK_TARGET at LINK_PATH)
 export const REFUSED_WORLD = 'build'
+export const SYSTEM_WORLD = '../usr/local/bin'
+export const LINK_WORLD = 'world/link/public'
+export const LINK_PATH = `${WORLD_PATH}/link`
+export const LINK_TARGET = '/app/build'
 // The lines --model=nonroot looks for, as parts of a line. test/imageCheck.test.js holds each to its source.
 export const ENTRYPOINT_LINES = {
-  // scripts/coo-entrypoint.sh: say "entries given to 1001:1001 under $dir: ${#before}"
+  // scripts/coo-entrypoint.sh: say "entries given to 1001:1001 under $dir: ${#given}"
   given: '[entrypoint] entries given to 1001:1001 under ',
+  // scripts/coo-entrypoint.sh: say "entries given u+rw (files) or u+rwx (folders) under $dir: ${#modes}"
+  modes: '[entrypoint] entries given u+rw (files) or u+rwx (folders) under ',
   // scripts/coo-entrypoint.sh: say "started as uid $uid, not as root: nothing under $dir changes owner, …"
   notRoot: '[entrypoint] started as uid ',
-  // scripts/coo-entrypoint.sh: die "refused: WORLD names $dir. The world folder is given to 1001:1001, …"
-  refused: '[entrypoint] refused: WORLD names ',
+  // scripts/coo-world-folder.mjs: `[entrypoint] refused: ${result.reason}`, the reason from scripts/lib/worldFolder.mjs:
+  // `WORLD=${JSON.stringify(world)} resolves to ${folder}: ${why}`
+  refused: '[entrypoint] refused: WORLD=',
 }
+/** The beginning of the entrypoint's refusal of `world`, which resolves to `folder`. */
+export const refusal = (world, folder) => `${ENTRYPOINT_LINES.refused}${JSON.stringify(world)} resolves to ${folder}: `
 // src/server/startupExit.js: proc.stderr.write(`[server] start-up failed; exiting with code 1: ${describe(err)}\n`, …)
 export const STARTUP_FAILED = '[server] start-up failed; exiting with code 1: '
 
@@ -181,7 +192,22 @@ export function parseArgs(argv) {
 // model uses the first three containers and the first volume; --model=nonroot all of them.
 export function runNames(id) {
   const prefix = `image-check-${id}`
-  const roles = ['sigterm', 'sigint', 'restart', 'legacy', 'chown', 'port', 'otheruser', 'refused', 'imagefiles']
+  const roles = [
+    'sigterm',
+    'sigint',
+    'restart',
+    'legacy',
+    'chown',
+    'breakperms',
+    'perms',
+    'port',
+    'otheruser',
+    'makelink',
+    'linked',
+    'refused',
+    'imagefiles',
+    'systemworld',
+  ]
   return {
     prefix,
     image: `${prefix}:check`,
@@ -577,15 +603,16 @@ export function mergeLogs(stdout, stderr) {
 }
 
 /**
- * The entrypoint's lines saying how many entries it gave to 1001:1001 (scripts/coo-entrypoint.sh prints one on each
- * start as root, 0 included): `{ dir, count }` for each, in the order of the log.
+ * The entrypoint's lines that begin with `prefix` and end in a count: how many entries it gave to 1001:1001
+ * (ENTRYPOINT_LINES.given), or gave owner read and write (ENTRYPOINT_LINES.modes). scripts/coo-entrypoint.sh prints
+ * one of each on every start as root, 0 included. `{ dir, count }` for each, in the order of the log.
  */
-export function entrypointCounts(log) {
+export function entrypointCounts(log, prefix = ENTRYPOINT_LINES.given) {
   const counts = []
   for (const line of String(log ?? '').split('\n')) {
-    const at = line.indexOf(ENTRYPOINT_LINES.given)
+    const at = line.indexOf(prefix)
     if (at === -1) continue
-    const match = /^(.*): (\d+)\s*$/.exec(line.slice(at + ENTRYPOINT_LINES.given.length))
+    const match = /^(.*): (\d+)\s*$/.exec(line.slice(at + prefix.length))
     if (match) counts.push({ dir: match[1], count: Number(match[2]) })
   }
   return counts
@@ -776,7 +803,15 @@ const SIMULATED_CONFIG = {
   },
 }
 // --model=nonroot: how many entries the entrypoint of each container gives to 1001:1001, in a run that goes well
-const SIMULATED_GIVEN = { sigterm: 23, sigint: 1, restart: 0, port: 1 }
+const SIMULATED_GIVEN = { sigterm: 23, sigint: 1, perms: 1, restart: 0, port: 1 }
+// and how many it gave owner read and write
+const SIMULATED_MODES = { sigterm: 0, sigint: 0, perms: 2, restart: 0, port: 0 }
+// --model=nonroot: the containers that end by themselves with exit code 1, and the refusals among them
+const SIMULATED_REFUSED = {
+  refused: [REFUSED_WORLD, `/app/${REFUSED_WORLD}`, "that is the image's own code (at or under /app/build)"],
+  linked: [LINK_WORLD, `${LINK_TARGET}/public`, "that is the image's own code (at or under /app/build)"],
+  systemworld: [SYSTEM_WORLD, '/usr/local/bin', 'that is a system folder (at or under /usr)'],
+}
 
 /**
  * The lines `docker events --format '{{json .}}'` prints for a stop, in the shape of the Engine API's EventMessage
@@ -819,7 +854,7 @@ export function simulatedDocker({
   // a container's role is the last part of its name (runNames): `image-check-<id>-<role>`
   const roleOf = name => String(name ?? '').slice(String(name ?? '').lastIndexOf('-') + 1)
   // --model=nonroot: the containers that end by themselves, with exit code 1
-  const exits = name => nonroot && ['otheruser', 'refused'].includes(roleOf(name))
+  const exits = name => nonroot && (roleOf(name) === 'otheruser' || Object.hasOwn(SIMULATED_REFUSED, roleOf(name)))
   const nonrootLog = role => {
     if (role === 'otheruser') {
       return [
@@ -827,14 +862,20 @@ export function simulatedDocker({
         `${STARTUP_FAILED}Error: EACCES: permission denied, mkdir '${WORLD_PATH}/assets'`,
       ]
     }
-    if (role === 'refused') {
+    if (Object.hasOwn(SIMULATED_REFUSED, role)) {
+      const [world, folder, why] = SIMULATED_REFUSED[role]
       return [
-        `${ENTRYPOINT_LINES.refused}/app/build. The world folder is given to 1001:1001, so it must not be /, /app, or at or under /app/build, /app/node_modules, /app/src or /app/scripts`,
+        `${refusal(world, folder)}${why}`,
+        '[entrypoint] not starting: WORLD names no folder that may be given to 1001:1001 (why: above)',
       ]
     }
     const port = role === 'port' ? OTHER_PORT : CONTAINER_PORT
     if (role === 'legacy') return [`server listening on port ${port}`]
-    return [`${ENTRYPOINT_LINES.given}${WORLD_PATH}: ${SIMULATED_GIVEN[role] ?? 0}`, `server listening on port ${port}`]
+    return [
+      `${ENTRYPOINT_LINES.given}${WORLD_PATH}: ${SIMULATED_GIVEN[role] ?? 0}`,
+      `${ENTRYPOINT_LINES.modes}${WORLD_PATH}: ${SIMULATED_MODES[role] ?? 0}`,
+      `server listening on port ${port}`,
+    ]
   }
   const answer = args => {
     const name = args[args.length - 1]
@@ -1202,26 +1243,65 @@ export async function runImageCheck({
   // --model=nonroot
   // ------------------------------------------------------------------------------------------------------------
 
-  // The entrypoint's line in the log of a container started as root: exactly one, about the world folder, and how
-  // many entries it gave to 1001:1001. `atLeast` / `exactly` (with `why`) is what this start must say.
-  async function entrypointCount(record, { atLeast = null, exactly = null, why = '' } = {}) {
-    const counts = entrypointCounts(await collectLog(record))
-    record.entrypoint = counts
-    if (counts.length !== 1) {
-      fail(
-        `${record.role}: ${counts.length || 'no'} \`${ENTRYPOINT_LINES.given}…\` line(s) in the log, expected one (the entrypoint prints it on every start as root)`
-      )
+  // The entrypoint's two lines in the log of a container started as root: exactly one of each, about the world
+  // folder: how many entries it gave to 1001:1001 (`given`) and how many it gave owner read and write (`modes`).
+  // Each may say `atLeast` or `exactly` (with `why`) what this start must count.
+  async function entrypointLines(record, expected = {}) {
+    const log = await collectLog(record)
+    record.entrypoint = {}
+    for (const [key, what] of [
+      ['given', 'given to 1001:1001'],
+      ['modes', 'given owner read and write'],
+    ]) {
+      const counts = entrypointCounts(log, ENTRYPOINT_LINES[key])
+      record.entrypoint[key] = counts
+      if (counts.length !== 1) {
+        fail(
+          `${record.role}: ${counts.length || 'no'} \`${ENTRYPOINT_LINES[key]}…\` line(s) in the log, expected one (the entrypoint prints it on every start as root)`
+        )
+        continue
+      }
+      const [{ dir, count }] = counts
+      report.info(`  the entrypoint: ${count} entr${count === 1 ? 'y' : 'ies'} under ${dir} ${what}`)
+      if (dir !== WORLD_PATH) fail(`${record.role}: the entrypoint looked at ${dir}, not at ${WORLD_PATH}`)
+      const { atLeast = null, exactly = null, why = '' } = expected[key] ?? {}
+      if (atLeast !== null && !(count >= atLeast)) {
+        fail(`${record.role}: ${count} entries ${what}, expected at least ${atLeast} (${why})`)
+      }
+      if (exactly !== null && count !== exactly) {
+        fail(`${record.role}: ${count} entries ${what}, expected ${exactly} (${why})`)
+      }
+    }
+  }
+
+  // What the server has to be able to write, asked as 1001:1001 itself: `test -w` of each path exits 0
+  async function serviceCanWrite(record, paths) {
+    record.writable = {}
+    for (const target of paths) {
+      const args = ['exec', '--user', `${SERVICE_ID}:${SERVICE_ID}`, record.name, 'test', '-w', target]
+      const result = await run(args)
+      record.writable[target] = result.code
+      if (result.code === 0) report.info(`  ${target}: writable for ${SERVICE_ID}:${SERVICE_ID}`)
+      else
+        fail(
+          `${record.role}: ${target} is not writable for ${SERVICE_ID}:${SERVICE_ID} (\`test -w\` exited ${result.code})`
+        )
+    }
+  }
+
+  // What a container that ended changed in its own file system (`docker diff`; a chown or chmod shows as `C`):
+  // nothing at or under `folder`
+  async function unchangedUnder(record, folder) {
+    const args = ['diff', record.name]
+    const diff = await run(args)
+    record.diff = tailOf(diff.stdout, 40, 4000)
+    if (diff.code !== 0) {
+      fail(`${record.role}: \`docker ${formatCommand(args)}\` exited ${diff.code}: ${said(diff)}`)
       return
     }
-    const [{ dir, count }] = counts
-    report.info(`  the entrypoint gave ${count} entr${count === 1 ? 'y' : 'ies'} under ${dir} to 1001:1001`)
-    if (dir !== WORLD_PATH) fail(`${record.role}: the entrypoint looked at ${dir}, not at ${WORLD_PATH}`)
-    if (atLeast !== null && !(count >= atLeast)) {
-      fail(`${record.role}: the entrypoint gave ${count} entries to 1001:1001, expected at least ${atLeast} (${why})`)
-    }
-    if (exactly !== null && count !== exactly) {
-      fail(`${record.role}: the entrypoint gave ${count} entries to 1001:1001, expected ${exactly} (${why})`)
-    }
+    const changed = changedUnder(diff.stdout, folder)
+    if (changed.length) fail(`${record.role}: the container changed ${folder}: ${changed.slice(0, 5).join(', ')}`)
+    else report.info(`  \`docker diff\`: nothing at or under ${folder} changed`)
   }
 
   // Nothing under the world folder, on its file system, that is not 1001's, as root sees it from inside
@@ -1319,7 +1399,7 @@ export async function runImageCheck({
     // stop with Docker's defaults saves
     const first = await startAndWait('sigterm')
     await observe(first)
-    await entrypointCount(first, { atLeast: 1, why: 'the volume was written by root' })
+    await entrypointLines(first, { given: { atLeast: 1, why: 'the volume was written by root' } })
     await ownership(first)
     await stop(first, STOPS.sigterm)
 
@@ -1335,25 +1415,50 @@ export async function runImageCheck({
       throw new StepFailed(`the chown of ${WORLD_PATH}/db.sqlite to root exited ${chown.code}: ${said(chown)}`)
     }
     const second = await startAndWait('sigint')
-    await entrypointCount(second, { atLeast: 1, why: 'db.sqlite was made root’s before this start' })
+    await entrypointLines(second, { given: { atLeast: 1, why: 'db.sqlite was made root’s before this start' } })
     await ownership(second)
     await stop(second, STOPS.sigint)
 
-    // 4. a start on a volume that is all 1001's already changes nothing (left running: the cleanup removes it)
+    // 4. modes root could live with: db.sqlite root's with mode 0400, a folder of mode 0500. The next start gives
+    // both back with owner read and write, 1001:1001 can write them, and a stop's final save is written
+    const db = `${WORLD_PATH}/db.sqlite`
+    const assets = `${WORLD_PATH}/assets`
+    const breakperms = await throwaway('breakperms', {
+      user: '0',
+      entrypoint: 'sh',
+      volume: names.volume,
+      command: ['-c', `chown 0:0 ${db} && chmod 0400 ${db} && chmod 0500 ${assets}`],
+    })
+    if (breakperms.code !== 0) {
+      throw new StepFailed(`making ${db} root's with mode 0400 exited ${breakperms.code}: ${said(breakperms)}`)
+    }
+    const perms = await startAndWait('perms')
+    await entrypointLines(perms, {
+      given: { atLeast: 1, why: 'db.sqlite was made root’s before this start' },
+      modes: { atLeast: 1, why: 'db.sqlite was made 0400 and assets 0500 before this start' },
+    })
+    await ownership(perms)
+    await serviceCanWrite(perms, [db, assets])
+    await stop(perms, STOPS.sigterm)
+
+    // 5. a start on a volume that is all 1001's already changes nothing (left running: the cleanup removes it)
     const third = await startAndWait('restart')
-    await entrypointCount(third, { exactly: 0, why: 'nothing was written as root since the last start' })
+    await entrypointLines(third, {
+      given: { exactly: 0, why: 'nothing was written as root since the last start' },
+      modes: { exactly: 0, why: 'every mode was given back at the last start' },
+    })
     await ownership(third)
 
-    // 5. another PORT: the image's own health check follows it. No volume: the entrypoint makes the world folder
+    // 6. another PORT: the image's own health check follows it. No volume: the entrypoint makes the world folder
     const port = await startAndWait('port', {
       how: `with PORT=${OTHER_PORT} (and the three addresses on it), no volume`,
       volume: null,
       env: envOnPort(env, OTHER_PORT),
     })
     report.info(`port: healthy on ${OTHER_PORT} by the image's own health check after ${port.healthy.seconds} s`)
-    await entrypointCount(port)
+    await entrypointLines(port)
 
-    // 6. started as another user, on a fresh volume (root's): nothing can be given away, and the server's start-up
+    // 7. started as another user, on a fresh volume (root's): nothing can be given away, and the server's start-up
     // says that it cannot write, and ends with 1
     await createVolume(names.freshVolume)
     await startAndExpectExit('otheruser', {
@@ -1364,25 +1469,34 @@ export async function runImageCheck({
       lines: [[`${ENTRYPOINT_LINES.notRoot}2000, not as root`], [STARTUP_FAILED, 'EACCES']],
     })
 
-    // 7. a WORLD the entrypoint refuses: exit 1 before anything changes owner
+    // 8. the image's code reached through a link on the volume (put there by a root container): the decision is on
+    // where the link leads, so this WORLD is refused, and nothing under /app/build changes
+    const makelink = await throwaway('makelink', {
+      user: '0',
+      entrypoint: 'ln',
+      volume: names.freshVolume,
+      command: ['-s', LINK_TARGET, LINK_PATH],
+    })
+    if (makelink.code !== 0) {
+      throw new StepFailed(`the link ${LINK_PATH} -> ${LINK_TARGET} exited ${makelink.code}: ${said(makelink)}`)
+    }
+    const linked = await startAndExpectExit('linked', {
+      how: `with WORLD=${LINK_WORLD} on the fresh volume, where ${LINK_PATH} -> ${LINK_TARGET}`,
+      volume: names.freshVolume,
+      env: { ...env, WORLD: LINK_WORLD },
+      exitCode: 1,
+      lines: [[refusal(LINK_WORLD, `${LINK_TARGET}/public`)]],
+    })
+    await unchangedUnder(linked, LINK_TARGET)
+
+    // 9. a WORLD that names the image's code: exit 1 before anything changes owner
     const refused = await startAndExpectExit('refused', {
       how: `with WORLD=${REFUSED_WORLD}, no volume`,
       env: { ...env, WORLD: REFUSED_WORLD },
       exitCode: 1,
-      lines: [[`${ENTRYPOINT_LINES.refused}/app/${REFUSED_WORLD}. `]],
+      lines: [[refusal(REFUSED_WORLD, `/app/${REFUSED_WORLD}`)]],
     })
-    // what that container changed in its own file system (a chown shows as `C`): nothing under /app/build
-    const diffArgs = ['diff', refused.name]
-    const diff = await run(diffArgs)
-    refused.diff = tailOf(diff.stdout, 40, 4000)
-    if (diff.code !== 0) {
-      fail(`refused: \`docker ${formatCommand(diffArgs)}\` exited ${diff.code}: ${said(diff)}`)
-    } else {
-      const changed = changedUnder(diff.stdout, `/app/${REFUSED_WORLD}`)
-      if (changed.length)
-        fail(`refused: the container changed /app/${REFUSED_WORLD}: ${changed.slice(0, 5).join(', ')}`)
-      else report.info(`  \`docker diff\`: nothing at or under /app/${REFUSED_WORLD} changed`)
-    }
+    await unchangedUnder(refused, `/app/${REFUSED_WORLD}`)
     // and in the image itself, as a fresh container of it sees it, everything under /app/build is root's
     const files = await throwaway('imagefiles', {
       user: '0',
@@ -1393,6 +1507,15 @@ export async function runImageCheck({
     else if (files.stdout.trim()) {
       fail(`imagefiles: not root's under /app/${REFUSED_WORLD}: ${tailOf(files.stdout, 5, 600).replaceAll('\n', ', ')}`)
     } else report.info(`imagefiles: everything under /app/${REFUSED_WORLD} in the image is root's`)
+
+    // 10. a WORLD that leads out of /app into a system tree (node and the entrypoint are in /usr/local/bin)
+    const system = await startAndExpectExit('systemworld', {
+      how: `with WORLD=${SYSTEM_WORLD}, no volume`,
+      env: { ...env, WORLD: SYSTEM_WORLD },
+      exitCode: 1,
+      lines: [[refusal(SYSTEM_WORLD, '/usr/local/bin')]],
+    })
+    await unchangedUnder(system, '/usr')
   }
 
   try {

@@ -68,9 +68,9 @@ function worldFatal(exits) {
 }
 
 // A world as hydration leaves it (spawn and settings loaded, settings changes saved) with one app of blueprint 'bp'
-// and a builder connection. `net`: the bundle (loadNetwork); `db`: a database() db
-export function fixture(t, { net, db = database().db }) {
-  const network = makeNetwork(t, { net, world: { server: { destroy() {} } }, init: { db } })
+// and a builder connection. `net`: the bundle (loadNetwork); `db`: a database() db; `timers`: makeNetwork's
+export function fixture(t, { net, db = database().db, timers }) {
+  const network = makeNetwork(t, { net, timers, world: { server: { destroy() {} } }, init: { db } })
   const world = network.world
   network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
   world.settings = new net.Settings(world)

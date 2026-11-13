@@ -8,8 +8,8 @@ import { fixture } from './lib/joinFixture.mjs'
 const MINUTE = 60 * 1000
 
 // A world with an admin code (so a visitor is a visitor), a stored admin, a stored builder and visitors
-async function stage({ limits = { minutes: 10 }, env = {} } = {}) {
-  const f = fixture({ env })
+async function stage(t, { limits = { minutes: 10 }, env = {} } = {}) {
+  const f = fixture(t, { env })
   f.world.settings.setHasAdminCode(true)
   f.world.settings.rank = Ranks.VISITOR
   const clock = { time: 1000 }
@@ -34,7 +34,7 @@ const packets = ws => ws.packets.map(readPacket)
 test('kick: the player is told, closed and kept out for the minutes; then let in again', async t => {
   const lines = []
   t.mock.method(console, 'log', line => lines.push(line))
-  const { f, clock, enter, kickCode } = await stage()
+  const { f, clock, enter, kickCode } = await stage(t)
   const admin = await enter('admin', Ranks.ADMIN)
   const visitor = await enter('visitor', Ranks.VISITOR)
   assert.equal(visitor.method, 'onSnapshot')
@@ -67,7 +67,7 @@ test('kick: the player is told, closed and kept out for the minutes; then let in
 test('kick: KICK_MINUTES=0 only disconnects', async t => {
   const lines = []
   t.mock.method(console, 'log', line => lines.push(line))
-  const { f, enter } = await stage({ limits: { minutes: 0 } })
+  const { f, enter } = await stage(t, { limits: { minutes: 0 } })
   const admin = await enter('admin', Ranks.ADMIN)
   await enter('visitor', Ranks.VISITOR)
   f.send('kick', 'visitor', admin.socket)
@@ -76,8 +76,8 @@ test('kick: KICK_MINUTES=0 only disconnects', async t => {
   assert.equal((await enter('visitor', Ranks.VISITOR)).method, 'onSnapshot')
 })
 
-test('kick and mute: only a player who outranks the target, by the rank the players pane shows', async () => {
-  const { f, muted, enter } = await stage()
+test('kick and mute: only a player who outranks the target, by the rank the players pane shows', async t => {
+  const { f, muted, enter } = await stage(t)
   const admin = await enter('admin', Ranks.ADMIN)
   await enter('admin2', Ranks.ADMIN)
   const builder = await enter('builder1', Ranks.BUILDER)
@@ -135,8 +135,8 @@ test('kick and mute: only a player who outranks the target, by the rank the play
   assert.deepEqual(packets(visitor2.ws).at(-1), ['onKick', 'moderation'])
 })
 
-test('kick and mute: where everyone is an admin (no admin code) nobody outranks anybody', async () => {
-  const { f, muted, enter } = await stage()
+test('kick and mute: where everyone is an admin (no admin code) nobody outranks anybody', async t => {
+  const { f, muted, enter } = await stage(t)
   f.world.settings.setHasAdminCode(false)
   const admin = await enter('admin', Ranks.ADMIN)
   await enter('visitor', Ranks.VISITOR)
@@ -146,8 +146,8 @@ test('kick and mute: where everyone is an admin (no admin code) nobody outranks 
   assert.deepEqual(muted, [])
 })
 
-test('kick: a world rank setting counts for both sides, as in the players pane', async () => {
-  const { f, enter } = await stage()
+test('kick: a world rank setting counts for both sides, as in the players pane', async t => {
+  const { f, enter } = await stage(t)
   f.world.settings.rank = Ranks.BUILDER
   const builder = await enter('builder1', Ranks.BUILDER)
   const admin = await enter('admin', Ranks.ADMIN)
@@ -159,11 +159,11 @@ test('kick: a world rank setting counts for both sides, as in the players pane',
   assert.equal(f.network.sockets.has('visitor'), false)
 })
 
-test('kick: the address holds only newcomers, only when asked for, only after an admin', async () => {
+test('kick: the address holds only newcomers, only when asked for, only after an admin', async t => {
   const origin = { key: '203.0.113.7', parents: [] }
   const elsewhere = { key: '198.51.100.9', parents: [] }
   {
-    const { f, enter, kickCode } = await stage({ limits: { minutes: 10, byAddress: true } })
+    const { f, enter, kickCode } = await stage(t, { limits: { minutes: 10, byAddress: true } })
     const admin = await enter('admin', Ranks.ADMIN, elsewhere)
     await enter('visitor', Ranks.VISITOR, origin)
     await enter('resident', Ranks.VISITOR, origin)
@@ -182,7 +182,7 @@ test('kick: the address holds only newcomers, only when asked for, only after an
   }
   {
     // a builder's kick makes no address entry
-    const { f, enter } = await stage({ limits: { minutes: 10, byAddress: true } })
+    const { f, enter } = await stage(t, { limits: { minutes: 10, byAddress: true } })
     const builder = await enter('builder1', Ranks.BUILDER, elsewhere)
     await enter('visitor', Ranks.VISITOR, origin)
     f.send('kick', 'visitor', builder.socket)
@@ -191,7 +191,7 @@ test('kick: the address holds only newcomers, only when asked for, only after an
   }
   {
     // off unless asked for
-    const { f, enter } = await stage()
+    const { f, enter } = await stage(t)
     const admin = await enter('admin', Ranks.ADMIN, elsewhere)
     await enter('visitor', Ranks.VISITOR, origin)
     f.send('kick', 'visitor', admin.socket)
@@ -201,7 +201,7 @@ test('kick: the address holds only newcomers, only when asked for, only after an
 
 test('kick: one that lands while the same user reconnects is not passed by the new connection', async t => {
   t.mock.method(console, 'log', () => {})
-  const { f, enter, kickCode } = await stage()
+  const { f, enter, kickCode } = await stage(t)
   const admin = await enter('admin', Ranks.ADMIN)
   const old = await enter('visitor', Ranks.VISITOR)
   // The same user connects again (a reload). The id is not listed yet, so the new connection passes the first
@@ -227,8 +227,8 @@ test('kick: one that lands while the same user reconnects is not passed by the n
   assert.equal(f.network.connecting.has('visitor'), false)
 })
 
-test('a muted player who comes back is said to be muted again', async () => {
-  const { f, enter } = await stage()
+test('a muted player who comes back is said to be muted again', async t => {
+  const { f, enter } = await stage(t)
   const admin = await enter('admin', Ranks.ADMIN)
   f.world.livekit.muted.add('visitor')
   admin.ws.packets.length = 0

@@ -32,8 +32,9 @@ const remoteParts = () => ({
   aura: { deactivate() {} },
   applyAvatar() {},
 })
-// What every client is told of a player, as the entity keeps it (PlayerRemote.modify). The server's player data is
-// made in the connection handler's own realm, and holds what only the server keeps: compared as the JSON of these
+// What every client is told of a player, as the entity keeps it (PlayerRemote.modify). The server's player data
+// holds what only the server keeps (and was made in another realm under the old harness): compared as the JSON of
+// these
 const TOLD = ['position', 'quaternion', 'mode', 'axis', 'gaze', 'emote', 'effect', 'name', 'health', 'avatar'].concat([
   'sessionAvatar',
   'rank',
@@ -47,8 +48,8 @@ const TICK_MS = 1000 / 30
 // The real network handlers (joinFixture) with an admin and visitors `a`, `b` and `c`, and a stand-in app whose
 // server script acts on players through the real player handle (createPlayerProxy) when an event asks it to.
 // `tick()` is the server's tick (preFixedUpdate): this tick's packets, then what was kept for its end.
-async function stage({ visitors = ['a', 'b'] } = {}) {
-  const f = fixture({ env: { ASSETS_BASE_URL: 'http://localhost/assets' } })
+async function stage(t, { visitors = ['a', 'b'] } = {}) {
+  const f = fixture(t, { env: { ASSETS_BASE_URL: 'http://localhost/assets' } })
   const world = f.world
   world.settings.setHasAdminCode(true)
   world.settings.rank = Ranks.VISITOR
@@ -154,8 +155,8 @@ async function stage({ visitors = ['a', 'b'] } = {}) {
   }
 }
 
-test('one change in a tick: the others get the packet they got before, when the tick ends; the sender gets nothing', async () => {
-  const s = await stage()
+test('one change in a tick: the others get the packet they got before, when the tick ends; the sender gets nothing', async t => {
+  const s = await stage(t)
   const fields = { p: [1, 2, 3], q: [0, 0, 0, 1], m: 2, a: [0, 0, 1], g: [0, 0, -1], e: null, t: true }
   s.own(s.a, fields)
   // a line of chat after it, in the same tick, is written before it: the change waits for the end of the flush
@@ -180,8 +181,8 @@ test('one change in a tick: the others get the packet they got before, when the 
   assert.deepEqual(s.got(s.b), [])
 })
 
-test('a thousand changes of one player in a tick: one packet to each of the others, the latest of each field', async () => {
-  const s = await stage()
+test('a thousand changes of one player in a tick: one packet to each of the others, the latest of each field', async t => {
+  const s = await stage(t)
   // handled in one tick (the inbox hands a tick about 300 such packets of one connection: see below)
   for (let i = 0; i < 1000; i++) {
     const fields = { id: 'a', p: [i, 0, -i] }
@@ -214,8 +215,8 @@ test('a thousand changes of one player in a tick: one packet to each of the othe
   assert.deepEqual(s.a.player.data.position, [999, 1, 0])
 })
 
-test('two players changing in one tick: one packet each, to everyone but its own connection', async () => {
-  const s = await stage()
+test('two players changing in one tick: one packet each, to everyone but its own connection', async t => {
+  const s = await stage(t)
   for (let i = 0; i < 20; i++) {
     s.own(s.b, { p: [0, i, 0] })
     s.own(s.a, { p: [i, 0, 0] })
@@ -241,7 +242,7 @@ const heavy = i => ({
 })
 
 test("a recipient on a slow link is not closed by one visitor's flood of its own player's changes", async t => {
-  const s = await stage()
+  const s = await stage(t)
   let clock = 80_000
   t.mock.method(performance, 'now', () => clock)
   s.f.network.gate = createInboundGate({ now: () => clock, log: line => s.f.logs.push(line) })
@@ -351,8 +352,8 @@ const serverWrites = [
   },
 ]
 for (const { name, builder, own, write, told, ends } of serverWrites) {
-  test(`what the server tells everyone about a player is not undone by that player's own change of the same tick: ${name}`, async () => {
-    const s = await stage()
+  test(`what the server tells everyone about a player is not undone by that player's own change of the same tick: ${name}`, async t => {
+    const s = await stage(t)
     s.actions.effect = () => s.handle(s.a).applyEffect({ snare: 0.5, duration: 5 })
     s.actions.avatar = () => s.handle(s.a).setSessionAvatar('asset://script.vrm')
     s.actions.damage = () => s.handle(s.a).damage(40)
@@ -371,7 +372,7 @@ for (const { name, builder, own, write, told, ends } of serverWrites) {
     ends(s.a.player.data)
     s.assertInStep()
     // the other way round the player's own change is the later one, and is told
-    const again = await stage()
+    const again = await stage(t)
     again.actions.effect = () => again.handle(again.a).applyEffect({ snare: 0.5, duration: 5 })
     again.actions.avatar = () => again.handle(again.a).setSessionAvatar('asset://script.vrm')
     again.actions.damage = () => again.handle(again.a).damage(40)
@@ -393,8 +394,8 @@ for (const { name, builder, own, write, told, ends } of serverWrites) {
   })
 }
 
-test('only a change of the player takes fields out of what is pending for it, not another packet that names it', async () => {
-  const s = await stage()
+test('only a change of the player takes fields out of what is pending for it, not another packet that names it', async t => {
+  const s = await stage(t)
   s.f.network.onEntityModified(s.a.socket, { id: 'a', p: [1, 0, 0], sessionAvatar: 'asset://mine.vrm' }, { at: 1000 })
   // (the packet that announces a player carries its id, its name and its avatars)
   s.f.network.send('entityAdded', { id: 'a', type: 'player', name: 'a', sessionAvatar: null, p: null })
@@ -402,8 +403,8 @@ test('only a change of the player takes fields out of what is pending for it, no
   assert.deepEqual(s.told(s.got(s.b), s.a), [{ id: 'a', p: [1, 0, 0], sessionAvatar: 'asset://mine.vrm' }])
 })
 
-test('a script write that was refused takes nothing out of what is pending', async () => {
-  const s = await stage()
+test('a script write that was refused takes nothing out of what is pending', async t => {
+  const s = await stage(t)
   s.actions.effect = () => s.handle(s.a).applyEffect({ snare: 0.5, duration: 5 })
   s.actions.avatar = () => s.handle(s.a).setSessionAvatar('asset://script.vrm')
   // this tick's budget for script writes is used up to its last bytes: large packets until one is refused, then
@@ -431,8 +432,8 @@ test('a script write that was refused takes nothing out of what is pending', asy
   assert.deepEqual(s.a.player.data.effect, { freeze: true }, 'nor is an effect: the server has what the others have')
 })
 
-test('an effect a script could not tell anyone of is not given: the end the client sent is told', async () => {
-  const s = await stage()
+test('an effect a script could not tell anyone of is not given: the end the client sent is told', async t => {
+  const s = await stage(t)
   s.actions.chain = () =>
     s.handle(s.a).applyEffect({ freeze: true, onEnd: () => s.handle(s.a).applyEffect({ snare: 0.5 }) })
   s.ask(s.b, 'chain')
@@ -461,8 +462,8 @@ test('an effect a script could not tell anyone of is not given: the end the clie
   s.assertInStep()
 })
 
-test('a change that ends an effect whose end starts another: told in the order the server made them', async () => {
-  const s = await stage()
+test('a change that ends an effect whose end starts another: told in the order the server made them', async t => {
+  const s = await stage(t)
   s.actions.chain = () =>
     s.handle(s.a).applyEffect({
       freeze: true,
@@ -506,8 +507,8 @@ test('a change that ends an effect whose end starts another: told in the order t
   s.assertInStep()
 })
 
-test('what is pending goes out when a handler throws, and when the flush itself ends by a throw; nothing stays', async () => {
-  const s = await stage()
+test('what is pending goes out when a handler throws, and when the flush itself ends by a throw; nothing stays', async t => {
+  const s = await stage(t)
   s.actions.boom = () => {
     throw new Error('boom')
   }
@@ -529,8 +530,8 @@ test('what is pending goes out when a handler throws, and when the flush itself 
   assert.deepEqual(s.told(s.got(s.b), s.a), [{ id: 'a', p: [7, 7, 7] }])
 })
 
-test('when a write throws, what was pending is gone all the same: nothing stays for a later tick', async () => {
-  const s = await stage()
+test('when a write throws, what was pending is gone all the same: nothing stays for a later tick', async t => {
+  const s = await stage(t)
   s.own(s.a, { p: [1, 1, 1] })
   s.own(s.b, { p: [2, 2, 2] })
   const send = s.f.network.send
@@ -547,9 +548,9 @@ test('when a write throws, what was pending is gone all the same: nothing stays 
   assert.deepEqual(s.told(s.got(s.a), s.b), [])
 })
 
-test('nothing is told about a player after its removal', async () => {
+test('nothing is told about a player after its removal', async t => {
   // (the fixture's connection reports its close at once, inside the flush; the invariant is kept there too)
-  const s = await stage()
+  const s = await stage(t)
   s.own(s.a, { p: [5, 5, 5] })
   s.own(s.b, { p: [6, 6, 6] })
   s.packet(s.admin, 'kick', 'a')
@@ -568,8 +569,8 @@ test('nothing is told about a player after its removal', async () => {
   )
 })
 
-test('a server that is stopping tells nothing more, and keeps nothing', async () => {
-  const s = await stage()
+test('a server that is stopping tells nothing more, and keeps nothing', async t => {
+  const s = await stage(t)
   s.actions.stop = () => s.f.network.stopForFatal()
   s.own(s.a, { p: [1, 1, 1] })
   s.ask(s.a, 'stop')
@@ -587,7 +588,7 @@ test('a server that is stopping tells nothing more, and keeps nothing', async ()
 
 test('visitors and a script changing players for 300 ticks: after every tick each client has what the server has', async t => {
   for (const seed of [1, 20261112, 987654321]) {
-    const s = await stage({ visitors: ['a', 'b', 'c'] })
+    const s = await stage(t, { visitors: ['a', 'b', 'c'] })
     const rand = prng(seed)
     const pick = list => list[rand(0, list.length - 1)]
     let clock = 10_000

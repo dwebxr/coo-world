@@ -224,8 +224,8 @@ const tokenGating = { ...gating, TOKEN_GATING_ENABLED: true }
 // The real ServerNetwork handlers, with players that joined through the real onConnection. The fixture's player
 // stands in for the server's PlayerRemote: as there, the emote it plays is kept as `data.emote`, and it is a builder
 // by its own rank or by the world's, whichever is higher (playerRanks.js isBuilder).
-async function world({ customAvatars = false, rank = null } = {}) {
-  const f = fixture({ env: { ASSETS_BASE_URL: ASSETS, ADMIN_CODE: 'code' }, context: { solanaGating: tokenGating } })
+async function world(t, { customAvatars = false, rank = null } = {}) {
+  const f = fixture(t, { env: { ASSETS_BASE_URL: ASSETS, ADMIN_CODE: 'code' }, modules: { solanaGating: tokenGating } })
   f.world.settings.setHasAdminCode(true)
   f.world.settings.customAvatars = customAvatars
   f.world.settings.rank = rank
@@ -258,9 +258,9 @@ async function world({ customAvatars = false, rank = null } = {}) {
   return { f, connect, received, modify }
 }
 
-test("a visitor's url outside the world is not kept, not relayed, and put right for the visitor", async () => {
+test("a visitor's url outside the world is not kept, not relayed, and put right for the visitor", async t => {
   for (const customAvatars of [false, true]) {
-    const w = await world({ customAvatars })
+    const w = await world(t, { customAvatars })
     const visitor = await w.connect()
     const watcher = await w.connect()
     w.modify(visitor, { sessionAvatar: EVIL_VRM, e: EVIL_GLB, avatar: EVIL_VRM })
@@ -284,8 +284,8 @@ test("a visitor's url outside the world is not kept, not relayed, and put right 
   }
 })
 
-test('an asset is relayed for anyone, and a url outside the world for a builder', async () => {
-  const w = await world()
+test('an asset is relayed for anyone, and a url outside the world for a builder', async t => {
+  const w = await world(t)
   const visitor = await w.connect()
   const builder = await w.connect({ rank: Ranks.BUILDER })
   const watcher = await w.connect()
@@ -325,11 +325,11 @@ function endsOn(w, client, subject, start) {
   return value
 }
 
-test('crossing packets: the sender ends on the session avatar the server ends on, as everyone else does', async () => {
+test('crossing packets: the sender ends on the session avatar the server ends on, as everyone else does', async t => {
   // (a) a visitor's client sets an avatar outside the world (refused), then an asset, before the answer to the
   // first comes back
   {
-    const w = await world()
+    const w = await world(t)
     const visitor = await w.connect()
     const watcher = await w.connect()
     w.modify(visitor, { sessionAvatar: EVIL_VRM })
@@ -341,7 +341,7 @@ test('crossing packets: the sender ends on the session avatar the server ends on
   // (b) the owner's own change is on its way when a server script chooses another avatar for the player: the
   // script's choice reaches everyone, the owner included, then the server takes the owner's change
   {
-    const w = await world()
+    const w = await world(t)
     const owner = await w.connect()
     const watcher = await w.connect()
     scriptProxy(owner.player).setSessionAvatar(EVIL_VRM)
@@ -440,8 +440,8 @@ const B = 'asset://b.vrm'
 // avatar back (a new load, and it could be installed for a moment), and the answer to the newer one then put the
 // newer one back: four loads for two choices. The client numbers its updates and passes over an answer that is not
 // to its latest one.
-test("the owner's client: the answer to an older choice does not undo a newer one in flight", async () => {
-  const w = await world()
+test("the owner's client: the answer to an older choice does not undo a newer one in flight", async t => {
+  const w = await world(t)
   const owner = await w.connect()
   const watcher = await w.connect()
   const c = await ownClient(w, owner)
@@ -465,8 +465,8 @@ test("the owner's client: the answer to an older choice does not undo a newer on
   assert.equal(endsOn(w, watcher, owner, null), B, 'everyone else')
 })
 
-test("the owner's client: a refused value, then a valid one before the answer, shows nothing in between", async () => {
-  const w = await world()
+test("the owner's client: a refused value, then a valid one before the answer, shows nothing in between", async t => {
+  const w = await world(t)
   const visitor = await w.connect()
   const watcher = await w.connect()
   const c = await ownClient(w, visitor)
@@ -496,10 +496,10 @@ test("the owner's client: a refused value, then a valid one before the answer, s
   assert.equal(endsOn(w, watcher, visitor, A), B, 'everyone else')
 })
 
-test("the owner's client: a server script's choice crossing the owner's own ends where the server ends", async () => {
+test("the owner's client: a server script's choice crossing the owner's own ends where the server ends", async t => {
   // the script's choice reaches the owner first, then the server takes the owner's: everyone ends on the owner's
   {
-    const w = await world()
+    const w = await world(t)
     const owner = await w.connect()
     const watcher = await w.connect()
     const c = await ownClient(w, owner)
@@ -514,7 +514,7 @@ test("the owner's client: a server script's choice crossing the owner's own ends
   }
   // the server takes the owner's, then the script chooses: everyone ends on the script's
   {
-    const w = await world()
+    const w = await world(t)
     const owner = await w.connect()
     const watcher = await w.connect()
     const c = await ownClient(w, owner)
@@ -530,7 +530,7 @@ test("the owner's client: a server script's choice crossing the owner's own ends
   // two choices of the owner's with the script's between them on the server: the answer to the first is passed
   // over, the script's choice is shown, and the answer to the second ends it
   {
-    const w = await world()
+    const w = await world(t)
     const owner = await w.connect()
     const watcher = await w.connect()
     const c = await ownClient(w, owner)
@@ -549,8 +549,8 @@ test("the owner's client: a server script's choice crossing the owner's own ends
 
 // An update that never reaches the server (the inbound gate dropped it) gets no answer, and the answers to the ones
 // before it are passed over: the owner stays on its own latest choice, as it did before the server answered at all.
-test("the owner's client: when its latest update is lost, it stays on its own choice", async () => {
-  const w = await world()
+test("the owner's client: when its latest update is lost, it stays on its own choice", async t => {
+  const w = await world(t)
   const owner = await w.connect()
   const c = await ownClient(w, owner)
   c.p.setSessionAvatar(A)
@@ -563,8 +563,8 @@ test("the owner's client: when its latest update is lost, it stays on its own ch
   assert.equal(owner.player.data.sessionAvatar, A, 'the server has the last one it got')
 })
 
-test('the number of a session avatar update comes back to its sender alone, and is kept nowhere', async () => {
-  const w = await world()
+test('the number of a session avatar update comes back to its sender alone, and is kept nowhere', async t => {
+  const w = await world(t)
   const visitor = await w.connect()
   const watcher = await w.connect()
   const answers = () =>
@@ -628,8 +628,8 @@ test("the number: the policy leaves it out of the player's fields; the client co
   for (const junk of [0, -1, 1.5, NaN, '2', null]) assert.equal(nextSessionAvatarRequest(junk), 1, String(junk))
 })
 
-test("a visitor's own effect does not make its emote one a script chose", async () => {
-  const w = await world()
+test("a visitor's own effect does not make its emote one a script chose", async t => {
+  const w = await world(t)
   const visitor = await w.connect()
   const watcher = await w.connect()
   w.modify(visitor, { ef: { emote: EVIL_GLB, duration: 5 } })
@@ -642,8 +642,8 @@ test("a visitor's own effect does not make its emote one a script chose", async 
   )
 })
 
-test('what a server script chose for a visitor is taken from that visitor, later too, and from nobody else', async () => {
-  const w = await world()
+test('what a server script chose for a visitor is taken from that visitor, later too, and from nobody else', async t => {
+  const w = await world(t)
   const visitor = await w.connect()
   const other = await w.connect()
   const watcher = await w.connect()
@@ -667,8 +667,8 @@ test('what a server script chose for a visitor is taken from that visitor, later
   ])
 })
 
-test('joining: an avatar outside the world, asked for or stored, is for builders; others get the world default', async () => {
-  const w = await world({ customAvatars: true })
+test('joining: an avatar outside the world, asked for or stored, is for builders; others get the world default', async t => {
+  const w = await world(t, { customAvatars: true })
   const watcher = await w.connect()
   const visitor = await w.connect({ avatar: EVIL_VRM, stored: EVIL_VRM })
   assert.equal(visitor.player.data.sessionAvatar, null)
@@ -685,8 +685,8 @@ test('joining: an avatar outside the world, asked for or stored, is for builders
   assert.equal(w.f.logs.filter(line => /asked for an avatar outside this world/.test(line)).length, 1)
 })
 
-test('joining: a stored avatar is read as the loaders read it, whatever its spelling', async () => {
-  const w = await world({ customAvatars: true })
+test('joining: a stored avatar is read as the loaders read it, whatever its spelling', async t => {
+  const w = await world(t, { customAvatars: true })
   const watcher = await w.connect()
   for (const stored of EVIL_SPELLINGS) {
     const visitor = await w.connect({ stored })
@@ -726,8 +726,8 @@ const demotions = {
 }
 
 for (const [way, { rank = Ranks.VISITOR, worldRank = null, make, lower }] of Object.entries(demotions)) {
-  test(`a builder who stops being one (${way}) keeps nothing outside the world that a script did not choose`, async () => {
-    const w = await world({ rank: worldRank })
+  test(`a builder who stops being one (${way}) keeps nothing outside the world that a script did not choose`, async t => {
+    const w = await world(t, { rank: worldRank })
     const watcher = await w.connect()
     const who = await w.connect({ rank, stored: EVIL_VRM })
     make?.(who)
@@ -758,8 +758,8 @@ for (const [way, { rank = Ranks.VISITOR, worldRank = null, make, lower }] of Obj
   })
 }
 
-test('a builder who stops being one keeps a stored avatar of the store, whatever its spelling', async () => {
-  const w = await world()
+test('a builder who stops being one keeps a stored avatar of the store, whatever its spelling', async t => {
+  const w = await world(t)
   for (const stored of OWN_SPELLINGS) {
     const who = await w.connect({ rank: Ranks.BUILDER, stored })
     await w.f.network.onModifyRank(w.f.builder, { playerId: who.id, rank: Ranks.VISITOR })
@@ -768,8 +768,8 @@ test('a builder who stops being one keeps a stored avatar of the store, whatever
   }
 })
 
-test('a builder who stops being one keeps what a server script chose; a builder who stays one keeps everything', async () => {
-  const w = await world()
+test('a builder who stops being one keeps what a server script chose; a builder who stays one keeps everything', async t => {
+  const w = await world(t)
   const watcher = await w.connect()
   const who = await w.connect({ rank: Ranks.BUILDER })
   const stays = await w.connect({ rank: Ranks.ADMIN })
@@ -789,8 +789,8 @@ test('a builder who stops being one keeps what a server script chose; a builder 
   assert.deepEqual(changes, [], 'nothing to tell')
 })
 
-test('in a world open to all every player is a builder, so nothing changes there', async () => {
-  const f = fixture({ env: { ASSETS_BASE_URL: ASSETS } })
+test('in a world open to all every player is a builder, so nothing changes there', async t => {
+  const f = fixture(t, { env: { ASSETS_BASE_URL: ASSETS } })
   f.world.settings.setHasAdminCode(false)
   const id = nextId()
   f.users.set(id, { id, name: id, rank: Ranks.VISITOR, avatar: EVIL_VRM })
@@ -865,8 +865,8 @@ test('a server script: a change the network does not take is not made on the ser
   assert.equal(player.scriptAvatar, undefined)
 })
 
-test('a server script: a change some clients did not get is still made; one nobody got is not', async () => {
-  const w = await world()
+test('a server script: a change some clients did not get is still made; one nobody got is not', async t => {
+  const w = await world(t)
   const visitor = await w.connect()
   const healthy = await w.connect()
   const full = await w.connect()
@@ -892,8 +892,8 @@ test('a server script: a change some clients did not get is still made; one nobo
   assert.deepEqual(told(full), [])
 })
 
-test('ServerNetwork broadcast tells a packet nobody got from one some did not get; send is true only when all did', async () => {
-  const w = await world()
+test('ServerNetwork broadcast tells a packet nobody got from one some did not get; send is true only when all did', async t => {
+  const w = await world(t)
   const healthy = await w.connect()
   const closing = await w.connect()
   const got = client => w.received(client).filter(([name]) => name === 'onChatAdded').length

@@ -12,7 +12,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Ranks } from '../src/core/extras/ranks.js'
-import { createRelayDrop } from '../src/core/extras/playerRelayPolicy.js'
 import { internalEvents } from '../src/core/extras/internalEvents.js'
 import { BUILDER_ONLY_PACKETS } from '../src/core/extras/inboundPolicy.js'
 import { ADMIN_SETTING_KEYS } from '../src/core/extras/settingsPolicy.js'
@@ -27,13 +26,11 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const methodOf = name => `on${name[0].toUpperCase()}${name.slice(1)}`
 
 // A world with an admin code (so a visitor is a visitor) and four players: an admin, a builder, a visitor and
-// another visitor. `context`: names the handlers see in place of the harness's (the gating modules, below)
-async function stage({ context } = {}) {
-  const f = fixture({ env: { ADMIN_CODE: CODE }, context })
+// another visitor. `modules`: the gating modules the handlers see in place of the real ones (below)
+async function stage(t, { modules } = {}) {
+  const f = fixture(t, { env: { ADMIN_CODE: CODE }, modules })
   f.world.settings.setHasAdminCode(true)
   f.world.settings.rank = Ranks.VISITOR
-  // (made in the constructor, which the harness does not run)
-  f.network.dropRelay = createRelayDrop(line => f.logs.push(line))
   // what the handlers ask of the rest of the world, recorded
   const calls = []
   f.calls = calls
@@ -58,8 +55,8 @@ async function stage({ context } = {}) {
   f.other = await enter('other', Ranks.VISITOR)
   f.player = socket => f.world.entities.get(socket.id)
   f.logged = text => f.logs.some(line => line.includes(text))
-  // where a player stands (a record of this realm: the handlers' sanitizers take plain objects of their own realm,
-  // as the server's are; the joined record was made inside the harness's)
+  // where a player stands (a record made here, as when the joined record was made inside the old harness's realm,
+  // whose objects the handlers' sanitizers did not take for plain ones)
   f.stand = (socket, position) => {
     const player = f.player(socket)
     player.data = { ...player.data, position }
@@ -162,11 +159,11 @@ const BUILDER_CASES = [
   },
 ]
 
-test('builder: each handler refuses a visitor itself, says so in the log, and takes the same packet from a builder', async () => {
+test('builder: each handler refuses a visitor itself, says so in the log, and takes the same packet from a builder', async t => {
   const names = BUILDER_CASES.map(c => c.name)
   for (const name of names) assert.ok(namesOfClass('builder').includes(name), `${name} has a builder rule`)
   for (const c of BUILDER_CASES) {
-    const f = await stage()
+    const f = await stage(t)
     c.prepare?.(f)
     const handler = f.network[methodOf(c.name)]
     await handler(f.visitor, c.payload())
@@ -179,10 +176,10 @@ test('builder: each handler refuses a visitor itself, says so in the log, and ta
   }
 })
 
-test('builder: the inbound gate drops blueprintAdded, blueprintModified and ai from a visitor before any handler', async () => {
+test('builder: the inbound gate drops blueprintAdded, blueprintModified and ai from a visitor before any handler', async t => {
   // the names as the rules give them, not as the gate's own list does (that list is what is asked)
   const GATED = ['blueprintAdded', 'blueprintModified', 'ai']
-  const f = await stage()
+  const f = await stage(t)
   const ran = []
   for (const name of GATED) {
     const method = methodOf(name)
@@ -206,8 +203,8 @@ test('builder: the inbound gate drops blueprintAdded, blueprintModified and ai f
   assert.deepEqual([...BUILDER_ONLY_PACKETS].sort(), [...GATED].sort(), 'and no other name is refused by the gate')
 })
 
-test("builder: a visitor's settingsModified is refused for its rank before its content is read", async () => {
-  const f = await stage()
+test("builder: a visitor's settingsModified is refused for its rank before its content is read", async t => {
+  const f = await stage(t)
   await f.network.onSettingsModified(f.visitor, { key: 'no-such-setting', value: 1 })
   await f.network.onSettingsModified(f.visitor, 'not an object')
   assert.ok(f.logged(f.rankLine('modify settings', f.visitor)))
@@ -217,8 +214,8 @@ test("builder: a visitor's settingsModified is refused for its rank before its c
   assert.ok(f.logged('onSettingsModified: unknown setting: "no-such-setting"'))
 })
 
-test('builder: an app is changed or removed by a builder; a visitor may end its own move and upload, and nothing else', async () => {
-  const f = await stage()
+test('builder: an app is changed or removed by a builder; a visitor may end its own move and upload, and nothing else', async t => {
+  const f = await stage(t)
   f.addApp('appHeld001', { position: [1, 0, 1], scale: [1, 1, 1], mover: 'visitor' })
   f.addApp('appUpload1', { uploader: 'visitor' })
   const held = () => f.world.entities.get('appHeld001').data
@@ -246,8 +243,8 @@ test('builder: an app is changed or removed by a builder; a visitor may end its 
   assert.ok(f.world.entities.get('appHeld001'), 'not removed')
 })
 
-test('builder: /spawn, /chat clear and /server stats are refused to a visitor and done for a builder', async () => {
-  const f = await stage()
+test('builder: /spawn, /chat clear and /server stats are refused to a visitor and done for a builder', async t => {
+  const f = await stage(t)
   for (const socket of [f.visitor, f.maker]) f.stand(socket, [7, 0, 7])
   const command = (socket, ...args) => f.network.onCommand(socket, { args })
   await command(f.visitor, 'spawn', 'set')
@@ -283,8 +280,8 @@ test('builder: /spawn, /chat clear and /server stats are refused to a visitor an
 
 // ---- admin ----
 
-test("admin: nobody but an admin changes a rank, its own, an admin's or a third player's", async () => {
-  const f = await stage()
+test("admin: nobody but an admin changes a rank, its own, an admin's or a third player's", async t => {
+  const f = await stage(t)
   const rank = socket => f.player(socket).data.rank
   for (const sender of [f.visitor, f.maker]) {
     await f.network.onModifyRank(sender, { playerId: f.other.id, rank: Ranks.BUILDER })
@@ -301,11 +298,11 @@ test("admin: nobody but an admin changes a rank, its own, an admin's or a third 
   assert.equal(rank(f.other), Ranks.BUILDER, 'the admin gives a rank')
 })
 
-test('admin: rank and customAvatars are refused to a builder and taken from an admin', async () => {
+test('admin: rank and customAvatars are refused to a builder and taken from an admin', async t => {
   const values = { rank: Ranks.BUILDER, customAvatars: true }
   assert.deepEqual(Object.keys(values).sort(), [...ADMIN_SETTING_KEYS].sort(), 'a value for every admin setting')
   for (const [key, value] of Object.entries(values)) {
-    const f = await stage()
+    const f = await stage(t)
     const before = f.world.settings[key]
     await f.network.onSettingsModified(f.maker, { key, value })
     assert.equal(f.world.settings[key], before, `${key}: taken from a builder`)
@@ -315,8 +312,8 @@ test('admin: rank and customAvatars are refused to a builder and taken from an a
   }
 })
 
-test("kick and mute: only a player whose rank is above the target's, and the target a player", async () => {
-  const f = await stage()
+test("kick and mute: only a player whose rank is above the target's, and the target a player", async t => {
+  const f = await stage(t)
   f.addApp('appTarget1')
   const refused = [
     [f.visitor, f.other],
@@ -353,8 +350,8 @@ test("kick and mute: only a player whose rank is above the target's, and the tar
   assert.equal(f.other.disconnected, true, 'the visitor is closed')
 })
 
-test('/admin: a wrong code gives no rank and the 21st closes the socket; the right code makes an admin', async () => {
-  const f = await stage()
+test('/admin: a wrong code gives no rank and the 21st closes the socket; the right code makes an admin', async t => {
+  const f = await stage(t)
   const guess = i => f.network.onCommand(f.visitor, { args: ['admin', `p14-guess-${i}`] })
   await guess(0)
   assert.equal(f.player(f.visitor).data.rank, Ranks.VISITOR)
@@ -372,7 +369,7 @@ test('/admin: a wrong code gives no rank and the 21st closes the socket; the rig
     [Ranks.ADMIN, Ranks.BUILDER, Ranks.VISITOR]
   )
   // the control: the right code, from a connection the wrong ones did not slow down (another user, another address)
-  const right = await stage()
+  const right = await stage(t)
   await right.network.onCommand(right.other, { args: ['admin', CODE] })
   assert.equal(right.player(right.other).data.rank, Ranks.ADMIN)
   assert.deepEqual(right.calls, [], 'the code is no command event either')
@@ -380,8 +377,8 @@ test('/admin: a wrong code gives no rank and the 21st closes the socket; the rig
 
 // ---- refused whoever sends it ----
 
-test('relays: a client copy of playerTeleport, playerPush or playerSessionAvatar reaches nobody and is logged once', async () => {
-  const f = await stage()
+test('relays: a client copy of playerTeleport, playerPush or playerSessionAvatar reaches nobody and is logged once', async t => {
+  const f = await stage(t)
   const relays = namesOfClass('relay')
   assert.deepEqual([...relays].sort(), ['playerPush', 'playerSessionAvatar', 'playerTeleport'])
   const payload = { networkId: f.other.id, position: [1, 2, 3], force: [0, 9, 0], avatar: 'asset://avatar.vrm' }
@@ -404,8 +401,8 @@ test('relays: a client copy of playerTeleport, playerPush or playerSessionAvatar
   }
 })
 
-test("refused whoever sends it: an event named after an engine hook or a world event reaches no app's script", async () => {
-  const f = await stage()
+test("refused whoever sends it: an event named after an engine hook or a world event reaches no app's script", async t => {
+  const f = await stage(t)
   const app = f.addApp('appEvents1')
   const events = []
   app.onEvent = (version, name, data, from) => events.push([name, from])
@@ -420,8 +417,8 @@ test("refused whoever sends it: an event named after an engine hook or a world e
   assert.deepEqual(events, [['probe', 'visitor']])
 })
 
-test("refused whoever sends it: another player's fields, a player's removal", async () => {
-  const f = await stage()
+test("refused whoever sends it: another player's fields, a player's removal", async t => {
+  const f = await stage(t)
   const target = f.player(f.other)
   const before = JSON.stringify(target.data)
   const change = { id: f.other.id, name: 'renamed', p: [50, 0, 50], q: [0, 0, 0, 1], t: true }
@@ -438,8 +435,8 @@ test("refused whoever sends it: another player's fields, a player's removal", as
   assert.equal(target.data.name, 'renamed')
 })
 
-test("refused whoever sends it: a player's own fields that only the server sets; a field it may set is taken", async () => {
-  const f = await stage()
+test("refused whoever sends it: a player's own fields that only the server sets; a field it may set is taken", async t => {
+  const f = await stage(t)
   const forbidden = {
     rank: Ranks.ADMIN,
     userId: 'someone-else',
@@ -464,8 +461,8 @@ test("refused whoever sends it: a player's own fields that only the server sets;
   }
 })
 
-test("refused whoever sends it: a player added through entityAdded, or an app under a player's id", async () => {
-  const f = await stage()
+test("refused whoever sends it: a player added through entityAdded, or an app under a player's id", async t => {
+  const f = await stage(t)
   // one complete app record: each refused packet differs from it in one field, and the control is the record itself
   const record = app('appAdded01')
   const announced = id =>
@@ -646,7 +643,7 @@ const WALLET_CASES = [
 // the sender's wallet state, as text (the tickets are a Map)
 const walletState = s => JSON.stringify([s.wallet, { ...s.evmWallet, tickets: [...s.evmWallet.tickets] }])
 
-test('the wallet flows: in a world without the feature each handler returns before it reads anything, and in a world with it the same state is acted on', async () => {
+test('the wallet flows: in a world without the feature each handler returns before it reads anything, and in a world with it the same state is acted on', async t => {
   assert.deepEqual(
     WALLET_CASES.map(c => c.name).sort(),
     namesOfClass('feature').sort(),
@@ -670,8 +667,8 @@ test('the wallet flows: in a world without the feature each handler returns befo
     const worlds = c.feature === 'tips' ? ['evm', 'tips'] : [c.feature]
     for (const world of worlds) {
       const reads = []
-      const f = await stage({
-        context: {
+      const f = await stage(t, {
+        modules: {
           solanaGating: watched(OFF[world].solana, reads, 'solanaGating'),
           evmGating: watched(OFF[world].evm, reads, 'evmGating'),
         },
@@ -680,7 +677,9 @@ test('the wallet flows: in a world without the feature each handler returns befo
       c.prepare?.(s)
       const state = walletState(s)
       const touched = []
+      const own = {}
       for (const key of ['tokenBalanceService', 'evmHoldings', 'tipWatcher', 'evmSignatureVerifier', 'db']) {
+        own[key] = f.network[key]
         f.network[key] = tripwire(`network.${key}`, touched)
       }
       f.world.events = tripwire('world.events', touched)
@@ -693,9 +692,11 @@ test('the wallet flows: in a world without the feature each handler returns befo
       assert.deepEqual(told(s), [], `${where}: answered`)
       assert.equal(walletState(s), state, `${where}: changed the sender's wallet state`)
       assert.equal(c.acted(s), false, `${where}: acted`)
+      // (the test's end stops the network, which touches what it holds: it has its own back for that)
+      Object.assign(f.network, own)
     }
     // the control: the same state and payload in a world with the feature
-    const f = await stage({ context: { solanaGating: SOLANA_ON, evmGating: EVM_ON } })
+    const f = await stage(t, { modules: { solanaGating: SOLANA_ON, evmGating: EVM_ON } })
     f.network.tokenBalanceService = { get: async () => ({ known: true, balance: 0 }) }
     const s = f.visitor
     c.prepare?.(s)

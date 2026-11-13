@@ -16,7 +16,12 @@
 // loadNetwork({ replace, env, sourceRoot, standIns }) → net: the bundle's exports (below) plus `url` and `env` (the
 //   evaluation these exports come from, and the environment it was evaluated with: a worker or a child process imports
 //   that one with importNetwork({ url, env })) and `destroy`. `replace` and `sourceRoot` as buildServer takes them; a
-//   file that ran against REAL_PHYSX_SOURCE_ROOT before passes it as `sourceRoot` (nothing else reads it).
+//   file that ran against REAL_PHYSX_SOURCE_ROOT before passes it as `sourceRoot` (nothing else reads it). Without a
+//   `sourceRoot` of its own, NETWORK_SOURCE_ROOT is the one where it is set: every network of the run is then bundled
+//   from that checkout's src/core and src/server, to run the tests as they are against the product code of another
+//   commit (`NETWORK_SOURCE_ROOT=<checkout> node --test test/serverEvmWallet.test.js`; the checkout needs its src/
+//   only). It is a setting of the test run, read here only, not a name the server reads. In such a bundle the timers'
+//   line of a module of TIMED_FILES goes only where the bundle has the module (below).
 //   `standIns`: modules (repository paths) a test gives per network, as the old harness's `context` gave names to the
 //   class: each becomes a CommonJS stand-in (serverBundle.mjs) whose every export, each time the bundle's code uses
 //   it, is read from the object makeNetwork's `modules` gave for that path last, where that object has the name, and
@@ -104,11 +109,21 @@ const ENTRY = `
 `
 
 // the class's own timers go through test/lib/networkTimers.mjs (makeNetwork's `timers`): those of ServerNetwork.js
-// and of the network's modules that call them (its members moved there: tips.js, a tip announcement that waits)
-const TIMED_FILES = ['src/core/systems/ServerNetwork.js', 'src/server/network/tips.js']
+// and of the network's modules that call them (its members moved there: tips.js, a tip announcement that waits).
+// Every file's line is required (a bundle without the file is an error, and so is a path that is no file), but in a
+// bundle of a `sourceRoot` a module's goes only where that bundle has the module: another checkout's class may not
+// import it (one from before its members moved there). The class's line is required there too.
+const NETWORK = 'src/core/systems/ServerNetwork.js'
+const TIMED_FILES = [NETWORK, 'src/server/network/tips.js']
 const TIMER_NAMES = ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval']
 const TIMER_IMPORT = `import { ${TIMER_NAMES.join(', ')} } from ${JSON.stringify(fileURLToPath(new URL('./networkTimers.mjs', import.meta.url)))};`
-const PREPEND = Object.fromEntries(TIMED_FILES.map(file => [file, TIMER_IMPORT]))
+const prependFor = sourceRoot =>
+  Object.fromEntries(
+    TIMED_FILES.map(file => [
+      file,
+      file === NETWORK || !sourceRoot ? TIMER_IMPORT : { text: TIMER_IMPORT, optional: true },
+    ])
+  )
 const timerTable = (globalThis[Symbol.for('test/lib/network.mjs: timers')] ??= { current: null })
 
 const STAND_IN_ENTITIES = {
@@ -174,14 +189,19 @@ const setEnv = (name, value) => {
   else process.env[name] = value
 }
 
-export async function loadNetwork({ replace, env, sourceRoot, standIns = [] } = {}) {
+export async function loadNetwork({
+  replace,
+  env,
+  sourceRoot = process.env.NETWORK_SOURCE_ROOT || undefined,
+  standIns = [],
+} = {}) {
   // (imported here: a worker that only constructs from a bundle the main thread built never loads esbuild)
   const { buildServer } = await import('./serverBundle.mjs')
   for (const file of standIns) assert.ok(!replace?.[file], `loadNetwork: ${file} is both replaced and a stand-in`)
   const forwarded = Object.fromEntries(standIns.map(file => [file, { commonjs: standInSource(file) }]))
   const built = await buildServer(ENTRY, {
     replace: { ...STAND_IN_ENTITIES, ...replace, ...forwarded },
-    prepend: PREPEND,
+    prepend: prependFor(sourceRoot),
     sourceRoot,
   })
   const evaluation = { ...testEnvironment(), ...known(env) }

@@ -369,6 +369,63 @@ test('server bundle: prepend puts a line before one module of the bundle', async
     }),
     /not one line/
   )
+  // an optional line goes where the bundle has the module, and a module it has not is no error; a path that is no file
+  // of this repository still is, and so is a replaced module
+  seen.length = 0
+  const optional = await bundleServer(`export { readKickEnv as optionalRead } from './src/server/kickList.js'`, {
+    prepend: {
+      'src/server/kickList.js': { text: `globalThis.prependedLines.push('kickList');`, optional: true },
+      'src/server/cleaner.js': { text: `globalThis.prependedLines.push('cleaner');`, optional: true },
+    },
+  })
+  t.after(optional.destroy)
+  assert.deepEqual(seen, ['kickList'])
+  await assert.rejects(
+    bundleServer(`export { readKickEnv } from './src/server/kickList.js'`, {
+      prepend: { 'src/server/network/tip.js': { text: ';', optional: true } },
+    }),
+    /prepend: src\/server\/network\/tip.js is not a file of this repository/
+  )
+  await assert.rejects(
+    bundleServer(`export { readKickEnv } from './src/server/kickList.js'`, {
+      replace: { 'src/server/kickList.js': `export * from 'real:'` },
+      prepend: { 'src/server/kickList.js': { text: ';', optional: true } },
+    }),
+    /prepend: src\/server\/kickList.js is replaced/
+  )
+})
+
+// TIMED_FILES (network.mjs): a checkout whose class does not import tips.js, as before its tip members moved there, is
+// a `sourceRoot` the helper loads (the line for tips.js goes nowhere in that bundle), and the class's own timers there
+// are the test's (its line is required). Without a sourceRoot, tips.js is in the bundle and has its line (the test of
+// the moved announcement above)
+test("network helper: a sourceRoot whose class does not import tips.js (from before the move) loads, and the class's timers there are the test's", async t => {
+  // the baseline: the class alone, today's without its import of tips.js (whose members it then never calls here)
+  const CLASS = 'src/core/systems/ServerNetwork.js'
+  const IMPORT = "import * as tips from '../../server/network/tips'\n"
+  const source = fs.readFileSync(fileURLToPath(new URL(`../${CLASS}`, import.meta.url)), 'utf8')
+  assert.equal(source.split(IMPORT).length, 2, 'the class imports tips.js once')
+  const baseline = fs.mkdtempSync(path.join(os.tmpdir(), 'network-baseline-'))
+  t.after(() => fs.rmSync(baseline, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(baseline, path.dirname(CLASS)), { recursive: true })
+  fs.writeFileSync(path.join(baseline, CLASS), source.replace(IMPORT, ''))
+  const old = await loadNetwork({ sourceRoot: baseline })
+  t.after(old.destroy)
+  // the network's modules in that bundle (each module of a bundle starts with a line of its path)
+  const modules = fs.readFileSync(fileURLToPath(old.url), 'utf8').match(/^\/\/ src\/server\/network\/\S+$/gm)
+  assert.deepEqual(modules, ['// src/server/network/solanaWallet.js', '// src/server/network/evmWallet.js'])
+  const calls = []
+  const network = makeNetwork(t, {
+    net: old,
+    timers: { setTimeout: (fn, ms) => (calls.push(ms), { fn, ms }), clearTimeout: () => {} },
+  })
+  // a takeover's ping: its deadline is the class's own setTimeout, the test's
+  const socket = new old.Socket({ id: 'p', ws: fakeWs(), network })
+  network.sockets.set('p', socket)
+  const answered = network.answersPing(socket, 1234)
+  assert.deepEqual(calls, [1234])
+  socket.ws.emit('pong')
+  assert.equal(await answered, true)
 })
 
 test('network helper: entityClasses gives Entities the classes a file of the tests exports', async t => {

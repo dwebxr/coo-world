@@ -423,8 +423,11 @@ test('client fatal stops animation, worker and visibility restart; close cannot 
   pendingMessage()
   assert.equal(loops.length, loopCount)
   const network = new B.ClientNetwork(world)
-  network.flush = () => assert.fail('fatal close flushed queued mutations')
+  // (counted and asserted after the close, whatever the close catches)
+  let flushed = 0
+  network.flush = () => flushed++
   network.onClose(1006)
+  assert.equal(flushed, 0, 'fatal close flushed queued mutations')
 })
 
 test('fatal stop suppresses save rearming and refuses mutating packets', async t => {

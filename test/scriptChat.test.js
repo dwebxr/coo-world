@@ -154,12 +154,14 @@ test('world.chat from a script: hostile values are read once and must be text', 
 })
 
 test('world.chat on the server: broadcast as an app line', () => {
+  const asked = []
   const Chat = loadClient('core/systems/Chat.js', 'Chat')
   const Apps = loadClient('core/systems/Apps.js', 'Apps')
   const sent = []
   const world = {
     network: { isServer: true, send: (name, data) => sent.push([name, data]) && true, asScript: fn => fn() },
-    entities: { getPlayer: () => assert.fail('no bubble on an app line') },
+    // (asked for no player: recorded and asserted after, as a throw in the chat's handling could be caught there)
+    entities: { getPlayer: id => (asked.push(id), undefined) },
     events: { emit() {} },
   }
   world.chat = new Chat(world)
@@ -170,6 +172,7 @@ test('world.chat on the server: broadcast as an app line', () => {
   assert.equal(sent[0][1].kind, 'app')
   assert.equal(sent[0][1].app, 'Shop')
   assert.equal(Object.hasOwn(sent[0][1], 'fromId'), false)
+  assert.deepEqual(asked, [], 'no bubble on an app line')
 })
 
 test("a player's chat packet is a player line whatever kind it claims", async t => {

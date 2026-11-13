@@ -586,15 +586,17 @@ test('onConnection: arbitrary thrown values are never inspected or stringified',
   const f = fixture(t, { pause: 'createJWT' })
   const running = f.run()
   await f.reached.promise
+  // (read, if at all, inside catches of the class: briefError catches what reading an error throws. inside() reports
+  // each check at the end of the test as well)
   const error = {
     get message() {
-      return assert.fail('message getter')
+      return inside(t, () => assert.fail('message getter'))
     },
     toString() {
-      assert.fail('toString')
+      inside(t, () => assert.fail('toString'))
     },
     toJSON() {
-      assert.fail('toJSON')
+      inside(t, () => assert.fail('toJSON'))
     },
   }
   f.pending.reject(error)

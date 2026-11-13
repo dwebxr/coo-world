@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { inspect } from 'node:util'
 import { createLogOnce } from '../src/core/extras/logOnce.js'
 import { Ranks } from '../src/core/extras/ranks.js'
-import { loadNetwork, makeNetwork } from './lib/network.mjs'
+import { inside, loadNetwork, makeNetwork } from './lib/network.mjs'
 
 // The real network (test/lib/network.mjs). What the old harness gave the class is given the same way here: an admin
 // code in the environment, and the token gate switched on through a stand-in of its module (the rest of it is the
@@ -17,18 +17,22 @@ function fixture(t) {
   // plain lines of the server's log (console.error): none, unless the test says it expects some
   const server = { lines: null }
   const entities = new Map()
+  // What the class must not touch of a thrown value or a packet fails the test when it is touched. The class reads
+  // such values inside catches of its own (briefError catches what reading an error throws), so each check is made
+  // through inside(), which also reports it at the end of the test.
+  const touched = what => inside(t, () => assert.fail(what))
   const failure = {
     get message() {
-      return assert.fail('thrown message getter')
+      return touched('thrown message getter')
     },
     toString() {
-      assert.fail('thrown value coerced')
+      touched('thrown value coerced')
     },
     toJSON() {
-      assert.fail('thrown value serialized')
+      touched('thrown value serialized')
     },
     [inspect.custom]() {
-      assert.fail('thrown value inspected')
+      touched('thrown value inspected')
     },
   }
   const db = () => ({
@@ -50,7 +54,7 @@ function fixture(t) {
     env: { ADMIN_CODE: 'code' },
     modules: { [SOLANA]: { TOKEN_GATING_ENABLED: true, clearWallet() {} } },
     // (the token gate is on: no balance is read in these tests)
-    init: { db, tokenBalanceService: { get: () => assert.fail('a token balance read') } },
+    init: { db, tokenBalanceService: { get: () => touched('a token balance read') } },
     world: {
       blueprints: { get() {} },
       entities: { get: id => entities.get(id) },
@@ -58,20 +62,23 @@ function fixture(t) {
       events: { emit() {} },
     },
     // the server's log (console.error; the constructor's own once-per-subject lines too)
+    // (the class writes some of these lines inside catches of its own: the user rows' failures)
     log: line => {
-      if (!server.lines) assert.fail('refusals must go through logOnce')
-      assert.equal(typeof line, 'string')
+      if (!server.lines) touched('refusals must go through logOnce')
+      inside(t, () => assert.equal(typeof line, 'string'))
       server.lines.push(line)
     },
   })
   // and nothing else of the console: the class's console under the old harness had only `error`, so a line on any
-  // other of its methods failed the test
-  for (const method of ['warn', 'log', 'info']) {
-    t.mock.method(console, method, () => assert.fail(`console.${method} in a handler`))
+  // other of its methods failed the test. Every other method of the console, as it has them now (a method added to
+  // it later is covered too)
+  for (const method of Object.keys(console)) {
+    if (method === 'error' || method === 'Console' || typeof console[method] !== 'function') continue
+    t.mock.method(console, method, () => touched(`console.${method} in a handler`))
   }
   network.loadedConfig.set('spawn', null)
   const once = createLogOnce(line => {
-    assert.equal(typeof line, 'string')
+    inside(t, () => assert.equal(typeof line, 'string'))
     lines.push(line)
   })
   network.logOnce = (subject, key, line) => {
@@ -91,27 +98,36 @@ function fixture(t) {
     },
     send() {},
   })
-  return { network, lines, calls, entities, socket, serverLines: () => (server.lines = []) }
+  return {
+    network,
+    lines,
+    calls,
+    entities,
+    socket,
+    packet: fields => packet(touched, fields),
+    serverLines: () => (server.lines = []),
+  }
 }
 
-// Packet payloads must never be coerced, serialized, inspected or enumerated for a refusal log.
-function packet(fields) {
+// Packet payloads must never be coerced, serialized, inspected or enumerated for a refusal log (`touched`: the
+// fixture's check, made through inside())
+function packet(touched, fields) {
   return new Proxy(
     {
       ...fields,
       toString() {
-        assert.fail('packet coerced')
+        touched('packet coerced')
       },
       toJSON() {
-        assert.fail('packet serialized')
+        touched('packet serialized')
       },
       [inspect.custom]() {
-        assert.fail('packet inspected')
+        touched('packet inspected')
       },
     },
     {
       ownKeys() {
-        assert.fail('packet enumerated')
+        touched('packet enumerated')
       },
     }
   )
@@ -130,14 +146,14 @@ const refusals = [
     'entity-missing',
     'onEntityModified: no entity found',
     (f, s, id) => {
-      return f.network.onEntityModified(s, packet({ id }))
+      return f.network.onEntityModified(s, f.packet({ id }))
     },
   ],
   [
     'entity-invalid',
     'onEntityAdded: invalid entity',
     (f, s, id) => {
-      return f.network.onEntityAdded(s, packet({ id, type: 'player' }))
+      return f.network.onEntityAdded(s, f.packet({ id, type: 'player' }))
     },
   ],
   [
@@ -145,7 +161,7 @@ const refusals = [
     'onEntityModified: no permitted fields',
     (f, s, id) => {
       f.entities.set(id, s.player)
-      return f.network.onEntityModified(s, packet({ id }))
+      return f.network.onEntityModified(s, f.packet({ id }))
     },
   ],
   [
@@ -153,7 +169,7 @@ const refusals = [
     'onEntityModified: no permitted fields',
     (f, s, id) => {
       f.entities.set(id, { isApp: true, data: { id } })
-      return f.network.onEntityModified(s, packet({ id }))
+      return f.network.onEntityModified(s, f.packet({ id }))
     },
   ],
   [
@@ -162,14 +178,14 @@ const refusals = [
     (f, s, id) => {
       s.player.isBuilder = () => false
       f.entities.set(id, { isApp: true, data: { id, mover: s.id } })
-      return f.network.onEntityModified(s, packet({ id }))
+      return f.network.onEntityModified(s, f.packet({ id }))
     },
   ],
   [
     'setting-unknown',
     'onSettingsModified: unknown setting',
     (f, s, id) => {
-      return f.network.onSettingsModified(s, packet({ key: id }))
+      return f.network.onSettingsModified(s, f.packet({ key: id }))
     },
   ],
 ]
@@ -197,8 +213,8 @@ test('handler logging: an id with a line break or control characters cannot star
   const f = fixture(t)
   const s = f.socket()
   const forged = 'x\n[network] admin granted to everyone\r\u001b[2J\u2028y'
-  await f.network.onEntityModified(s, packet({ id: forged }))
-  await f.network.onSettingsModified(s, packet({ key: forged }))
+  await f.network.onEntityModified(s, f.packet({ id: forged }))
+  await f.network.onSettingsModified(s, f.packet({ key: forged }))
   assert.equal(f.lines.length, 2)
   for (const line of f.lines) {
     assert.ok(!['\n', '\r', '\u001b', '\u2028'].some(character => line.includes(character)), JSON.stringify(line))
@@ -237,15 +253,15 @@ test('handler logging: all refusal reasons are independently logged once per soc
   const refuse = async () => {
     await f.network.onEntityModified(s, null)
     f.entities.set('other', { isPlayer: true })
-    await f.network.onEntityModified(s, packet({ id: 'other' }))
+    await f.network.onEntityModified(s, f.packet({ id: 'other' }))
     f.network.onEntityRemoved(s, 'other')
-    f.network.onSettingsModified(s, packet({ key: 'rank', value: 0 }))
-    f.network.onSettingsModified(s, packet({ key: 'voice', value: false }))
-    await f.network.onRequestBuilderByToken(s, packet({}))
+    f.network.onSettingsModified(s, f.packet({ key: 'rank', value: 0 }))
+    f.network.onSettingsModified(s, f.packet({ key: 'voice', value: false }))
+    await f.network.onRequestBuilderByToken(s, f.packet({}))
     s.player.isBuilder = () => false
     f.entities.set('app', { isApp: true, data: {} })
-    await f.network.onEntityModified(s, packet({ id: 'app' }))
-    f.network.onAi(s, packet({}))
+    await f.network.onEntityModified(s, f.packet({ id: 'app' }))
+    f.network.onAi(s, f.packet({}))
     s.player.isBuilder = () => true
   }
   await refuse()

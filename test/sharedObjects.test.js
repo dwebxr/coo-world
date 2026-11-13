@@ -99,7 +99,13 @@ test("control.onTouch: an app's control gets one stable touch facade; the host k
     onTouch: touch => {
       seen.start = touch
       touch.position.x = 999 // a copy: changes nothing
-      assert.throws(() => Object.defineProperty(touch, 'position', { get: () => 'poison' }), TypeError)
+      // what redefining a property does, asserted below: the controls catch what a control's callback throws
+      try {
+        Object.defineProperty(touch, 'position', { get: () => 'poison' })
+        seen.redefined = 'redefined'
+      } catch (err) {
+        seen.redefined = err.constructor.name
+      }
     },
     onTouchEnd: touch => {
       seen.end = touch // (returning a truthy value would consume the touch)
@@ -124,6 +130,7 @@ test("control.onTouch: an app's control gets one stable touch facade; the host k
     preventDefault() {},
   })
   world.controls.onPointerDown(event(5, 6))
+  assert.equal(seen.redefined, 'TypeError', "an app's touch facade cannot be redefined")
   const record = world.controls.touches.get(7)
   assert.equal(seen.host, record, 'the host control (the player) gets the live record')
   assert.notEqual(seen.start, record)

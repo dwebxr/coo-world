@@ -82,7 +82,8 @@ test('persistence: concurrent save calls serialize and cannot overwrite a later 
   await held.started.promise
   await network.onEntityModified(socket, { id: 'app', position: [2, 0, 0] })
   const second = network.save()
-  await Promise.resolve()
+  // the turns a save takes before its first row (saveDirty yields one before each), with the first write still held
+  for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve))
   assert.equal(writes.length, 1, 'second save must wait for the first write')
   held.release.resolve()
   await Promise.all([first, second])

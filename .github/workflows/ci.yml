@@ -67,8 +67,9 @@ jobs:
           path: test/e2e/out/
           if-no-files-found: ignore
 
-      # LAST STEP OF THE JOB (new steps go above this one). The Docker image is built by hand, so this is the only
-      # automatic check that the server starts without dev dependencies: scripts/prod-smoke.mjs copies build/ and
+      # LAST STEP OF THE JOB (new steps go above this one). The image itself is built and run by image.yml, for changes
+      # that touch what it is built from; this is the check, on every run of this job, that the server starts without
+      # dev dependencies: scripts/prod-smoke.mjs copies build/ and
       # src/ to a temp folder, runs `npm ci --omit=dev` there, starts the server and asks for /health, / and /env.js.
       # It does not build or run the image (Alpine/musl, the image's own install and prune, its HEALTHCHECK command).
       - name: Production install smoke (server starts without dev dependencies)

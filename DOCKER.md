@@ -75,6 +75,32 @@ docker run -d -p 3000:3000 \
 
 Replace `localhost:3000` in the three addresses with the host (and `wss://` / `https://`) your visitors use.
 
+## Checked in CI
+
+`.github/workflows/image.yml` builds this image on a GitHub runner and runs it there with `scripts/image-check.mjs`. This section says what that job checks, not what it found: the job's output and its `image-check` artifact say that for each run.
+
+What its first run found (2026-11-13, on the image as it was then): the container's first process is `npm run start`, run by `node`, as root; the server is its direct child, with no shell in between; both `SIGTERM` and `SIGINT` reached the server, whose log then held `[server] SIG…: saving the world before exit` and `[network] final save complete`; each `docker stop` returned after about 0.2 s, and the container's exit code was 0. That exit code is PID 1's, npm's: the job does not see the server's own exit status, only its log lines and how the container ended.
+
+It runs for a pull request, or a push to `main`, that changes what the image is built from (`Dockerfile`, `.dockerignore`, `package.json`, `package-lock.json`, `.nvmrc`, `scripts/build*.mjs`, `scripts/lib/`), `src/server/`, `src/core/` (bundled into the server; the final save is in `src/core/systems/ServerNetwork.js`), the script or the workflow; once a week (the base image's tag can be pushed again with other contents); and by hand. It is not a required check: with a path filter it does not report on most pull requests. Nothing is pushed, no port is published to the runner, and every setting is made up; the job's output shows the value of a setting with a secret's name (`JWT_SECRET`) as `***` all the same.
+
+What the job asserts:
+
+- `docker build` of the repository with a `COMMIT_HASH` succeeds.
+- A container started with the image's own entry point and command, a named volume at `/app/world` and the settings of the table above becomes `healthy` by the image's own health check. A `node build/index.js` process runs in it, and `GET /status`, asked with `curl` inside the container, carries the `COMMIT_HASH` the build was given.
+- `docker stop -t 10` (SIGTERM, Docker's defaults): the container is gone within 8 s with exit code 0, and its log holds the server's `[server] SIGTERM: saving the world before exit` and `[network] final save complete` and none of the lines the server prints when something was not stopped or not saved: `[server] stopping the world failed`, `[server] close failed`, `[server] final save failed`, the save's deadline, a second signal, a signal during start-up, `[network] not persisted`, `[network] error saving`, `… was not loaded; changes will not be saved`, a user's row `not stored`, `[storage] failed to save` (`NOT_STOPPED_OR_SAVED` in `scripts/lib/imageCheck.mjs`, each quoted from its source). Any of them fails the stop whatever the exit code: the server still exits 0 after a failed stop of the world or of its listener.
+- A second container on the same volume, stopped with `docker stop --signal SIGINT -t 5` (the signal and the timeout Fly documents as its defaults): the same within 4 s, with `SIGINT` in the server's line.
+- The 8 s and the 4 s are measured on Docker's own clock: from the `kill` event Docker records when it sends the signal to the container's `die` event (or, without one, its `State.FinishedAt`), read with `docker events` after the stop. The time the `docker stop` command itself took holds the CLI's start and the runner's scheduling as well; it is judged only when Docker's events cannot be read, and then against the whole timeout (10 s, 5 s), which a container killed after the timeout still fails.
+- A third container on the same volume becomes healthy. That is all it shows: nothing is changed in the world before the stops, so an image that started on an empty world each time would pass it too.
+
+What it records without asserting, in the job's output and in the artifact (`image-check.json` and each container's log): the image's configuration (user, entry point, command, health check); who PID 1 is and whether it has a handler for SIGTERM and for SIGINT; whether a shell sits between PID 1 and the server; the uids; how long the start took; for each stop the signals Docker sent (a second `kill` with SIGKILL means the timeout ran out), the exit code its `die` event carries, and how long the `docker stop` command took; what is in the world folder.
+
+What it does not check:
+
+- **Fly.** A Fly machine is not `docker run`. Fly's own init is PID 1 there; the stop signal and the time before the kill are Fly's (`kill_signal`, `kill_timeout`); a volume is mounted with the owner the platform gives it; and the health checks are Fly's, not the Dockerfile's `HEALTHCHECK`. A green job says the image stops cleanly under Docker with these two signals and timeouts, not that a deploy does.
+- **Other architectures.** One build, for the runner's own (`linux/amd64`). `docker.yml` also builds `linux/arm64`; no job runs that image.
+- **A world in use.** No client connects and nothing is changed in the world before the stops: they show that the signal reaches the server and that its final save runs and returns in time, not that a changed row is written (the persistence tests are for that). PostgreSQL and S3 are not used.
+- **Other ways to start it.** Another `PORT` than 3000, another user than the image's, a host folder instead of a named volume.
+
 ## The workflow
 
 `.github/workflows/docker.yml` runs only when it is started by hand (`workflow_dispatch`). It builds the image for `linux/amd64` and `linux/arm64` with `COMMIT_HASH` set to the commit, and pushes it to `ghcr.io/<owner>/<repository>` under the tags `docker/metadata-action` makes from that file's settings. Its comment says production deploys build from the Dockerfile through Fly; the Fly configuration is not part of this repository.

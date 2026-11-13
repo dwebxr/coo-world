@@ -37,7 +37,7 @@ import {
   sleep,
   waitUntil,
 } from './lib/common.mjs'
-import { REFUSED_INLINE, launchBrowser, runInlineScript, saveArtifacts } from './lib/browser.mjs'
+import { REFUSED_INLINE, launchBrowser, runInlineScript, saveArtifacts, watchPolicy } from './lib/browser.mjs'
 import { installAsset, startServer, worldAssetsDir } from './lib/server.mjs'
 import { WireClient } from './lib/ws.mjs'
 
@@ -110,6 +110,10 @@ let browser
 let observer
 let recipient
 const pages = []
+// what the world page's policy refused in each document of each browser context of the run, a page that was dropped
+// and opened again included (lib/browser.mjs watchPolicy)
+const violationLists = []
+const violations = () => violationLists.flat()
 
 // Mock Polygon RPC: chain id, ERC-1155 balanceOf(owner, id) for NFT from the holders table, and receipts,
 // blocks and the finalized block for the transactions the fake wallets sent.
@@ -228,6 +232,7 @@ async function connectWallet({ page }) {
 async function openPage(account, name) {
   // A small viewport keeps the software renderer's share of each frame low, as in token-gate.mjs.
   const context = await browser.newContext({ viewport: { width: 480, height: 320 }, serviceWorkers: 'block' })
+  violationLists.push(await watchPolicy(context))
   const page = await context.newPage()
   page.setDefaultTimeout(30000 * TIMEOUT_SCALE)
   // pageErrorAt: when each page error arrived (the reload step allows one, in a time window)
@@ -1073,15 +1078,26 @@ try {
     for (const entry of pages) eq(entry.pageErrors.length, 0, entry.pageErrors.join('\n'))
   })
 
-  // tips and the gate above are inside the world page's policy, which the harness's server enforces
-  // (lib/server.mjs): no browser posted a report (they are posted a moment after the event), and a refusal would have
-  // broken the step that needed it
-  await step('the enforced policy: nothing the tips and the gate did is outside it', async () => {
+  // The world page's policy is enforced by the harness's server (lib/server.mjs): a refusal in the tips and the gate
+  // above would have broken the step that needed it. No document of the run's browser contexts saw a violation, and
+  // no report had reached the server three seconds after the last step (reports are posted a moment after the event;
+  // one that comes later than that is not seen here).
+  await step('the enforced policy: nothing the tips and the gate did was refused', async () => {
     await sleep(3000)
+    eq(JSON.stringify(violations()), '[]', 'violations seen by the documents')
     eq(server.lines(/\[csp\]/).join('\n'), '')
-    // and a report would have come: a script outside the policy is refused, and the server writes the report of it
+    // and that the policy is enforced: a script outside it is refused, the document is told, and the server writes
+    // the report of it
     eq(await runInlineScript(pages[0].page), undefined, 'the inline script did not run')
-    await waitUntil(() => server.lines(REFUSED_INLINE).length === 1, { timeout: 15000, message: 'the report' })
+    await waitUntil(() => server.lines(REFUSED_INLINE).length === 1 && violations().length > 0, {
+      timeout: 15000,
+      message: 'the report and the event',
+    })
+    const seen = violations()
+    eq(seen.length, 1, `one violation: ${JSON.stringify(seen)}`)
+    eq(seen[0].directive, 'script-src-elem', 'its directive')
+    eq(seen[0].blocked, 'inline', 'what it was')
+    eq(seen[0].disposition, 'enforce', 'refused, not only reported')
     eq(server.lines(/\[csp\]/).length, 1, 'that report and no other')
   })
 } catch (err) {

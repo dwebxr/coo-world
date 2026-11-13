@@ -9,7 +9,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { parseSiweMessage } from 'viem/siwe'
 
 import { REPO_ROOT, TIMEOUT_SCALE, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
-import { REFUSED_INLINE, launchBrowser, runInlineScript, saveArtifacts } from './lib/browser.mjs'
+import { REFUSED_INLINE, launchBrowser, runInlineScript, saveArtifacts, watchPolicy } from './lib/browser.mjs'
 import { startServer } from './lib/server.mjs'
 import { WireClient } from './lib/ws.mjs'
 
@@ -183,6 +183,8 @@ try {
     await ctx.routeWebSocket(/walletconnect\.(org|com)|reown\.com/, ws => ws.close())
   }
   await blockWalletConnect(context)
+  // what the world page's policy refused in every document of the context (lib/browser.mjs)
+  const violations = await watchPolicy(context)
   const signed = []
   // The wallet's key stays in Node; the page only sees the signature. Both are on the context, so a later
   // page in it gets the same wallet.
@@ -410,15 +412,25 @@ try {
     eq(pageErrors.length, 0, pageErrors.join('\n'))
   })
 
-  // the wallet flows above (an injected provider, the WalletConnect sheet) are inside the world page's policy, which
-  // the harness's server enforces (lib/server.mjs): no browser posted a report (they are posted a moment after the
-  // event), and a refusal would have broken the flow that needed it
-  await step('the enforced policy: nothing the wallet flows did is outside it', async () => {
+  // The world page's policy is enforced by the harness's server (lib/server.mjs): a refusal in the wallet flows above
+  // (an injected provider, the WalletConnect sheet) would have broken the flow that needed it. No document of the
+  // context saw a violation, and no report had reached the server three seconds after the last step (reports are
+  // posted a moment after the event; one that comes later than that is not seen here).
+  await step('the enforced policy: nothing the wallet flows did was refused', async () => {
     await sleep(3000)
+    eq(JSON.stringify(violations), '[]', 'violations seen by the documents')
     eq(server.lines(/\[csp\]/).join('\n'), '')
-    // and a report would have come: a script outside the policy is refused, and the server writes the report of it
+    // and that the policy is enforced: a script outside it is refused, the document is told, and the server writes
+    // the report of it
     eq(await runInlineScript(page), undefined, 'the inline script did not run')
-    await waitUntil(() => server.lines(REFUSED_INLINE).length === 1, { timeout: 15000, message: 'the report' })
+    await waitUntil(() => server.lines(REFUSED_INLINE).length === 1 && violations.length > 0, {
+      timeout: 15000,
+      message: 'the report and the event',
+    })
+    eq(violations.length, 1, `one violation: ${JSON.stringify(violations)}`)
+    eq(violations[0].directive, 'script-src-elem', 'its directive')
+    eq(violations[0].blocked, 'inline', 'what it was')
+    eq(violations[0].disposition, 'enforce', 'refused, not only reported')
     eq(server.lines(/\[csp\]/).length, 1, 'that report and no other')
   })
 } catch (err) {

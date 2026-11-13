@@ -2533,15 +2533,15 @@ async function probes(admin, watcher) {
   )
 
   // ---------- the world page's policy, enforced ----------
-  // The server runs with CSP_MODE=enforce (lib/server.mjs). Everything this run did in the browser (the world,
-  // uploads, the script editor from cdnjs with its workers, the apps above) is inside the policy: no document saw a
-  // violation, and no browser posted one (a worker's would only show there). Under enforcement a violation would also
-  // have broken the step that needed it. Reports are posted a moment after the event.
+  // The server runs with CSP_MODE=enforce (lib/server.mjs): a refusal in what this run did in the browser (the world,
+  // uploads, the script editor from cdnjs with its workers, the apps above) would have broken the step that needed it.
+  // No document saw a violation, and no report had reached the server three seconds after the last step (a worker's
+  // violation shows only there; reports are posted a moment after the event, and one later than that is not seen).
   await sleep(3000)
   const posted = server.lines(/\[csp\]/)
   record(
     violations.length === 0 && posted.length === 0,
-    'B28 the enforced policy: nothing this run did is outside it',
+    'B28 the enforced policy: nothing this run did was refused',
     JSON.stringify({ violations: violations.slice(0, 5), posted: posted.slice(0, 5) })
   )
   // And that it is enforced: an inline script without the nonce is outside the policy; it does NOT run, the document

@@ -96,21 +96,6 @@ export async function startServer({
   child.stderr.on('data', onData)
   child.on('exit', code => (server.exited = code ?? 'signal'))
   const readMemory = memoryProbe ? memoryReader(child) : null
-  const deadline = Date.now() + timeout
-  while (!server.out.includes(`server listening on port ${port}`)) {
-    if (server.exited !== null) throw new Error(`server exited early (${server.exited}):\n${server.out.slice(-3000)}`)
-    if (Date.now() > deadline) throw new Error(`server did not start:\n${server.out.slice(-3000)}`)
-    await sleep(200)
-  }
-  server.count = text => server.out.split(text).length - 1
-  server.lines = pattern => server.out.split('\n').filter(line => pattern.test(line))
-  // `heapUsed + external` after a full collection, in MiB (memory-probe.js). Unlike resident memory it does not
-  // depend on when the collector last ran. `options` and errors as for memoryReader() in memory.mjs.
-  server.retainedMiB = async options => {
-    if (!readMemory) throw new Error('retainedMiB() needs startServer({ memoryProbe: true })')
-    const { heapUsed, external } = await readMemory(options)
-    return Math.round((heapUsed + external) / MiB)
-  }
   server.stop = async () => {
     if (server.exited === null) {
       const asked = Date.now()
@@ -125,6 +110,28 @@ export async function startServer({
     }
     if (log !== null) fs.closeSync(log)
     fs.rmSync(worldDir, { recursive: true, force: true })
+  }
+  // A start-up that fails (the process ended early, or it did not say it listens before the deadline) stops what it
+  // started (the process, the log, the world directory) before it throws: the caller gets no handle to stop it with.
+  const deadline = Date.now() + timeout
+  try {
+    while (!server.out.includes(`server listening on port ${port}`)) {
+      if (server.exited !== null) throw new Error(`server exited early (${server.exited}):\n${server.out.slice(-3000)}`)
+      if (Date.now() > deadline) throw new Error(`server did not start:\n${server.out.slice(-3000)}`)
+      await sleep(200)
+    }
+  } catch (err) {
+    await server.stop()
+    throw err
+  }
+  server.count = text => server.out.split(text).length - 1
+  server.lines = pattern => server.out.split('\n').filter(line => pattern.test(line))
+  // `heapUsed + external` after a full collection, in MiB (memory-probe.js). Unlike resident memory it does not
+  // depend on when the collector last ran. `options` and errors as for memoryReader() in memory.mjs.
+  server.retainedMiB = async options => {
+    if (!readMemory) throw new Error('retainedMiB() needs startServer({ memoryProbe: true })')
+    const { heapUsed, external } = await readMemory(options)
+    return Math.round((heapUsed + external) / MiB)
   }
   return server
 }

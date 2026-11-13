@@ -38,8 +38,9 @@ The server build has to come after `client:build` and `viewer:build`: each of th
 
 The servers the harness starts (`lib/server.mjs`) enforce the world page's policy (`CSP_MODE=enforce`): what a run
 does that the policy refuses breaks the step that needed it, and `fullstack.mjs` (B28, B29), `evm-wallet.mjs` and
-`evm-tips-gate.mjs` end by checking that no browser reported a violation and that an inline script without the nonce
-is refused and reported. `gate-extras.mjs` alone starts a server in report mode, the server's default.
+`evm-tips-gate.mjs` end by checking that no document of the run saw a violation and no report had reached the server
+three seconds after the last step (a later one is not seen), and that an inline script without the nonce is refused
+(the document's event says `enforce`) and reported. `gate-extras.mjs` alone starts a server in report mode, the server's default.
 
 Options: `--port=<n>` picks the server port, `--world=<dir>` copies an existing world (eg the local
 multi-app `world/`) instead of the default world that the server bootstraps from `src/world`;

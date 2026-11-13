@@ -29,9 +29,6 @@ const buildConfig = () => ({
   requiredTokenAmount: parseRequiredTokenAmount(resolveEnv('PUBLIC_REQUIRED_TOKEN_AMOUNT')),
 })
 
-// Solana統合が設定済み (=有効) かどうか
-export const isSolanaConfigured = () => !!buildConfig().tokenMint
-
 const uint8ToBase64 = bytes => {
   let bin = ''
   for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])

@@ -146,8 +146,6 @@ export const codeToProp = {
   MetaLeft: 'metaLeft',
 }
 
-export const propToCode = Object.fromEntries(Object.entries(codeToProp).map(([code, prop]) => [prop, code]))
-
 export const propToLabel = {
   keyA: 'A',
   keyB: 'B',

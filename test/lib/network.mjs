@@ -166,8 +166,9 @@ const tests = new WeakMap()
 const ENDED = 'makeNetwork after the end of its test: the network would not be stopped, nor the environment put back'
 function testState(t) {
   let state = tests.get(t)
-  // (a test's state is used up at its end: a network made later, from another hook of the test, would be left)
-  if (state?.ended) throw new Error(ENDED)
+  // (a test's state is used up at its end: a network made later, from another hook of the test, would be left. So
+  // would the first one of a test that is over already: a body that timed out and goes on running)
+  if (state?.ended || t.signal?.aborted) throw new Error(ENDED)
   if (state) return state
   if (holder) throw new Error(CONCURRENT)
   state = { networks: [], modules: new Map(), env: new Map(), ended: false, threw: false, failure: undefined }

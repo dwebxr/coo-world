@@ -356,6 +356,15 @@ test('network helper: a network cannot be made for a test that is over', async t
   const next = handedContext(t)
   makeNetwork(next.context, { net })
   assert.deepEqual(await next.end(), { threw: false })
+  // nor for one that was over before it made its first (a body that timed out and goes on running)
+  const late = handedContext(t)
+  assert.deepEqual(await late.end(), { threw: false })
+  assert.throws(() => makeNetwork(late.context, { net, env: { ADMIN_CODE: 'late' } }), /after the end of its test/)
+  assert.deepEqual(timers(), before)
+  assert.notEqual(process.env.ADMIN_CODE, 'late')
+  const after = handedContext(t)
+  makeNetwork(after.context, { net })
+  assert.deepEqual(await after.end(), { threw: false })
 })
 
 test('network helper: env varies a constant read at import, in one call that restores the environment', async t => {

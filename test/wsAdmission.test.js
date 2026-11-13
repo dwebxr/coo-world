@@ -2,12 +2,16 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { createConnectionLimits, readConnectionLimitsEnv } from '../src/server/connectionLimits.js'
-import { loadRoute, makeNetwork } from './lib/networkHarness.mjs'
+import { loadNetwork, makeNetwork } from './lib/network.mjs'
+import { loadRoute } from './lib/wsRoute.mjs'
 import { PROTOCOL_VERSION } from '../src/core/packets.js'
 
-function fixture() {
+// the route on a network of the real class (test/lib/network.mjs)
+const net = await loadNetwork()
+
+function fixture(t) {
   const limits = createConnectionLimits({ ...readConnectionLimitsEnv({}), ratePerMin: 0 })
-  const route = loadRoute(limits, makeNetwork())
+  const route = loadRoute(limits, makeNetwork(t, { net }))
   const transport = new EventEmitter()
   const request = { ws: true, raw: { socket: transport }, headers: {}, ip: '::ffff:102:304' }
   const reply = {
@@ -26,8 +30,8 @@ function fixture() {
   return { limits, ...route, transport, request, reply }
 }
 
-test('preValidation: HTTP GETs take no lease and only one upgrade lease may occupy a transport', () => {
-  const { limits, preValidation, request, reply, transport } = fixture()
+test('preValidation: HTTP GETs take no lease and only one upgrade lease may occupy a transport', t => {
+  const { limits, preValidation, request, reply, transport } = fixture(t)
   let next = 0
   for (let i = 0; i < 8; i++) preValidation({ ...request, ws: false }, reply, () => next++)
   assert.equal(limits.stats().active, 0)
@@ -43,9 +47,9 @@ test('preValidation: HTTP GETs take no lease and only one upgrade lease may occu
   assert.equal(limits.stats().active, 0)
 })
 
-test('preValidation: already destroyed and synchronously closing transports release their lease', () => {
+test('preValidation: already destroyed and synchronously closing transports release their lease', t => {
   for (const duringRegistration of [false, true]) {
-    const { limits, preValidation, request, reply, transport } = fixture()
+    const { limits, preValidation, request, reply, transport } = fixture(t)
     transport.destroyed = !duringRegistration
     if (duringRegistration) {
       transport.once = (name, fn) => {
@@ -59,8 +63,8 @@ test('preValidation: already destroyed and synchronously closing transports rele
   }
 })
 
-test('transport: actual registration pins all six ws limits', () => {
-  const { options } = fixture()
+test('transport: actual registration pins all six ws limits', t => {
+  const { options } = fixture(t)
   assert.deepEqual(
     { ...options.options },
     {
@@ -74,9 +78,10 @@ test('transport: actual registration pins all six ws limits', () => {
   )
 })
 
-test('the /ws route hands the connection its address key and wider networks, from the header the limits use', () => {
+test('the /ws route hands the connection its address key and wider networks, from the header the limits use', t => {
   const calls = []
-  const network = { onConnection: (...args) => calls.push(args), write() {} }
+  const network = makeNetwork(t, { net })
+  network.onConnection = (...args) => calls.push(args)
   const connect = (config, req) => {
     const { register } = loadRoute(
       createConnectionLimits({ ...readConnectionLimitsEnv({}), ratePerMin: 0 }),

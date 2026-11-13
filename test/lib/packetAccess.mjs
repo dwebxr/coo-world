@@ -3,7 +3,7 @@
 //
 // test/packetAccess.test.js holds this table to the registry (a name without a rule fails, and so does a rule for a
 // name that is gone) and to the server (a name whose rules say it is handled has an `on<Name>`, and the reverse).
-// test/packetRefusals.test.js asks the handlers themselves, rule by rule, through the network harness.
+// test/packetRefusals.test.js asks the handlers themselves, rule by rule, on the real class (test/lib/network.mjs).
 // test/e2e/access-control.mjs sends the packets against a running server: each rule names the case there that
 // tries it (`e2e`), or the existing test that does (`cover`), and the suite fails when a case named here did not
 // run. So a new packet cannot be added without saying who may send it, and a rule cannot claim a case that does

@@ -424,14 +424,17 @@ test('Apps: unknown players and internal-event refusals return false without sen
     internalEvents: ['update'],
     console: { error: line => logs.push(line) },
   })
+  // (nothing sent: recorded and asserted after, as a throw in the methods could be caught there)
+  const sent = []
   const world = {
-    network: { isServer: true, send: () => assert.fail('unexpected send') },
+    network: { isServer: true, send: (...args) => (sent.push(args), true) },
     entities: { get: () => undefined },
   }
   const apps = new Apps(world)
   assert.equal(apps.appMethods.send({}, 'update', {}), false)
   assert.equal(apps.appMethods.sendTo({}, 'missing', 'update', {}), false)
   assert.equal(apps.appMethods.sendTo({}, 'missing', 'probe', {}), false)
+  assert.deepEqual(sent, [], 'unexpected send')
   assert.equal(logs.length, 2)
 })
 

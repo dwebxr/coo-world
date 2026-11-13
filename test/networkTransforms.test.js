@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createLogOnce } from '../src/core/extras/logOnce.js'
 import { readPacket } from '../src/core/packets.js'
-import { fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
+import { fakeWs, inside, loadNetwork, makeNetwork } from './lib/network.mjs'
 import { loadClient } from './lib/clientHarness.mjs'
 
 const Player = loadClient('core/entities/PlayerRemote.js', 'PlayerRemote')
@@ -80,7 +80,8 @@ function fixture(t, spawnRow) {
   })
   const join = async () => {
     const ws = fakeWs()
-    ws.close = () => assert.fail('join unexpectedly failed')
+    // (a join that fails closes inside onConnection's catch: inside() reports it at the end of the test as well)
+    ws.close = () => inside(t, () => assert.fail('join unexpectedly failed'))
     await network.onConnection(ws, {})
     ws.drain()
     const [method, snapshot] = readPacket(ws.packets[0])

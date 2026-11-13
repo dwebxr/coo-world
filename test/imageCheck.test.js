@@ -442,8 +442,11 @@ test('stop: `during start-up, before the world was loaded` (shutdown.js:36) fail
 // any object (`console`, a `log` handed in, `audit` where `const audit = console`), its key written or a computed
 // string; every call of a name the file binds to such a member (`const { error } = console`,
 // `const report = console.error`, `= console.warn.bind(console)`) or named logOnce; and such a member or name called
-// through `.call`, `.apply`, `Reflect.apply` or a `.bind(…)` called at once. -> [{ call, line }]: the call's text, from
-// its callee to its closing parenthesis, and the line it starts on. (What it does not see: the tripwire's comment.)
+// through `.call`, `.apply`, `Reflect.apply` or a `.bind(…)` called at once; and every direct call of `console`, or of
+// a parameter the function's signature defaults to it, whatever the member's name (`console.table(…)`). The ways the
+// stop path's own functions may not log are refused by loggerViolations, below. -> [{ call, line }]: the call's text,
+// from its callee to its closing parenthesis, and the line it starts on. (What it does not see: the tripwire's
+// comment.)
 const LOG_MEMBERS = new Set(['error', 'warn', 'log', 'info', 'debug', 'trace', 'logOnce'])
 const isMember = node => node?.type === 'MemberExpression' || node?.type === 'OptionalMemberExpression'
 const memberKey = node => {
@@ -487,6 +490,8 @@ const isCallNode = node => node?.type === 'CallExpression' || node?.type === 'Op
 function logCalls({ node, ast, source }) {
   const names = loggerNames(ast)
   const isLogger = at => isLogMember(at) || (at?.type === 'Identifier' && names.has(at.name))
+  // (and every direct call of `console`, or of a parameter defaulted to it, whatever its name: `console.table(…)`)
+  const loggers = new Set(['console', ...loggerParams(definitionFunction(node)).map(param => param.name)])
   const calls = []
   const visit = at => {
     if (isCallNode(at)) {
@@ -494,6 +499,10 @@ function logCalls({ node, ast, source }) {
       const key = isMember(callee) ? memberKey(callee) : null
       const logs =
         isLogger(callee) ||
+        (isMember(callee) &&
+          !callee.computed &&
+          callee.object.type === 'Identifier' &&
+          loggers.has(callee.object.name)) ||
         // console.warn.call(console, …), .apply(console, […])
         (['call', 'apply'].includes(key) && isLogger(callee.object)) ||
         // Reflect.apply(console.warn, console, […])
@@ -647,14 +656,19 @@ test('stop: the lines looked for are the ones the server prints', async () => {
 // stop. Each is found by parsing (test/lib/networkSource.mjs) wherever it is written; the network's in all of its
 // files, the class and the modules of src/server/network/ that parts of it move to, every definition of the name (a
 // member of the class that hands its call on to a module's function is one too), and its log calls are read from the
-// syntax tree (logCalls, above; the parser is @babel/parser). What it cannot see, said plainly:
+// syntax tree (logCalls, above; the parser is @babel/parser). In these functions `console`, and a parameter their own
+// signature defaults to it (installShutdown's `{ log = console } = {}`), may only be called at once by a written name
+// (`console.error(…)`, `log.log(…)`): any other use of either is a violation, reported and not followed
+// (loggerViolations, above), so a logger kept in another name, called through `.call`, `.apply`, `.bind` or
+// `Reflect.apply`, or by a computed level (`console[level](…)`) fails the test. A member call named error, warn, log,
+// info, debug, trace or logOnce on any other object (`audit.error(…)`, `get().warn(…)`, `this.logOnce(…)`) is counted
+// and sorted as a log line, as is a call of a name the file binds to such a member outside these functions. What it
+// cannot see, said plainly:
 // - a function the named ones call: a helper that logs (briefError, the user rows' own module, Storage's other
 //   methods) is not read;
-// - a logger given a second local name, or by an assignment (`const warning = console.warn; const report = warning`,
-//   `let report; report = console.warn`): only a name a declaration binds to a log member directly is followed;
-// - a logger reached through a call or another module (`const f = pick(console); f(…)`, `import { warn } from …`),
-//   a level computed at run time (`console[level](…)`), console methods outside the set (`dir`, `table`, `assert`,
-//   `count`, `timeLog`), and output by other means (`process.stderr.write`, `process.emitWarning`, `util.debuglog`);
+// - a logger reached through another module or a call outside these functions and called by a plain name in them
+//   (`import { warn } from …`, `const f = pick(console)` at a module's top, then `f(…)`);
+// - output by other means (`process.stderr.write`, `process.emitWarning`, `util.debuglog`);
 // - what a line says beyond its call's text: a call is sorted by the parts its text carries, so a message built
 //   elsewhere and passed in a variable is unsorted (and fails the test) unless the call's text carries a known part,
 //   and a call that carries a known part passes whatever else it says.
@@ -676,12 +690,90 @@ const STOP_PATH_REQUIRED = [': saving the world before exit', '[network] final s
 
 // What the stop path logs that the verdict does not know, and how many log calls each function has, in a checkout
 // (`root`; this one by default)
+// The loggers an inspected function may use, and how: the identifier `console`, and a parameter its own signature
+// gives `console` as a default, as a property of a destructured options parameter (`{ log = console } = {}`,
+// installShutdown's; that shape only), each only as the object of a direct call by a written name (`console.error(…)`,
+// `log.log(…)`, optional ones included). Anything else the function does with either is a violation, reported and
+// not followed: used as a value (assigned, passed, returned, put into another name), a member of it that is not
+// called at once (taken, destructured, `.call`, `.apply`, `.bind`, `Reflect.apply`), a computed member
+// (`console[level](…)`, `console['warn'](…)` too), the parameter given another value or either name bound again.
+function definitionFunction(node) {
+  if (node.type === 'ClassProperty' || node.type === 'ObjectProperty') return node.value
+  return node.type === 'VariableDeclarator' ? node.init : node
+}
+function loggerParams(fn) {
+  const accepted = []
+  for (const param of fn.params ?? []) {
+    const pattern = param.type === 'AssignmentPattern' ? param.left : param
+    if (pattern.type !== 'ObjectPattern') continue
+    for (const property of pattern.properties) {
+      const value = property.type === 'ObjectProperty' && !property.computed ? property.value : null
+      if (
+        value?.type === 'AssignmentPattern' &&
+        value.left.type === 'Identifier' &&
+        value.right.type === 'Identifier' &&
+        value.right.name === 'console'
+      ) {
+        accepted.push({ name: value.left.name, nodes: [value.left, value.right] })
+      }
+    }
+  }
+  return accepted
+}
+function loggerViolations({ node, source }, name) {
+  const params = loggerParams(definitionFunction(node))
+  const loggers = new Set(['console', ...params.map(param => param.name)])
+  const accepted = new Set(params.flatMap(param => param.nodes))
+  const found = []
+  const say = (at, what) =>
+    found.push(`${name}, line ${at.loc.start.line}: ${what}: ${source.slice(at.start, at.end).replace(/\s+/g, ' ')}`)
+  const visit = (at, parents) => {
+    if (at.type === 'Identifier' && loggers.has(at.name) && !accepted.has(at)) {
+      const parent = parents.at(-1)
+      const above = parents.at(-2)
+      const isKey =
+        (isMember(parent) && parent.property === at && !parent.computed) ||
+        (['ObjectProperty', 'ObjectMethod', 'ClassProperty', 'ClassMethod'].includes(parent?.type) &&
+          parent.key === at &&
+          !parent.computed &&
+          parent.value !== at)
+      if (!isKey) {
+        if (isMember(parent) && parent.object === at) {
+          if (parent.computed) say(parent, 'a computed member of a logger')
+          else if (!(isCallNode(above) && above.callee === parent))
+            say(parent, 'a member of a logger not called at once')
+        } else if (parent?.type === 'AssignmentExpression' && parent.left === at)
+          say(parent, 'a logger given another value')
+        else if (
+          (parent?.type === 'VariableDeclarator' && parent.id === at) ||
+          ((parent?.type === 'FunctionDeclaration' || parent?.type === 'ClassDeclaration') && parent.id === at) ||
+          (FUNCTION_NODES.has(parent?.type) && parent.params.includes(at))
+        ) {
+          say(at, "a logger's name bound again")
+        } else say(parent ?? at, 'a logger used as a value')
+      }
+    }
+    for (const child of children(at)) visit(child, [...parents, at])
+  }
+  visit(node, [])
+  return found
+}
+const FUNCTION_NODES = new Set([
+  'FunctionDeclaration',
+  'FunctionExpression',
+  'ArrowFunctionExpression',
+  'ObjectMethod',
+  'ClassMethod',
+])
+
 function stopPathProblems(functions = STOP_PATH_FUNCTIONS, root) {
   const unsorted = []
+  const violations = []
   const counts = {}
   for (const [name, files] of functions) {
     counts[name] = 0
     for (const definition of findFunction(name, files, root)) {
+      violations.push(...loggerViolations(definition, `${definition.file} ${name}`))
       const calls = logCalls(definition).map(({ call }) => call)
       counts[name] += calls.length
       for (const call of calls) {
@@ -693,11 +785,13 @@ function stopPathProblems(functions = STOP_PATH_FUNCTIONS, root) {
       }
     }
   }
-  return { unsorted, counts }
+  return { unsorted, violations, counts }
 }
 
 test('stop: every log line of the stop and save paths is forbidden, required or allowed with a reason', () => {
-  const { unsorted, counts } = stopPathProblems()
+  const { unsorted, violations, counts } = stopPathProblems()
+  // a logger used otherwise than called at once, by its written name: refused, not followed
+  assert.deepEqual(violations, [], 'a logger kept in a name or called indirectly in a stop-path function')
   assert.deepEqual(
     unsorted,
     [],
@@ -743,12 +837,88 @@ test('stop: every log line of the stop and save paths is forbidden, required or 
       'a logger taken out, through call',
       `const report = console.error\nexport async function saveDirty() {\n  report.call(console, ${line})\n}\n`,
     ],
+    ['another method of console', `export async function saveDirty() {\n  console.table(${line})\n}\n`],
   ]) {
     const added = definitionsIn(source, 'saveDirty').flatMap(definition => logCalls(definition).map(at => at.call))
     assert.equal(added.length, 1, `${shape}: ${added}`)
     assert.ok(added[0].includes(line), shape)
     assert.ok(!NOT_STOPPED_OR_SAVED.some(part => added[0].includes(part)))
   }
+  // the loggers: what a stop-path function may do with `console`, or with installShutdown's `log` parameter, is to
+  // call a member of it at once by its written name; anything else is a violation, and is not followed
+  const violationsIn = (source, name) =>
+    definitionsIn(source, name).flatMap(definition => loggerViolations(definition, name))
+  const inSave = body => `export async function saveDirty() {\n${body}\n}\n`
+  const inShutdown = body => `export function installShutdown({ proc = process, log = console } = {}) {\n${body}\n}\n`
+  for (const [shape, source, name] of [
+    [
+      'a chain of local names (Codex)',
+      inSave("  const warning = console.warn\n  const report = warning\n  report('[network] row skipped')"),
+      'saveDirty',
+    ],
+    [
+      'a chain of three',
+      inSave("  const a = console.warn\n  const b = a\n  const report = b\n  report('x')"),
+      'saveDirty',
+    ],
+    [
+      'a choice between two',
+      inSave("  const report = flag ? console.warn : console.error\n  report('x')"),
+      'saveDirty',
+    ],
+    [
+      'an assignment (Codex)',
+      inSave("  let report\n  report = console.warn\n  report('[network] row skipped')"),
+      'saveDirty',
+    ],
+    [
+      'an assignment in a branch',
+      inSave("  let report = null\n  if (flag) report = console.error\n  report?.('x')"),
+      'saveDirty',
+    ],
+    ['a destructuring assignment', inSave("  let report\n  ;({ warn: report } = console)\n  report('x')"), 'saveDirty'],
+    ['through call', inSave("  console.warn.call(console, 'x')"), 'saveDirty'],
+    ['through Reflect.apply', inSave("  Reflect.apply(console.warn, console, ['x'])"), 'saveDirty'],
+    ['a computed level', inSave("  console[level]('x')"), 'saveDirty'],
+    ['a computed written name', inSave("  console['warn']('x')"), 'saveDirty'],
+    ['console handed on', inSave("  report(console, 'x')"), 'saveDirty'],
+    ['the parameter taken out', inShutdown("  const report = log.error\n  report('[server] x')"), 'installShutdown'],
+    [
+      'the parameter in a chain',
+      inShutdown("  const pick = log.error\n  const report = pick\n  report('[server] x')"),
+      'installShutdown',
+    ],
+    [
+      'the parameter given another value',
+      inShutdown("  log = makeLogger()\n  log.error('[server] x')"),
+      'installShutdown',
+    ],
+    ['a computed member of the parameter', inShutdown("  log[level]('[server] x')"), 'installShutdown'],
+    [
+      'a plain parameter defaulted to console',
+      "export function installShutdown(log = console) {\n  log.error('[server] x')\n}\n",
+      'installShutdown',
+    ],
+  ]) {
+    assert.ok(violationsIn(source, name).length >= 1, `${shape}:\n${source}`)
+  }
+  // and what the stop path does today: none
+  assert.deepEqual(
+    violationsIn(
+      inSave(
+        "  console.error('[network] x')\n  console?.log('y')\n  console.warn?.('z')\n  this.logOnce(this, 'k', 'w')"
+      ),
+      'saveDirty'
+    ),
+    []
+  )
+  assert.deepEqual(
+    violationsIn(
+      inShutdown("  log.error('[server] x')\n  log.log('y')\n  Promise.resolve().catch(err => log.error(err))"),
+      'installShutdown'
+    ),
+    []
+  )
   for (const { reason } of STOP_PATH_ALLOWED) assert.ok(reason.length > 10)
 })
 

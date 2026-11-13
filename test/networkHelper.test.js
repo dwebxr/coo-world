@@ -500,13 +500,125 @@ test('network helper: a check that fails inside a catch of the class fails the e
   const ended = await end()
   assert.equal(ended.threw, true)
   assert.equal(ended.error.message, 'seen in the handler')
-  // a check that passes returns what it returns; outside a test that holds the helper, one that fails only throws
+  // a check that passes returns what it returns (a test that never made a network: nothing to report)
   assert.equal(
     inside(t, () => 'value'),
     'value'
   )
-  assert.throws(() => inside(t, () => assert.fail('only thrown')), /only thrown/)
 })
+
+test('network helper: a check that fails while the end stops the networks is reported by that end', async t => {
+  const { context, end } = handedContext(t)
+  const network = makeNetwork(context, { net })
+  // a collaborator of the stop that catches what it throws, as the class's catches do
+  network.tipWatcher = {
+    stop() {
+      try {
+        inside(context, () => assert.fail('seen during the stop'))
+      } catch {
+        // taken for its own failure
+      }
+    },
+  }
+  const ended = await end()
+  assert.equal(ended.threw, true)
+  assert.equal(ended.error.message, 'seen during the stop')
+})
+
+test('network helper: a check is synchronous; one that returns a thenable is refused, and reported', async t => {
+  const { context, end } = handedContext(t)
+  makeNetwork(context, { net })
+  assert.throws(() => inside(context, () => Promise.resolve()), {
+    name: 'TypeError',
+    message: /inside\(\): the check must be synchronous/,
+  })
+  const ended = await end()
+  assert.equal(ended.threw, true)
+  assert.equal(ended.error.name, 'TypeError')
+})
+
+// A test file of its own, run by `node --test` in a child process: what it reports (the reporter is named: with its
+// output piped, Node 22 would print TAP and Node 24 the spec lines read below)
+async function runTestFile(t, body) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'network-helper-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const file = path.join(dir, 'case.test.mjs')
+  const helper = new URL('./lib/network.mjs', import.meta.url).href
+  fs.writeFileSync(
+    file,
+    `import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { fakeWs, importNetwork, inside, makeNetwork } from ${JSON.stringify(helper)}
+const net = await importNetwork(JSON.parse(process.env.NETWORK_UNDER_TEST))
+${body}
+`
+  )
+  const child = spawn(process.execPath, ['--test', '--test-reporter=spec', file], {
+    // (not the runner's own variables: a child of a test file that runs `node --test` would skip its files)
+    env: {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      TMPDIR: process.env.TMPDIR,
+      NETWORK_UNDER_TEST: JSON.stringify({ url: net.url, env: net.env }),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  child.stdout.on('data', data => (out += data))
+  child.stderr.on('data', data => (out += data))
+  const [code] = await once(child, 'close')
+  return { code, out }
+}
+
+test(
+  'network helper: a check that fails with no test left to report it is thrown outside the class, and fails the file',
+  { timeout: 60000 },
+  async t => {
+    for (const [what, body] of [
+      [
+        'in a hook after the end',
+        `test('late', t => {
+  makeNetwork(t, { net })
+  t.after(() => {
+    try {
+      inside(t, () => assert.fail('seen after the end'))
+    } catch {}
+  })
+})`,
+      ],
+      [
+        "a ping of an earlier test's connection",
+        `let old
+test('first', t => {
+  makeNetwork(t, { net })
+  old = fakeWs()
+})
+test('second', t => {
+  makeNetwork(t, { net })
+  try {
+    old.ping('seen by an earlier test', false, () => {})
+  } catch {}
+})`,
+      ],
+      [
+        'a connection of no test',
+        `test('nobody', () => {
+  const ws = fakeWs()
+  try {
+    ws.ping('seen by nobody', false, () => {})
+  } catch {}
+})`,
+      ],
+    ]) {
+      const { code, out } = await runTestFile(t, body)
+      assert.notEqual(code, 0, `${what}: ${out.slice(-1500)}`)
+      assert.match(out, /seen (after the end|by an earlier test|by nobody)/, what)
+      // thrown outside every test: no test of the file fails on it (not the one running when it came)
+      assert.match(out, /uncaughtException/, what)
+      assert.doesNotMatch(out, /^✖ (late|first|second|nobody) /m, what)
+    }
+  }
+)
 
 test("network helper: a fake connection's check of a ping is reported at the end, though the write ledger catches it", async t => {
   const { context, end } = handedContext(t)

@@ -60,8 +60,14 @@
 // inside(t, check) → what `check` returns: for an assertion a test makes in code the network calls and catches (a
 //   handler the flush dispatches, a collaborator of a join, the write ledger's ping), which the class takes for a
 //   failure of its own and only logs or works around, so that the test would not fail on it. `check` runs as it is;
-//   what it throws is thrown on, as before, and is reported again by the test's end (after everything is put back,
-//   unless a stop failed there first). fakeWs's own check of a ping is made this way.
+//   what it throws is thrown on, as before, and is reported again: by the end of test `t` while that test holds the
+//   helper and its end has not reported yet (a check that fails while the end stops the networks is reported by it,
+//   after everything is put back, unless a stop failed there first); otherwise (a test that never made a network, or
+//   whose end has reported, as for a check in a later hook of it) it is thrown outside every catch of the class, from
+//   a turn of its own (setImmediate), where node:test reports it as an uncaught exception of the file. A check is
+//   synchronous: one that returns a thenable is refused with a TypeError (reported the same way), as its failure would
+//   come after the catch that should not have hidden it. fakeWs's own check of a ping is made this way, for the test
+//   that held the helper when the fake was made.
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
@@ -210,6 +216,7 @@ function testState(t) {
     threw: false,
     failure: undefined,
     inside: [], // what a check made inside the class's own catch threw (inside())
+    reported: false, // the end has reported (or, after an earlier hook threw, cannot): inside() throws outside then
   }
   tests.set(t, state)
   holder = t
@@ -253,6 +260,7 @@ function testState(t) {
   }
   t.after(() => {
     end()
+    state.reported = true
     if (state.threw) throw state.failure
     if (state.inside.length) throw state.inside[0]
   })
@@ -261,7 +269,16 @@ function testState(t) {
   // is aborted when the test is over, whatever its hooks did; what a stop threw is then no longer reported (the
   // test has failed already, with the hook's own error). (A stand-in context without a signal, as a child process
   // that makes one network and exits hands in, has no later test to protect.)
-  t.signal?.addEventListener('abort', end)
+  t.signal?.addEventListener('abort', () => {
+    end()
+    // (the hook above did not run: a check that failed meanwhile is thrown outside, as one after the end is)
+    if (state.reported) return
+    state.reported = true
+    for (const err of state.inside)
+      setImmediate(() => {
+        throw err
+      })
+  })
   return state
 }
 
@@ -341,20 +358,39 @@ export function makeNetwork(t, { net, world: fields, log, init = {}, env, module
   return network
 }
 
-// See the top. (Reported by a test that holds the helper and has not ended; otherwise only thrown)
+// See the top
+const SYNCHRONOUS =
+  'inside(): the check must be synchronous; it returned a thenable, whose failure would come after the catch it is for'
 export function inside(t, check) {
+  let result
   try {
-    return check()
+    result = check()
   } catch (err) {
-    const state = tests.get(t)
-    if (state && !state.ended) state.inside.push(err)
+    report(t, err)
     throw err
   }
+  if (typeof result?.then === 'function') {
+    const err = new TypeError(SYNCHRONOUS)
+    report(t, err)
+    throw err
+  }
+  return result
+}
+
+// a failure inside() saw: to the end of the test that holds the helper and has not reported, else out of every catch
+function report(t, err) {
+  const state = t ? tests.get(t) : undefined
+  if (state && !state.reported) state.inside.push(err)
+  else
+    setImmediate(() => {
+      throw err
+    })
 }
 
 // a connection as the ws library gives it: what is written stays in `packets`, its write callbacks in `pending`
-// until `drain()`, and `terminate()` closes it as the transport would
-export function fakeWs() {
+// until `drain()`, and `terminate()` closes it as the transport would. It belongs to `owner`: by default the test that
+// holds the helper when it is made (none: a fake made outside such a test), whose end reports what its checks find
+export function fakeWs(owner = holder) {
   const ws = new EventEmitter()
   ws.readyState = 1
   ws.pending = []
@@ -364,14 +400,13 @@ export function fakeWs() {
     ws.packets.push(packet)
     ws.pending.push(cb)
   }
-  // (the write ledger catches a ping that throws and takes the connection for a dead one: the check is reported at
-  // the end of the test that holds the helper as well)
+  // (the write ledger catches a ping that throws and takes the connection for a dead one: the check is reported for
+  // the fake's own test, or thrown outside the class: inside())
   ws.ping = (data, mask, cb) => {
-    const check = () => {
+    inside(owner, () => {
       assert.equal(data, undefined)
       assert.equal(mask, false)
-    }
-    inside(holder, check)
+    })
     ws.pending.push(cb)
   }
   ws.terminate = () => {

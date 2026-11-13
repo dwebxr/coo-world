@@ -1,0 +1,476 @@
+# the 'ui' node type, written by test/lib/nodeGolden.mjs (legend: test/nodeGolden.test.js)
+== a. the proxy: own keys in order, descriptors, functions shared by two instances
+a proxy: prototype Object.prototype, extensible true, frozen false, 48 keys, getNodeRef(proxy) is the node: true
+a 1 space: get+set enum conf get:"get space"/0 per-instance set:"set"/1 shared
+a 2 width: get+set enum conf get:"get width"/0 per-instance set:"set"/1 shared
+a 3 height: get+set enum conf get:"get height"/0 per-instance set:"set"/1 shared
+a 4 size: get+set enum conf get:"get size"/0 per-instance set:"set"/1 shared
+a 5 res: get+set enum conf get:"get res"/0 per-instance set:"set"/1 shared
+a 6 lit: get+set enum conf get:"get lit"/0 per-instance set:"set"/1 shared
+a 7 doubleside: get+set enum conf get:"get doubleside"/0 per-instance set:"set"/1 shared
+a 8 billboard: get+set enum conf get:"get billboard"/0 per-instance set:"set"/1 shared
+a 9 pivot: get+set enum conf get:"get pivot"/0 per-instance set:"set"/1 shared
+a 10 offset: get+set enum conf get:"get offset"/0 per-instance set:"set"/1 shared
+a 11 scaler: get+set enum conf get:"get scaler"/0 per-instance set:"set"/1 shared
+a 12 pointerEvents: get+set enum conf get:"get pointerEvents"/0 per-instance set:"set"/1 shared
+a 13 transparent: get+set enum conf get:"get transparent"/0 per-instance set:"set"/1 shared
+a 14 backgroundColor: get+set enum conf get:"get backgroundColor"/0 per-instance set:"set"/1 shared
+a 15 borderWidth: get+set enum conf get:"get borderWidth"/0 per-instance set:"set"/1 shared
+a 16 borderColor: get+set enum conf get:"get borderColor"/0 per-instance set:"set"/1 shared
+a 17 borderRadius: get+set enum conf get:"get borderRadius"/0 per-instance set:"set"/1 shared
+a 18 padding: get+set enum conf get:"get padding"/0 per-instance set:"set"/1 shared
+a 19 flexDirection: get+set enum conf get:"get flexDirection"/0 per-instance set:"set"/1 shared
+a 20 justifyContent: get+set enum conf get:"get justifyContent"/0 per-instance set:"set"/1 shared
+a 21 alignItems: get+set enum conf get:"get alignItems"/0 per-instance set:"set"/1 shared
+a 22 alignContent: get+set enum conf get:"get alignContent"/0 per-instance set:"set"/1 shared
+a 23 flexWrap: get+set enum conf get:"get flexWrap"/0 per-instance set:"set"/1 shared
+a 24 gap: get+set enum conf get:"get gap"/0 per-instance set:"set"/1 shared
+a node keys: 24 at 25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48; order as on node; descriptors as on node
+== b. a stopped run (ctx.run is not its entity's deadHook), a live run, and receivers
+b set throws Error: "[app] this app has stopped": space width height size res lit doubleside billboard pivot offset scaler pointerEvents transparent backgroundColor borderWidth borderColor borderRadius padding flexDirection justifyContent alignItems alignContent flexWrap gap id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b method throws Error: "[app] this app has stopped": get getWorldMatrix add remove traverse clone clean
+b get reads "world": space
+b get reads 100: width height
+b get reads 0.01: size
+b get reads 2: res
+b get reads false: lit
+b get reads true: doubleside pointerEvents transparent active _isRef
+b get reads "none": billboard
+b get reads "center": pivot
+b get reads view:V3(0,0,0)S: offset
+b get reads null: scaler backgroundColor borderColor _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
+b get reads 0: borderWidth borderRadius padding gap
+b get reads "column": flexDirection
+b get reads "flex-start": justifyContent alignContent
+b get reads "stretch": alignItems
+b get reads "no-wrap": flexWrap
+b get reads <auto id>: id
+b get reads "ui": name
+b get reads V3(0,0,0)S: position
+b get reads Q(0,0,0,1)S: quaternion
+b get reads E(0,0,0,YXZ)S: rotation
+b get reads V3(1,1,1)S: scale
+b get reads view:M4(I)S: matrixWorld
+b get reads undefined: parent cursor
+b get reads []: children
+b through _created set throws Error: "[app] this app has stopped": all 36
+b through _created method throws Error: "[app] this app has stopped": all 7
+b through a parent set throws Error: "[app] this app has stopped": all 36
+b through a parent method throws Error: "[app] this app has stopped": all 7
+b a live run: each setter with a sample value takes it
+b receiver Object.create(proxy): as through the proxy: 36 of 36
+b receiver a plain object: throws TypeError: "[node] not a node": all 36
+b receiver no receiver: throws TypeError: "[node] not a node": all 36
+b receiver a group's proxy: throws TypeError: "[node] a group node has no <key> to set": space width height size res lit doubleside billboard pivot offset scaler pointerEvents transparent backgroundColor borderWidth borderColor borderRadius padding flexDirection justifyContent alignItems alignContent flexWrap gap
+b receiver a group's proxy: throws Error: "Setting ID not currently supported": id
+b receiver a group's proxy: throws Error: "Cannot replace node <key>": position quaternion rotation scale
+b receiver a group's proxy: runs: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b receiver a group's proxy: throws Error: "Cannot set <key> directly": parent
+b receiver another type's proxy with the key: throws Error: "[particles] space invalid": space(particles)
+b receiver another type's proxy with the key: sets that node: width(collider) height(collider) lit(image) pivot(image) backgroundColor(uiimage) borderWidth(uiview) borderColor(uiview) borderRadius(uiimage) padding(uitext) flexDirection(uiview) justifyContent(uiview) alignItems(uiview) alignContent(uiview) flexWrap(uiview) gap(uiview)
+b receiver another type's proxy with the key: throws Error: "[particles] size invalid": size(particles)
+b receiver another type's proxy with the key: leaves that node as it was: doubleside(image) billboard(particles) transparent(prim)
+== c. one set on a fresh unmounted node: pc the proxy and the class alike, p the proxy, c the class
+c space pc read "world" <- undefined
+c space pc throw Error: "[ui] space not valid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c space pc read $in <- 'world'
+c space pc read $in Δ{_space:$in needsRebuild:true needsRedraw:true} calls[rebuild,setDirty] <- 'screen'
+c width pc read 100 <- undefined NaN
+c width pc throw Error: "[ui] width not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c width pc read 16384 Δ{needsRebuild:true needsRedraw:true _width:16384} calls[rebuild,setDirty] <- Infinity 1e9
+c width pc read 0 Δ{needsRebuild:true needsRedraw:true _width:0} calls[rebuild,setDirty] <- -Infinity -1
+c width pc read $in Δ{needsRebuild:true needsRedraw:true _width:$in} calls[rebuild,setDirty] <- -0 0 0.5 1
+c height pc read 100 <- undefined NaN
+c height pc throw Error: "[ui] height not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c height pc read 16384 Δ{needsRebuild:true needsRedraw:true _height:16384} calls[rebuild,setDirty] <- Infinity 1e9
+c height pc read 0 Δ{needsRebuild:true needsRedraw:true _height:0} calls[rebuild,setDirty] <- -Infinity -1
+c height pc read $in Δ{needsRebuild:true needsRedraw:true _height:$in} calls[rebuild,setDirty] <- -0 0 0.5 1
+c size pc read 0.01 <- undefined NaN
+c size pc throw Error: "[ui] size not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c size pc read 1000000 Δ{needsRebuild:true needsRedraw:true _size:1000000} calls[rebuild,setDirty] <- Infinity 1e9
+c size pc read 0.000001 Δ{needsRebuild:true needsRedraw:true _size:0.000001} calls[rebuild,setDirty] <- -Infinity -1 -0 0
+c size pc read $in Δ{needsRebuild:true needsRedraw:true _size:$in} calls[rebuild,setDirty] <- 0.5 1
+c res pc read 2 <- undefined NaN
+c res pc throw Error: "[ui] res not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c res pc read 16 Δ{needsRebuild:true needsRedraw:true _res:16} calls[rebuild,setDirty] <- Infinity 1e9
+c res pc read 0 Δ{needsRebuild:true needsRedraw:true _res:0} calls[rebuild,setDirty] <- -Infinity -1
+c res pc read $in Δ{needsRebuild:true needsRedraw:true _res:$in} calls[rebuild,setDirty] <- -0 0 0.5 1
+c lit pc read false <- undefined
+c lit pc throw Error: "[ui] lit not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c lit pc read $in Δ{needsRebuild:true needsRedraw:true _lit:$in} calls[rebuild,setDirty] <- true
+c lit pc read $in <- false
+c doubleside pc read true <- undefined
+c doubleside pc throw Error: "[ui] doubleside not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c doubleside pc read $in <- true
+c doubleside pc read $in Δ{needsRebuild:true needsRedraw:true _doubleside:$in} calls[rebuild,setDirty] <- false
+c billboard pc read "none" <- undefined
+c billboard pc throw Error: "[ui] billboard invalid: <in>" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 'x' true false {} [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn 1n
+c billboard pc throw Error: "[ui] billboard invalid: " <- '' []
+c billboard pc throw Error: "[ui] billboard invalid: <in>" traps[get:@Symbol.toPrimitive,get:toString,get:join,get:length,get:0,get:1,get:2] <- Proxy[1,2,3]
+c billboard pc throw TypeError: "Cannot convert a Symbol value to a string" <- Symbol
+c billboard pc throw Error: "toString called" <- {toString throws}
+c billboard pc read $in <- 'none'
+c billboard pc read $in Δ{needsRebuild:true needsRedraw:true _billboard:$in} calls[rebuild,setDirty] <- 'full' 'y'
+c pivot pc read "center" <- undefined
+c pivot pc throw Error: "[ui] pivot invalid: <in>" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 'x' true false {} [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn 1n
+c pivot pc throw Error: "[ui] pivot invalid: " <- '' []
+c pivot pc throw Error: "[ui] pivot invalid: <in>" traps[get:@Symbol.toPrimitive,get:toString,get:join,get:length,get:0,get:1,get:2] <- Proxy[1,2,3]
+c pivot pc throw TypeError: "Cannot convert a Symbol value to a string" <- Symbol
+c pivot pc throw Error: "toString called" <- {toString throws}
+c pivot pc read $in Δ{needsRebuild:true needsRedraw:true _pivot:$in} calls[rebuild,setDirty] <- 'top-left' 'top-center' 'top-right' 'center-left' 'center-right' 'bottom-left' 'bottom-center' 'bottom-right'
+c pivot pc read $in <- 'center'
+c offset pc throw Error: "[ui] offset invalid" <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws}
+c offset pc throw Error: "[ui] offset invalid" traps[get:isVector3] <- Proxy[1,2,3]
+c offset p read view:V3(1,2,3)S Δ{needsRebuild:true needsRedraw:true _offset:V3(1,2,3)S} calls[rebuild,setDirty,rebuild,setDirty] <- V3(1,2,3)
+c offset p read view:V3(4,5,6)S Δ{needsRebuild:true needsRedraw:true _offset:V3(4,5,6)S} calls[rebuild,setDirty,rebuild,setDirty] <- V3(4,5,6)
+c offset c read V3(1,2,3)S Δ{needsRebuild:true needsRedraw:true _offset:V3(1,2,3)S} calls[rebuild,setDirty,rebuild,setDirty] <- V3(1,2,3)
+c offset c read V3(4,5,6)S Δ{needsRebuild:true needsRedraw:true _offset:V3(4,5,6)S} calls[rebuild,setDirty,rebuild,setDirty] <- V3(4,5,6)
+c scaler pc read null Δ{needsRebuild:true needsRedraw:true} calls[rebuild,setDirty] <- undefined
+c scaler pc read $in Δ{needsRebuild:true needsRedraw:true} calls[rebuild,setDirty] <- null
+c scaler pc throw Error: "[ui] scaler invalid" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws} [1,"x"] [1,10,{}]
+c scaler pc read [1,2,3]F Δ{needsRebuild:true needsRedraw:true _scaler:[1,2,3]F} calls[rebuild,setDirty] <- [1,2,3]
+c scaler pc read [1,2,3]F Δ{needsRebuild:true needsRedraw:true _scaler:[1,2,3]F} calls[rebuild,setDirty] traps[get:@Symbol.iterator,get:length,get:0,get:length,get:1,get:length,get:2,get:length] <- Proxy[1,2,3]
+c scaler pc read [1,10]F Δ{needsRebuild:true needsRedraw:true _scaler:[1,10]F} calls[rebuild,setDirty] <- [1,10]
+c scaler pc read [1,10,2]F Δ{needsRebuild:true needsRedraw:true _scaler:[1,10,2]F} calls[rebuild,setDirty] <- [1,10,2]
+c pointerEvents pc read true <- undefined
+c pointerEvents pc throw Error: "[ui] pointerEvents not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c pointerEvents pc read $in <- true
+c pointerEvents pc read $in Δ{needsRedraw:true _pointerEvents:$in} calls[redraw,setDirty] <- false
+c transparent pc read true <- undefined
+c transparent pc throw Error: "[ui] transparent not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c transparent pc read $in <- true
+c transparent pc read $in Δ{needsRedraw:true _transparent:$in} calls[redraw,setDirty] <- false
+c backgroundColor pc read null <- undefined
+c backgroundColor pc read $in <- null
+c backgroundColor pc throw Error: "[ui] backgroundColor not a string" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c backgroundColor pc read $in Δ{needsRedraw:true _backgroundColor:$in} calls[redraw,setDirty] <- '' 'x' 'red'
+c borderWidth pc read 0 <- undefined -0
+c borderWidth pc throw Error: "[ui] borderWidth not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c borderWidth pc read $in Δ{needsRedraw:true _borderWidth:$in} calls[redraw,setDirty] <- NaN Infinity -Infinity -1 0.5 1 1e9
+c borderWidth pc read $in <- 0
+c borderColor pc read null <- undefined
+c borderColor pc read $in <- null
+c borderColor pc throw Error: "[ui] borderColor not a string" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c borderColor pc read $in Δ{needsRedraw:true _borderColor:$in} calls[redraw,setDirty] <- '' 'x' 'red'
+c borderRadius pc read 0 <- undefined -0
+c borderRadius pc throw Error: "[ui] borderRadius not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c borderRadius pc read $in Δ{needsRedraw:true _borderRadius:$in} calls[redraw,setDirty] <- NaN Infinity -Infinity -1 0.5 1 1e9
+c borderRadius pc read $in <- 0
+c padding pc read 0 <- undefined -0
+c padding pc throw Error: "[ui] padding not a number or array of numbers" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws} [1,"x",3,4]
+c padding pc read $in Δ{needsRedraw:true _padding:$in} calls[redraw,setDirty] <- NaN Infinity -Infinity -1 0.5 1 1e9
+c padding pc read $in <- 0
+c padding pc throw Error: "[ui] padding not a number or array of numbers" traps[get:@Symbol.iterator,get:length,get:0,get:length,get:1,get:length,get:2,get:length] <- Proxy[1,2,3]
+c padding pc read [1,2,3,4]F Δ{needsRedraw:true _padding:[1,2,3,4]F} calls[redraw,setDirty] <- [1,2,3,4]
+c flexDirection pc read "column" <- undefined
+c flexDirection pc throw Error: "[ui] flexDirection invalid: <in>" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 'x' true false {} [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn 1n
+c flexDirection pc throw Error: "[ui] flexDirection invalid: " <- '' []
+c flexDirection pc throw Error: "[ui] flexDirection invalid: <in>" traps[get:@Symbol.toPrimitive,get:toString,get:join,get:length,get:0,get:1,get:2] <- Proxy[1,2,3]
+c flexDirection pc throw TypeError: "Cannot convert a Symbol value to a string" <- Symbol
+c flexDirection pc throw Error: "toString called" <- {toString throws}
+c flexDirection pc read $in <- 'column'
+c flexDirection pc read $in Δ{needsRedraw:true _flexDirection:$in} calls[redraw,setDirty] <- 'column-reverse' 'row' 'row-reverse'
+c justifyContent pc read "flex-start" <- undefined
+c justifyContent pc throw Error: "[ui] justifyContent invalid: <in>" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 'x' true false {} [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn 1n
+c justifyContent pc throw Error: "[ui] justifyContent invalid: " <- '' []
+c justifyContent pc throw Error: "[ui] justifyContent invalid: <in>" traps[get:@Symbol.toPrimitive,get:toString,get:join,get:length,get:0,get:1,get:2] <- Proxy[1,2,3]
+c justifyContent pc throw TypeError: "Cannot convert a Symbol value to a string" <- Symbol
+c justifyContent pc throw Error: "toString called" <- {toString throws}
+c justifyContent pc read $in <- 'flex-start'
+c justifyContent pc read $in Δ{needsRedraw:true _justifyContent:$in} calls[redraw,setDirty] <- 'flex-end' 'center' 'space-between' 'space-around' 'space-evenly'
+c alignItems pc read "stretch" <- undefined
+c alignItems pc throw Error: "[ui] alignItems invalid: <in>" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 'x' true false {} [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn 1n
+c alignItems pc throw Error: "[ui] alignItems invalid: " <- '' []
+c alignItems pc throw Error: "[ui] alignItems invalid: <in>" traps[get:@Symbol.toPrimitive,get:toString,get:join,get:length,get:0,get:1,get:2] <- Proxy[1,2,3]
+c alignItems pc throw TypeError: "Cannot convert a Symbol value to a string" <- Symbol
+c alignItems pc throw Error: "toString called" <- {toString throws}
+c alignItems pc read $in <- 'stretch'
+c alignItems pc read $in Δ{needsRedraw:true _alignItems:$in} calls[redraw,setDirty] <- 'flex-start' 'flex-end' 'center' 'baseline'
+c alignContent pc read "flex-start" <- undefined
+c alignContent pc throw Error: "[ui] alignContent invalid: <in>" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 'x' true false {} [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn 1n
+c alignContent pc throw Error: "[ui] alignContent invalid: " <- '' []
+c alignContent pc throw Error: "[ui] alignContent invalid: <in>" traps[get:@Symbol.toPrimitive,get:toString,get:join,get:length,get:0,get:1,get:2] <- Proxy[1,2,3]
+c alignContent pc throw TypeError: "Cannot convert a Symbol value to a string" <- Symbol
+c alignContent pc throw Error: "toString called" <- {toString throws}
+c alignContent pc read $in <- 'flex-start'
+c alignContent pc read $in Δ{needsRedraw:true _alignContent:$in} calls[redraw,setDirty] <- 'flex-end' 'stretch' 'center' 'space-between' 'space-around' 'space-evenly'
+c flexWrap pc read "no-wrap" <- undefined
+c flexWrap pc throw Error: "[uiview] flexWrap invalid: <in>" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 'x' true false {} [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn 1n
+c flexWrap pc throw Error: "[uiview] flexWrap invalid: " <- '' []
+c flexWrap pc throw Error: "[uiview] flexWrap invalid: <in>" traps[get:@Symbol.toPrimitive,get:toString,get:join,get:length,get:0,get:1,get:2] <- Proxy[1,2,3]
+c flexWrap pc throw TypeError: "Cannot convert a Symbol value to a string" <- Symbol
+c flexWrap pc throw Error: "toString called" <- {toString throws}
+c flexWrap pc read $in <- 'no-wrap'
+c flexWrap pc read $in Δ{needsRedraw:true _flexWrap:$in} calls[redraw,setDirty] <- 'wrap' 'wrap-reverse'
+c gap pc read 0 <- undefined -0
+c gap pc throw Error: "[uiview] gap not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c gap pc read $in Δ{needsRedraw:true _gap:$in} calls[redraw,setDirty] <- NaN Infinity -Infinity -1 0.5 1 1e9
+c gap pc read $in <- 0
+c as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
+d space same: - | NaN,NaN: first throws Error: "[ui] space not valid" | 0,-0: first throws Error: "[ui] space not valid"
+d width same: - | NaN,NaN: read 100 | 0,-0: read 0
+d height same: - | NaN,NaN: read 100 | 0,-0: read 0
+d size same: - | NaN,NaN: read 0.01 | 0,-0: read 0.000001
+d res same: - | NaN,NaN: read 2 | 0,-0: read 0
+d lit same: - | NaN,NaN: first throws Error: "[ui] lit not a boolean" | 0,-0: first throws Error: "[ui] lit not a boolean"
+d doubleside same: - | NaN,NaN: first throws Error: "[ui] doubleside not a boolean" | 0,-0: first throws Error: "[ui] doubleside not a boolean"
+d billboard same: - | NaN,NaN: first throws Error: "[ui] billboard invalid: NaN" | 0,-0: first throws Error: "[ui] billboard invalid: 0"
+d pivot same: - | NaN,NaN: first throws Error: "[ui] pivot invalid: NaN" | 0,-0: first throws Error: "[ui] pivot invalid: 0"
+d offset same: read view:V3(1,2,3)S Δ{needsRebuild:true needsRedraw:true} calls[rebuild,setDirty,rebuild,setDirty] | copy: read view:V3(1,2,3)S Δ{needsRebuild:true needsRedraw:true} calls[rebuild,setDirty,rebuild,setDirty] | NaN,NaN: first throws Error: "[ui] offset invalid" | 0,-0: first throws Error: "[ui] offset invalid"
+d scaler same: read [1,10]F Δ{needsRebuild:true needsRedraw:true _scaler:[1,10]F} calls[rebuild,setDirty] | copy: read [1,10]F Δ{needsRebuild:true needsRedraw:true _scaler:[1,10]F} calls[rebuild,setDirty] | NaN,NaN: first throws Error: "[ui] scaler invalid" | 0,-0: first throws Error: "[ui] scaler invalid"
+d pointerEvents same: - | NaN,NaN: first throws Error: "[ui] pointerEvents not a boolean" | 0,-0: first throws Error: "[ui] pointerEvents not a boolean"
+d transparent same: - | NaN,NaN: first throws Error: "[ui] transparent not a boolean" | 0,-0: first throws Error: "[ui] transparent not a boolean"
+d backgroundColor same: - | NaN,NaN: first throws Error: "[ui] backgroundColor not a string" | 0,-0: first throws Error: "[ui] backgroundColor not a string"
+d borderWidth same: - | NaN,NaN: Δ{needsRedraw:true} calls[redraw,setDirty] | 0,-0: read 0
+d borderColor same: - | NaN,NaN: first throws Error: "[ui] borderColor not a string" | 0,-0: first throws Error: "[ui] borderColor not a string"
+d borderRadius same: - | NaN,NaN: Δ{needsRedraw:true} calls[redraw,setDirty] | 0,-0: read 0
+d padding same: read [1,2,3,4]F Δ{needsRedraw:true _padding:[1,2,3,4]F} calls[redraw,setDirty] | copy: read [1,2,3,4]F Δ{needsRedraw:true _padding:[1,2,3,4]F} calls[redraw,setDirty] | NaN,NaN: Δ{needsRedraw:true} calls[redraw,setDirty] | 0,-0: read 0
+d flexDirection same: - | NaN,NaN: first throws Error: "[ui] flexDirection invalid: NaN" | 0,-0: first throws Error: "[ui] flexDirection invalid: 0"
+d justifyContent same: - | NaN,NaN: first throws Error: "[ui] justifyContent invalid: NaN" | 0,-0: first throws Error: "[ui] justifyContent invalid: 0"
+d alignItems same: - | NaN,NaN: first throws Error: "[ui] alignItems invalid: NaN" | 0,-0: first throws Error: "[ui] alignItems invalid: 0"
+d alignContent same: - | NaN,NaN: first throws Error: "[ui] alignContent invalid: NaN" | 0,-0: first throws Error: "[ui] alignContent invalid: 0"
+d flexWrap same: - | NaN,NaN: first throws Error: "[uiview] flexWrap invalid: NaN" | 0,-0: first throws Error: "[uiview] flexWrap invalid: 0"
+d gap same: - | NaN,NaN: Δ{needsRedraw:true} calls[redraw,setDirty] | 0,-0: read 0
+d space [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: first throws Error: "[ui] space not valid" | 0,-0: first throws Error: "[ui] space not valid"
+d width [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: read 100 | 0,-0: read 0
+d height [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: read 100 | 0,-0: read 0
+d size [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: read 0.01 | 0,-0: read 0.000001
+d res [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: read 2 | 0,-0: read 0
+d lit [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: first throws Error: "[ui] lit not a boolean" | 0,-0: first throws Error: "[ui] lit not a boolean"
+d doubleside [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: first throws Error: "[ui] doubleside not a boolean" | 0,-0: first throws Error: "[ui] doubleside not a boolean"
+d billboard [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: first throws Error: "[ui] billboard invalid: NaN" | 0,-0: first throws Error: "[ui] billboard invalid: 0"
+d pivot [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: first throws Error: "[ui] pivot invalid: NaN" | 0,-0: first throws Error: "[ui] pivot invalid: 0"
+d offset [laid out (_res 2.5, yogaNode)] same: read view:V3(1,2,3)S Δ{needsRebuild:true needsRedraw:true} calls[rebuild,setDirty,rebuild,setDirty] | copy: read view:V3(1,2,3)S Δ{needsRebuild:true needsRedraw:true} calls[rebuild,setDirty,rebuild,setDirty] | NaN,NaN: first throws Error: "[ui] offset invalid" | 0,-0: first throws Error: "[ui] offset invalid"
+d scaler [laid out (_res 2.5, yogaNode)] same: read [1,10]F Δ{needsRebuild:true needsRedraw:true _scaler:[1,10]F} calls[rebuild,setDirty] | copy: read [1,10]F Δ{needsRebuild:true needsRedraw:true _scaler:[1,10]F} calls[rebuild,setDirty] | NaN,NaN: first throws Error: "[ui] scaler invalid" | 0,-0: first throws Error: "[ui] scaler invalid"
+d pointerEvents [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: first throws Error: "[ui] pointerEvents not a boolean" | 0,-0: first throws Error: "[ui] pointerEvents not a boolean"
+d transparent [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: first throws Error: "[ui] transparent not a boolean" | 0,-0: first throws Error: "[ui] transparent not a boolean"
+d backgroundColor [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: first throws Error: "[ui] backgroundColor not a string" | 0,-0: first throws Error: "[ui] backgroundColor not a string"
+d borderWidth [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: Δ{needsRedraw:true} calls[redraw,setDirty] | 0,-0: read 0
+d borderColor [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: first throws Error: "[ui] borderColor not a string" | 0,-0: first throws Error: "[ui] borderColor not a string"
+d borderRadius [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: Δ{needsRedraw:true} calls[redraw,setDirty] | 0,-0: read 0
+d padding [laid out (_res 2.5, yogaNode)] same: read [1,2,3,4]F Δ{needsRedraw:true _padding:[1,2,3,4]F} calls[redraw,setDirty] stub[yoga.setPadding(1,2.5) yoga.setPadding(2,5) yoga.setPadding(3,7.5) yoga.setPadding(0,10)] | copy: read [1,2,3,4]F Δ{needsRedraw:true _padding:[1,2,3,4]F} calls[redraw,setDirty] stub[yoga.setPadding(1,2.5) yoga.setPadding(2,5) yoga.setPadding(3,7.5) yoga.setPadding(0,10)] | NaN,NaN: Δ{needsRedraw:true} calls[redraw,setDirty] stub[yoga.setPadding(8,NaN)] | 0,-0: read 0
+d flexDirection [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: first throws Error: "[ui] flexDirection invalid: NaN" | 0,-0: first throws Error: "[ui] flexDirection invalid: 0"
+d justifyContent [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: first throws Error: "[ui] justifyContent invalid: NaN" | 0,-0: first throws Error: "[ui] justifyContent invalid: 0"
+d alignItems [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: first throws Error: "[ui] alignItems invalid: NaN" | 0,-0: first throws Error: "[ui] alignItems invalid: 0"
+d alignContent [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: first throws Error: "[ui] alignContent invalid: NaN" | 0,-0: first throws Error: "[ui] alignContent invalid: 0"
+d flexWrap [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: first throws Error: "[uiview] flexWrap invalid: NaN" | 0,-0: first throws Error: "[uiview] flexWrap invalid: 0"
+d gap [laid out (_res 2.5, yogaNode)] same: - | NaN,NaN: Δ{needsRedraw:true} calls[redraw,setDirty] stub[yoga.setGap(2,NaN)] | 0,-0: read 0
+== e. the sets of c in a mounted-like state (stubs record what is done to them): what differs from c
+e [laid out (_res 2.5, yogaNode)]
+e width pc read 16384 Δ{needsRebuild:true needsRedraw:true _width:16384} calls[rebuild,setDirty] stub[yoga.setWidth(40960)] <- Infinity 1e9
+e width pc read 0 Δ{needsRebuild:true needsRedraw:true _width:0} calls[rebuild,setDirty] stub[yoga.setWidth(0)] <- -Infinity -1
+e width pc read $in Δ{needsRebuild:true needsRedraw:true _width:$in} calls[rebuild,setDirty] stub[yoga.setWidth(-0)] <- -0
+e width pc read $in Δ{needsRebuild:true needsRedraw:true _width:$in} calls[rebuild,setDirty] stub[yoga.setWidth(0)] <- 0
+e width pc read $in Δ{needsRebuild:true needsRedraw:true _width:$in} calls[rebuild,setDirty] stub[yoga.setWidth(1.25)] <- 0.5
+e width pc read $in Δ{needsRebuild:true needsRedraw:true _width:$in} calls[rebuild,setDirty] stub[yoga.setWidth(2.5)] <- 1
+e width: the other 19 as in c
+e height pc read 16384 Δ{needsRebuild:true needsRedraw:true _height:16384} calls[rebuild,setDirty] stub[yoga.setHeight(40960)] <- Infinity 1e9
+e height pc read 0 Δ{needsRebuild:true needsRedraw:true _height:0} calls[rebuild,setDirty] stub[yoga.setHeight(0)] <- -Infinity -1
+e height pc read $in Δ{needsRebuild:true needsRedraw:true _height:$in} calls[rebuild,setDirty] stub[yoga.setHeight(-0)] <- -0
+e height pc read $in Δ{needsRebuild:true needsRedraw:true _height:$in} calls[rebuild,setDirty] stub[yoga.setHeight(0)] <- 0
+e height pc read $in Δ{needsRebuild:true needsRedraw:true _height:$in} calls[rebuild,setDirty] stub[yoga.setHeight(1.25)] <- 0.5
+e height pc read $in Δ{needsRebuild:true needsRedraw:true _height:$in} calls[rebuild,setDirty] stub[yoga.setHeight(2.5)] <- 1
+e height: the other 19 as in c
+e res pc read 2 Δ{needsRebuild:true needsRedraw:true _res:2} calls[rebuild,setDirty] <- undefined NaN
+e res: the other 25 as in c
+e padding pc read $in Δ{needsRedraw:true _padding:$in} calls[redraw,setDirty] stub[yoga.setPadding(8,NaN)] <- NaN
+e padding pc read $in Δ{needsRedraw:true _padding:$in} calls[redraw,setDirty] stub[yoga.setPadding(8,Infinity)] <- Infinity
+e padding pc read $in Δ{needsRedraw:true _padding:$in} calls[redraw,setDirty] stub[yoga.setPadding(8,-Infinity)] <- -Infinity
+e padding pc read $in Δ{needsRedraw:true _padding:$in} calls[redraw,setDirty] stub[yoga.setPadding(8,-2.5)] <- -1
+e padding pc read $in Δ{needsRedraw:true _padding:$in} calls[redraw,setDirty] stub[yoga.setPadding(8,1.25)] <- 0.5
+e padding pc read $in Δ{needsRedraw:true _padding:$in} calls[redraw,setDirty] stub[yoga.setPadding(8,2.5)] <- 1
+e padding pc read $in Δ{needsRedraw:true _padding:$in} calls[redraw,setDirty] stub[yoga.setPadding(8,2500000000)] <- 1e9
+e padding pc read [1,2,3,4]F Δ{needsRedraw:true _padding:[1,2,3,4]F} calls[redraw,setDirty] stub[yoga.setPadding(1,2.5) yoga.setPadding(2,5) yoga.setPadding(3,7.5) yoga.setPadding(0,10)] <- [1,2,3,4]
+e padding: the other 21 as in c
+e flexDirection pc read $in Δ{needsRedraw:true _flexDirection:$in} calls[redraw,setDirty] stub[yoga.setFlexDirection(undefined)] <- 'column-reverse' 'row' 'row-reverse'
+e flexDirection: the other 28 as in c
+e justifyContent pc read $in Δ{needsRedraw:true _justifyContent:$in} calls[redraw,setDirty] stub[yoga.setJustifyContent(undefined)] <- 'flex-end' 'center' 'space-between' 'space-around' 'space-evenly'
+e justifyContent: the other 28 as in c
+e alignItems pc read $in Δ{needsRedraw:true _alignItems:$in} calls[redraw,setDirty] stub[yoga.setAlignItems(undefined)] <- 'flex-start' 'flex-end' 'center' 'baseline'
+e alignItems: the other 28 as in c
+e alignContent pc read $in Δ{needsRedraw:true _alignContent:$in} calls[redraw,setDirty] stub[yoga.setAlignContent(undefined)] <- 'flex-end' 'stretch' 'center' 'space-between' 'space-around' 'space-evenly'
+e alignContent: the other 28 as in c
+e flexWrap pc read $in Δ{needsRedraw:true _flexWrap:$in} calls[redraw,setDirty] stub[yoga.setFlexWrap(undefined)] <- 'wrap' 'wrap-reverse'
+e flexWrap: the other 28 as in c
+e gap pc read $in Δ{needsRedraw:true _gap:$in} calls[redraw,setDirty] stub[yoga.setGap(2,NaN)] <- NaN
+e gap pc read $in Δ{needsRedraw:true _gap:$in} calls[redraw,setDirty] stub[yoga.setGap(2,Infinity)] <- Infinity
+e gap pc read $in Δ{needsRedraw:true _gap:$in} calls[redraw,setDirty] stub[yoga.setGap(2,-Infinity)] <- -Infinity
+e gap pc read $in Δ{needsRedraw:true _gap:$in} calls[redraw,setDirty] stub[yoga.setGap(2,-2.5)] <- -1
+e gap pc read $in Δ{needsRedraw:true _gap:$in} calls[redraw,setDirty] stub[yoga.setGap(2,1.25)] <- 0.5
+e gap pc read $in Δ{needsRedraw:true _gap:$in} calls[redraw,setDirty] stub[yoga.setGap(2,2.5)] <- 1
+e gap pc read $in Δ{needsRedraw:true _gap:$in} calls[redraw,setDirty] stub[yoga.setGap(2,2500000000)] <- 1e9
+e gap: the other 20 as in c
+e as in c: space size lit doubleside billboard pivot offset scaler pointerEvents transparent backgroundColor borderWidth borderColor borderRadius
+e [laid out (_res 4, yogaNode)]
+e width pc read 16384 Δ{needsRebuild:true needsRedraw:true _width:16384} calls[rebuild,setDirty] stub[yoga.setWidth(65536)] <- Infinity 1e9
+e width pc read 0 Δ{needsRebuild:true needsRedraw:true _width:0} calls[rebuild,setDirty] stub[yoga.setWidth(0)] <- -Infinity -1
+e width pc read $in Δ{needsRebuild:true needsRedraw:true _width:$in} calls[rebuild,setDirty] stub[yoga.setWidth(-0)] <- -0
+e width pc read $in Δ{needsRebuild:true needsRedraw:true _width:$in} calls[rebuild,setDirty] stub[yoga.setWidth(0)] <- 0
+e width pc read $in Δ{needsRebuild:true needsRedraw:true _width:$in} calls[rebuild,setDirty] stub[yoga.setWidth(2)] <- 0.5
+e width pc read $in Δ{needsRebuild:true needsRedraw:true _width:$in} calls[rebuild,setDirty] stub[yoga.setWidth(4)] <- 1
+e width: the other 19 as in c
+e height pc read 16384 Δ{needsRebuild:true needsRedraw:true _height:16384} calls[rebuild,setDirty] stub[yoga.setHeight(65536)] <- Infinity 1e9
+e height pc read 0 Δ{needsRebuild:true needsRedraw:true _height:0} calls[rebuild,setDirty] stub[yoga.setHeight(0)] <- -Infinity -1
+e height pc read $in Δ{needsRebuild:true needsRedraw:true _height:$in} calls[rebuild,setDirty] stub[yoga.setHeight(-0)] <- -0
+e height pc read $in Δ{needsRebuild:true needsRedraw:true _height:$in} calls[rebuild,setDirty] stub[yoga.setHeight(0)] <- 0
+e height pc read $in Δ{needsRebuild:true needsRedraw:true _height:$in} calls[rebuild,setDirty] stub[yoga.setHeight(2)] <- 0.5
+e height pc read $in Δ{needsRebuild:true needsRedraw:true _height:$in} calls[rebuild,setDirty] stub[yoga.setHeight(4)] <- 1
+e height: the other 19 as in c
+e padding pc read $in Δ{needsRedraw:true _padding:$in} calls[redraw,setDirty] stub[yoga.setPadding(8,NaN)] <- NaN
+e padding pc read $in Δ{needsRedraw:true _padding:$in} calls[redraw,setDirty] stub[yoga.setPadding(8,Infinity)] <- Infinity
+e padding pc read $in Δ{needsRedraw:true _padding:$in} calls[redraw,setDirty] stub[yoga.setPadding(8,-Infinity)] <- -Infinity
+e padding pc read $in Δ{needsRedraw:true _padding:$in} calls[redraw,setDirty] stub[yoga.setPadding(8,-4)] <- -1
+e padding pc read $in Δ{needsRedraw:true _padding:$in} calls[redraw,setDirty] stub[yoga.setPadding(8,2)] <- 0.5
+e padding pc read $in Δ{needsRedraw:true _padding:$in} calls[redraw,setDirty] stub[yoga.setPadding(8,4)] <- 1
+e padding pc read $in Δ{needsRedraw:true _padding:$in} calls[redraw,setDirty] stub[yoga.setPadding(8,4000000000)] <- 1e9
+e padding pc read [1,2,3,4]F Δ{needsRedraw:true _padding:[1,2,3,4]F} calls[redraw,setDirty] stub[yoga.setPadding(1,4) yoga.setPadding(2,8) yoga.setPadding(3,12) yoga.setPadding(0,16)] <- [1,2,3,4]
+e padding: the other 21 as in c
+e gap pc read $in Δ{needsRedraw:true _gap:$in} calls[redraw,setDirty] stub[yoga.setGap(2,NaN)] <- NaN
+e gap pc read $in Δ{needsRedraw:true _gap:$in} calls[redraw,setDirty] stub[yoga.setGap(2,Infinity)] <- Infinity
+e gap pc read $in Δ{needsRedraw:true _gap:$in} calls[redraw,setDirty] stub[yoga.setGap(2,-Infinity)] <- -Infinity
+e gap pc read $in Δ{needsRedraw:true _gap:$in} calls[redraw,setDirty] stub[yoga.setGap(2,-4)] <- -1
+e gap pc read $in Δ{needsRedraw:true _gap:$in} calls[redraw,setDirty] stub[yoga.setGap(2,2)] <- 0.5
+e gap pc read $in Δ{needsRedraw:true _gap:$in} calls[redraw,setDirty] stub[yoga.setGap(2,4)] <- 1
+e gap pc read $in Δ{needsRedraw:true _gap:$in} calls[redraw,setDirty] stub[yoga.setGap(2,4000000000)] <- 1e9
+e gap: the other 20 as in c
+== f. the constructor: defaults (read through the proxy); each key given through data
+f default space = "world"
+f default width = 100
+f default height = 100
+f default size = 0.01
+f default res = 2
+f default lit = false
+f default doubleside = true
+f default billboard = "none"
+f default pivot = "center"
+f default offset = view:V3(0,0,0)S
+f default scaler = null
+f default pointerEvents = true
+f default transparent = true
+f default backgroundColor = null
+f default borderWidth = 0
+f default borderColor = null
+f default borderRadius = 0
+f default padding = 0
+f default flexDirection = "column"
+f default justifyContent = "flex-start"
+f default alignItems = "stretch"
+f default alignContent = "flex-start"
+f default flexWrap = "no-wrap"
+f default gap = 0
+f default name = "ui"
+f defaults as on node: id position quaternion rotation scale matrixWorld active parent children _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+f space: through data as through the class (all 29)
+f width: through data as through the class (all 27)
+f height: through data as through the class (all 27)
+f size: through data as through the class (all 27)
+f res: through data as through the class (all 27)
+f lit: through data as through the class (all 27)
+f doubleside: through data as through the class (all 27)
+f billboard: through data as through the class (all 30)
+f pivot: through data as through the class (all 36)
+f offset data V3(0,0,0)S <- undefined null NaN -0 0 '' false
+f offset data V3(NaN,NaN,NaN)S <- Infinity -Infinity -1 0.5 1 1e9 'x' true {} [] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws} V3(1,2,3) V3(4,5,6)
+f offset data V3(1,2,3)S <- [1,2,3] Proxy[1,2,3]
+f scaler: through data as through the class (all 31)
+f pointerEvents: through data as through the class (all 27)
+f transparent: through data as through the class (all 27)
+f backgroundColor: through data as through the class (all 28)
+f borderWidth data 0 <- undefined
+f borderWidth data throw Error: "[ui] borderWidth not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f borderWidth data $in <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+f borderColor: through data as through the class (all 28)
+f borderRadius data 0 <- undefined
+f borderRadius data throw Error: "[ui] borderRadius not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f borderRadius data $in <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+f padding data 0 <- undefined
+f padding data throw Error: "[ui] padding not a number or array of numbers" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} [1,"x",3,4]
+f padding data $in <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+f padding data [1,2,3,4]F <- [1,2,3,4]
+f flexDirection: through data as through the class (all 31)
+f justifyContent: through data as through the class (all 33)
+f alignItems: through data as through the class (all 32)
+f alignContent: through data as through the class (all 34)
+f flexWrap: through data as through the class (all 30)
+f gap data 0 <- undefined
+f gap data throw Error: "[uiview] gap not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f gap data $in <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+f as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== g. own fields after construction, and what clone() and clone(true) make of them
+g field name = "ui"
+g field _space = "world"
+g field needsRebuild = true
+g field needsRedraw = true
+g field _width = 100
+g field _height = 100
+g field _size = 0.01
+g field _res = 2
+g field _lit = false
+g field _doubleside = true
+g field _billboard = "none"
+g field _pivot = "center"
+g field _offset = V3(0,0,0)S
+g field _scaler = null
+g field _pointerEvents = true
+g field _transparent = true
+g field _backgroundColor = null
+g field _borderWidth = 0
+g field _borderColor = null
+g field _borderRadius = 0
+g field _padding = 0
+g field _flexDirection = "column"
+g field _justifyContent = "flex-start"
+g field _alignItems = "stretch"
+g field _alignContent = "flex-start"
+g field _flexWrap = "no-wrap"
+g field _gap = 0
+g field ui = self
+g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
+g full: 30 properties set (space width height size res lit doubleside billboard pivot offset scaler pointerEvents transparent backgroundColor borderWidth borderColor borderRadius padding flexDirection justifyContent alignItems alignContent flexWrap gap active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
+g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
+g full fields unlike a new node's: children=[node:node#child(below)] position=V3(1,2,3)S rotation=E(-0,1.2870022175865687,0,YXZ)S quaternion=Q(0,0.6,0,0.8)S scale=V3(2,3,4)S _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _created=owner#full _space="screen" _width=0.5 _height=0.5 _size=0.5 _res=0.5 _lit=true _doubleside=false _billboard="full" _pivot="top-left" _offset=V3(1,2,3)S _scaler=[1,10]F _pointerEvents=false _transparent=false _backgroundColor="red" _borderWidth=0.5 _borderColor="red" _borderRadius=0.5 _padding=[1,2,3,4]F _flexDirection="column-reverse" _justifyContent="flex-end" _alignItems="flex-start" _alignContent="flex-end" _flexWrap="wrap" _gap=0.5
+g full fields at a new node's value: name parent ctx matrix matrixWorld isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting needsRebuild needsRedraw ui
+g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _space needsRebuild needsRedraw _width _height _size _res _lit _doubleside _billboard _pivot _scaler _pointerEvents _transparent _backgroundColor _borderWidth _borderColor _borderRadius _flexDirection _justifyContent _alignItems _alignContent _flexWrap _gap
+g full clone(false) copy: position rotation quaternion scale matrix matrixWorld _offset _padding ui
+g full clone(false) differs: children([node:node#child(below)] -> [])
+g full clone(false) source only: _proxy
+g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _space needsRebuild needsRedraw _width _height _size _res _lit _doubleside _billboard _pivot _scaler _pointerEvents _transparent _backgroundColor _borderWidth _borderColor _borderRadius _flexDirection _justifyContent _alignItems _alignContent _flexWrap _gap
+g full clone(true) copy: children position rotation quaternion scale matrix matrixWorld _offset _padding ui
+g full clone(true) source only: _proxy
+g full clone(true) children: node#child -> node#child
+g a clone reads as its source, each sample property alone (60 clones): yes
+== h. two instances alive at once, their proxies kept: each write and read reaches its own node only
+h each write and read reached its own node only: space width height size res lit doubleside billboard pivot offset scaler pointerEvents transparent backgroundColor borderWidth borderColor borderRadius padding flexDirection justifyContent alignItems alignContent flexWrap gap id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+h no value accepted (each write throws, on both nodes): id position quaternion rotation scale parent
+h each read of a key no script sets reached its own node only: id name position quaternion rotation scale matrixWorld parent children _ref _isRef
+h the same in both states (a constant): name _ref _isRef
+== i. every getter on a node whose backing values are distinct
+i space = "world"
+i width = 100
+i height = 100
+i size = 0.01
+i res = 2
+i lit = false
+i doubleside = true
+i billboard = "none"
+i pivot = "center"
+i offset = view:V3(0,0,0)S (class: V3(0,0,0)S)
+i scaler = null
+i pointerEvents = true
+i transparent = true
+i backgroundColor = null
+i borderWidth = 0
+i borderColor = null
+i borderRadius = 0
+i padding = 0
+i flexDirection = "column"
+i justifyContent = "flex-start"
+i alignItems = "stretch"
+i alignContent = "flex-start"
+i flexWrap = "no-wrap"
+i gap = 0
+i name = "ui"
+i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== x. the console outside the cases (the generator's own probing and set-up), by row
+x b: warn:"prim.transparent deprecated"

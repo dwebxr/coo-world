@@ -1,0 +1,422 @@
+# the 'prim' node type, written by test/lib/nodeGolden.mjs (legend: test/nodeGolden.test.js)
+== a. the proxy: own keys in order, descriptors, functions shared by two instances
+a proxy: prototype Object.prototype, extensible true, frozen false, 51 keys, getNodeRef(proxy) is the node: true
+a 1 type: get+set enum conf get:"get type"/0 per-instance set:"set"/1 shared
+a 2 size: get+set enum conf get:"get size"/0 per-instance set:"set"/1 shared
+a 3 color: get+set enum conf get:"get color"/0 per-instance set:"set"/1 shared
+a 4 emissive: get+set enum conf get:"get emissive"/0 per-instance set:"set"/1 shared
+a 5 emissiveIntensity: get+set enum conf get:"get emissiveIntensity"/0 per-instance set:"set"/1 shared
+a 6 metalness: get+set enum conf get:"get metalness"/0 per-instance set:"set"/1 shared
+a 7 roughness: get+set enum conf get:"get roughness"/0 per-instance set:"set"/1 shared
+a 8 opacity: get+set enum conf get:"get opacity"/0 per-instance set:"set"/1 shared
+a 9 transparent: get+set enum conf get:"get transparent"/0 per-instance set:"set"/1 shared
+a 10 texture: get+set enum conf get:"get texture"/0 per-instance set:"set"/1 shared
+a 11 castShadow: get+set enum conf get:"get castShadow"/0 per-instance set:"set"/1 shared
+a 12 receiveShadow: get+set enum conf get:"get receiveShadow"/0 per-instance set:"set"/1 shared
+a 13 physics: get+set enum conf get:"get physics"/0 per-instance set:"set"/1 shared
+a 14 mass: get+set enum conf get:"get mass"/0 per-instance set:"set"/1 shared
+a 15 linearDamping: get+set enum conf get:"get linearDamping"/0 per-instance set:"set"/1 shared
+a 16 angularDamping: get+set enum conf get:"get angularDamping"/0 per-instance set:"set"/1 shared
+a 17 staticFriction: get+set enum conf get:"get staticFriction"/0 per-instance set:"set"/1 shared
+a 18 dynamicFriction: get+set enum conf get:"get dynamicFriction"/0 per-instance set:"set"/1 shared
+a 19 restitution: get+set enum conf get:"get restitution"/0 per-instance set:"set"/1 shared
+a 20 layer: get+set enum conf get:"get layer"/0 per-instance set:"set"/1 shared
+a 21 trigger: get+set enum conf get:"get trigger"/0 per-instance set:"set"/1 shared
+a 22 tag: get+set enum conf get:"get tag"/0 per-instance set:"set"/1 shared
+a 23 onContactStart: get+set enum conf get:"get onContactStart"/0 per-instance set:"set"/1 shared
+a 24 onContactEnd: get+set enum conf get:"get onContactEnd"/0 per-instance set:"set"/1 shared
+a 25 onTriggerEnter: get+set enum conf get:"get onTriggerEnter"/0 per-instance set:"set"/1 shared
+a 26 onTriggerLeave: get+set enum conf get:"get onTriggerLeave"/0 per-instance set:"set"/1 shared
+a 27 doubleside: get+set enum conf get:"get doubleside"/0 per-instance set:"set"/1 shared
+a node keys: 24 at 28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51; order as on node; descriptors as on node
+== b. a stopped run (ctx.run is not its entity's deadHook), a live run, and receivers
+b set throws Error: "[app] this app has stopped": type size color emissive emissiveIntensity metalness roughness opacity transparent texture castShadow receiveShadow physics mass linearDamping angularDamping staticFriction dynamicFriction restitution layer trigger tag onContactStart onContactEnd onTriggerEnter onTriggerLeave doubleside id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b method throws Error: "[app] this app has stopped": get getWorldMatrix add remove traverse clone clean
+b get reads "box": type
+b get reads [1,1,1]: size
+b get reads "#ffffff": color
+b get reads null: emissive texture physics tag onContactStart onContactEnd onTriggerEnter onTriggerLeave _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
+b get reads 0: emissiveIntensity linearDamping restitution
+b get reads 0.2: metalness
+b get reads 0.8: roughness
+b get reads 1: opacity mass
+b get reads undefined: transparent parent cursor
+b get reads true: castShadow receiveShadow active _isRef
+b get reads 0.05: angularDamping
+b get reads 0.6: staticFriction dynamicFriction
+b get reads "environment": layer
+b get reads false: trigger doubleside
+b get reads <auto id>: id
+b get reads "prim": name
+b get reads V3(0,0,0)S: position
+b get reads Q(0,0,0,1)S: quaternion
+b get reads E(0,0,0,YXZ)S: rotation
+b get reads V3(1,1,1)S: scale
+b get reads view:M4(I)S: matrixWorld
+b get reads []: children
+b through _created set throws Error: "[app] this app has stopped": all 39
+b through _created method throws Error: "[app] this app has stopped": all 7
+b through a parent set throws Error: "[app] this app has stopped": all 39
+b through a parent method throws Error: "[app] this app has stopped": all 7
+b a live run: each setter with a sample value takes it
+b receiver Object.create(proxy): as through the proxy: 39 of 39
+b receiver a plain object: throws TypeError: "[node] not a node": all 39
+b receiver no receiver: throws TypeError: "[node] not a node": all 39
+b receiver a group's proxy: throws TypeError: "[node] a group node has no <key> to set": type size color emissive emissiveIntensity metalness roughness opacity transparent texture castShadow receiveShadow physics mass linearDamping angularDamping staticFriction dynamicFriction restitution layer trigger tag onContactStart onContactEnd onTriggerEnter onTriggerLeave doubleside
+b receiver a group's proxy: throws Error: "Setting ID not currently supported": id
+b receiver a group's proxy: throws Error: "Cannot replace node <key>": position quaternion rotation scale
+b receiver a group's proxy: runs: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b receiver a group's proxy: throws Error: "Cannot set <key> directly": parent
+b receiver another type's proxy with the key: sets that node: type(collider) color(image) emissive(particles) mass(rigidbody) staticFriction(collider) dynamicFriction(collider) restitution(collider) layer(collider) trigger(collider) tag(controller) onContactStart(controller) onContactEnd(controller) onTriggerEnter(rigidbody) onTriggerLeave(rigidbody) doubleside(image)
+b receiver another type's proxy with the key: throws Error: "[particles] size invalid": size(particles)
+b receiver another type's proxy with the key: throws Error: "[ui] transparent not a boolean": transparent(ui)
+b receiver another type's proxy with the key: leaves that node as it was: castShadow(image) receiveShadow(image) linearDamping(rigidbody) angularDamping(rigidbody)
+== c. one set on a fresh unmounted node: pc the proxy and the class alike, p the proxy, c the class
+c type pc read "box" <- undefined
+c type pc throw Error: "[prim] type invalid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} 'bogus'
+c type pc read $in <- 'box'
+c type pc read $in Δ{_type:$in needsRebuild:true} calls[setDirty] <- 'sphere' 'cylinder' 'cone' 'torus' 'plane'
+c size pc read [1,1,1] fresh <- undefined null
+c size pc throw Error: "[prim] size must be an array of finite numbers" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws} [1,1,1,…,1](len 17 #cf9c1c1ae448) [1,"2",3] [<hole>,<hole>,<hole>]
+c size pc read $in~ fresh Δ{needsRebuild:true _size:$in~} calls[setDirty] <- [] [1,2,3] [0.5] [1,2]
+c size pc read [1,2,3] fresh Δ{needsRebuild:true _size:[1,2,3]} calls[setDirty] traps[get:length,get:0,get:1,get:2] <- Proxy[1,2,3]
+c color pc read "#ffffff" <- undefined
+c color pc throw Error: "[prim] color must be string" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c color pc read $in Δ{_color:$in} <- '' 'x' 'red'
+c emissive pc read null <- undefined
+c emissive pc read $in <- null
+c emissive pc throw Error: "[prim] emissive must be string or null" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c emissive pc read $in Δ{_emissive:$in} <- '' 'x' 'red'
+c emissiveIntensity pc read 0 <- undefined NaN -0
+c emissiveIntensity pc throw Error: "[prim] emissiveIntensity must be positive number" <- null -Infinity -1 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c emissiveIntensity pc read 3.4028234663852886e+38 Δ{_emissiveIntensity:3.4028234663852886e+38} <- Infinity
+c emissiveIntensity pc read $in <- 0
+c emissiveIntensity pc read $in Δ{_emissiveIntensity:$in} <- 0.5 1 1e9
+c metalness pc read 0.2 <- undefined
+c metalness pc throw Error: "[prim] metalness must be number between 0 and 1" <- null NaN Infinity -Infinity -1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c metalness pc read $in Δ{needsRebuild:true _metalness:$in} calls[setDirty] <- -0 0 0.5 1
+c roughness pc read 0.8 <- undefined
+c roughness pc throw Error: "[prim] roughness must be number between 0 and 1" <- null NaN Infinity -Infinity -1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c roughness pc read $in Δ{needsRebuild:true _roughness:$in} calls[setDirty] <- -0 0 0.5 1
+c opacity pc read 1 <- undefined
+c opacity pc throw Error: "[prim] opacity must be number between 0 and 1" <- null NaN Infinity -Infinity -1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c opacity pc read $in Δ{needsRebuild:true _opacity:$in} calls[setDirty] <- -0 0 0.5
+c opacity pc read $in <- 1
+c transparent p read $in log[warn:"prim.transparent deprecated"] <- undefined
+c transparent p read undefined log[warn:"prim.transparent deprecated"] <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c transparent c read $in Δ{transparent:$in} <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c texture pc read null <- undefined
+c texture pc read $in <- null
+c texture pc throw Error: "[prim] texture must be string or null" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c texture pc read $in Δ{needsRebuild:true _texture:$in} calls[setDirty] <- '' 'x' 'asset://t.png'
+c castShadow pc read true <- undefined
+c castShadow pc throw Error: "[prim] castShadow not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c castShadow pc read $in <- true
+c castShadow pc read $in Δ{needsRebuild:true _castShadow:$in} calls[setDirty] <- false
+c receiveShadow pc read true <- undefined
+c receiveShadow pc throw Error: "[prim] receiveShadow not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c receiveShadow pc read $in <- true
+c receiveShadow pc read $in Δ{needsRebuild:true _receiveShadow:$in} calls[setDirty] <- false
+c physics pc read null <- undefined
+c physics pc read $in <- null
+c physics pc throw Error: "[prim] physics must be null, \"static\", \"kinematic\", or \"dynamic\"" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} 'bogus'
+c physics pc read $in Δ{needsRebuild:true _physics:$in} calls[setDirty] <- 'static' 'kinematic' 'dynamic'
+c mass pc read 1 <- undefined
+c mass pc throw Error: "[prim] mass must be a finite number >= 1e-9" <- null NaN Infinity -Infinity -1 -0 0 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} 1e-10
+c mass pc read $in Δ{needsRebuild:true _mass:$in} calls[setDirty] <- 0.5 1e9 1e-9 2
+c mass pc read $in <- 1
+c linearDamping pc read 0 <- undefined -0
+c linearDamping pc throw Error: "[prim] linearDamping must be non-negative number" <- null NaN Infinity -Infinity -1 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c linearDamping pc read $in <- 0
+c linearDamping pc read $in Δ{needsRebuild:true _linearDamping:$in} calls[setDirty] <- 0.5 1 1e9
+c angularDamping pc read 0.05 <- undefined
+c angularDamping pc throw Error: "[prim] angularDamping must be non-negative number" <- null NaN Infinity -Infinity -1 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c angularDamping pc read $in Δ{needsRebuild:true _angularDamping:$in} calls[setDirty] <- -0 0 0.5 1 1e9
+c staticFriction pc read 0.6 <- undefined
+c staticFriction pc throw Error: "[prim] staticFriction must be number between 0 and 1" <- null NaN Infinity -Infinity -1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c staticFriction pc read $in Δ{needsRebuild:true _staticFriction:$in} calls[setDirty] <- -0 0 0.5 1
+c dynamicFriction pc read 0.6 <- undefined
+c dynamicFriction pc throw Error: "[prim] dynamicFriction must be number between 0 and 1" <- null NaN Infinity -Infinity -1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c dynamicFriction pc read $in Δ{needsRebuild:true _dynamicFriction:$in} calls[setDirty] <- -0 0 0.5 1
+c restitution pc read 0 <- undefined -0
+c restitution pc throw Error: "[prim] restitution must be number between 0 and 1" <- null NaN Infinity -Infinity -1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c restitution pc read $in <- 0
+c restitution pc read $in Δ{needsRebuild:true _restitution:$in} calls[setDirty] <- 0.5 1
+c layer pc read "environment" <- undefined
+c layer pc throw Error: "[prim] invalid layer: <in>" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 'x' true false {} [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn 1n 'bogus'
+c layer pc throw Error: "[prim] invalid layer: " <- '' []
+c layer pc throw Error: "[prim] invalid layer: <in>" traps[get:@Symbol.toPrimitive,get:toString,get:join,get:length,get:0,get:1,get:2] <- Proxy[1,2,3]
+c layer pc throw TypeError: "Cannot convert a Symbol value to a string" <- Symbol
+c layer pc throw Error: "toString called" <- {toString throws}
+c layer pc read $in <- 'environment'
+c layer pc read $in Δ{needsRebuild:true _layer:$in} calls[setDirty] <- 'prop' 'tool'
+c layer p throw Error: "[prim] layer invalid: <in>" <- 'player'
+c layer c read $in Δ{needsRebuild:true _layer:$in} calls[setDirty] <- 'player'
+c trigger pc read false <- undefined
+c trigger pc throw Error: "[prim] trigger must be boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c trigger pc read $in Δ{needsRebuild:true _trigger:$in} calls[setDirty] <- true
+c trigger pc read $in <- false
+c tag pc read null <- undefined
+c tag pc read $in <- null
+c tag pc throw Error: "[prim] tag must be string or null" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c tag pc read $in Δ{_tag:$in} <- '' 'x' 't'
+c onContactStart pc read null <- undefined
+c onContactStart pc read $in <- null
+c onContactStart pc throw Error: "[prim] onContactStart must be function or null" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] Symbol 1n {toString throws}
+c onContactStart pc read $in Δ{_onContactStart:$in} <- fn
+c onContactEnd pc read null <- undefined
+c onContactEnd pc read $in <- null
+c onContactEnd pc throw Error: "[prim] onContactEnd must be function or null" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] Symbol 1n {toString throws}
+c onContactEnd pc read $in Δ{_onContactEnd:$in} <- fn
+c onTriggerEnter pc read null <- undefined
+c onTriggerEnter pc read $in <- null
+c onTriggerEnter pc throw Error: "[prim] onTriggerEnter must be function or null" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] Symbol 1n {toString throws}
+c onTriggerEnter pc read $in Δ{_onTriggerEnter:$in} <- fn
+c onTriggerLeave pc read null <- undefined
+c onTriggerLeave pc read $in <- null
+c onTriggerLeave pc throw Error: "[prim] onTriggerLeave must be function or null" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] Symbol 1n {toString throws}
+c onTriggerLeave pc read $in Δ{_onTriggerLeave:$in} <- fn
+c doubleside pc read false <- undefined
+c doubleside pc throw Error: "[prim] doubleside must be boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c doubleside pc read $in Δ{needsRebuild:true _doubleside:$in} calls[setDirty] <- true
+c doubleside pc read $in <- false
+c as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
+d type same: - | NaN,NaN: first throws Error: "[prim] type invalid" | 0,-0: first throws Error: "[prim] type invalid"
+d size same: read $in~ fresh | copy: read $in~ fresh | NaN,NaN: first throws Error: "[prim] size must be an array of finite numbers" | 0,-0: first throws Error: "[prim] size must be an array of finite numbers"
+d color same: - | NaN,NaN: first throws Error: "[prim] color must be string" | 0,-0: first throws Error: "[prim] color must be string"
+d emissive same: - | NaN,NaN: first throws Error: "[prim] emissive must be string or null" | 0,-0: first throws Error: "[prim] emissive must be string or null"
+d emissiveIntensity same: - | NaN,NaN: read 0 | 0,-0: read 0
+d metalness same: - | NaN,NaN: first throws Error: "[prim] metalness must be number between 0 and 1" | 0,-0: read 0
+d roughness same: - | NaN,NaN: first throws Error: "[prim] roughness must be number between 0 and 1" | 0,-0: read 0
+d opacity same: - | NaN,NaN: first throws Error: "[prim] opacity must be number between 0 and 1" | 0,-0: read 0
+d transparent NaN,NaN: read undefined log[warn:"prim.transparent deprecated"] | 0,-0: read undefined log[warn:"prim.transparent deprecated"]
+d texture same: - | NaN,NaN: first throws Error: "[prim] texture must be string or null" | 0,-0: first throws Error: "[prim] texture must be string or null"
+d castShadow same: - | NaN,NaN: first throws Error: "[prim] castShadow not a boolean" | 0,-0: first throws Error: "[prim] castShadow not a boolean"
+d receiveShadow same: - | NaN,NaN: first throws Error: "[prim] receiveShadow not a boolean" | 0,-0: first throws Error: "[prim] receiveShadow not a boolean"
+d physics same: - | NaN,NaN: first throws Error: "[prim] physics must be null, \"static\", \"kinematic\", or \"dynamic\"" | 0,-0: first throws Error: "[prim] physics must be null, \"static\", \"kinematic\", or \"dynamic\""
+d mass same: - | NaN,NaN: first throws Error: "[prim] mass must be a finite number >= 1e-9" | 0,-0: first throws Error: "[prim] mass must be a finite number >= 1e-9"
+d linearDamping same: - | NaN,NaN: first throws Error: "[prim] linearDamping must be non-negative number" | 0,-0: read 0
+d angularDamping same: - | NaN,NaN: first throws Error: "[prim] angularDamping must be non-negative number" | 0,-0: read 0
+d staticFriction same: - | NaN,NaN: first throws Error: "[prim] staticFriction must be number between 0 and 1" | 0,-0: read 0
+d dynamicFriction same: - | NaN,NaN: first throws Error: "[prim] dynamicFriction must be number between 0 and 1" | 0,-0: read 0
+d restitution same: - | NaN,NaN: first throws Error: "[prim] restitution must be number between 0 and 1" | 0,-0: read 0
+d layer same: - | NaN,NaN: first throws Error: "[prim] invalid layer: NaN" | 0,-0: first throws Error: "[prim] invalid layer: 0"
+d trigger same: - | NaN,NaN: first throws Error: "[prim] trigger must be boolean" | 0,-0: first throws Error: "[prim] trigger must be boolean"
+d tag same: - | NaN,NaN: first throws Error: "[prim] tag must be string or null" | 0,-0: first throws Error: "[prim] tag must be string or null"
+d onContactStart same: - | NaN,NaN: first throws Error: "[prim] onContactStart must be function or null" | 0,-0: first throws Error: "[prim] onContactStart must be function or null"
+d onContactEnd same: - | NaN,NaN: first throws Error: "[prim] onContactEnd must be function or null" | 0,-0: first throws Error: "[prim] onContactEnd must be function or null"
+d onTriggerEnter same: - | NaN,NaN: first throws Error: "[prim] onTriggerEnter must be function or null" | 0,-0: first throws Error: "[prim] onTriggerEnter must be function or null"
+d onTriggerLeave same: - | NaN,NaN: first throws Error: "[prim] onTriggerLeave must be function or null" | 0,-0: first throws Error: "[prim] onTriggerLeave must be function or null"
+d doubleside same: - | NaN,NaN: first throws Error: "[prim] doubleside must be boolean" | 0,-0: first throws Error: "[prim] doubleside must be boolean"
+d type [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] type invalid" | 0,-0: first throws Error: "[prim] type invalid"
+d size [mounted (handle)] same: read $in~ fresh | copy: read $in~ fresh | NaN,NaN: first throws Error: "[prim] size must be an array of finite numbers" | 0,-0: first throws Error: "[prim] size must be an array of finite numbers"
+d color [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] color must be string" | 0,-0: first throws Error: "[prim] color must be string"
+d emissive [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] emissive must be string or null" | 0,-0: first throws Error: "[prim] emissive must be string or null"
+d emissiveIntensity [mounted (handle)] same: - | NaN,NaN: read 0 | 0,-0: read 0
+d metalness [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] metalness must be number between 0 and 1" | 0,-0: read 0
+d roughness [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] roughness must be number between 0 and 1" | 0,-0: read 0
+d opacity [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] opacity must be number between 0 and 1" | 0,-0: read 0
+d transparent [mounted (handle)] NaN,NaN: read undefined log[warn:"prim.transparent deprecated"] | 0,-0: read undefined log[warn:"prim.transparent deprecated"]
+d texture [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] texture must be string or null" | 0,-0: first throws Error: "[prim] texture must be string or null"
+d castShadow [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] castShadow not a boolean" | 0,-0: first throws Error: "[prim] castShadow not a boolean"
+d receiveShadow [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] receiveShadow not a boolean" | 0,-0: first throws Error: "[prim] receiveShadow not a boolean"
+d physics [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] physics must be null, \"static\", \"kinematic\", or \"dynamic\"" | 0,-0: first throws Error: "[prim] physics must be null, \"static\", \"kinematic\", or \"dynamic\""
+d mass [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] mass must be a finite number >= 1e-9" | 0,-0: first throws Error: "[prim] mass must be a finite number >= 1e-9"
+d linearDamping [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] linearDamping must be non-negative number" | 0,-0: read 0
+d angularDamping [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] angularDamping must be non-negative number" | 0,-0: read 0
+d staticFriction [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] staticFriction must be number between 0 and 1" | 0,-0: read 0
+d dynamicFriction [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] dynamicFriction must be number between 0 and 1" | 0,-0: read 0
+d restitution [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] restitution must be number between 0 and 1" | 0,-0: read 0
+d layer [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] invalid layer: NaN" | 0,-0: first throws Error: "[prim] invalid layer: 0"
+d trigger [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] trigger must be boolean" | 0,-0: first throws Error: "[prim] trigger must be boolean"
+d tag [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] tag must be string or null" | 0,-0: first throws Error: "[prim] tag must be string or null"
+d onContactStart [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] onContactStart must be function or null" | 0,-0: first throws Error: "[prim] onContactStart must be function or null"
+d onContactEnd [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] onContactEnd must be function or null" | 0,-0: first throws Error: "[prim] onContactEnd must be function or null"
+d onTriggerEnter [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] onTriggerEnter must be function or null" | 0,-0: first throws Error: "[prim] onTriggerEnter must be function or null"
+d onTriggerLeave [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] onTriggerLeave must be function or null" | 0,-0: first throws Error: "[prim] onTriggerLeave must be function or null"
+d doubleside [mounted (handle)] same: - | NaN,NaN: first throws Error: "[prim] doubleside must be boolean" | 0,-0: first throws Error: "[prim] doubleside must be boolean"
+== e. the sets of c in a mounted-like state (stubs record what is done to them): what differs from c
+e [mounted (handle)]
+e color pc read $in Δ{_color:$in} stub[handle.setColor($in)] <- '' 'x' 'red'
+e color: the other 25 as in c
+e emissive pc read $in Δ{_emissive:$in} stub[handle.setEmissive($in)] <- '' 'x' 'red'
+e emissive: the other 25 as in c
+e emissiveIntensity pc read 3.4028234663852886e+38 Δ{_emissiveIntensity:3.4028234663852886e+38} stub[handle.setEmissiveIntensity(3.4028234663852886e+38)] <- Infinity
+e emissiveIntensity pc read $in Δ{_emissiveIntensity:$in} stub[handle.setEmissiveIntensity(0.5)] <- 0.5
+e emissiveIntensity pc read $in Δ{_emissiveIntensity:$in} stub[handle.setEmissiveIntensity(1)] <- 1
+e emissiveIntensity pc read $in Δ{_emissiveIntensity:$in} stub[handle.setEmissiveIntensity(1000000000)] <- 1e9
+e emissiveIntensity: the other 23 as in c
+e as in c: type size metalness roughness opacity transparent texture castShadow receiveShadow physics mass linearDamping angularDamping staticFriction dynamicFriction restitution layer trigger tag onContactStart onContactEnd onTriggerEnter onTriggerLeave doubleside
+e [_type sphere]
+e size pc read [0.5] fresh Δ{needsRebuild:true _size:[0.5]} calls[setDirty] <- undefined null
+e size: the other 30 as in c
+e [_type cylinder]
+e size pc read [0.5,0.5,1] fresh Δ{needsRebuild:true _size:[0.5,0.5,1]} calls[setDirty] <- undefined null
+e size: the other 30 as in c
+e [_type cone]
+e size pc read [0.5,1] fresh Δ{needsRebuild:true _size:[0.5,1]} calls[setDirty] <- undefined null
+e size: the other 30 as in c
+e [_type torus]
+e size pc read [0.4,0.1] fresh Δ{needsRebuild:true _size:[0.4,0.1]} calls[setDirty] <- undefined null
+e size: the other 30 as in c
+e [_type plane]
+e size pc read [1,1] fresh Δ{needsRebuild:true _size:[1,1]} calls[setDirty] <- undefined null
+e size: the other 30 as in c
+== f. the constructor: defaults (read through the proxy); each key given through data
+f default type = "box"
+f default size = [1,1,1] fresh
+f default color = "#ffffff"
+f default emissive = null
+f default emissiveIntensity = 0
+f default metalness = 0.2
+f default roughness = 0.8
+f default opacity = 1
+f default transparent = undefined
+f default texture = null
+f default castShadow = true
+f default receiveShadow = true
+f default physics = null
+f default mass = 1
+f default linearDamping = 0
+f default angularDamping = 0.05
+f default staticFriction = 0.6
+f default dynamicFriction = 0.6
+f default restitution = 0
+f default layer = "environment"
+f default trigger = false
+f default tag = null
+f default onContactStart = null
+f default onContactEnd = null
+f default onTriggerEnter = null
+f default onTriggerLeave = null
+f default doubleside = false
+f default name = "prim"
+f defaults as on node: id position quaternion rotation scale matrixWorld active parent children _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+f type: through data as through the class (all 34)
+f size: through data as through the class (all 32)
+f color: through data as through the class (all 28)
+f emissive: through data as through the class (all 28)
+f emissiveIntensity data 0 <- undefined NaN
+f emissiveIntensity data throw Error: "[prim] emissiveIntensity must be positive number" <- null -Infinity -1 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f emissiveIntensity data 3.4028234663852886e+38 <- Infinity
+f emissiveIntensity data $in <- -0 0 0.5 1 1e9
+f metalness: through data as through the class (all 27)
+f roughness: through data as through the class (all 27)
+f opacity: through data as through the class (all 27)
+f transparent data $in <- undefined
+f transparent data undefined <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f texture: through data as through the class (all 28)
+f castShadow: through data as through the class (all 27)
+f receiveShadow: through data as through the class (all 27)
+f physics: through data as through the class (all 31)
+f mass: through data as through the class (all 30)
+f linearDamping data 0 <- undefined
+f linearDamping data throw Error: "[prim] linearDamping must be non-negative number" <- null NaN Infinity -Infinity -1 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f linearDamping data $in <- -0 0 0.5 1 1e9
+f angularDamping: through data as through the class (all 27)
+f staticFriction: through data as through the class (all 27)
+f dynamicFriction: through data as through the class (all 27)
+f restitution data 0 <- undefined
+f restitution data throw Error: "[prim] restitution must be number between 0 and 1" <- null NaN Infinity -Infinity -1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f restitution data $in <- -0 0 0.5 1
+f layer: through data as through the class (all 32)
+f trigger: through data as through the class (all 27)
+f tag: through data as through the class (all 28)
+f onContactStart: through data as through the class (all 27)
+f onContactEnd: through data as through the class (all 27)
+f onTriggerEnter: through data as through the class (all 27)
+f onTriggerLeave: through data as through the class (all 27)
+f doubleside: through data as through the class (all 27)
+f as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== g. own fields after construction, and what clone() and clone(true) make of them
+g field name = "prim"
+g field onInterpolate = fn:onInterpolate
+g field _type = "box"
+g field needsRebuild = true
+g field _size = [1,1,1]
+g field _color = "#ffffff"
+g field _emissive = null
+g field _emissiveIntensity = 0
+g field _metalness = 0.2
+g field _roughness = 0.8
+g field _opacity = 1
+g field _texture = null
+g field _castShadow = true
+g field _receiveShadow = true
+g field _doubleside = false
+g field _physics = null
+g field _mass = 1
+g field _linearDamping = 0
+g field _angularDamping = 0.05
+g field _staticFriction = 0.6
+g field _dynamicFriction = 0.6
+g field _restitution = 0
+g field _layer = "environment"
+g field _trigger = false
+g field _tag = null
+g field _onContactStart = null
+g field _onContactEnd = null
+g field _onTriggerEnter = null
+g field _onTriggerLeave = null
+g field shapes = Set(0)
+g field _tm = null
+g field tempVec3 = V3(0,0,0)
+g field tempQuat = Q(0,0,0,1)
+g field matrixWorldOffset = M4(I)
+g field scaleOffset = V3(0,0,0)
+g field n = 0
+g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
+g full: 32 properties set (type size color emissive emissiveIntensity metalness roughness opacity texture castShadow receiveShadow physics mass linearDamping angularDamping staticFriction dynamicFriction restitution layer trigger tag onContactStart onContactEnd onTriggerEnter onTriggerLeave doubleside active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
+g no sample value (no value accepted reads otherwise than the default): transparent id position quaternion rotation scale parent
+g full fields unlike a new node's: children=[node:node#child(below)] position=V3(1,2,3)S rotation=E(-0,1.2870022175865687,0,YXZ)S quaternion=Q(0,0.6,0,0.8)S scale=V3(2,3,4)S _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _created=owner#full _type="sphere" _size=[1,2,3] _color="red" _emissive="red" _emissiveIntensity=0.5 _metalness=0.5 _roughness=0.5 _opacity=0.5 _texture="asset://t.png" _castShadow=false _receiveShadow=false _doubleside=true _physics="static" _mass=1e-9 _linearDamping=0.5 _angularDamping=0.5 _staticFriction=0.5 _dynamicFriction=0.5 _restitution=0.5 _layer="prop" _trigger=true _tag="t" _onContactStart=fn:hostileFn _onContactEnd=fn:hostileFn _onTriggerEnter=fn:hostileFn _onTriggerLeave=fn:hostileFn
+g full fields at a new node's value: name parent ctx matrix matrixWorld isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting onInterpolate needsRebuild shapes _tm tempVec3 tempQuat matrixWorldOffset scaleOffset n
+g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type needsRebuild _size _color _emissive _emissiveIntensity _metalness _roughness _opacity _texture _castShadow _receiveShadow _doubleside _physics _mass _linearDamping _angularDamping _staticFriction _dynamicFriction _restitution _layer _trigger _tag _onContactStart _onContactEnd _onTriggerEnter _onTriggerLeave _tm n
+g full clone(false) copy: position rotation quaternion scale matrix matrixWorld onInterpolate shapes tempVec3 tempQuat matrixWorldOffset scaleOffset
+g full clone(false) differs: children([node:node#child(below)] -> [])
+g full clone(false) source only: _proxy
+g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type needsRebuild _size _color _emissive _emissiveIntensity _metalness _roughness _opacity _texture _castShadow _receiveShadow _doubleside _physics _mass _linearDamping _angularDamping _staticFriction _dynamicFriction _restitution _layer _trigger _tag _onContactStart _onContactEnd _onTriggerEnter _onTriggerLeave _tm n
+g full clone(true) copy: children position rotation quaternion scale matrix matrixWorld onInterpolate shapes tempVec3 tempQuat matrixWorldOffset scaleOffset
+g full clone(true) source only: _proxy
+g full clone(true) children: node#child -> node#child
+g a clone reads as its source, each sample property alone (64 clones): yes
+== h. two instances alive at once, their proxies kept: each write and read reaches its own node only
+h each write and read reached its own node only: type size color emissive emissiveIntensity metalness roughness opacity transparent texture castShadow receiveShadow physics mass linearDamping angularDamping staticFriction dynamicFriction restitution layer trigger tag onContactStart onContactEnd onTriggerEnter onTriggerLeave doubleside id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+h no value accepted (each write throws, on both nodes): id position quaternion rotation scale parent
+h no second value that reads otherwise (the first is written twice): transparent
+h each read of a key no script sets reached its own node only: transparent id name position quaternion rotation scale matrixWorld parent children _ref _isRef
+h the same in both states (a constant): transparent name _ref _isRef
+== i. every getter on a node whose backing values are distinct
+i type = "box"
+i size = [1,1,1]
+i color = "#ffffff"
+i emissive = null
+i emissiveIntensity = 0
+i metalness = 0.2
+i roughness = 0.8
+i opacity = 1
+i transparent = undefined
+i texture = null
+i castShadow = true
+i receiveShadow = true
+i physics = null
+i mass = 1
+i linearDamping = 0
+i angularDamping = 0.05
+i staticFriction = 0.6
+i dynamicFriction = 0.6
+i restitution = 0
+i layer = "environment"
+i trigger = false
+i tag = null
+i onContactStart = null
+i onContactEnd = null
+i onTriggerEnter = null
+i onTriggerLeave = null
+i doubleside = false
+i name = "prim"
+i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== x. the console outside the cases (the generator's own probing and set-up), by row
+x b: warn:"prim.transparent deprecated"×29
+x d: warn:"prim.transparent deprecated"×4
+x h: warn:"prim.transparent deprecated"

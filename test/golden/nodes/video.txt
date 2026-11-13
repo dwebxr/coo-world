@@ -1,0 +1,551 @@
+# the 'video' node type, written by test/lib/nodeGolden.mjs (legend: test/nodeGolden.test.js)
+== a. the proxy: own keys in order, descriptors, functions shared by two instances
+a proxy: prototype Object.prototype, extensible true, frozen false, 61 keys, getNodeRef(proxy) is the node: true
+a 1 screenId: get+set enum conf get:"get screenId"/0 per-instance set:"set"/1 shared
+a 2 src: get+set enum conf get:"get src"/0 per-instance set:"set"/1 shared
+a 3 linked: get+set enum conf get:"get linked"/0 per-instance set:"set"/1 shared
+a 4 loop: get+set enum conf get:"get loop"/0 per-instance set:"set"/1 shared
+a 5 visible: get+set enum conf get:"get visible"/0 per-instance set:"set"/1 shared
+a 6 color: get+set enum conf get:"get color"/0 per-instance set:"set"/1 shared
+a 7 lit: get+set enum conf get:"get lit"/0 per-instance set:"set"/1 shared
+a 8 doubleside: get+set enum conf get:"get doubleside"/0 per-instance set:"set"/1 shared
+a 9 castShadow: get+set enum conf get:"get castShadow"/0 per-instance set:"set"/1 shared
+a 10 receiveShadow: get+set enum conf get:"get receiveShadow"/0 per-instance set:"set"/1 shared
+a 11 aspect: get+set enum conf get:"get aspect"/0 per-instance set:"set"/1 shared
+a 12 fit: get+set enum conf get:"get fit"/0 per-instance set:"set"/1 shared
+a 13 width: get+set enum conf get:"get width"/0 per-instance set:"set"/1 shared
+a 14 height: get+set enum conf get:"get height"/0 per-instance set:"set"/1 shared
+a 15 pivot: get+set enum conf get:"get pivot"/0 per-instance set:"set"/1 shared
+a 16 geometry: get+set enum conf get:"get geometry"/0 per-instance set:"set"/1 shared
+a 17 volume: get+set enum conf get:"get volume"/0 per-instance set:"set"/1 shared
+a 18 group: get+set enum conf get:"get group"/0 per-instance set:"set"/1 shared
+a 19 spatial: get+set enum conf get:"get spatial"/0 per-instance set:"set"/1 shared
+a 20 distanceModel: get+set enum conf get:"get distanceModel"/0 per-instance set:"set"/1 shared
+a 21 refDistance: get+set enum conf get:"get refDistance"/0 per-instance set:"set"/1 shared
+a 22 maxDistance: get+set enum conf get:"get maxDistance"/0 per-instance set:"set"/1 shared
+a 23 rolloffFactor: get+set enum conf get:"get rolloffFactor"/0 per-instance set:"set"/1 shared
+a 24 coneInnerAngle: get+set enum conf get:"get coneInnerAngle"/0 per-instance set:"set"/1 shared
+a 25 coneOuterAngle: get+set enum conf get:"get coneOuterAngle"/0 per-instance set:"set"/1 shared
+a 26 coneOuterGain: get+set enum conf get:"get coneOuterGain"/0 per-instance set:"set"/1 shared
+a 27 loading: get enum conf get:"get loading"/0 per-instance
+a 28 duration: get enum conf get:"get duration"/0 per-instance
+a 29 playing: get enum conf get:"get playing"/0 per-instance
+a 30 isPlaying: get enum conf get:"get isPlaying"/0 per-instance
+a 31 time: get+set enum conf get:"get time"/0 per-instance set:"set"/1 shared
+a 32 currentTime: get+set enum conf get:"get currentTime"/0 per-instance set:"set"/1 shared
+a 33 material: get+set enum conf get:"get material"/0 per-instance set:"set"/1 shared
+a 34 onLoad: get+set enum conf get:"get onLoad"/0 per-instance set:"set"/1 shared
+a 35 play: method enum conf writable fn:"play"/1 per-instance
+a 36 pause: method enum conf writable fn:"pause"/0 per-instance
+a 37 stop: method enum conf writable fn:"stop"/0 per-instance
+a node keys: 24 at 38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61; order as on node; descriptors as on node
+== b. a stopped run (ctx.run is not its entity's deadHook), a live run, and receivers
+b set throws Error: "[app] this app has stopped": screenId src linked loop visible color lit doubleside castShadow receiveShadow aspect fit width height pivot geometry volume group spatial distanceModel refDistance maxDistance rolloffFactor coneInnerAngle coneOuterAngle coneOuterGain time currentTime material onLoad id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b method throws Error: "[app] this app has stopped": play pause stop get getWorldMatrix add remove traverse clone clean
+b get reads null: screenId src width _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
+b get reads false: linked loop lit doubleside castShadow receiveShadow playing isPlaying
+b get reads true: visible spatial loading active _isRef
+b get reads "black": color
+b get reads 1.7777777777777777: aspect
+b get reads "contain": fit
+b get reads 1: height volume refDistance
+b get reads "center": pivot
+b get reads ref(null): geometry
+b get reads "music": group
+b get reads "inverse": distanceModel
+b get reads 40: maxDistance
+b get reads 3: rolloffFactor
+b get reads 360: coneInnerAngle coneOuterAngle
+b get reads 0: coneOuterGain duration time currentTime
+b get reads undefined: material onLoad parent cursor
+b get reads <auto id>: id
+b get reads "video": name
+b get reads V3(0,0,0)S: position
+b get reads Q(0,0,0,1)S: quaternion
+b get reads E(0,0,0,YXZ)S: rotation
+b get reads V3(1,1,1)S: scale
+b get reads view:M4(I)S: matrixWorld
+b get reads []: children
+b through _created set throws Error: "[app] this app has stopped": all 42
+b through _created method throws Error: "[app] this app has stopped": all 10
+b through a parent set throws Error: "[app] this app has stopped": all 42
+b through a parent method throws Error: "[app] this app has stopped": all 10
+b a live run: each setter with a sample value takes it
+b receiver Object.create(proxy): as through the proxy: 42 of 42
+b receiver a plain object: throws TypeError: "[node] not a node": all 42
+b receiver no receiver: throws TypeError: "[node] not a node": all 42
+b receiver a group's proxy: throws TypeError: "[node] a group node has no <key> to set": screenId src linked loop visible color lit doubleside castShadow receiveShadow aspect fit width height pivot geometry volume group spatial distanceModel refDistance maxDistance rolloffFactor coneInnerAngle coneOuterAngle coneOuterGain time currentTime material onLoad
+b receiver a group's proxy: throws Error: "Setting ID not currently supported": id
+b receiver a group's proxy: throws Error: "Cannot replace node <key>": position quaternion rotation scale
+b receiver a group's proxy: runs: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b receiver a group's proxy: throws Error: "Cannot set <key> directly": parent
+b receiver another type's proxy with the key: sets that node: src(audio) loop(audio) visible(avatar) color(image) lit(image) doubleside(image) castShadow(image) receiveShadow(image) fit(image) width(collider) height(collider) pivot(image) geometry(collider) volume(audio) group(audio) spatial(audio) distanceModel(audio) refDistance(audio) maxDistance(audio) rolloffFactor(audio) coneInnerAngle(audio) coneOuterAngle(audio) coneOuterGain(audio) onLoad(avatar)
+b receiver another type's proxy with the key: throws Error: "[mesh] linked not a boolean": linked(mesh)
+b receiver another type's proxy with the key: leaves that node as it was: currentTime(audio)
+b receiver another type's proxy with the key: throws Error: "[mesh] set material not supported": material(mesh)
+== c. one set on a fresh unmounted node: pc the proxy and the class alike, p the proxy, c the class
+c screenId pc read null <- undefined
+c screenId pc read $in <- null
+c screenId pc throw Error: "[video] screenId not null or string" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c screenId pc read $in Δ{_screenId:$in needsRebuild:true} calls[setDirty] <- '' 'x' 'screen-1'
+c src pc read null <- undefined
+c src pc read $in <- null
+c src pc throw Error: "[video] src not null or string" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c src pc read $in Δ{needsRebuild:true _src:$in} calls[setDirty] <- '' 'x' 'asset://v.mp4'
+c linked pc read false <- undefined
+c linked pc throw Error: "[video] linked not boolean or string" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c linked pc read $in Δ{needsRebuild:true _linked:$in} calls[setDirty] <- '' 'x' true 'tag'
+c linked pc read $in <- false
+c loop pc read false <- undefined
+c loop pc throw Error: "[video] loop not boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c loop pc read $in Δ{_loop:$in} <- true
+c loop pc read $in <- false
+c visible pc read true <- undefined
+c visible pc throw Error: "[video] visible not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c visible pc read $in <- true
+c visible pc read $in Δ{needsRebuild:true _visible:$in} calls[setDirty] <- false
+c color pc read "black" <- undefined
+c color pc read $in Δ{needsRebuild:true _color:$in} calls[setDirty] <- null '' 'x' 'red'
+c color pc throw Error: "[video] color not null or string" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c lit pc read false <- undefined
+c lit pc throw Error: "[video] lit not boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c lit pc read $in Δ{needsRebuild:true _lit:$in} calls[setDirty] <- true
+c lit pc read $in <- false
+c doubleside pc read false <- undefined
+c doubleside pc throw Error: "[video] doubleside not boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c doubleside pc read $in Δ{_doubleside:$in} <- true
+c doubleside pc read $in <- false
+c castShadow pc read false <- undefined
+c castShadow pc throw Error: "[video] castShadow not boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c castShadow pc read $in Δ{_castShadow:$in} <- true
+c castShadow pc read $in <- false
+c receiveShadow pc read false <- undefined
+c receiveShadow pc throw Error: "[video] receiveShadow not boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c receiveShadow pc read $in Δ{_receiveShadow:$in} <- true
+c receiveShadow pc read $in <- false
+c aspect pc read 1.7777777777777777 <- undefined NaN
+c aspect pc throw Error: "[video] aspect not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c aspect pc read 1000 Δ{needsRebuild:true _aspect:1000} calls[setDirty] <- Infinity 1e9
+c aspect pc read 0.001 Δ{needsRebuild:true _aspect:0.001} calls[setDirty] <- -Infinity -1 -0 0
+c aspect pc read $in Δ{needsRebuild:true _aspect:$in} calls[setDirty] <- 0.5 1
+c fit pc read "contain" <- undefined
+c fit pc throw Error: "[video] fit invalid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c fit pc read $in Δ{needsRebuild:true _fit:$in} calls[setDirty] <- 'none' 'cover'
+c fit pc read $in <- 'contain'
+c width pc read null <- undefined NaN
+c width pc read $in <- null
+c width pc read 1000000 Δ{needsRebuild:true _width:1000000} calls[setDirty] <- Infinity 1e9
+c width pc read 0 Δ{needsRebuild:true _width:0} calls[setDirty] <- -Infinity -1
+c width pc read $in Δ{needsRebuild:true _width:$in} calls[setDirty] <- -0 0 0.5 1
+c width pc throw Error: "[video] width not null or number" <- '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c height pc read 1 <- undefined
+c height pc read $in Δ{needsRebuild:true _height:$in} calls[setDirty] <- null -0 0 0.5
+c height pc read null Δ{needsRebuild:true _height:null} calls[setDirty] <- NaN
+c height pc read 1000000 Δ{needsRebuild:true _height:1000000} calls[setDirty] <- Infinity 1e9
+c height pc read 0 Δ{needsRebuild:true _height:0} calls[setDirty] <- -Infinity -1
+c height pc read $in <- 1
+c height pc throw Error: "[video] height not null or number" <- '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c pivot pc read "center" <- undefined
+c pivot pc throw Error: "[video] pivot invalid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c pivot pc read $in Δ{needsRebuild:true _pivot:$in} calls[setDirty] <- 'top-left' 'top-center' 'top-right' 'center-left' 'center-right' 'bottom-left' 'bottom-center' 'bottom-right'
+c pivot pc read $in <- 'center'
+c geometry pc read ref(null) fresh Δ{needsRebuild:true} calls[setDirty] <- undefined null
+c geometry pc read ref(geometry#A) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- geometry#A
+c geometry pc read $in~ fresh Δ{needsRebuild:true _geometry:geometry#B} calls[setDirty] <- ref(geometry#B)
+c geometry p read ref(null) fresh log[error:"[video] geometry invalid"] <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws}
+c geometry p read ref(null) fresh traps[gopd:_ref] log[error:"[video] geometry invalid"] <- Proxy[1,2,3]
+c geometry c read ref(NaN) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- NaN
+c geometry c read ref(Infinity) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- Infinity
+c geometry c read ref(-Infinity) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- -Infinity
+c geometry c read ref(-1) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- -1
+c geometry c read ref(-0) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- -0
+c geometry c read ref(0) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- 0
+c geometry c read ref(0.5) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- 0.5
+c geometry c read ref(1) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- 1
+c geometry c read ref(1000000000) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- 1e9
+c geometry c read ref("") fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- ''
+c geometry c read ref("x") fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- 'x'
+c geometry c read ref(true) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- true
+c geometry c read ref(false) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- false
+c geometry c read ref({}) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- {}
+c geometry c read ref([]) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- []
+c geometry c read ref([1,2,3]) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- [1,2,3]
+c geometry c read ref([NaN]) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- [NaN]
+c geometry c read ref(Number(1)) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- Number(1)
+c geometry c read ref(String("x")) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- String('x')
+c geometry c read ref(Boolean(true)) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- Boolean(true)
+c geometry c read ref(Proxy) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] traps[gopd:_ref] <- Proxy[1,2,3]
+c geometry c read ref(fn:hostileFn) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- fn
+c geometry c read ref(Symbol(s)) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- Symbol
+c geometry c read ref(1n) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- 1n
+c geometry c read ref({toString:fn:toString}) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- {toString throws}
+c volume pc read 1 <- undefined NaN
+c volume pc throw Error: "[video] volume not number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c volume pc read 100 Δ{_volume:100} <- Infinity 1e9
+c volume pc read 0 Δ{_volume:0} <- -Infinity -1
+c volume pc read $in Δ{_volume:$in} <- -0 0 0.5
+c volume pc read $in <- 1
+c group pc read "music" Δ{needsRebuild:true} calls[setDirty] <- undefined
+c group pc throw Error: "[video] group not valid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c group pc read $in Δ{needsRebuild:true} calls[setDirty] <- 'music'
+c group pc read $in Δ{needsRebuild:true _group:$in} calls[setDirty] <- 'sfx'
+c spatial pc read true <- undefined
+c spatial pc throw Error: "[video] spatial not boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c spatial pc read $in <- true
+c spatial pc read $in Δ{needsRebuild:true _spatial:$in} calls[setDirty] <- false
+c distanceModel pc read "inverse" <- undefined
+c distanceModel pc throw Error: "[audio] distanceModel not valid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c distanceModel pc read $in Δ{_distanceModel:$in} <- 'linear' 'exponential'
+c distanceModel pc read $in <- 'inverse'
+c refDistance pc read 1 <- undefined NaN
+c refDistance pc throw Error: "[audio] refDistance not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c refDistance pc read 1000000 Δ{_refDistance:1000000} <- Infinity 1e9
+c refDistance pc read 0 Δ{_refDistance:0} <- -Infinity -1
+c refDistance pc read $in Δ{_refDistance:$in} <- -0 0 0.5
+c refDistance pc read $in <- 1
+c maxDistance pc read 40 <- undefined NaN
+c maxDistance pc throw Error: "[audio] maxDistance not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c maxDistance pc read 1000000 Δ{_maxDistance:1000000} <- Infinity 1e9
+c maxDistance pc read 0.0001 Δ{_maxDistance:0.0001} <- -Infinity -1 -0 0
+c maxDistance pc read $in Δ{_maxDistance:$in} <- 0.5 1
+c rolloffFactor pc read 3 <- undefined NaN
+c rolloffFactor pc throw Error: "[audio] rolloffFactor not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c rolloffFactor pc read 1000000 Δ{_rolloffFactor:1000000} <- Infinity 1e9
+c rolloffFactor pc read 0 Δ{_rolloffFactor:0} <- -Infinity -1
+c rolloffFactor pc read $in Δ{_rolloffFactor:$in} <- -0 0 0.5 1
+c coneInnerAngle pc read 360 <- undefined NaN Infinity 1e9
+c coneInnerAngle pc throw Error: "[audio] coneInnerAngle not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c coneInnerAngle pc read 0 Δ{_coneInnerAngle:0} <- -Infinity -1
+c coneInnerAngle pc read $in Δ{_coneInnerAngle:$in} <- -0 0 0.5 1
+c coneOuterAngle pc read 360 <- undefined NaN Infinity 1e9
+c coneOuterAngle pc throw Error: "[audio] coneOuterAngle not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c coneOuterAngle pc read 0 Δ{_coneOuterAngle:0} <- -Infinity -1
+c coneOuterAngle pc read $in Δ{_coneOuterAngle:$in} <- -0 0 0.5 1
+c coneOuterGain pc read 0 <- undefined NaN -Infinity -1
+c coneOuterGain pc throw Error: "[audio] coneOuterGain not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c coneOuterGain pc read 1 Δ{_coneOuterGain:1} <- Infinity 1e9
+c coneOuterGain pc read $in Δ{_coneOuterGain:$in} <- -0 0.5 1
+c coneOuterGain pc read $in <- 0
+c time pc read 0 <- undefined null NaN Infinity -Infinity -1 -0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} 3
+c time pc read $in <- 0
+c currentTime p read 0 <- undefined null NaN Infinity -Infinity -1 -0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} 3
+c currentTime p read $in <- 0
+c currentTime c read $in Δ{currentTime:$in} <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} 3
+c material pc throw Error: "[video] cannot set material" <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c onLoad pc read $in Δ{_onLoad:$in} <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
+d screenId same: - | NaN,NaN: first throws Error: "[video] screenId not null or string" | 0,-0: first throws Error: "[video] screenId not null or string"
+d src same: - | NaN,NaN: first throws Error: "[video] src not null or string" | 0,-0: first throws Error: "[video] src not null or string"
+d linked same: - | NaN,NaN: first throws Error: "[video] linked not boolean or string" | 0,-0: first throws Error: "[video] linked not boolean or string"
+d loop same: - | NaN,NaN: first throws Error: "[video] loop not boolean" | 0,-0: first throws Error: "[video] loop not boolean"
+d visible same: - | NaN,NaN: first throws Error: "[video] visible not a boolean" | 0,-0: first throws Error: "[video] visible not a boolean"
+d color same: - | NaN,NaN: first throws Error: "[video] color not null or string" | 0,-0: first throws Error: "[video] color not null or string"
+d lit same: - | NaN,NaN: first throws Error: "[video] lit not boolean" | 0,-0: first throws Error: "[video] lit not boolean"
+d doubleside same: - | NaN,NaN: first throws Error: "[video] doubleside not boolean" | 0,-0: first throws Error: "[video] doubleside not boolean"
+d castShadow same: - | NaN,NaN: first throws Error: "[video] castShadow not boolean" | 0,-0: first throws Error: "[video] castShadow not boolean"
+d receiveShadow same: - | NaN,NaN: first throws Error: "[video] receiveShadow not boolean" | 0,-0: first throws Error: "[video] receiveShadow not boolean"
+d aspect same: - | NaN,NaN: read 1.7777777777777777 | 0,-0: read 0.001
+d fit same: - | NaN,NaN: first throws Error: "[video] fit invalid" | 0,-0: first throws Error: "[video] fit invalid"
+d width same: - | NaN,NaN: read null | 0,-0: read 0
+d height same: - | NaN,NaN: read null | 0,-0: read 0
+d pivot same: - | NaN,NaN: first throws Error: "[video] pivot invalid" | 0,-0: first throws Error: "[video] pivot invalid"
+d geometry same: read ref(geometry#A) fresh Δ{needsRebuild:true} calls[setDirty] | copy: read ref(geometry#A) fresh Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read ref(null) fresh log[error:"[video] geometry invalid"] | 0,-0: read ref(null) fresh log[error:"[video] geometry invalid"]
+d volume same: - | NaN,NaN: read 1 | 0,-0: read 0
+d group same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[video] group not valid" | 0,-0: first throws Error: "[video] group not valid"
+d spatial same: - | NaN,NaN: first throws Error: "[video] spatial not boolean" | 0,-0: first throws Error: "[video] spatial not boolean"
+d distanceModel same: - | NaN,NaN: first throws Error: "[audio] distanceModel not valid" | 0,-0: first throws Error: "[audio] distanceModel not valid"
+d refDistance same: - | NaN,NaN: read 1 | 0,-0: Δ{_refDistance:$in}
+d maxDistance same: - | NaN,NaN: read 40 | 0,-0: read 0.0001
+d rolloffFactor same: - | NaN,NaN: read 3 | 0,-0: Δ{_rolloffFactor:$in}
+d coneInnerAngle same: - | NaN,NaN: read 360 | 0,-0: Δ{_coneInnerAngle:$in}
+d coneOuterAngle same: - | NaN,NaN: read 360 | 0,-0: Δ{_coneOuterAngle:$in}
+d coneOuterGain same: - | NaN,NaN: read 0 | 0,-0: Δ{_coneOuterGain:$in}
+d time NaN,NaN: read 0 | 0,-0: read 0
+d currentTime NaN,NaN: read 0 | 0,-0: read 0
+d material NaN,NaN: first throws Error: "[video] cannot set material" | 0,-0: first throws Error: "[video] cannot set material"
+d onLoad same: - | NaN,NaN: - | 0,-0: Δ{_onLoad:$in}
+d screenId [mounted (instance, mesh, gain, panner)] same: - | NaN,NaN: first throws Error: "[video] screenId not null or string" | 0,-0: first throws Error: "[video] screenId not null or string"
+d src [mounted (instance, mesh, gain, panner)] same: - | NaN,NaN: first throws Error: "[video] src not null or string" | 0,-0: first throws Error: "[video] src not null or string"
+d linked [mounted (instance, mesh, gain, panner)] same: - | NaN,NaN: first throws Error: "[video] linked not boolean or string" | 0,-0: first throws Error: "[video] linked not boolean or string"
+d loop [mounted (instance, mesh, gain, panner)] same: - | NaN,NaN: first throws Error: "[video] loop not boolean" | 0,-0: first throws Error: "[video] loop not boolean"
+d visible [mounted (instance, mesh, gain, panner)] same: - | NaN,NaN: first throws Error: "[video] visible not a boolean" | 0,-0: first throws Error: "[video] visible not a boolean"
+d color [mounted (instance, mesh, gain, panner)] same: - | NaN,NaN: first throws Error: "[video] color not null or string" | 0,-0: first throws Error: "[video] color not null or string"
+d lit [mounted (instance, mesh, gain, panner)] same: - | NaN,NaN: first throws Error: "[video] lit not boolean" | 0,-0: first throws Error: "[video] lit not boolean"
+d doubleside [mounted (instance, mesh, gain, panner)] same: - | NaN,NaN: first throws Error: "[video] doubleside not boolean" | 0,-0: first throws Error: "[video] doubleside not boolean"
+d castShadow [mounted (instance, mesh, gain, panner)] same: - | NaN,NaN: first throws Error: "[video] castShadow not boolean" | 0,-0: first throws Error: "[video] castShadow not boolean"
+d receiveShadow [mounted (instance, mesh, gain, panner)] same: - | NaN,NaN: first throws Error: "[video] receiveShadow not boolean" | 0,-0: first throws Error: "[video] receiveShadow not boolean"
+d aspect [mounted (instance, mesh, gain, panner)] same: - | NaN,NaN: read 1.7777777777777777 | 0,-0: read 0.001
+d fit [mounted (instance, mesh, gain, panner)] same: - | NaN,NaN: first throws Error: "[video] fit invalid" | 0,-0: first throws Error: "[video] fit invalid"
+d width [mounted (instance, mesh, gain, panner)] same: - | NaN,NaN: read null | 0,-0: read 0
+d height [mounted (instance, mesh, gain, panner)] same: - | NaN,NaN: read null | 0,-0: read 0
+d pivot [mounted (instance, mesh, gain, panner)] same: - | NaN,NaN: first throws Error: "[video] pivot invalid" | 0,-0: first throws Error: "[video] pivot invalid"
+d geometry [mounted (instance, mesh, gain, panner)] same: read ref(geometry#A) fresh Δ{needsRebuild:true} calls[setDirty] | copy: read ref(geometry#A) fresh Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: read ref(null) fresh log[error:"[video] geometry invalid"] | 0,-0: read ref(null) fresh log[error:"[video] geometry invalid"]
+d volume [mounted (instance, mesh, gain, panner)] same: - | NaN,NaN: read 1 | 0,-0: read 0
+d group [mounted (instance, mesh, gain, panner)] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[video] group not valid" | 0,-0: first throws Error: "[video] group not valid"
+d spatial [mounted (instance, mesh, gain, panner)] same: - | NaN,NaN: first throws Error: "[video] spatial not boolean" | 0,-0: first throws Error: "[video] spatial not boolean"
+d distanceModel [mounted (instance, mesh, gain, panner)] same: stub[panner.distanceModel=$in] | NaN,NaN: first throws Error: "[audio] distanceModel not valid" | 0,-0: first throws Error: "[audio] distanceModel not valid"
+d refDistance [mounted (instance, mesh, gain, panner)] same: stub[panner.refDistance=0.5] | NaN,NaN: read 1 stub[panner.refDistance=1] | 0,-0: Δ{_refDistance:$in} stub[panner.refDistance=-0]
+d maxDistance [mounted (instance, mesh, gain, panner)] same: stub[panner.maxDistance=0.5] | NaN,NaN: read 40 stub[panner.maxDistance=40] | 0,-0: read 0.0001 stub[panner.maxDistance=0.0001]
+d rolloffFactor [mounted (instance, mesh, gain, panner)] same: stub[panner.rolloffFactor=0.5] | NaN,NaN: read 3 stub[panner.rolloffFactor=3] | 0,-0: Δ{_rolloffFactor:$in} stub[panner.rolloffFactor=-0]
+d coneInnerAngle [mounted (instance, mesh, gain, panner)] same: stub[panner.coneInnerAngle=0.5] | NaN,NaN: read 360 stub[panner.coneInnerAngle=360] | 0,-0: Δ{_coneInnerAngle:$in} stub[panner.coneInnerAngle=-0]
+d coneOuterAngle [mounted (instance, mesh, gain, panner)] same: stub[panner.coneOuterAngle=0.5] | NaN,NaN: read 360 stub[panner.coneOuterAngle=360] | 0,-0: Δ{_coneOuterAngle:$in} stub[panner.coneOuterAngle=-0]
+d coneOuterGain [mounted (instance, mesh, gain, panner)] same: stub[panner.coneOuterGain=0.5] | NaN,NaN: read 0 stub[panner.coneOuterGain=0] | 0,-0: Δ{_coneOuterGain:$in} stub[panner.coneOuterGain=-0]
+d time [mounted (instance, mesh, gain, panner)] NaN,NaN: read stub:instance.currentTime stub[instance.currentTime=0] | 0,-0: read stub:instance.currentTime stub[instance.currentTime=-0]
+d currentTime [mounted (instance, mesh, gain, panner)] NaN,NaN: read stub:instance.currentTime stub[instance.currentTime=0] | 0,-0: read stub:instance.currentTime stub[instance.currentTime=-0]
+d material [mounted (instance, mesh, gain, panner)] NaN,NaN: first throws Error: "[video] cannot set material" | 0,-0: first throws Error: "[video] cannot set material"
+d onLoad [mounted (instance, mesh, gain, panner)] same: - | NaN,NaN: - | 0,-0: Δ{_onLoad:$in}
+== e. the sets of c in a mounted-like state (stubs record what is done to them): what differs from c
+e [mounted (instance, mesh, gain, panner)]
+e loop pc read $in Δ{_loop:$in} stub[instance.loop=true] <- true
+e loop: the other 26 as in c
+e doubleside pc read $in Δ{_doubleside:$in} stub[mesh.material.side=2 mesh.material.needsUpdate=true] <- true
+e doubleside: the other 26 as in c
+e castShadow pc read $in Δ{_castShadow:$in} stub[mesh.castShadow=true] <- true
+e castShadow: the other 26 as in c
+e receiveShadow pc read $in Δ{_receiveShadow:$in} stub[mesh.receiveShadow=true] <- true
+e receiveShadow: the other 26 as in c
+e volume pc read 100 Δ{_volume:100} stub[gain.gain.value=100] <- Infinity 1e9
+e volume pc read 0 Δ{_volume:0} stub[gain.gain.value=0] <- -Infinity -1
+e volume pc read $in Δ{_volume:$in} stub[gain.gain.value=-0] <- -0
+e volume pc read $in Δ{_volume:$in} stub[gain.gain.value=0] <- 0
+e volume pc read $in Δ{_volume:$in} stub[gain.gain.value=0.5] <- 0.5
+e volume: the other 20 as in c
+e distanceModel pc read "inverse" stub[panner.distanceModel="inverse"] <- undefined
+e distanceModel pc read $in Δ{_distanceModel:$in} stub[panner.distanceModel=$in] <- 'linear' 'exponential'
+e distanceModel pc read $in stub[panner.distanceModel=$in] <- 'inverse'
+e distanceModel: the other 26 as in c
+e refDistance pc read 1 stub[panner.refDistance=1] <- undefined NaN
+e refDistance pc read 1000000 Δ{_refDistance:1000000} stub[panner.refDistance=1000000] <- Infinity 1e9
+e refDistance pc read 0 Δ{_refDistance:0} stub[panner.refDistance=0] <- -Infinity -1
+e refDistance pc read $in Δ{_refDistance:$in} stub[panner.refDistance=-0] <- -0
+e refDistance pc read $in Δ{_refDistance:$in} stub[panner.refDistance=0] <- 0
+e refDistance pc read $in Δ{_refDistance:$in} stub[panner.refDistance=0.5] <- 0.5
+e refDistance pc read $in stub[panner.refDistance=1] <- 1
+e refDistance: the other 17 as in c
+e maxDistance pc read 40 stub[panner.maxDistance=40] <- undefined NaN
+e maxDistance pc read 1000000 Δ{_maxDistance:1000000} stub[panner.maxDistance=1000000] <- Infinity 1e9
+e maxDistance pc read 0.0001 Δ{_maxDistance:0.0001} stub[panner.maxDistance=0.0001] <- -Infinity -1 -0 0
+e maxDistance pc read $in Δ{_maxDistance:$in} stub[panner.maxDistance=0.5] <- 0.5
+e maxDistance pc read $in Δ{_maxDistance:$in} stub[panner.maxDistance=1] <- 1
+e maxDistance: the other 17 as in c
+e rolloffFactor pc read 3 stub[panner.rolloffFactor=3] <- undefined NaN
+e rolloffFactor pc read 1000000 Δ{_rolloffFactor:1000000} stub[panner.rolloffFactor=1000000] <- Infinity 1e9
+e rolloffFactor pc read 0 Δ{_rolloffFactor:0} stub[panner.rolloffFactor=0] <- -Infinity -1
+e rolloffFactor pc read $in Δ{_rolloffFactor:$in} stub[panner.rolloffFactor=-0] <- -0
+e rolloffFactor pc read $in Δ{_rolloffFactor:$in} stub[panner.rolloffFactor=0] <- 0
+e rolloffFactor pc read $in Δ{_rolloffFactor:$in} stub[panner.rolloffFactor=0.5] <- 0.5
+e rolloffFactor pc read $in Δ{_rolloffFactor:$in} stub[panner.rolloffFactor=1] <- 1
+e rolloffFactor: the other 17 as in c
+e coneInnerAngle pc read 360 stub[panner.coneInnerAngle=360] <- undefined NaN Infinity 1e9
+e coneInnerAngle pc read 0 Δ{_coneInnerAngle:0} stub[panner.coneInnerAngle=0] <- -Infinity -1
+e coneInnerAngle pc read $in Δ{_coneInnerAngle:$in} stub[panner.coneInnerAngle=-0] <- -0
+e coneInnerAngle pc read $in Δ{_coneInnerAngle:$in} stub[panner.coneInnerAngle=0] <- 0
+e coneInnerAngle pc read $in Δ{_coneInnerAngle:$in} stub[panner.coneInnerAngle=0.5] <- 0.5
+e coneInnerAngle pc read $in Δ{_coneInnerAngle:$in} stub[panner.coneInnerAngle=1] <- 1
+e coneInnerAngle: the other 17 as in c
+e coneOuterAngle pc read 360 stub[panner.coneOuterAngle=360] <- undefined NaN Infinity 1e9
+e coneOuterAngle pc read 0 Δ{_coneOuterAngle:0} stub[panner.coneOuterAngle=0] <- -Infinity -1
+e coneOuterAngle pc read $in Δ{_coneOuterAngle:$in} stub[panner.coneOuterAngle=-0] <- -0
+e coneOuterAngle pc read $in Δ{_coneOuterAngle:$in} stub[panner.coneOuterAngle=0] <- 0
+e coneOuterAngle pc read $in Δ{_coneOuterAngle:$in} stub[panner.coneOuterAngle=0.5] <- 0.5
+e coneOuterAngle pc read $in Δ{_coneOuterAngle:$in} stub[panner.coneOuterAngle=1] <- 1
+e coneOuterAngle: the other 17 as in c
+e coneOuterGain pc read 0 stub[panner.coneOuterGain=0] <- undefined NaN -Infinity -1
+e coneOuterGain pc read 1 Δ{_coneOuterGain:1} stub[panner.coneOuterGain=1] <- Infinity 1e9
+e coneOuterGain pc read $in Δ{_coneOuterGain:$in} stub[panner.coneOuterGain=-0] <- -0
+e coneOuterGain pc read $in stub[panner.coneOuterGain=0] <- 0
+e coneOuterGain pc read $in Δ{_coneOuterGain:$in} stub[panner.coneOuterGain=0.5] <- 0.5
+e coneOuterGain pc read $in Δ{_coneOuterGain:$in} stub[panner.coneOuterGain=1] <- 1
+e coneOuterGain: the other 17 as in c
+e time pc read stub:instance.currentTime stub[instance.currentTime=0] <- undefined null NaN -Infinity -1 0 '' 'x' false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+e time pc read stub:instance.currentTime stub[instance.currentTime=1000000000] <- Infinity 1e9
+e time pc read stub:instance.currentTime stub[instance.currentTime=-0] <- -0
+e time pc read stub:instance.currentTime stub[instance.currentTime=0.5] <- 0.5
+e time pc read stub:instance.currentTime stub[instance.currentTime=1] <- 1 true
+e time pc read stub:instance.currentTime stub[instance.currentTime=3] <- 3
+e currentTime p read stub:instance.currentTime stub[instance.currentTime=0] <- undefined null NaN -Infinity -1 0 '' 'x' false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+e currentTime p read stub:instance.currentTime stub[instance.currentTime=1000000000] <- Infinity 1e9
+e currentTime p read stub:instance.currentTime stub[instance.currentTime=-0] <- -0
+e currentTime p read stub:instance.currentTime stub[instance.currentTime=0.5] <- 0.5
+e currentTime p read stub:instance.currentTime stub[instance.currentTime=1] <- 1 true
+e currentTime p read stub:instance.currentTime stub[instance.currentTime=3] <- 3
+e currentTime c read $in Δ{currentTime:$in} <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} 3
+e as in c: screenId src linked visible color lit aspect fit width height pivot geometry group spatial material onLoad
+e [loaded (_loading false)]
+e src pc read $in Δ{needsRebuild:true _src:$in _loading:true} calls[setDirty] <- '' 'x' 'asset://v.mp4'
+e src: the other 25 as in c
+== f. the constructor: defaults (read through the proxy); each key given through data
+f default screenId = null
+f default src = null
+f default linked = false
+f default loop = false
+f default visible = true
+f default color = "black"
+f default lit = false
+f default doubleside = false
+f default castShadow = false
+f default receiveShadow = false
+f default aspect = 1.7777777777777777
+f default fit = "contain"
+f default width = null
+f default height = 1
+f default pivot = "center"
+f default geometry = ref(null) fresh
+f default volume = 1
+f default group = "music"
+f default spatial = true
+f default distanceModel = "inverse"
+f default refDistance = 1
+f default maxDistance = 40
+f default rolloffFactor = 3
+f default coneInnerAngle = 360
+f default coneOuterAngle = 360
+f default coneOuterGain = 0
+f default loading = true
+f default duration = 0
+f default playing = false
+f default isPlaying = false
+f default time = 0
+f default currentTime = 0
+f default material = undefined
+f default onLoad = undefined
+f default name = "video"
+f defaults as on node: id position quaternion rotation scale matrixWorld active parent children _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+f screenId: through data as through the class (all 28)
+f src: through data as through the class (all 28)
+f linked: through data as through the class (all 28)
+f loop: through data as through the class (all 27)
+f visible: through data as through the class (all 27)
+f color: through data as through the class (all 28)
+f lit: through data as through the class (all 27)
+f doubleside: through data as through the class (all 27)
+f castShadow: through data as through the class (all 27)
+f receiveShadow: through data as through the class (all 27)
+f aspect: through data as through the class (all 27)
+f fit: through data as through the class (all 30)
+f width: through data as through the class (all 27)
+f height: through data as through the class (all 27)
+f pivot: through data as through the class (all 36)
+f geometry: through data as through the class (all 29)
+f volume: through data as through the class (all 27)
+f group: through data as through the class (all 29)
+f spatial: through data as through the class (all 27)
+f distanceModel: through data as through the class (all 30)
+f refDistance: through data as through the class (all 27)
+f maxDistance: through data as through the class (all 27)
+f rolloffFactor: through data as through the class (all 27)
+f coneInnerAngle: through data as through the class (all 27)
+f coneOuterAngle: through data as through the class (all 27)
+f coneOuterGain: through data as through the class (all 27)
+f time: through data as through the class (all 28)
+f currentTime data $in <- undefined
+f currentTime data undefined <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} 3
+f material data $in <- undefined
+f material data undefined <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f onLoad data $in <- undefined
+f onLoad data undefined <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== g. own fields after construction, and what clone() and clone(true) make of them
+g field name = "video"
+g field _screenId = null
+g field needsRebuild = true
+g field _src = null
+g field _loading = true
+g field _linked = false
+g field _loop = false
+g field _visible = true
+g field _color = "black"
+g field _lit = false
+g field _doubleside = false
+g field _castShadow = false
+g field _receiveShadow = false
+g field _aspect = 1.7777777777777777
+g field _fit = "contain"
+g field _width = null
+g field _height = 1
+g field _pivot = "center"
+g field _geometry = null
+g field _volume = 1
+g field _group = "music"
+g field _spatial = true
+g field _distanceModel = "inverse"
+g field _refDistance = 1
+g field _maxDistance = 40
+g field _rolloffFactor = 3
+g field _coneInnerAngle = 360
+g field _coneOuterAngle = 360
+g field _coneOuterGain = 0
+g field n = 0
+g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
+g full: 33 properties set (screenId src linked loop visible color lit doubleside castShadow receiveShadow aspect fit width height pivot geometry volume group spatial distanceModel refDistance maxDistance rolloffFactor coneInnerAngle coneOuterAngle coneOuterGain onLoad active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
+g no sample value (no value accepted reads otherwise than the default): time currentTime material id position quaternion rotation scale parent
+g full fields unlike a new node's: children=[node:node#child(below)] position=V3(1,2,3)S rotation=E(-0,1.2870022175865687,0,YXZ)S quaternion=Q(0,0.6,0,0.8)S scale=V3(2,3,4)S _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _created=owner#full _screenId="screen-1" _src="asset://v.mp4" _linked="tag" _loop=true _visible=false _color="red" _lit=true _doubleside=true _castShadow=true _receiveShadow=true _aspect=0.5 _fit="none" _width=0.5 _height=0.5 _pivot="top-left" _geometry=geometry#A _volume=0.5 _group="sfx" _spatial=false _distanceModel="linear" _refDistance=0.5 _maxDistance=0.5 _rolloffFactor=0.5 _coneInnerAngle=0.5 _coneOuterAngle=0.5 _coneOuterGain=0.5 _onLoad=fn:hostileFn
+g full fields at a new node's value: name parent ctx matrix matrixWorld isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting needsRebuild _loading n
+g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _screenId needsRebuild _src _loading _linked _loop _visible _color _lit _doubleside _castShadow _receiveShadow _aspect _fit _width _height _pivot _geometry _volume _group _spatial _distanceModel _refDistance _maxDistance _rolloffFactor _coneInnerAngle _coneOuterAngle _coneOuterGain n _onLoad
+g full clone(false) copy: position rotation quaternion scale matrix matrixWorld
+g full clone(false) differs: children([node:node#child(below)] -> [])
+g full clone(false) source only: _proxy
+g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _screenId needsRebuild _src _loading _linked _loop _visible _color _lit _doubleside _castShadow _receiveShadow _aspect _fit _width _height _pivot _geometry _volume _group _spatial _distanceModel _refDistance _maxDistance _rolloffFactor _coneInnerAngle _coneOuterAngle _coneOuterGain n _onLoad
+g full clone(true) copy: children position rotation quaternion scale matrix matrixWorld
+g full clone(true) source only: _proxy
+g full clone(true) children: node#child -> node#child
+g host video (onLoad) fields unlike a new node's: _onLoad=fn:onLoad
+g host video (onLoad) clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _screenId needsRebuild _src _loading _linked _loop _visible _color _lit _doubleside _castShadow _receiveShadow _aspect _fit _width _height _pivot _geometry _volume _group _spatial _distanceModel _refDistance _maxDistance _rolloffFactor _coneInnerAngle _coneOuterAngle _coneOuterGain n _onLoad
+g host video (onLoad) clone(false) copy: children position quaternion scale matrix matrixWorld
+g host video (onLoad) clone(false) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g host video (onLoad) clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _screenId needsRebuild _src _loading _linked _loop _visible _color _lit _doubleside _castShadow _receiveShadow _aspect _fit _width _height _pivot _geometry _volume _group _spatial _distanceModel _refDistance _maxDistance _rolloffFactor _coneInnerAngle _coneOuterAngle _coneOuterGain n _onLoad
+g host video (onLoad) clone(true) copy: children position quaternion scale matrix matrixWorld
+g host video (onLoad) clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g host video (onLoad) clone(true) children: -
+g a clone reads as its source, each sample property alone (66 clones): yes
+== h. two instances alive at once, their proxies kept: each write and read reaches its own node only
+h each write and read reached its own node only: screenId src linked loop visible color lit doubleside castShadow receiveShadow aspect fit width height pivot geometry volume group spatial distanceModel refDistance maxDistance rolloffFactor coneInnerAngle coneOuterAngle coneOuterGain time currentTime material onLoad id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor time[mounted] currentTime[mounted]
+h no value accepted (each write throws, on both nodes): material id position quaternion rotation scale parent
+h no second value that reads otherwise (the first is written twice): time currentTime
+h each read of a key no script sets reached its own node only: loading duration playing isPlaying time currentTime material id name position quaternion rotation scale matrixWorld parent children _ref _isRef
+h the same in both states (a constant): name _ref _isRef
+== i. every getter on a node whose backing values are distinct
+i screenId = null
+i src = null
+i linked = false
+i loop = false
+i visible = true
+i color = "black"
+i lit = false
+i doubleside = false
+i castShadow = false
+i receiveShadow = false
+i aspect = 1.7777777777777777
+i fit = "contain"
+i width = null
+i height = 1
+i pivot = "center"
+i geometry = ref(null)
+i volume = 1
+i group = "music"
+i spatial = true
+i distanceModel = "inverse"
+i refDistance = 1
+i maxDistance = 40
+i rolloffFactor = 3
+i coneInnerAngle = 360
+i coneOuterAngle = 360
+i coneOuterGain = 0
+i loading = false
+i duration = 12
+i playing = true
+i isPlaying = true
+i time = 3
+i currentTime = 3
+i material = {textureX:<accessor>,textureY:<accessor>}F reads{textureX=0.25 textureY=0.75} (class: {textureX:<accessor>,textureY:<accessor>} reads{textureX=0.25 textureY=0.75})
+i onLoad = undefined
+i name = "video"
+i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+i the same value (an alias): playing isPlaying = true
+i the same value (an alias): time currentTime = 3
+i alias isPlaying with playing redefined on the proxy: reads true
+i alias currentTime with time redefined on the proxy: reads 3; written: the node reads 0
+== x. the console outside the cases (the generator's own probing and set-up), by row
+x d: error:"[video] geometry invalid"×4
+x h: error:"[video] geometry invalid"

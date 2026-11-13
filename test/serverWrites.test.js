@@ -285,10 +285,11 @@ function onlyConnections(unit, array, name) {
 // each with the units that need it; any other is refused, whatever it holds, and nothing on the right of a binding is
 // followed:
 // - a plain parameter of the unit itself (a class member, a field's function, a module's top-level function): 44 of
-//   today's 48 sends and pings, in 23 units: the methods retireSocket, spend, checkBuilderBalance, endTokenGrant,
-//   onTipResult, revertBlueprint, releaseSettings; the fields onCommand, onModifyRank, onRequestBuilderNonce,
-//   onRequestBuilderByToken, onTokenBalanceRequest, onRevokeBuilderByToken, onRequestEvmNonce, onRequestEvmVerify,
-//   onRevokeEvmWallet, onRequestEvmTipIntent, onEvmTip, onEntityAdded, onEntityModified, onSpawnModified, onAi, onPing;
+//   today's 48 sends and pings, in 23 units: the methods retireSocket, spend, onTipResult, revertBlueprint,
+//   releaseSettings; the fields onCommand, onModifyRank, onRequestEvmNonce, onRequestEvmVerify, onRevokeEvmWallet,
+//   onRequestEvmTipIntent, onEvmTip, onEntityAdded, onEntityModified, onSpawnModified, onAi, onPing; the top-level
+//   functions of src/server/network/solanaWallet.js checkBuilderBalance, endTokenGrant (methods of the class before),
+//   onRequestBuilderNonce, onRequestBuilderByToken, onTokenBalanceRequest, onRevokeBuilderByToken (fields before);
 // - a plain parameter of a function passed directly to `this.sockets.forEach`, or to `forEach` of a local array of
 //   the unit's that only ever receives such connections (onlyConnections): checkSockets, whose ping is in the first
 //   and whose `dead.forEach(socket => socket.disconnect())` binds the name too;

@@ -3,8 +3,8 @@
 // (@babel/parser), not by a line number or by the text of a signature.
 //
 // The network is the class in src/core/systems/ServerNetwork.js and the modules of src/server/network/ (any depth),
-// where parts of the class are to move as functions whose `this` is the network (P16, step 3). The folder is read
-// when it exists; it does not yet. `root`: the checkout read, this one by default (the tests of the tripwires give a
+// where parts of the class move as functions whose `this` is the network (P16, step 3: solanaWallet.js so far). The
+// folder is read when it exists. `root`: the checkout read, this one by default (the tests of the tripwires give a
 // tree of their own, with such a folder).
 import fs from 'node:fs'
 import path from 'node:path'

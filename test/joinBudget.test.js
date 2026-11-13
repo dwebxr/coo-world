@@ -291,6 +291,34 @@ test('join budget: an app that holds a joining user id moves to a new id; the pl
   assert.equal(f.logs.length, logs + 1)
 })
 
+test('join budget: the new id of a moved app is drawn again while an entity or a known user has it', async t => {
+  // the ids the network draws here: an app's that is in the world, a user's the world knows, then a free one
+  const ids = ['otherApp', 'awayUser', 'freshApp']
+  const f = fixture(t, { uuid: () => ids.shift() ?? nextId() })
+  const other = f.world.entities.add(app('otherApp', 'bp', { position: [7, 8, 9] }), true)
+  const away = { id: 'awayUser', name: 'Away', rank: 0 }
+  f.users.set('awayUser', { ...away })
+  f.network.userIds.add('awayUser')
+  f.users.set('legacyUser', { id: 'legacyUser', name: 'Returning', rank: 0 })
+  f.world.entities.add(app('legacyUser', 'bp', { position: [1, 2, 3] }), true)
+  f.network.dirtyApps.clear()
+  const joined = await f.join({ authToken: 'legacyUser' })
+  assert.equal(joined.method, 'onSnapshot')
+  assert.deepEqual(ids, [], 'three ids drawn')
+  // the app moved to the third, with its record
+  const moved = f.world.entities.get('freshApp')
+  assert.equal(moved?.isApp, true)
+  assert.deepEqual(moved.data.position, [1, 2, 3])
+  assert.equal(f.world.entities.get('legacyUser').isPlayer, true)
+  // the app that had the first is as it was, and nothing took the away user's id, in the world or in the store
+  assert.equal(f.world.entities.get('otherApp'), other)
+  assert.deepEqual(other.data.position, [7, 8, 9])
+  assert.equal(f.world.entities.get('awayUser'), undefined)
+  assert.deepEqual(f.users.get('awayUser'), away)
+  // and what is to be stored is the move, under the third alone (a row that replaces the old one: rekeyApp)
+  assert.deepEqual([...f.network.dirtyApps.keys()], ['freshApp'])
+})
+
 // a re-keyed app under its old id in the database, the save interrupted after `hangAfter` writes
 async function interruptedRekey(t, { hangAfter, transactions, teardown = () => {}, pending = false }) {
   const f = fixture(t)

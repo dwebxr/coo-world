@@ -48,8 +48,9 @@ const session = {
 }
 
 // `t`: the test; `env`: the process environment the network sees while the test runs; `modules`: the gating modules
-// the handlers see in place of the real ones ({ solanaGating, evmGating }: objects with the modules' names)
-export function fixture(t, { env = {}, modules = {} } = {}) {
+// the handlers see in place of the real ones ({ solanaGating, evmGating }: objects with the modules' names); `uuid`:
+// where the network's new ids come from (nextId)
+export function fixture(t, { env = {}, modules = {}, uuid = nextId } = {}) {
   for (const name of Object.keys(modules)) assert.ok(GATING[name], `fixture: ${name} is not a module it can give`)
   const logs = []
   const users = new Map()
@@ -106,7 +107,7 @@ export function fixture(t, { env = {}, modules = {} } = {}) {
     init: { db },
     env,
     modules: {
-      [UTILS]: { uuid: nextId },
+      [UTILS]: { uuid },
       [SESSION]: session,
       ...Object.fromEntries(Object.entries(GATING).map(([name, file]) => [file, modules[name] ?? null])),
     },

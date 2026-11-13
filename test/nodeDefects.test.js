@@ -214,7 +214,7 @@ test("node: the handle's pointer-callback getters ask the node, not the object t
   }))
 
 // `play()` with no options threw a TypeError (it destructured `undefined`); `stop()` has had a default. It is now
-// `play({})`: a play with no name, which is a clip not found (said once a play, as for any name the model lacks).
+// `play({})`: a play with no name, which is a clip not found (warned, as for any name the model lacks).
 test('skinnedmesh: play() with no options is play({}) (it threw)', () =>
   runProbe(bundle, ({ createNode, Apps, THREE }) => {
     const apps = new Apps({ network: {}, events: {} })

@@ -279,6 +279,67 @@ test("network helper: timers a test gives are the class's own; its imports, and 
   assert.equal(calls.length, 2)
 })
 
+test("network helper: the timers a test gives are those of the class's code moved to src/server/network/ too (a tip announcement that waits)", async t => {
+  // a module the class imports, replaced by one that hands out the setTimeout it sees
+  const own = await loadNetwork({
+    replace: {
+      'src/server/kickList.js': `
+        import { createKickList as real } from 'real:'
+        export * from 'real:'
+        export const createKickList = config => Object.assign(real(config), { setTimeout })
+      `,
+    },
+  })
+  t.after(own.destroy)
+  const before = timers()
+  const calls = []
+  const fake = {
+    setTimeout: (fn, ms) => (calls.push(['setTimeout', ms]), { fn, ms }),
+    clearTimeout: timer => calls.push(['clearTimeout', timer?.ms ?? timer]),
+  }
+  const interval = own.evmGating.TIP_ANNOUNCE_INTERVAL_MS
+  await t.test('a test that gives them', t => {
+    const announced = []
+    const network = makeNetwork(t, {
+      net: own,
+      timers: fake,
+      world: { chat: { add: line => announced.push(line.body) } },
+    })
+    // no announcement may go out now (none left, none earned back yet): the line waits, on the timer that
+    // drainTipAnnouncements sets in src/server/network/tips.js, and that timer is the test's
+    const wait = () => Object.assign(network.tipAnnounce, { tokens: 0, at: Date.now() + 60_000 })
+    wait()
+    network.announceTip({ fromId: 'alice', toPlayerId: 'bob', body: 'alice tipped bob', privateBody: 'to bob' })
+    assert.deepEqual(calls, [['setTimeout', interval]])
+    assert.deepEqual(announced, [])
+    const timer = network.tipAnnounce.timer
+    assert.equal(timer.ms, interval)
+    assert.equal(timers(), before + 1, 'the socket check only: no global timer')
+    // run by the test once one announcement is earned back: the waiting line goes out, and nothing waits any more
+    network.tipAnnounce.at = Date.now() - interval
+    timer.fn()
+    assert.deepEqual(announced, ['alice tipped bob'])
+    assert.equal(network.tipAnnounce.timer, null)
+    // another line that waits, when the test ends
+    wait()
+    network.announceTip({ fromId: 'carol', toPlayerId: 'bob', body: 'carol tipped bob', privateBody: 'to bob' })
+    assert.deepEqual(calls, [
+      ['setTimeout', interval],
+      ['setTimeout', interval],
+    ])
+    // a module the class imports calls the global one
+    assert.equal(network.kicks().setTimeout, globalThis.setTimeout)
+    calls.length = 0
+  })
+  // the end stopped the network with them: the class's clearTimeout (stopForFatal) cancelled the save timer (none
+  // here) and the announcement the moved code made with the test's setTimeout
+  assert.deepEqual(calls, [
+    ['clearTimeout', null],
+    ['clearTimeout', interval],
+  ])
+  assert.equal(timers(), before)
+})
+
 test('server bundle: prepend puts a line before one module of the bundle', async t => {
   const seen = (globalThis.prependedLines = [])
   t.after(() => delete globalThis.prependedLines)

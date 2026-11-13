@@ -40,16 +40,18 @@
 //   ASSETS_BASE_URL, …).
 //   modules: { path: object } for stand-ins of `net` (loadNetwork's standIns), set before the constructor runs and
 //   kept until the test ends (null: the real module again); every network of the test sees the last one given.
-//   timers: an object with any of setTimeout, clearTimeout, setInterval and clearInterval, which the class's own
-//   calls of those names use (the names it lacks are the global functions, read at each call), as the old harness
-//   injected them into the class: test/lib/networkTimers.mjs is imported on the first line of the bundle's
-//   ServerNetwork.js (serverBundle.mjs `prepend`). Only that file's calls: the modules it imports (a tip watcher,
-//   the admin code's brake) call the globals. Set before the constructor runs (its socket check is a setInterval)
-//   and kept until the test ends, after its networks are stopped (stopForFatal clears with it); every network of
-//   the test makes its timers with the last one given (there is one table for the process). A timer whose handle
-//   is an object or a function is cancelled by the object that made it, whichever is the last one by then (a test
-//   with two networks, each with its own fake); a handle that is a number, or one the class did not make through
-//   here, is cancelled by the last one given: two fakes that hand out numbers leave the first one's timers.
+//   timers: an object with any of setTimeout, clearTimeout, setInterval and clearInterval, which the class's own calls
+//   of those names use (the names it lacks are the global functions, read at each call), as the old harness injected
+//   them into the class: test/lib/networkTimers.mjs is imported on the first line of the bundle's ServerNetwork.js and
+//   of each module of src/server/network/ whose functions (members of the class, moved there) call them: tips.js, a tip
+//   announcement that waits (TIMED_FILES below; serverBundle.mjs `prepend`). Only those files' calls: the other modules
+//   (a tip watcher, the admin code's brake) call the globals. A member moved with a timer call to a module of its own
+//   needs that file in TIMED_FILES. Set before the constructor runs (its socket check is a setInterval) and kept until
+//   the test ends, after its networks are stopped (stopForFatal clears with it); every network of the test makes its
+//   timers with the last one given (there is one table for the process). A timer whose handle is an object or a
+//   function is cancelled by the object that made it, whichever is the last one by then (a test with two networks, each
+//   with its own fake); a handle that is a number, or one the class did not make through here, is cancelled by the last
+//   one given: two fakes that hand out numbers leave the first one's timers.
 //   (Date is the global one: node:test's mock timers reach it in this realm.)
 //   log: where the network's own once-per-subject lines go: the console its constructor wires them to is `log`
 //   (console.warn while the constructor runs, which its logOnce, inbound gate and relay drop keep; console.error for
@@ -101,12 +103,12 @@ const ENTRY = `
   export * as evmGating from './src/server/evm-gating.js'
 `
 
-// the class's own timers go through test/lib/networkTimers.mjs (makeNetwork's `timers`)
-const NETWORK = 'src/core/systems/ServerNetwork.js'
+// the class's own timers go through test/lib/networkTimers.mjs (makeNetwork's `timers`): those of ServerNetwork.js
+// and of the network's modules that call them (its members moved there: tips.js, a tip announcement that waits)
+const TIMED_FILES = ['src/core/systems/ServerNetwork.js', 'src/server/network/tips.js']
 const TIMER_NAMES = ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval']
-const PREPEND = {
-  [NETWORK]: `import { ${TIMER_NAMES.join(', ')} } from ${JSON.stringify(fileURLToPath(new URL('./networkTimers.mjs', import.meta.url)))};`,
-}
+const TIMER_IMPORT = `import { ${TIMER_NAMES.join(', ')} } from ${JSON.stringify(fileURLToPath(new URL('./networkTimers.mjs', import.meta.url)))};`
+const PREPEND = Object.fromEntries(TIMED_FILES.map(file => [file, TIMER_IMPORT]))
 const timerTable = (globalThis[Symbol.for('test/lib/network.mjs: timers')] ??= { current: null })
 
 const STAND_IN_ENTITIES = {

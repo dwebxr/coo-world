@@ -1,4 +1,5 @@
-// The timers of ServerNetwork.js in the bundle network.mjs makes: its own calls of setTimeout, clearTimeout,
+// The timers of ServerNetwork.js in the bundle network.mjs makes, and of the network's modules its members moved to
+// with a timer call (network.mjs TIMED_FILES: tips.js): their own calls of setTimeout, clearTimeout,
 // setInterval and clearInterval come here (serverBundle.mjs `prepend`), and go to the object makeNetwork's `timers`
 // gave for the test that holds the helper, where that object has the name, and to the global function otherwise,
 // read at the call (so node:test's mock timers apply too). The rest of the bundle calls the globals.

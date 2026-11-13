@@ -156,10 +156,19 @@ test('network helper: env varies a constant read at import, in one call that res
   // the same values give the same evaluation; other values another one
   assert.equal((await loadNetwork({ env: { SAVE_INTERVAL: '0' } })).ServerNetwork, unsaved.ServerNetwork)
   assert.notEqual(unsaved.ServerNetwork, net.ServerNetwork)
-  // a module that throws at import with the value given leaves the environment as it was
+  // A module that throws at import with the value given leaves the environment as it was just before. (Not "as the
+  // shell had it": the networks started above keep this test's known environment until the test ends, so a shell
+  // with WS_MAX_SOCKETS or SAVE_INTERVAL set sees them unset here.)
+  const before = { sockets: process.env.WS_MAX_SOCKETS, interval: process.env.SAVE_INTERVAL }
   await assert.rejects(loadNetwork({ env: { WS_MAX_SOCKETS: 'many', SAVE_INTERVAL: '5' } }), /WS_MAX_SOCKETS/)
-  assert.equal(process.env.WS_MAX_SOCKETS, sockets)
-  assert.equal(process.env.SAVE_INTERVAL, saved)
+  assert.deepEqual({ sockets: process.env.WS_MAX_SOCKETS, interval: process.env.SAVE_INTERVAL }, before)
+  // ... and when the test is over, the shell's own values are back
+  t.after(() => {
+    setImmediate(() => {
+      assert.equal(process.env.WS_MAX_SOCKETS, sockets)
+      assert.equal(process.env.SAVE_INTERVAL, saved)
+    })
+  })
 })
 
 test('server bundle: evaluations wait for each other; none sees the values of another', async () => {
@@ -245,35 +254,45 @@ test('network helper: settings of the environment the tests run in change nothin
   for (const [name, value] of Object.entries(AMBIENT)) assert.equal(process.env[name], value)
 })
 
-test(
-  'network helper: the ported files pass with those settings in their environment',
-  { timeout: 120000 },
-  async () => {
-    const files = [
-      'announceBeforeApply',
-      'blueprintEnforcement',
-      'persistence',
-      'persistedHydration',
-      'scriptChat',
-      'serverFileRead',
-      'sharedObjects',
-    ].map(name => fileURLToPath(new URL(`./${name}.test.js`, import.meta.url)))
-    const { PATH, HOME, TMPDIR } = process.env
-    const child = spawn(process.execPath, ['--test', ...files], {
-      cwd: fileURLToPath(new URL('../', import.meta.url)),
-      env: { PATH, HOME, TMPDIR, ...AMBIENT },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    let out = ''
-    child.stdout.on('data', data => (out += data))
-    child.stderr.on('data', data => (out += data))
-    const [code] = await once(child, 'close')
-    assert.equal(code, 0, out.slice(-3000))
-    const [, tests] = /ℹ tests (\d+)/.exec(out)
-    assert.ok(Number(tests) > 0)
-    assert.match(out, new RegExp(`ℹ pass ${tests}\\n`))
+test('network helper: the ported files pass with those settings in their environment', { timeout: 120000 }, async t => {
+  const files = [
+    'announceBeforeApply',
+    'blueprintEnforcement',
+    'persistence',
+    'persistedHydration',
+    'scriptChat',
+    'serverFileRead',
+    'sharedObjects',
+  ].map(name => fileURLToPath(new URL(`./${name}.test.js`, import.meta.url)))
+  const { PATH, HOME, TMPDIR } = process.env
+  // (the reporter is named: with its output piped, Node 22 would print TAP and Node 24 the spec lines read below)
+  const child = spawn(process.execPath, ['--test', '--test-reporter=spec', ...files], {
+    cwd: fileURLToPath(new URL('../', import.meta.url)),
+    env: { PATH, HOME, TMPDIR, ...AMBIENT },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    // a group of its own: the runner starts a process per file, and a test of theirs that hung must not outlive
+    // this one (its time-out, or the end of the test, stops the whole group)
+    detached: process.platform !== 'win32',
+  })
+  const stop = () => {
+    try {
+      if (process.platform === 'win32') child.kill('SIGKILL')
+      else process.kill(-child.pid, 'SIGKILL')
+    } catch {
+      // (gone already)
+    }
   }
-)
+  t.signal.addEventListener('abort', stop)
+  t.after(stop)
+  let out = ''
+  child.stdout.on('data', data => (out += data))
+  child.stderr.on('data', data => (out += data))
+  const [code] = await once(child, 'close')
+  assert.equal(code, 0, out.slice(-3000))
+  const tests = /ℹ tests (\d+)/.exec(out)?.[1]
+  assert.ok(Number(tests) > 0, `no count of tests in the output: ${out.slice(-500)}`)
+  assert.match(out, new RegExp(`ℹ pass ${tests}\\n`))
+})
 
 test('network helper: the classes a test constructs are the ones the network code checks against', async () => {
   // the same bundle again (cached): the same classes

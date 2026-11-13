@@ -1,0 +1,226 @@
+# the 'mesh' node type, written by test/lib/nodeGolden.mjs (legend: test/nodeGolden.test.js)
+== a. the proxy: own keys in order, descriptors, functions shared by two instances
+a proxy: prototype Object.prototype, extensible true, frozen false, 36 keys, getNodeRef(proxy) is the node: true
+a 1 type: get+set enum conf get:"get type"/0 per-instance set:"set"/1 shared
+a 2 width: get+set enum conf get:"get width"/0 per-instance set:"set"/1 shared
+a 3 height: get+set enum conf get:"get height"/0 per-instance set:"set"/1 shared
+a 4 depth: get+set enum conf get:"get depth"/0 per-instance set:"set"/1 shared
+a 5 setSize: method enum conf writable fn:"setSize"/3 per-instance
+a 6 radius: get+set enum conf get:"get radius"/0 per-instance set:"set"/1 shared
+a 7 geometry: get+set enum conf get:"get geometry"/0 per-instance set:"set"/1 shared
+a 8 material: get+set enum conf get:"get material"/0 per-instance set:"set"/1 shared
+a 9 linked: get+set enum conf get:"get linked"/0 per-instance set:"set"/1 shared
+a 10 castShadow: get+set enum conf get:"get castShadow"/0 per-instance set:"set"/1 shared
+a 11 receiveShadow: get+set enum conf get:"get receiveShadow"/0 per-instance set:"set"/1 shared
+a 12 visible: get+set enum conf get:"get visible"/0 per-instance set:"set"/1 shared
+a node keys: 24 at 13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36; order as on node; descriptors as on node
+== b. a stopped run (ctx.run is not its entity's deadHook), a live run, and receivers
+b set throws Error: "[app] this app has stopped": type width height depth radius geometry material linked castShadow receiveShadow visible id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b method throws Error: "[app] this app has stopped": setSize get getWorldMatrix add remove traverse clone clean
+b get reads "box": type
+b get reads 1: width height depth
+b get reads 0.5: radius
+b get reads ref(null): geometry
+b get reads undefined: material parent cursor
+b get reads true: linked castShadow receiveShadow visible active _isRef
+b get reads <auto id>: id
+b get reads "mesh": name
+b get reads V3(0,0,0)S: position
+b get reads Q(0,0,0,1)S: quaternion
+b get reads E(0,0,0,YXZ)S: rotation
+b get reads V3(1,1,1)S: scale
+b get reads view:M4(I)S: matrixWorld
+b get reads []: children
+b get reads null: _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
+b stopped through _created: 23 of 23 setters throw Error: "[app] this app has stopped"
+b stopped through a parent: 23 of 23 setters throw Error: "[app] this app has stopped"
+b a live run: each setter with a sample value takes it
+b receiver Object.create(proxy): as through the proxy: 23 of 23
+b receiver a plain object: throws TypeError: "[node] not a node": all 23
+b receiver no receiver: throws TypeError: "[node] not a node": all 23
+b receiver a group's proxy: throws TypeError: "[node] a group node has no <key> to set": type width height depth radius geometry material linked castShadow receiveShadow visible
+b receiver a group's proxy: throws Error: "Setting ID not currently supported": id
+b receiver a group's proxy: throws Error: "Cannot replace node <key>": position quaternion rotation scale
+b receiver a group's proxy: runs: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b receiver a group's proxy: throws Error: "Cannot set <key> directly": parent
+b receiver another type's proxy with the key: sets that node: type(collider) width(collider) height(collider) depth(collider) radius(collider) geometry(collider) visible(avatar)
+b receiver another type's proxy with the key: throws Error: "[video] cannot set material": material(video)
+b receiver another type's proxy with the key: leaves that node as it was: linked(video) castShadow(image) receiveShadow(image)
+== c. one set on a fresh unmounted node: pc the proxy and the class alike, p the proxy, c the class
+c type pc read "box" <- undefined
+c type pc throw Error: "[mesh] type invalid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c type pc read $in <- 'box'
+c type pc read $in Δ{_type:$in} <- 'sphere' 'geometry'
+c width pc read 1 <- undefined
+c width pc throw Error: "[mesh] width not a number" <- null NaN Infinity -Infinity '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c width pc read $in Δ{_width:$in} <- -1 -0 0 0.5 1e9
+c width pc read $in <- 1
+c height pc read 1 <- undefined
+c height pc throw Error: "[mesh] height not a number" <- null NaN Infinity -Infinity '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c height pc read $in Δ{_height:$in} <- -1 -0 0 0.5 1e9
+c height pc read $in <- 1
+c depth pc read 1 <- undefined
+c depth pc throw Error: "[mesh] depth not a number" <- null NaN Infinity -Infinity '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c depth pc read $in Δ{_depth:$in} <- -1 -0 0 0.5 1e9
+c depth pc read $in <- 1
+c radius pc read 0.5 <- undefined
+c radius pc throw Error: "[mesh] radius not a number" <- null NaN Infinity -Infinity '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c radius pc read $in Δ{_radius:$in} <- -1 -0 0 1 1e9
+c radius pc read $in <- 0.5
+c geometry pc read ref(null) fresh <- undefined null
+c geometry pc read ref(geometry#A) fresh Δ{_geometry:$in needsRebuild:true} calls[setDirty] <- geometry#A
+c geometry p read ref(null) fresh log[error:"[mesh] geometry invalid"] <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws}
+c geometry p read ref(null) fresh traps[gopd:_ref] log[error:"[mesh] geometry invalid"] <- Proxy[1,2,3]
+c geometry p read $in~ fresh Δ{_geometry:geometry#B needsRebuild:true} calls[setDirty] <- ref(geometry#B)
+c geometry c read ref(NaN) fresh Δ{_geometry:$in needsRebuild:true} calls[setDirty] <- NaN
+c geometry c throw Error: "[mesh] geometry invalid" <- Infinity -Infinity -1 0.5 1 1e9 'x' true {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws} ref(geometry#B)
+c geometry c read ref(-0) fresh Δ{_geometry:$in needsRebuild:true} calls[setDirty] <- -0
+c geometry c read ref(0) fresh Δ{_geometry:$in needsRebuild:true} calls[setDirty] <- 0
+c geometry c read ref("") fresh Δ{_geometry:$in needsRebuild:true} calls[setDirty] <- ''
+c geometry c read ref(false) fresh Δ{_geometry:$in needsRebuild:true} calls[setDirty] <- false
+c geometry c throw Error: "[mesh] geometry invalid" traps[get:isBufferGeometry] <- Proxy[1,2,3]
+c material p throw Error: "[mesh] set material not supported" <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} material#A
+c material c read $in <- undefined
+c material c read undefined <- null
+c material c read undefined Δ{needsRebuild:true _material:$in} calls[setDirty] <- NaN -0 0 '' false material#A
+c material c throw Error: "[mesh] material invalid" <- Infinity -Infinity -1 0.5 1 1e9 'x' true {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws}
+c material c throw Error: "[mesh] material invalid" traps[get:isMaterial] <- Proxy[1,2,3]
+c linked pc read true <- undefined
+c linked pc throw Error: "[mesh] linked not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c linked pc read $in <- true
+c linked pc read $in Δ{needsRebuild:true _linked:$in} calls[setDirty] <- false
+c castShadow pc read true <- undefined
+c castShadow pc throw Error: "[mesh] castShadow not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c castShadow pc read $in <- true
+c castShadow pc read $in Δ{_castShadow:$in} <- false
+c receiveShadow pc read true <- undefined
+c receiveShadow pc throw Error: "[mesh] receiveShadow not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c receiveShadow pc read $in <- true
+c receiveShadow pc read $in Δ{_receiveShadow:$in} <- false
+c visible pc read true <- undefined
+c visible pc throw Error: "[mesh] visible not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c visible pc read $in <- true
+c visible pc read $in Δ{needsRebuild:true _visible:$in} calls[setDirty] <- false
+c as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
+d type same: - | NaN,NaN: first throws Error: "[mesh] type invalid" | 0,-0: first throws Error: "[mesh] type invalid"
+d width same: - | NaN,NaN: first throws Error: "[mesh] width not a number" | 0,-0: read 0
+d height same: - | NaN,NaN: first throws Error: "[mesh] height not a number" | 0,-0: read 0
+d depth same: - | NaN,NaN: first throws Error: "[mesh] depth not a number" | 0,-0: read 0
+d radius same: - | NaN,NaN: first throws Error: "[mesh] radius not a number" | 0,-0: read 0
+d geometry same: read ref(geometry#A) fresh | copy: read ref(geometry#A) fresh | NaN,NaN: read ref(null) fresh log[error:"[mesh] geometry invalid"] | 0,-0: read ref(null) fresh log[error:"[mesh] geometry invalid"]
+d material NaN,NaN: first throws Error: "[mesh] set material not supported" | 0,-0: first throws Error: "[mesh] set material not supported"
+d linked same: - | NaN,NaN: first throws Error: "[mesh] linked not a boolean" | 0,-0: first throws Error: "[mesh] linked not a boolean"
+d castShadow same: - | NaN,NaN: first throws Error: "[mesh] castShadow not a boolean" | 0,-0: first throws Error: "[mesh] castShadow not a boolean"
+d receiveShadow same: - | NaN,NaN: first throws Error: "[mesh] receiveShadow not a boolean" | 0,-0: first throws Error: "[mesh] receiveShadow not a boolean"
+d visible same: - | NaN,NaN: first throws Error: "[mesh] visible not a boolean" | 0,-0: first throws Error: "[mesh] visible not a boolean"
+d type [mounted (handle)] same: - | NaN,NaN: first throws Error: "[mesh] type invalid" | 0,-0: first throws Error: "[mesh] type invalid"
+d width [mounted (handle)] same: - | NaN,NaN: first throws Error: "[mesh] width not a number" | 0,-0: read 0
+d height [mounted (handle)] same: - | NaN,NaN: first throws Error: "[mesh] height not a number" | 0,-0: read 0
+d depth [mounted (handle)] same: - | NaN,NaN: first throws Error: "[mesh] depth not a number" | 0,-0: read 0
+d radius [mounted (handle)] same: - | NaN,NaN: first throws Error: "[mesh] radius not a number" | 0,-0: read 0
+d geometry [mounted (handle)] same: read ref(geometry#A) fresh | copy: read ref(geometry#A) fresh | NaN,NaN: read ref(null) fresh log[error:"[mesh] geometry invalid"] | 0,-0: read ref(null) fresh log[error:"[mesh] geometry invalid"]
+d material [mounted (handle)] NaN,NaN: first throws Error: "[mesh] set material not supported" | 0,-0: first throws Error: "[mesh] set material not supported"
+d linked [mounted (handle)] same: - | NaN,NaN: first throws Error: "[mesh] linked not a boolean" | 0,-0: first throws Error: "[mesh] linked not a boolean"
+d castShadow [mounted (handle)] same: - | NaN,NaN: first throws Error: "[mesh] castShadow not a boolean" | 0,-0: first throws Error: "[mesh] castShadow not a boolean"
+d receiveShadow [mounted (handle)] same: - | NaN,NaN: first throws Error: "[mesh] receiveShadow not a boolean" | 0,-0: first throws Error: "[mesh] receiveShadow not a boolean"
+d visible [mounted (handle)] same: - | NaN,NaN: first throws Error: "[mesh] visible not a boolean" | 0,-0: first throws Error: "[mesh] visible not a boolean"
+== e. the sets of c in a mounted-like state (stubs record what is done to them): what differs from c
+e [mounted (handle)]
+e type pc read $in Δ{_type:$in needsRebuild:true} calls[setDirty] <- 'sphere' 'geometry'
+e type: the other 28 as in c
+e width pc read $in Δ{_width:$in needsRebuild:true} calls[setDirty] <- -1 -0 0 0.5 1e9
+e width: the other 22 as in c
+e height pc read $in Δ{_height:$in needsRebuild:true} calls[setDirty] <- -1 -0 0 0.5 1e9
+e height: the other 22 as in c
+e depth pc read $in Δ{_depth:$in needsRebuild:true} calls[setDirty] <- -1 -0 0 0.5 1e9
+e depth: the other 22 as in c
+e material p throw Error: "[mesh] set material not supported" <- undefined null NaN -0 0 '' false material#A
+e material c read stub:handle.material <- undefined null
+e material c read stub:handle.material Δ{needsRebuild:true _material:$in} calls[setDirty] <- NaN -0 0 '' false material#A
+e material: the other 20 as in c
+e castShadow pc read $in Δ{needsRebuild:true _castShadow:$in} calls[setDirty] <- false
+e castShadow: the other 26 as in c
+e receiveShadow pc read $in Δ{needsRebuild:true _receiveShadow:$in} calls[setDirty] <- false
+e receiveShadow: the other 26 as in c
+e as in c: radius geometry linked visible
+e [_type sphere]
+e as in c: width height depth radius
+e [_type sphere, mounted (handle)]
+e radius pc read $in Δ{_radius:$in needsRebuild:true} calls[setDirty] <- -1 -0 0 1 1e9
+e radius: the other 22 as in c
+e as in c: width height depth
+e [_type geometry]
+e as in c: width height depth radius
+e [_type geometry, mounted (handle)]
+e as in c: width height depth radius
+== f. the constructor: defaults (read through the proxy); each key given through data
+f default type = "box"
+f default width = 1
+f default height = 1
+f default depth = 1
+f default radius = 0.5
+f default geometry = ref(null) fresh
+f default material = undefined
+f default linked = true
+f default castShadow = true
+f default receiveShadow = true
+f default visible = true
+f default name = "mesh"
+f defaults as on node: id position quaternion rotation scale matrixWorld active parent children _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+f type: through data as through the class (all 30)
+f width: through data as through the class (all 27)
+f height: through data as through the class (all 27)
+f depth: through data as through the class (all 27)
+f radius: through data as through the class (all 27)
+f geometry: through data as through the class (all 29)
+f material: through data as through the class (all 28)
+f linked: through data as through the class (all 27)
+f castShadow: through data as through the class (all 27)
+f receiveShadow: through data as through the class (all 27)
+f visible: through data as through the class (all 27)
+f as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== g. own fields after construction, and what clone() and clone(true) make of them
+g field name = "mesh"
+g field _type = "box"
+g field _width = 1
+g field _height = 1
+g field _depth = 1
+g field _radius = 0.5
+g field _geometry = null
+g field needsRebuild = true
+g field _material = null
+g field _linked = true
+g field _castShadow = true
+g field _receiveShadow = true
+g field _visible = true
+g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
+g full: 16 properties set (type width height depth radius geometry linked castShadow receiveShadow visible active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
+g no sample value (no value accepted reads otherwise than the default): material id position quaternion rotation scale parent
+g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _type="sphere" _width=0.5 _height=0.5 _depth=0.5 _radius=1 _geometry=geometry#A _linked=false _castShadow=false _receiveShadow=false _visible=false
+g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type _width _height _depth _radius _geometry needsRebuild _material _linked _castShadow _receiveShadow _visible
+g full clone(false) copy: position quaternion scale matrix matrixWorld
+g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) source only: _proxy
+g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type _width _height _depth _radius _geometry needsRebuild _material _linked _castShadow _receiveShadow _visible
+g full clone(true) copy: children position quaternion scale matrix matrixWorld
+g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) source only: _proxy
+g full clone(true) children: node#child -> node#child
+g glb glbMesh fields unlike a new node's: parent=node:group rotation=E(-0,0,0,YXZ)S _type="geometry" _geometry=<BoxGeometry> _material=material#glb _castShadow=false
+g glb glbMesh clone(false) same: id name ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type _width _height _depth _radius _geometry needsRebuild _material _linked _castShadow _receiveShadow _visible
+g glb glbMesh clone(false) copy: children position rotation quaternion scale matrix matrixWorld
+g glb glbMesh clone(false) differs: parent(node:group -> null)
+g glb glbMesh clone(true) same: id name ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type _width _height _depth _radius _geometry needsRebuild _material _linked _castShadow _receiveShadow _visible
+g glb glbMesh clone(true) copy: children position rotation quaternion scale matrix matrixWorld
+g glb glbMesh clone(true) differs: parent(node:group -> null)
+g glb glbMesh clone(true) children: -
+g glb glbNear fields unlike a new node's: parent=node:lod rotation=E(-0,0,0,YXZ)S _active=false _type="geometry" _geometry=<BoxGeometry> _material=material#glb
+g glb glbNear clone(false) same: id name ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type _width _height _depth _radius _geometry needsRebuild _material _linked _castShadow _receiveShadow _visible
+g glb glbNear clone(false) copy: children position rotation quaternion scale matrix matrixWorld
+g glb glbNear clone(false) differs: parent(node:lod -> null)
+g glb glbNear clone(true) same: id name ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type _width _height _depth _radius _geometry needsRebuild _material _linked _castShadow _receiveShadow _visible
+g glb glbNear clone(true) copy: children position rotation quaternion scale matrix matrixWorld
+g glb glbNear clone(true) differs: parent(node:lod -> null)
+g glb glbNear clone(true) children: -
+g a clone reads as its source, each sample property alone (32 clones): yes

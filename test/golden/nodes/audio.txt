@@ -1,0 +1,349 @@
+# the 'audio' node type, written by test/lib/nodeGolden.mjs (legend: test/nodeGolden.test.js)
+== a. the proxy: own keys in order, descriptors, functions shared by two instances
+a proxy: prototype Object.prototype, extensible true, frozen false, 42 keys, getNodeRef(proxy) is the node: true
+a 1 src: get+set enum conf get:"get src"/0 per-instance set:"set"/1 shared
+a 2 volume: get+set enum conf get:"get volume"/0 per-instance set:"set"/1 shared
+a 3 loop: get+set enum conf get:"get loop"/0 per-instance set:"set"/1 shared
+a 4 group: get+set enum conf get:"get group"/0 per-instance set:"set"/1 shared
+a 5 spatial: get+set enum conf get:"get spatial"/0 per-instance set:"set"/1 shared
+a 6 distanceModel: get+set enum conf get:"get distanceModel"/0 per-instance set:"set"/1 shared
+a 7 refDistance: get+set enum conf get:"get refDistance"/0 per-instance set:"set"/1 shared
+a 8 maxDistance: get+set enum conf get:"get maxDistance"/0 per-instance set:"set"/1 shared
+a 9 rolloffFactor: get+set enum conf get:"get rolloffFactor"/0 per-instance set:"set"/1 shared
+a 10 coneInnerAngle: get+set enum conf get:"get coneInnerAngle"/0 per-instance set:"set"/1 shared
+a 11 coneOuterAngle: get+set enum conf get:"get coneOuterAngle"/0 per-instance set:"set"/1 shared
+a 12 coneOuterGain: get+set enum conf get:"get coneOuterGain"/0 per-instance set:"set"/1 shared
+a 13 currentTime: get+set enum conf get:"get currentTime"/0 per-instance set:"set"/1 shared
+a 14 isPlaying: get enum conf get:"get isPlaying"/0 per-instance
+a 15 play: method enum conf writable fn:"play"/1 per-instance
+a 16 pause: method enum conf writable fn:"pause"/0 per-instance
+a 17 stop: method enum conf writable fn:"stop"/0 per-instance
+a 18 setPlaybackRate: method enum conf writable fn:"setPlaybackRate"/1 per-instance
+a node keys: 24 at 19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42; order as on node; descriptors as on node
+== b. a stopped run (ctx.run is not its entity's deadHook), a live run, and receivers
+b set throws Error: "[app] this app has stopped": src volume loop group spatial distanceModel refDistance maxDistance rolloffFactor coneInnerAngle coneOuterAngle coneOuterGain currentTime id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b method throws Error: "[app] this app has stopped": play pause stop setPlaybackRate get getWorldMatrix add remove traverse clone clean
+b get reads null: src _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
+b get reads 1: volume refDistance
+b get reads false: loop isPlaying
+b get reads "music": group
+b get reads true: spatial active _isRef
+b get reads "inverse": distanceModel
+b get reads 40: maxDistance
+b get reads 3: rolloffFactor
+b get reads 360: coneInnerAngle coneOuterAngle
+b get reads 0: coneOuterGain
+b get throws TypeError: "Cannot read properties of undefined (reading 'audio')": currentTime
+b get reads <auto id>: id
+b get reads "audio": name
+b get reads V3(0,0,0)S: position
+b get reads Q(0,0,0,1)S: quaternion
+b get reads E(0,0,0,YXZ)S: rotation
+b get reads V3(1,1,1)S: scale
+b get reads view:M4(I)S: matrixWorld
+b get reads undefined: parent cursor
+b get reads []: children
+b stopped through _created: 25 of 25 setters throw Error: "[app] this app has stopped"
+b stopped through a parent: 25 of 25 setters throw Error: "[app] this app has stopped"
+b a live run: each setter with a sample value takes it
+b receiver Object.create(proxy): as through the proxy: 25 of 25
+b receiver a plain object: throws TypeError: "[node] not a node": all 25
+b receiver no receiver: throws TypeError: "[node] not a node": all 25
+b receiver a group's proxy: throws TypeError: "[node] a group node has no <key> to set": src volume loop group spatial distanceModel refDistance maxDistance rolloffFactor coneInnerAngle coneOuterAngle coneOuterGain currentTime
+b receiver a group's proxy: throws Error: "Setting ID not currently supported": id
+b receiver a group's proxy: throws Error: "Cannot replace node <key>": position quaternion rotation scale
+b receiver a group's proxy: runs: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b receiver a group's proxy: throws Error: "Cannot set <key> directly": parent
+b receiver another type's proxy with the key: sets that node: src(avatar) volume(video) group(video) spatial(video) distanceModel(video) refDistance(video) maxDistance(video) rolloffFactor(video) coneInnerAngle(video) coneOuterAngle(video) coneOuterGain(video)
+b receiver another type's proxy with the key: leaves that node as it was: loop(particles) currentTime(video)
+== c. one set on a fresh unmounted node: pc the proxy and the class alike, p the proxy, c the class
+c src pc read null Δ{needsRebuild:true} calls[setDirty] <- undefined ''
+c src pc read $in Δ{needsRebuild:true} calls[setDirty] <- null
+c src pc throw Error: "[audio] src not a string" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c src pc read $in Δ{_src:$in needsRebuild:true} calls[setDirty] <- 'x' 'asset://a.mp3'
+c volume pc read 1 <- undefined NaN
+c volume pc throw Error: "[audio] volume not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c volume pc read 100 Δ{_volume:100} <- Infinity 1e9
+c volume pc read 0 Δ{_volume:0} <- -Infinity -1
+c volume pc read $in Δ{_volume:$in} <- -0 0 0.5
+c volume pc read $in <- 1
+c loop pc read false Δ{needsRebuild:true} calls[setDirty] <- undefined
+c loop pc throw Error: "[audio] loop not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c loop pc read $in Δ{needsRebuild:true _loop:$in} calls[setDirty] <- true
+c loop pc read $in Δ{needsRebuild:true} calls[setDirty] <- false
+c group pc read "music" Δ{needsRebuild:true} calls[setDirty] <- undefined
+c group pc throw Error: "[audio] group not valid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c group pc read $in Δ{needsRebuild:true} calls[setDirty] <- 'music'
+c group pc read $in Δ{needsRebuild:true _group:$in} calls[setDirty] <- 'sfx'
+c spatial pc read true Δ{needsRebuild:true} calls[setDirty] <- undefined
+c spatial pc throw Error: "[audio] spatial not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c spatial pc read $in Δ{needsRebuild:true} calls[setDirty] <- true
+c spatial pc read $in Δ{needsRebuild:true _spatial:$in} calls[setDirty] <- false
+c distanceModel pc read "inverse" <- undefined
+c distanceModel pc throw Error: "[audio] distanceModel not valid" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c distanceModel pc read $in Δ{_distanceModel:$in} <- 'linear' 'exponential'
+c distanceModel pc read $in <- 'inverse'
+c refDistance pc read 1 <- undefined NaN
+c refDistance pc throw Error: "[audio] refDistance not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c refDistance pc read 1000000 Δ{_refDistance:1000000} <- Infinity 1e9
+c refDistance pc read 0 Δ{_refDistance:0} <- -Infinity -1
+c refDistance pc read $in Δ{_refDistance:$in} <- -0 0 0.5
+c refDistance pc read $in <- 1
+c maxDistance pc read 40 <- undefined NaN
+c maxDistance pc throw Error: "[audio] maxDistance not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c maxDistance pc read 1000000 Δ{_maxDistance:1000000} <- Infinity 1e9
+c maxDistance pc read 0.0001 Δ{_maxDistance:0.0001} <- -Infinity -1 -0 0
+c maxDistance pc read $in Δ{_maxDistance:$in} <- 0.5 1
+c rolloffFactor pc read 3 <- undefined NaN
+c rolloffFactor pc throw Error: "[audio] rolloffFactor not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c rolloffFactor pc read 1000000 Δ{_rolloffFactor:1000000} <- Infinity 1e9
+c rolloffFactor pc read 0 Δ{_rolloffFactor:0} <- -Infinity -1
+c rolloffFactor pc read $in Δ{_rolloffFactor:$in} <- -0 0 0.5 1
+c coneInnerAngle pc read 360 <- undefined NaN Infinity 1e9
+c coneInnerAngle pc throw Error: "[audio] coneInnerAngle not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c coneInnerAngle pc read 0 Δ{_coneInnerAngle:0} <- -Infinity -1
+c coneInnerAngle pc read $in Δ{_coneInnerAngle:$in} <- -0 0 0.5 1
+c coneOuterAngle pc read 360 <- undefined NaN Infinity 1e9
+c coneOuterAngle pc throw Error: "[audio] coneOuterAngle not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c coneOuterAngle pc read 0 Δ{_coneOuterAngle:0} <- -Infinity -1
+c coneOuterAngle pc read $in Δ{_coneOuterAngle:$in} <- -0 0 0.5 1
+c coneOuterGain pc read 0 <- undefined NaN -Infinity -1
+c coneOuterGain pc throw Error: "[audio] coneOuterGain not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c coneOuterGain pc read 1 Δ{_coneOuterGain:1} <- Infinity 1e9
+c coneOuterGain pc read $in Δ{_coneOuterGain:$in} <- -0 0.5 1
+c coneOuterGain pc read $in <- 0
+c currentTime pc throw Error: "[audio] currentTime not a number" <- undefined null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c currentTime pc read throws TypeError: "Cannot read properties of null (reading 'world')" <- NaN -Infinity -1 0
+c currentTime pc read throws TypeError: "Cannot read properties of null (reading 'world')" Δ{offset:1000000000} <- Infinity
+c currentTime pc read throws TypeError: "Cannot read properties of null (reading 'world')" Δ{offset:$in} <- -0 0.5 1 1e9 3
+c as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
+d src same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[audio] src not a string" | 0,-0: first throws Error: "[audio] src not a string"
+d volume same: - | NaN,NaN: read 1 | 0,-0: Δ{_volume:$in}
+d loop same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[audio] loop not a boolean" | 0,-0: first throws Error: "[audio] loop not a boolean"
+d group same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[audio] group not valid" | 0,-0: first throws Error: "[audio] group not valid"
+d spatial same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[audio] spatial not a boolean" | 0,-0: first throws Error: "[audio] spatial not a boolean"
+d distanceModel same: - | NaN,NaN: first throws Error: "[audio] distanceModel not valid" | 0,-0: first throws Error: "[audio] distanceModel not valid"
+d refDistance same: - | NaN,NaN: read 1 | 0,-0: Δ{_refDistance:$in}
+d maxDistance same: - | NaN,NaN: read 40 | 0,-0: read 0.0001
+d rolloffFactor same: - | NaN,NaN: read 3 | 0,-0: Δ{_rolloffFactor:$in}
+d coneInnerAngle same: - | NaN,NaN: read 360 | 0,-0: Δ{_coneInnerAngle:$in}
+d coneOuterAngle same: - | NaN,NaN: read 360 | 0,-0: Δ{_coneOuterAngle:$in}
+d coneOuterGain same: - | NaN,NaN: read 0 | 0,-0: Δ{_coneOuterGain:$in}
+d currentTime NaN,NaN: read throws TypeError: "Cannot read properties of null (reading 'world')" | 0,-0: read throws TypeError: "Cannot read properties of null (reading 'world')" Δ{offset:$in}
+d src [an audio world, no source] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[audio] src not a string" | 0,-0: first throws Error: "[audio] src not a string"
+d volume [an audio world, no source] same: - | NaN,NaN: read 1 | 0,-0: Δ{_volume:$in}
+d loop [an audio world, no source] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[audio] loop not a boolean" | 0,-0: first throws Error: "[audio] loop not a boolean"
+d group [an audio world, no source] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[audio] group not valid" | 0,-0: first throws Error: "[audio] group not valid"
+d spatial [an audio world, no source] same: Δ{needsRebuild:true} calls[setDirty] | NaN,NaN: first throws Error: "[audio] spatial not a boolean" | 0,-0: first throws Error: "[audio] spatial not a boolean"
+d distanceModel [an audio world, no source] same: - | NaN,NaN: first throws Error: "[audio] distanceModel not valid" | 0,-0: first throws Error: "[audio] distanceModel not valid"
+d refDistance [an audio world, no source] same: - | NaN,NaN: read 1 | 0,-0: Δ{_refDistance:$in}
+d maxDistance [an audio world, no source] same: - | NaN,NaN: read 40 | 0,-0: read 0.0001
+d rolloffFactor [an audio world, no source] same: - | NaN,NaN: read 3 | 0,-0: Δ{_rolloffFactor:$in}
+d coneInnerAngle [an audio world, no source] same: - | NaN,NaN: read 360 | 0,-0: Δ{_coneInnerAngle:$in}
+d coneOuterAngle [an audio world, no source] same: - | NaN,NaN: read 360 | 0,-0: Δ{_coneOuterAngle:$in}
+d coneOuterGain [an audio world, no source] same: - | NaN,NaN: read 0 | 0,-0: Δ{_coneOuterGain:$in}
+d currentTime [an audio world, no source] NaN,NaN: read 0 | 0,-0: Δ{offset:$in}
+== e. the sets of c in a mounted-like state (stubs record what is done to them): what differs from c
+e [an audio world, no source]
+e currentTime pc read 0 <- NaN -Infinity -1
+e currentTime pc read 1000000000 Δ{offset:1000000000} <- Infinity
+e currentTime pc read $in Δ{offset:$in} <- -0 0.5 1 1e9 3
+e currentTime pc read $in <- 0
+e currentTime: the other 18 as in c
+e as in c: src volume loop group spatial distanceModel refDistance maxDistance rolloffFactor coneInnerAngle coneOuterAngle coneOuterGain
+e [a source waiting for the audio unlock (offset 2)]
+e src pc read $in Δ{_src:$in offset:0 n:1 source:null gainNode:null pannerNode:null} calls[stop,releaseSource,play] stub[source.onended=null gain.disconnect() panner.disconnect()] <- 'x' 'asset://a.mp3'
+e src: the other 26 as in c
+e volume pc read 1 stub[gain.gain.value=1] <- undefined NaN
+e volume pc read 100 Δ{_volume:100} stub[gain.gain.value=100] <- Infinity 1e9
+e volume pc read 0 Δ{_volume:0} stub[gain.gain.value=0] <- -Infinity -1
+e volume pc read $in Δ{_volume:$in} stub[gain.gain.value=-0] <- -0
+e volume pc read $in Δ{_volume:$in} stub[gain.gain.value=0] <- 0
+e volume pc read $in Δ{_volume:$in} stub[gain.gain.value=0.5] <- 0.5
+e volume pc read $in stub[gain.gain.value=1] <- 1
+e volume: the other 17 as in c
+e distanceModel pc read "inverse" stub[panner.distanceModel="inverse"] <- undefined
+e distanceModel pc read $in Δ{_distanceModel:$in} stub[panner.distanceModel=$in] <- 'linear' 'exponential'
+e distanceModel pc read $in stub[panner.distanceModel=$in] <- 'inverse'
+e distanceModel: the other 26 as in c
+e refDistance pc read 1 stub[panner.refDistance=1] <- undefined NaN
+e refDistance pc read 1000000 Δ{_refDistance:1000000} stub[panner.refDistance=1000000] <- Infinity 1e9
+e refDistance pc read 0 Δ{_refDistance:0} stub[panner.refDistance=0] <- -Infinity -1
+e refDistance pc read $in Δ{_refDistance:$in} stub[panner.refDistance=-0] <- -0
+e refDistance pc read $in Δ{_refDistance:$in} stub[panner.refDistance=0] <- 0
+e refDistance pc read $in Δ{_refDistance:$in} stub[panner.refDistance=0.5] <- 0.5
+e refDistance pc read $in stub[panner.refDistance=1] <- 1
+e refDistance: the other 17 as in c
+e maxDistance pc read 40 stub[panner.maxDistance=40] <- undefined NaN
+e maxDistance pc read 1000000 Δ{_maxDistance:1000000} stub[panner.maxDistance=1000000] <- Infinity 1e9
+e maxDistance pc read 0.0001 Δ{_maxDistance:0.0001} stub[panner.maxDistance=0.0001] <- -Infinity -1 -0 0
+e maxDistance pc read $in Δ{_maxDistance:$in} stub[panner.maxDistance=0.5] <- 0.5
+e maxDistance pc read $in Δ{_maxDistance:$in} stub[panner.maxDistance=1] <- 1
+e maxDistance: the other 17 as in c
+e rolloffFactor pc read 3 stub[panner.rolloffFactor=3] <- undefined NaN
+e rolloffFactor pc read 1000000 Δ{_rolloffFactor:1000000} stub[panner.rolloffFactor=1000000] <- Infinity 1e9
+e rolloffFactor pc read 0 Δ{_rolloffFactor:0} stub[panner.rolloffFactor=0] <- -Infinity -1
+e rolloffFactor pc read $in Δ{_rolloffFactor:$in} stub[panner.rolloffFactor=-0] <- -0
+e rolloffFactor pc read $in Δ{_rolloffFactor:$in} stub[panner.rolloffFactor=0] <- 0
+e rolloffFactor pc read $in Δ{_rolloffFactor:$in} stub[panner.rolloffFactor=0.5] <- 0.5
+e rolloffFactor pc read $in Δ{_rolloffFactor:$in} stub[panner.rolloffFactor=1] <- 1
+e rolloffFactor: the other 17 as in c
+e coneInnerAngle pc read 360 stub[panner.coneInnerAngle=360] <- undefined NaN Infinity 1e9
+e coneInnerAngle pc read 0 Δ{_coneInnerAngle:0} stub[panner.coneInnerAngle=0] <- -Infinity -1
+e coneInnerAngle pc read $in Δ{_coneInnerAngle:$in} stub[panner.coneInnerAngle=-0] <- -0
+e coneInnerAngle pc read $in Δ{_coneInnerAngle:$in} stub[panner.coneInnerAngle=0] <- 0
+e coneInnerAngle pc read $in Δ{_coneInnerAngle:$in} stub[panner.coneInnerAngle=0.5] <- 0.5
+e coneInnerAngle pc read $in Δ{_coneInnerAngle:$in} stub[panner.coneInnerAngle=1] <- 1
+e coneInnerAngle: the other 17 as in c
+e coneOuterAngle pc read 360 stub[panner.coneOuterAngle=360] <- undefined NaN Infinity 1e9
+e coneOuterAngle pc read 0 Δ{_coneOuterAngle:0} stub[panner.coneOuterAngle=0] <- -Infinity -1
+e coneOuterAngle pc read $in Δ{_coneOuterAngle:$in} stub[panner.coneOuterAngle=-0] <- -0
+e coneOuterAngle pc read $in Δ{_coneOuterAngle:$in} stub[panner.coneOuterAngle=0] <- 0
+e coneOuterAngle pc read $in Δ{_coneOuterAngle:$in} stub[panner.coneOuterAngle=0.5] <- 0.5
+e coneOuterAngle pc read $in Δ{_coneOuterAngle:$in} stub[panner.coneOuterAngle=1] <- 1
+e coneOuterAngle: the other 17 as in c
+e coneOuterGain pc read 0 stub[panner.coneOuterGain=0] <- undefined NaN -Infinity -1
+e coneOuterGain pc read 1 Δ{_coneOuterGain:1} stub[panner.coneOuterGain=1] <- Infinity 1e9
+e coneOuterGain pc read $in Δ{_coneOuterGain:$in} stub[panner.coneOuterGain=-0] <- -0
+e coneOuterGain pc read $in stub[panner.coneOuterGain=0] <- 0
+e coneOuterGain pc read $in Δ{_coneOuterGain:$in} stub[panner.coneOuterGain=0.5] <- 0.5
+e coneOuterGain pc read $in Δ{_coneOuterGain:$in} stub[panner.coneOuterGain=1] <- 1
+e coneOuterGain: the other 17 as in c
+e currentTime pc read 0 Δ{offset:0 n:1 source:null gainNode:null pannerNode:null} calls[stop,releaseSource,play] stub[source.onended=null gain.disconnect() panner.disconnect()] <- NaN -Infinity -1
+e currentTime pc read 1000000000 Δ{offset:1000000000 n:1 source:null gainNode:null pannerNode:null} calls[stop,releaseSource,play] stub[source.onended=null gain.disconnect() panner.disconnect()] <- Infinity
+e currentTime pc read $in Δ{offset:$in n:1 source:null gainNode:null pannerNode:null} calls[stop,releaseSource,play] stub[source.onended=null gain.disconnect() panner.disconnect()] <- -0 0 0.5 1 1e9 3
+e currentTime: the other 18 as in c
+e as in c: loop group spatial
+e [a source playing (started at 4)]
+e src pc read $in Δ{_src:$in n:1 source:null sourceStarted:false gainNode:null pannerNode:null} calls[stop,releaseSource,play] stub[source.onended=null source.stop() gain.disconnect() panner.disconnect()] <- 'x' 'asset://a.mp3'
+e src: the other 26 as in c
+e volume pc read 1 stub[gain.gain.value=1] <- undefined NaN
+e volume pc read 100 Δ{_volume:100} stub[gain.gain.value=100] <- Infinity 1e9
+e volume pc read 0 Δ{_volume:0} stub[gain.gain.value=0] <- -Infinity -1
+e volume pc read $in Δ{_volume:$in} stub[gain.gain.value=-0] <- -0
+e volume pc read $in Δ{_volume:$in} stub[gain.gain.value=0] <- 0
+e volume pc read $in Δ{_volume:$in} stub[gain.gain.value=0.5] <- 0.5
+e volume pc read $in stub[gain.gain.value=1] <- 1
+e volume: the other 17 as in c
+e distanceModel pc read "inverse" stub[panner.distanceModel="inverse"] <- undefined
+e distanceModel pc read $in Δ{_distanceModel:$in} stub[panner.distanceModel=$in] <- 'linear' 'exponential'
+e distanceModel pc read $in stub[panner.distanceModel=$in] <- 'inverse'
+e distanceModel: the other 26 as in c
+e refDistance pc read 1 stub[panner.refDistance=1] <- undefined NaN
+e refDistance pc read 1000000 Δ{_refDistance:1000000} stub[panner.refDistance=1000000] <- Infinity 1e9
+e refDistance pc read 0 Δ{_refDistance:0} stub[panner.refDistance=0] <- -Infinity -1
+e refDistance pc read $in Δ{_refDistance:$in} stub[panner.refDistance=-0] <- -0
+e refDistance pc read $in Δ{_refDistance:$in} stub[panner.refDistance=0] <- 0
+e refDistance pc read $in Δ{_refDistance:$in} stub[panner.refDistance=0.5] <- 0.5
+e refDistance pc read $in stub[panner.refDistance=1] <- 1
+e refDistance: the other 17 as in c
+e maxDistance pc read 40 stub[panner.maxDistance=40] <- undefined NaN
+e maxDistance pc read 1000000 Δ{_maxDistance:1000000} stub[panner.maxDistance=1000000] <- Infinity 1e9
+e maxDistance pc read 0.0001 Δ{_maxDistance:0.0001} stub[panner.maxDistance=0.0001] <- -Infinity -1 -0 0
+e maxDistance pc read $in Δ{_maxDistance:$in} stub[panner.maxDistance=0.5] <- 0.5
+e maxDistance pc read $in Δ{_maxDistance:$in} stub[panner.maxDistance=1] <- 1
+e maxDistance: the other 17 as in c
+e rolloffFactor pc read 3 stub[panner.rolloffFactor=3] <- undefined NaN
+e rolloffFactor pc read 1000000 Δ{_rolloffFactor:1000000} stub[panner.rolloffFactor=1000000] <- Infinity 1e9
+e rolloffFactor pc read 0 Δ{_rolloffFactor:0} stub[panner.rolloffFactor=0] <- -Infinity -1
+e rolloffFactor pc read $in Δ{_rolloffFactor:$in} stub[panner.rolloffFactor=-0] <- -0
+e rolloffFactor pc read $in Δ{_rolloffFactor:$in} stub[panner.rolloffFactor=0] <- 0
+e rolloffFactor pc read $in Δ{_rolloffFactor:$in} stub[panner.rolloffFactor=0.5] <- 0.5
+e rolloffFactor pc read $in Δ{_rolloffFactor:$in} stub[panner.rolloffFactor=1] <- 1
+e rolloffFactor: the other 17 as in c
+e coneInnerAngle pc read 360 stub[panner.coneInnerAngle=360] <- undefined NaN Infinity 1e9
+e coneInnerAngle pc read 0 Δ{_coneInnerAngle:0} stub[panner.coneInnerAngle=0] <- -Infinity -1
+e coneInnerAngle pc read $in Δ{_coneInnerAngle:$in} stub[panner.coneInnerAngle=-0] <- -0
+e coneInnerAngle pc read $in Δ{_coneInnerAngle:$in} stub[panner.coneInnerAngle=0] <- 0
+e coneInnerAngle pc read $in Δ{_coneInnerAngle:$in} stub[panner.coneInnerAngle=0.5] <- 0.5
+e coneInnerAngle pc read $in Δ{_coneInnerAngle:$in} stub[panner.coneInnerAngle=1] <- 1
+e coneInnerAngle: the other 17 as in c
+e coneOuterAngle pc read 360 stub[panner.coneOuterAngle=360] <- undefined NaN Infinity 1e9
+e coneOuterAngle pc read 0 Δ{_coneOuterAngle:0} stub[panner.coneOuterAngle=0] <- -Infinity -1
+e coneOuterAngle pc read $in Δ{_coneOuterAngle:$in} stub[panner.coneOuterAngle=-0] <- -0
+e coneOuterAngle pc read $in Δ{_coneOuterAngle:$in} stub[panner.coneOuterAngle=0] <- 0
+e coneOuterAngle pc read $in Δ{_coneOuterAngle:$in} stub[panner.coneOuterAngle=0.5] <- 0.5
+e coneOuterAngle pc read $in Δ{_coneOuterAngle:$in} stub[panner.coneOuterAngle=1] <- 1
+e coneOuterAngle: the other 17 as in c
+e coneOuterGain pc read 0 stub[panner.coneOuterGain=0] <- undefined NaN -Infinity -1
+e coneOuterGain pc read 1 Δ{_coneOuterGain:1} stub[panner.coneOuterGain=1] <- Infinity 1e9
+e coneOuterGain pc read $in Δ{_coneOuterGain:$in} stub[panner.coneOuterGain=-0] <- -0
+e coneOuterGain pc read $in stub[panner.coneOuterGain=0] <- 0
+e coneOuterGain pc read $in Δ{_coneOuterGain:$in} stub[panner.coneOuterGain=0.5] <- 0.5
+e coneOuterGain pc read $in Δ{_coneOuterGain:$in} stub[panner.coneOuterGain=1] <- 1
+e coneOuterGain: the other 17 as in c
+e currentTime pc read 0 Δ{n:1 source:null sourceStarted:false gainNode:null pannerNode:null} calls[stop,releaseSource,play] stub[source.onended=null source.stop() gain.disconnect() panner.disconnect()] <- NaN -Infinity -1
+e currentTime pc read 1000000000 Δ{offset:1000000000 n:1 source:null sourceStarted:false gainNode:null pannerNode:null} calls[stop,releaseSource,play] stub[source.onended=null source.stop() gain.disconnect() panner.disconnect()] <- Infinity
+e currentTime pc read $in Δ{offset:$in n:1 source:null sourceStarted:false gainNode:null pannerNode:null} calls[stop,releaseSource,play] stub[source.onended=null source.stop() gain.disconnect() panner.disconnect()] <- -0 0.5 1 1e9 3
+e currentTime pc read $in Δ{n:1 source:null sourceStarted:false gainNode:null pannerNode:null} calls[stop,releaseSource,play] stub[source.onended=null source.stop() gain.disconnect() panner.disconnect()] <- 0
+e currentTime: the other 18 as in c
+e as in c: loop group spatial
+== f. the constructor: defaults (read through the proxy); each key given through data
+f default src = null
+f default volume = 1
+f default loop = false
+f default group = "music"
+f default spatial = true
+f default distanceModel = "inverse"
+f default refDistance = 1
+f default maxDistance = 40
+f default rolloffFactor = 3
+f default coneInnerAngle = 360
+f default coneOuterAngle = 360
+f default coneOuterGain = 0
+f default currentTime = read throws TypeError: "Cannot read properties of null (reading 'world')"
+f default isPlaying = false
+f default name = "audio"
+f defaults as on node: id position quaternion rotation scale matrixWorld active parent children _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+f src: through data as through the class (all 28)
+f volume: through data as through the class (all 27)
+f loop: through data as through the class (all 27)
+f group: through data as through the class (all 29)
+f spatial: through data as through the class (all 27)
+f distanceModel: through data as through the class (all 30)
+f refDistance: through data as through the class (all 27)
+f maxDistance: through data as through the class (all 27)
+f rolloffFactor: through data as through the class (all 27)
+f coneInnerAngle: through data as through the class (all 27)
+f coneOuterAngle: through data as through the class (all 27)
+f coneOuterGain: through data as through the class (all 27)
+f currentTime data read throws TypeError: "Cannot read properties of null (reading 'world')" <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} 3
+f as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== g. own fields after construction, and what clone() and clone(true) make of them
+g field name = "audio"
+g field _src = null
+g field offset = 0
+g field needsRebuild = true
+g field _volume = 1
+g field _loop = false
+g field _group = "music"
+g field _spatial = true
+g field _distanceModel = "inverse"
+g field _refDistance = 1
+g field _maxDistance = 40
+g field _rolloffFactor = 3
+g field _coneInnerAngle = 360
+g field _coneOuterAngle = 360
+g field _coneOuterGain = 0
+g field n = 0
+g field source = null
+g field sourceStarted = false
+g field gainNode = null
+g field pannerNode = null
+g field shouldPlay = false
+g field startTime = null
+g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
+g full: 18 properties set (src volume loop group spatial distanceModel refDistance maxDistance rolloffFactor coneInnerAngle coneOuterAngle coneOuterGain active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
+g no sample value (no value accepted reads otherwise than the default): currentTime id position quaternion rotation scale parent
+g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _src="asset://a.mp3" _volume=0.5 _loop=true _group="sfx" _spatial=false _distanceModel="linear" _refDistance=0.5 _maxDistance=0.5 _rolloffFactor=0.5 _coneInnerAngle=0.5 _coneOuterAngle=0.5 _coneOuterGain=0.5
+g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _src offset needsRebuild _volume _loop _group _spatial _distanceModel _refDistance _maxDistance _rolloffFactor _coneInnerAngle _coneOuterAngle _coneOuterGain n source sourceStarted gainNode pannerNode shouldPlay startTime
+g full clone(false) copy: position quaternion scale matrix matrixWorld
+g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) source only: _proxy
+g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _src offset needsRebuild _volume _loop _group _spatial _distanceModel _refDistance _maxDistance _rolloffFactor _coneInnerAngle _coneOuterAngle _coneOuterGain n source sourceStarted gainNode pannerNode shouldPlay startTime
+g full clone(true) copy: children position quaternion scale matrix matrixWorld
+g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) source only: _proxy
+g full clone(true) children: node#child -> node#child
+g a clone reads as its source, each sample property alone (36 clones): yes

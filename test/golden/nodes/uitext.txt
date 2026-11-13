@@ -1,0 +1,537 @@
+# the 'uitext' node type, written by test/lib/nodeGolden.mjs (legend: test/nodeGolden.test.js)
+== a. the proxy: own keys in order, descriptors, functions shared by two instances
+a proxy: prototype Object.prototype, extensible true, frozen false, 44 keys, getNodeRef(proxy) is the node: true
+a 1 display: get+set enum conf get:"get display"/0 per-instance set:"set"/1 shared
+a 2 absolute: get+set enum conf get:"get absolute"/0 per-instance set:"set"/1 shared
+a 3 top: get+set enum conf get:"get top"/0 per-instance set:"set"/1 shared
+a 4 right: get+set enum conf get:"get right"/0 per-instance set:"set"/1 shared
+a 5 bottom: get+set enum conf get:"get bottom"/0 per-instance set:"set"/1 shared
+a 6 left: get+set enum conf get:"get left"/0 per-instance set:"set"/1 shared
+a 7 backgroundColor: get+set enum conf get:"get backgroundColor"/0 per-instance set:"set"/1 shared
+a 8 borderRadius: get+set enum conf get:"get borderRadius"/0 per-instance set:"set"/1 shared
+a 9 margin: get+set enum conf get:"get margin"/0 per-instance set:"set"/1 shared
+a 10 padding: get+set enum conf get:"get padding"/0 per-instance set:"set"/1 shared
+a 11 value: get+set enum conf get:"get value"/0 per-instance set:"set"/1 shared
+a 12 fontSize: get+set enum conf get:"get fontSize"/0 per-instance set:"set"/1 shared
+a 13 color: get+set enum conf get:"get color"/0 per-instance set:"set"/1 shared
+a 14 lineHeight: get+set enum conf get:"get lineHeight"/0 per-instance set:"set"/1 shared
+a 15 textAlign: get+set enum conf get:"get textAlign"/0 per-instance set:"set"/1 shared
+a 16 fontFamily: get+set enum conf get:"get fontFamily"/0 per-instance set:"set"/1 shared
+a 17 fontWeight: get+set enum conf get:"get fontWeight"/0 per-instance set:"set"/1 shared
+a 18 flexBasis: get+set enum conf get:"get flexBasis"/0 per-instance set:"set"/1 shared
+a 19 flexGrow: get+set enum conf get:"get flexGrow"/0 per-instance set:"set"/1 shared
+a 20 flexShrink: get+set enum conf get:"get flexShrink"/0 per-instance set:"set"/1 shared
+a node keys: 24 at 21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44; order as on node; descriptors as on node
+== b. a stopped run (ctx.run is not its entity's deadHook), a live run, and receivers
+b set throws Error: "[app] this app has stopped": display absolute top right bottom left backgroundColor borderRadius margin padding value fontSize color lineHeight textAlign fontFamily fontWeight flexBasis flexGrow flexShrink id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b method throws Error: "[app] this app has stopped": get getWorldMatrix add remove traverse clone clean
+b get reads "flex": display
+b get reads false: absolute
+b get reads null: top right bottom left backgroundColor _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
+b get reads 0: borderRadius margin padding flexGrow
+b get reads "": value
+b get reads 16: fontSize
+b get reads "#000000": color
+b get reads 1.2: lineHeight
+b get reads "left": textAlign
+b get reads "Rubik": fontFamily
+b get reads "normal": fontWeight
+b get reads "auto": flexBasis
+b get reads 1: flexShrink
+b get reads <auto id>: id
+b get reads "uitext": name
+b get reads V3(0,0,0)S: position
+b get reads Q(0,0,0,1)S: quaternion
+b get reads E(0,0,0,YXZ)S: rotation
+b get reads V3(1,1,1)S: scale
+b get reads view:M4(I)S: matrixWorld
+b get reads true: active _isRef
+b get reads undefined: parent cursor
+b get reads []: children
+b stopped through _created: 32 of 32 setters throw Error: "[app] this app has stopped"
+b stopped through a parent: 32 of 32 setters throw Error: "[app] this app has stopped"
+b a live run: each setter with a sample value takes it
+b receiver Object.create(proxy): as through the proxy: 32 of 32
+b receiver a plain object: throws TypeError: "[node] not a node": all 32
+b receiver no receiver: throws TypeError: "[node] not a node": all 32
+b receiver a group's proxy: throws TypeError: "[node] a group node has no <key> to set": display absolute top right bottom left backgroundColor borderRadius margin padding value fontSize color lineHeight textAlign fontFamily fontWeight flexBasis flexGrow flexShrink
+b receiver a group's proxy: throws Error: "Setting ID not currently supported": id
+b receiver a group's proxy: throws Error: "Cannot replace node <key>": position quaternion rotation scale
+b receiver a group's proxy: runs: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b receiver a group's proxy: throws Error: "Cannot set <key> directly": parent
+b receiver another type's proxy with the key: sets that node: display(uiimage) absolute(uiimage) top(uiimage) right(uiimage) bottom(uiimage) left(uiimage) backgroundColor(ui) borderRadius(ui) margin(uiimage) padding(ui) color(image) flexBasis(uiview) flexGrow(uiview) flexShrink(uiview)
+== c. one set on a fresh unmounted node: pc the proxy and the class alike, p the proxy, c the class
+c display pc read "flex" <- undefined
+c display pc throw Error: "[uitext] display invalid: <in>" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 'x' true false {} [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn 1n
+c display pc throw Error: "[uitext] display invalid: " <- '' []
+c display pc throw Error: "[uitext] display invalid: <in>" traps[get:@Symbol.toPrimitive,get:toString,get:join,get:length,get:0,get:1,get:2] <- Proxy[1,2,3]
+c display pc throw TypeError: "Cannot convert a Symbol value to a string" <- Symbol
+c display pc throw Error: "toString called" <- {toString throws}
+c display pc read $in <- 'flex'
+c display pc read $in Δ{_display:$in} <- 'none'
+c absolute pc read false <- undefined
+c absolute pc throw Error: "[uitext] absolute not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c absolute pc read $in Δ{_absolute:$in} <- true
+c absolute pc read $in <- false
+c top pc read null <- undefined
+c top pc read $in <- null
+c top pc read $in Δ{_top:$in} <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 5
+c top pc throw Error: "[uitext] top must be a number or null" <- '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c right pc read null <- undefined
+c right pc read $in <- null
+c right pc read $in Δ{_right:$in} <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 5
+c right pc throw Error: "[uitext] right must be a number or null" <- '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c bottom pc read null <- undefined
+c bottom pc read $in <- null
+c bottom pc read $in Δ{_bottom:$in} <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 5
+c bottom pc throw Error: "[uitext] bottom must be a number or null" <- '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c left pc read null <- undefined
+c left pc read $in <- null
+c left pc read $in Δ{_left:$in} <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 5
+c left pc throw Error: "[uitext] left must be a number or null" <- '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c backgroundColor pc read null <- undefined
+c backgroundColor pc read $in <- null
+c backgroundColor pc throw Error: "[uitext] backgroundColor not a string" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c backgroundColor pc read $in Δ{_backgroundColor:$in} <- '' 'x' 'red'
+c borderRadius pc read 0 <- undefined -0
+c borderRadius pc throw Error: "[uitext] borderRadius not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c borderRadius pc read $in Δ{_borderRadius:$in} <- NaN Infinity -Infinity -1 0.5 1 1e9
+c borderRadius pc read $in <- 0
+c margin pc read 0 <- undefined -0
+c margin pc throw Error: "[uitext] margin not a number or array of numbers" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws} [1,"x",3,4]
+c margin pc read $in Δ{_margin:$in} <- NaN Infinity -Infinity -1 0.5 1 1e9
+c margin pc read $in <- 0
+c margin pc throw Error: "[uitext] margin not a number or array of numbers" traps[get:@Symbol.iterator,get:length,get:0,get:length,get:1,get:length,get:2,get:length] <- Proxy[1,2,3]
+c margin pc read [1,2,3,4]F Δ{_margin:[1,2,3,4]F} <- [1,2,3,4]
+c padding pc read 0 <- undefined -0
+c padding pc throw Error: "[uitext] padding not a number or array of numbers" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws} [1,"x",3,4]
+c padding pc read $in Δ{_padding:$in} <- NaN Infinity -Infinity -1 0.5 1 1e9
+c padding pc read $in <- 0
+c padding pc throw Error: "[uitext] padding not a number or array of numbers" traps[get:@Symbol.iterator,get:length,get:0,get:length,get:1,get:length,get:2,get:length] <- Proxy[1,2,3]
+c padding pc read [1,2,3,4]F Δ{_padding:[1,2,3,4]F} <- [1,2,3,4]
+c value pc read "" <- undefined
+c value pc throw Error: "[uitext] value not a string" <- null true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c value pc read "NaN" Δ{_value:"NaN"} <- NaN
+c value pc read "Infinity" Δ{_value:"Infinity"} <- Infinity
+c value pc read "-Infinity" Δ{_value:"-Infinity"} <- -Infinity
+c value pc read "-1" Δ{_value:"-1"} <- -1
+c value pc read "0" Δ{_value:"0"} <- -0 0
+c value pc read "0.5" Δ{_value:"0.5"} <- 0.5
+c value pc read "1" Δ{_value:"1"} <- 1
+c value pc read "1000000000" Δ{_value:"1000000000"} <- 1e9
+c value pc read $in <- ''
+c value pc read $in Δ{_value:$in} <- 'x' 'Hello'
+c value pc read "wwwwwwww…"(len 10000) Δ{_value:"wwwwwwww…"(len 10000)} <- "wwwwwwww…"(len 10001)
+c fontSize pc read 16 <- undefined NaN
+c fontSize pc throw Error: "[uitext] fontSize not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c fontSize pc read 1024 Δ{_fontSize:1024} <- Infinity 1e9
+c fontSize pc read 0 Δ{_fontSize:0} <- -Infinity -1
+c fontSize pc read $in Δ{_fontSize:$in} <- -0 0 0.5 1
+c color pc read "#000000" <- undefined
+c color pc throw Error: "[uitext] color not a string" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c color pc read $in Δ{_color:$in} <- '' 'x' 'red'
+c lineHeight pc read 1.2 <- undefined
+c lineHeight pc throw Error: "[uitext] lineHeight not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c lineHeight pc read $in Δ{_lineHeight:$in} <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+c textAlign pc read "left" <- undefined
+c textAlign pc throw Error: "[uitext] textAlign invalid: <in>" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 'x' true false {} [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn 1n
+c textAlign pc throw Error: "[uitext] textAlign invalid: " <- '' []
+c textAlign pc throw Error: "[uitext] textAlign invalid: <in>" traps[get:@Symbol.toPrimitive,get:toString,get:join,get:length,get:0,get:1,get:2] <- Proxy[1,2,3]
+c textAlign pc throw TypeError: "Cannot convert a Symbol value to a string" <- Symbol
+c textAlign pc throw Error: "toString called" <- {toString throws}
+c textAlign pc read $in <- 'left'
+c textAlign pc read $in Δ{_textAlign:$in} <- 'center' 'right'
+c fontFamily pc read "Rubik" <- undefined
+c fontFamily pc throw Error: "[uitext] fontFamily not a string" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c fontFamily pc read $in Δ{_fontFamily:$in} <- '' 'x'
+c fontFamily pc read $in <- 'Rubik'
+c fontWeight pc read "normal" <- undefined
+c fontWeight pc throw Error: "[uitext] fontWeight invalid" <- null true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c fontWeight pc read $in Δ{_fontWeight:$in} <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' 'bold' 700
+c flexBasis pc read "auto" <- undefined
+c flexBasis pc throw Error: "[uitext] flexBasis invalid" <- null true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c flexBasis pc read $in Δ{_flexBasis:$in} <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' 10
+c flexBasis pc read $in <- 'auto'
+c flexGrow pc read 0 <- undefined -0
+c flexGrow pc throw Error: "[uitext] flexGrow not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c flexGrow pc read $in Δ{_flexGrow:$in} <- NaN Infinity -Infinity -1 0.5 1 1e9
+c flexGrow pc read $in <- 0
+c flexShrink pc read 1 <- undefined
+c flexShrink pc throw Error: "[uitext] flexShrink not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c flexShrink pc read $in Δ{_flexShrink:$in} <- NaN Infinity -Infinity -1 -0 0 0.5 1e9
+c flexShrink pc read $in <- 1
+c as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
+d display same: - | NaN,NaN: first throws Error: "[uitext] display invalid: NaN" | 0,-0: first throws Error: "[uitext] display invalid: 0"
+d absolute same: - | NaN,NaN: first throws Error: "[uitext] absolute not a boolean" | 0,-0: first throws Error: "[uitext] absolute not a boolean"
+d top same: - | NaN,NaN: - | 0,-0: read 0
+d right same: - | NaN,NaN: - | 0,-0: read 0
+d bottom same: - | NaN,NaN: - | 0,-0: read 0
+d left same: - | NaN,NaN: - | 0,-0: read 0
+d backgroundColor same: - | NaN,NaN: first throws Error: "[uitext] backgroundColor not a string" | 0,-0: first throws Error: "[uitext] backgroundColor not a string"
+d borderRadius same: - | NaN,NaN: - | 0,-0: read 0
+d margin same: read [1,2,3,4]F Δ{_margin:[1,2,3,4]F} | copy: read [1,2,3,4]F Δ{_margin:[1,2,3,4]F} | NaN,NaN: - | 0,-0: read 0
+d padding same: read [1,2,3,4]F Δ{_padding:[1,2,3,4]F} | copy: read [1,2,3,4]F Δ{_padding:[1,2,3,4]F} | NaN,NaN: - | 0,-0: read 0
+d value same: - | NaN,NaN: read "NaN" | 0,-0: read "0"
+d fontSize same: - | NaN,NaN: read 16 | 0,-0: read 0
+d color same: - | NaN,NaN: first throws Error: "[uitext] color not a string" | 0,-0: first throws Error: "[uitext] color not a string"
+d lineHeight same: - | NaN,NaN: - | 0,-0: read 0
+d textAlign same: - | NaN,NaN: first throws Error: "[uitext] textAlign invalid: NaN" | 0,-0: first throws Error: "[uitext] textAlign invalid: 0"
+d fontFamily same: - | NaN,NaN: first throws Error: "[uitext] fontFamily not a string" | 0,-0: first throws Error: "[uitext] fontFamily not a string"
+d fontWeight same: - | NaN,NaN: - | 0,-0: read 0
+d flexBasis same: - | NaN,NaN: - | 0,-0: read 0
+d flexGrow same: - | NaN,NaN: - | 0,-0: read 0
+d flexShrink same: - | NaN,NaN: - | 0,-0: read 0
+d display [in a ui (ui._res 2.5), no layout node] same: - | NaN,NaN: first throws Error: "[uitext] display invalid: NaN" | 0,-0: first throws Error: "[uitext] display invalid: 0"
+d absolute [in a ui (ui._res 2.5), no layout node] same: - | NaN,NaN: first throws Error: "[uitext] absolute not a boolean" | 0,-0: first throws Error: "[uitext] absolute not a boolean"
+d top [in a ui (ui._res 2.5), no layout node] same: - | NaN,NaN: stub[ui.redraw()] | 0,-0: read 0
+d right [in a ui (ui._res 2.5), no layout node] same: - | NaN,NaN: stub[ui.redraw()] | 0,-0: read 0
+d bottom [in a ui (ui._res 2.5), no layout node] same: - | NaN,NaN: stub[ui.redraw()] | 0,-0: read 0
+d left [in a ui (ui._res 2.5), no layout node] same: - | NaN,NaN: stub[ui.redraw()] | 0,-0: read 0
+d backgroundColor [in a ui (ui._res 2.5), no layout node] same: - | NaN,NaN: first throws Error: "[uitext] backgroundColor not a string" | 0,-0: first throws Error: "[uitext] backgroundColor not a string"
+d borderRadius [in a ui (ui._res 2.5), no layout node] same: - | NaN,NaN: stub[ui.redraw()] | 0,-0: read 0
+d margin [in a ui (ui._res 2.5), no layout node] same: read [1,2,3,4]F Δ{_margin:[1,2,3,4]F} stub[ui.redraw()] | copy: read [1,2,3,4]F Δ{_margin:[1,2,3,4]F} stub[ui.redraw()] | NaN,NaN: stub[ui.redraw()] | 0,-0: read 0
+d padding [in a ui (ui._res 2.5), no layout node] same: read [1,2,3,4]F Δ{_padding:[1,2,3,4]F} stub[ui.redraw()] | copy: read [1,2,3,4]F Δ{_padding:[1,2,3,4]F} stub[ui.redraw()] | NaN,NaN: stub[ui.redraw()] | 0,-0: read 0
+d value [in a ui (ui._res 2.5), no layout node] same: - | NaN,NaN: read "NaN" | 0,-0: read "0"
+d fontSize [in a ui (ui._res 2.5), no layout node] same: - | NaN,NaN: read 16 | 0,-0: read 0
+d color [in a ui (ui._res 2.5), no layout node] same: - | NaN,NaN: first throws Error: "[uitext] color not a string" | 0,-0: first throws Error: "[uitext] color not a string"
+d lineHeight [in a ui (ui._res 2.5), no layout node] same: - | NaN,NaN: stub[ui.redraw()] | 0,-0: read 0
+d textAlign [in a ui (ui._res 2.5), no layout node] same: - | NaN,NaN: first throws Error: "[uitext] textAlign invalid: NaN" | 0,-0: first throws Error: "[uitext] textAlign invalid: 0"
+d fontFamily [in a ui (ui._res 2.5), no layout node] same: - | NaN,NaN: first throws Error: "[uitext] fontFamily not a string" | 0,-0: first throws Error: "[uitext] fontFamily not a string"
+d fontWeight [in a ui (ui._res 2.5), no layout node] same: - | NaN,NaN: stub[ui.redraw()] | 0,-0: read 0
+d flexBasis [in a ui (ui._res 2.5), no layout node] same: - | NaN,NaN: stub[ui.redraw()] | 0,-0: read 0
+d flexGrow [in a ui (ui._res 2.5), no layout node] same: - | NaN,NaN: stub[ui.redraw()] | 0,-0: read 0
+d flexShrink [in a ui (ui._res 2.5), no layout node] same: - | NaN,NaN: stub[ui.redraw()] | 0,-0: read 0
+== e. the sets of c in a mounted-like state (stubs record what is done to them): what differs from c
+e [in a ui (ui._res 2.5), no layout node]
+e display pc read $in Δ{_display:$in} stub[ui.redraw()] <- 'none'
+e display: the other 28 as in c
+e absolute pc read $in Δ{_absolute:$in} stub[ui.redraw()] <- true
+e absolute: the other 26 as in c
+e top pc read $in Δ{_top:$in} stub[ui.redraw()] <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 5
+e top: the other 18 as in c
+e right pc read $in Δ{_right:$in} stub[ui.redraw()] <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 5
+e right: the other 18 as in c
+e bottom pc read $in Δ{_bottom:$in} stub[ui.redraw()] <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 5
+e bottom: the other 18 as in c
+e left pc read $in Δ{_left:$in} stub[ui.redraw()] <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 5
+e left: the other 18 as in c
+e backgroundColor pc read $in Δ{_backgroundColor:$in} stub[ui.redraw()] <- '' 'x' 'red'
+e backgroundColor: the other 25 as in c
+e borderRadius pc read $in Δ{_borderRadius:$in} stub[ui.redraw()] <- NaN Infinity -Infinity -1 0.5 1 1e9
+e borderRadius: the other 20 as in c
+e margin pc read $in Δ{_margin:$in} stub[ui.redraw()] <- NaN Infinity -Infinity -1 0.5 1 1e9
+e margin pc read [1,2,3,4]F Δ{_margin:[1,2,3,4]F} stub[ui.redraw()] <- [1,2,3,4]
+e margin: the other 21 as in c
+e padding pc read $in Δ{_padding:$in} stub[ui.redraw()] <- NaN Infinity -Infinity -1 0.5 1 1e9
+e padding pc read [1,2,3,4]F Δ{_padding:[1,2,3,4]F} stub[ui.redraw()] <- [1,2,3,4]
+e padding: the other 21 as in c
+e value pc read "NaN" Δ{_value:"NaN"} stub[ui.redraw()] <- NaN
+e value pc read "Infinity" Δ{_value:"Infinity"} stub[ui.redraw()] <- Infinity
+e value pc read "-Infinity" Δ{_value:"-Infinity"} stub[ui.redraw()] <- -Infinity
+e value pc read "-1" Δ{_value:"-1"} stub[ui.redraw()] <- -1
+e value pc read "0" Δ{_value:"0"} stub[ui.redraw()] <- -0 0
+e value pc read "0.5" Δ{_value:"0.5"} stub[ui.redraw()] <- 0.5
+e value pc read "1" Δ{_value:"1"} stub[ui.redraw()] <- 1
+e value pc read "1000000000" Δ{_value:"1000000000"} stub[ui.redraw()] <- 1e9
+e value pc read $in Δ{_value:$in} stub[ui.redraw()] <- 'x' 'Hello'
+e value pc read "wwwwwwww…"(len 10000) Δ{_value:"wwwwwwww…"(len 10000)} stub[ui.redraw()] <- "wwwwwwww…"(len 10001)
+e value: the other 17 as in c
+e fontSize pc read 1024 Δ{_fontSize:1024} stub[ui.redraw()] <- Infinity 1e9
+e fontSize pc read 0 Δ{_fontSize:0} stub[ui.redraw()] <- -Infinity -1
+e fontSize pc read $in Δ{_fontSize:$in} stub[ui.redraw()] <- -0 0 0.5 1
+e fontSize: the other 19 as in c
+e color pc read $in Δ{_color:$in} stub[ui.redraw()] <- '' 'x' 'red'
+e color: the other 25 as in c
+e lineHeight pc read $in Δ{_lineHeight:$in} stub[ui.redraw()] <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+e lineHeight: the other 18 as in c
+e textAlign pc read $in Δ{_textAlign:$in} stub[ui.redraw()] <- 'center' 'right'
+e textAlign: the other 28 as in c
+e fontFamily pc read $in Δ{_fontFamily:$in} stub[ui.redraw()] <- '' 'x'
+e fontFamily: the other 26 as in c
+e fontWeight pc read $in Δ{_fontWeight:$in} stub[ui.redraw()] <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' 'bold' 700
+e fontWeight: the other 16 as in c
+e flexBasis pc read $in Δ{_flexBasis:$in} stub[ui.redraw()] <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' 10
+e flexBasis: the other 17 as in c
+e flexGrow pc read $in Δ{_flexGrow:$in} stub[ui.redraw()] <- NaN Infinity -Infinity -1 0.5 1 1e9
+e flexGrow: the other 20 as in c
+e flexShrink pc read $in Δ{_flexShrink:$in} stub[ui.redraw()] <- NaN Infinity -Infinity -1 -0 0 0.5 1e9
+e flexShrink: the other 19 as in c
+e [laid out (ui._res 2.5, yogaNode)]
+e display pc read $in Δ{_display:$in} stub[yoga.setDisplay(undefined) yoga.markDirty() ui.redraw()] <- 'none'
+e display: the other 28 as in c
+e absolute pc read $in Δ{_absolute:$in} stub[yoga.setPositionType(2) ui.redraw()] <- true
+e absolute: the other 26 as in c
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,NaN) ui.redraw()] <- NaN
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,Infinity) ui.redraw()] <- Infinity
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,-Infinity) ui.redraw()] <- -Infinity
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,-2.5) ui.redraw()] <- -1
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,-0) ui.redraw()] <- -0
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,0) ui.redraw()] <- 0
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,1.25) ui.redraw()] <- 0.5
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,2.5) ui.redraw()] <- 1
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,2500000000) ui.redraw()] <- 1e9
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,12.5) ui.redraw()] <- 5
+e top: the other 18 as in c
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,NaN) ui.redraw()] <- NaN
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,Infinity) ui.redraw()] <- Infinity
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,-Infinity) ui.redraw()] <- -Infinity
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,-2.5) ui.redraw()] <- -1
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,-0) ui.redraw()] <- -0
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,0) ui.redraw()] <- 0
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,1.25) ui.redraw()] <- 0.5
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,2.5) ui.redraw()] <- 1
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,2500000000) ui.redraw()] <- 1e9
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,12.5) ui.redraw()] <- 5
+e right: the other 18 as in c
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,NaN) ui.redraw()] <- NaN
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,Infinity) ui.redraw()] <- Infinity
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,-Infinity) ui.redraw()] <- -Infinity
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,-2.5) ui.redraw()] <- -1
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,-0) ui.redraw()] <- -0
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,0) ui.redraw()] <- 0
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,1.25) ui.redraw()] <- 0.5
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,2.5) ui.redraw()] <- 1
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,2500000000) ui.redraw()] <- 1e9
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,12.5) ui.redraw()] <- 5
+e bottom: the other 18 as in c
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,NaN) ui.redraw()] <- NaN
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,Infinity) ui.redraw()] <- Infinity
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,-Infinity) ui.redraw()] <- -Infinity
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,-2.5) ui.redraw()] <- -1
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,-0) ui.redraw()] <- -0
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,0) ui.redraw()] <- 0
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,1.25) ui.redraw()] <- 0.5
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,2.5) ui.redraw()] <- 1
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,2500000000) ui.redraw()] <- 1e9
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,12.5) ui.redraw()] <- 5
+e left: the other 18 as in c
+e backgroundColor pc read $in Δ{_backgroundColor:$in} stub[ui.redraw()] <- '' 'x' 'red'
+e backgroundColor: the other 25 as in c
+e borderRadius pc read $in Δ{_borderRadius:$in} stub[ui.redraw()] <- NaN Infinity -Infinity -1 0.5 1 1e9
+e borderRadius: the other 20 as in c
+e margin pc read $in Δ{_margin:$in} stub[yoga.setMargin(8,NaN) ui.redraw()] <- NaN
+e margin pc read $in Δ{_margin:$in} stub[yoga.setMargin(8,Infinity) ui.redraw()] <- Infinity
+e margin pc read $in Δ{_margin:$in} stub[yoga.setMargin(8,-Infinity) ui.redraw()] <- -Infinity
+e margin pc read $in Δ{_margin:$in} stub[yoga.setMargin(8,-2.5) ui.redraw()] <- -1
+e margin pc read $in Δ{_margin:$in} stub[yoga.setMargin(8,1.25) ui.redraw()] <- 0.5
+e margin pc read $in Δ{_margin:$in} stub[yoga.setMargin(8,2.5) ui.redraw()] <- 1
+e margin pc read $in Δ{_margin:$in} stub[yoga.setMargin(8,2500000000) ui.redraw()] <- 1e9
+e margin pc read [1,2,3,4]F Δ{_margin:[1,2,3,4]F} stub[yoga.setMargin(1,2.5) yoga.setMargin(2,5) yoga.setMargin(3,7.5) yoga.setMargin(0,10) ui.redraw()] <- [1,2,3,4]
+e margin: the other 21 as in c
+e padding pc read $in Δ{_padding:$in} stub[yoga.setPadding(8,NaN) ui.redraw()] <- NaN
+e padding pc read $in Δ{_padding:$in} stub[yoga.setPadding(8,Infinity) ui.redraw()] <- Infinity
+e padding pc read $in Δ{_padding:$in} stub[yoga.setPadding(8,-Infinity) ui.redraw()] <- -Infinity
+e padding pc read $in Δ{_padding:$in} stub[yoga.setPadding(8,-2.5) ui.redraw()] <- -1
+e padding pc read $in Δ{_padding:$in} stub[yoga.setPadding(8,1.25) ui.redraw()] <- 0.5
+e padding pc read $in Δ{_padding:$in} stub[yoga.setPadding(8,2.5) ui.redraw()] <- 1
+e padding pc read $in Δ{_padding:$in} stub[yoga.setPadding(8,2500000000) ui.redraw()] <- 1e9
+e padding pc read [1,2,3,4]F Δ{_padding:[1,2,3,4]F} stub[yoga.setPadding(1,2.5) yoga.setPadding(2,5) yoga.setPadding(3,7.5) yoga.setPadding(0,10) ui.redraw()] <- [1,2,3,4]
+e padding: the other 21 as in c
+e value pc read "NaN" Δ{_value:"NaN"} stub[yoga.markDirty() ui.redraw()] <- NaN
+e value pc read "Infinity" Δ{_value:"Infinity"} stub[yoga.markDirty() ui.redraw()] <- Infinity
+e value pc read "-Infinity" Δ{_value:"-Infinity"} stub[yoga.markDirty() ui.redraw()] <- -Infinity
+e value pc read "-1" Δ{_value:"-1"} stub[yoga.markDirty() ui.redraw()] <- -1
+e value pc read "0" Δ{_value:"0"} stub[yoga.markDirty() ui.redraw()] <- -0 0
+e value pc read "0.5" Δ{_value:"0.5"} stub[yoga.markDirty() ui.redraw()] <- 0.5
+e value pc read "1" Δ{_value:"1"} stub[yoga.markDirty() ui.redraw()] <- 1
+e value pc read "1000000000" Δ{_value:"1000000000"} stub[yoga.markDirty() ui.redraw()] <- 1e9
+e value pc read $in Δ{_value:$in} stub[yoga.markDirty() ui.redraw()] <- 'x' 'Hello'
+e value pc read "wwwwwwww…"(len 10000) Δ{_value:"wwwwwwww…"(len 10000)} stub[yoga.markDirty() ui.redraw()] <- "wwwwwwww…"(len 10001)
+e value: the other 17 as in c
+e fontSize pc read 1024 Δ{_fontSize:1024} stub[yoga.markDirty() ui.redraw()] <- Infinity 1e9
+e fontSize pc read 0 Δ{_fontSize:0} stub[yoga.markDirty() ui.redraw()] <- -Infinity -1
+e fontSize pc read $in Δ{_fontSize:$in} stub[yoga.markDirty() ui.redraw()] <- -0 0 0.5 1
+e fontSize: the other 19 as in c
+e color pc read $in Δ{_color:$in} stub[ui.redraw()] <- '' 'x' 'red'
+e color: the other 25 as in c
+e lineHeight pc read $in Δ{_lineHeight:$in} stub[yoga.markDirty() ui.redraw()] <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+e lineHeight: the other 18 as in c
+e textAlign pc read $in Δ{_textAlign:$in} stub[yoga.markDirty() ui.redraw()] <- 'center' 'right'
+e textAlign: the other 28 as in c
+e fontFamily pc read $in Δ{_fontFamily:$in} stub[yoga.markDirty() ui.redraw()] <- '' 'x'
+e fontFamily: the other 26 as in c
+e fontWeight pc read $in Δ{_fontWeight:$in} stub[yoga.markDirty() ui.redraw()] <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' 'bold' 700
+e fontWeight: the other 16 as in c
+e flexBasis pc read $in Δ{_flexBasis:$in} stub[yoga.setFlexBasis(NaN) ui.redraw()] <- NaN
+e flexBasis pc read $in Δ{_flexBasis:$in} stub[yoga.setFlexBasis(Infinity) ui.redraw()] <- Infinity
+e flexBasis pc read $in Δ{_flexBasis:$in} stub[yoga.setFlexBasis(-Infinity) ui.redraw()] <- -Infinity
+e flexBasis pc read $in Δ{_flexBasis:$in} stub[yoga.setFlexBasis(-1) ui.redraw()] <- -1
+e flexBasis pc read $in Δ{_flexBasis:$in} stub[yoga.setFlexBasis(-0) ui.redraw()] <- -0
+e flexBasis pc read $in Δ{_flexBasis:$in} stub[yoga.setFlexBasis(0) ui.redraw()] <- 0
+e flexBasis pc read $in Δ{_flexBasis:$in} stub[yoga.setFlexBasis(0.5) ui.redraw()] <- 0.5
+e flexBasis pc read $in Δ{_flexBasis:$in} stub[yoga.setFlexBasis(1) ui.redraw()] <- 1
+e flexBasis pc read $in Δ{_flexBasis:$in} stub[yoga.setFlexBasis(1000000000) ui.redraw()] <- 1e9
+e flexBasis pc read $in Δ{_flexBasis:$in} stub[yoga.setFlexBasis($in) ui.redraw()] <- '' 'x'
+e flexBasis pc read $in Δ{_flexBasis:$in} stub[yoga.setFlexBasis(10) ui.redraw()] <- 10
+e flexBasis: the other 17 as in c
+e flexGrow pc read $in Δ{_flexGrow:$in} stub[yoga.setFlexGrow(NaN) ui.redraw()] <- NaN
+e flexGrow pc read $in Δ{_flexGrow:$in} stub[yoga.setFlexGrow(Infinity) ui.redraw()] <- Infinity
+e flexGrow pc read $in Δ{_flexGrow:$in} stub[yoga.setFlexGrow(-Infinity) ui.redraw()] <- -Infinity
+e flexGrow pc read $in Δ{_flexGrow:$in} stub[yoga.setFlexGrow(-1) ui.redraw()] <- -1
+e flexGrow pc read $in Δ{_flexGrow:$in} stub[yoga.setFlexGrow(0.5) ui.redraw()] <- 0.5
+e flexGrow pc read $in Δ{_flexGrow:$in} stub[yoga.setFlexGrow(1) ui.redraw()] <- 1
+e flexGrow pc read $in Δ{_flexGrow:$in} stub[yoga.setFlexGrow(1000000000) ui.redraw()] <- 1e9
+e flexGrow: the other 20 as in c
+e flexShrink pc read $in Δ{_flexShrink:$in} stub[yoga.setFlexShrink(NaN) ui.redraw()] <- NaN
+e flexShrink pc read $in Δ{_flexShrink:$in} stub[yoga.setFlexShrink(Infinity) ui.redraw()] <- Infinity
+e flexShrink pc read $in Δ{_flexShrink:$in} stub[yoga.setFlexShrink(-Infinity) ui.redraw()] <- -Infinity
+e flexShrink pc read $in Δ{_flexShrink:$in} stub[yoga.setFlexShrink(-1) ui.redraw()] <- -1
+e flexShrink pc read $in Δ{_flexShrink:$in} stub[yoga.setFlexShrink(-0) ui.redraw()] <- -0
+e flexShrink pc read $in Δ{_flexShrink:$in} stub[yoga.setFlexShrink(0) ui.redraw()] <- 0
+e flexShrink pc read $in Δ{_flexShrink:$in} stub[yoga.setFlexShrink(0.5) ui.redraw()] <- 0.5
+e flexShrink pc read $in Δ{_flexShrink:$in} stub[yoga.setFlexShrink(1000000000) ui.redraw()] <- 1e9
+e flexShrink: the other 19 as in c
+e [laid out (ui._res 4, yogaNode)]
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,NaN) ui.redraw()] <- NaN
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,Infinity) ui.redraw()] <- Infinity
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,-Infinity) ui.redraw()] <- -Infinity
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,-4) ui.redraw()] <- -1
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,-0) ui.redraw()] <- -0
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,0) ui.redraw()] <- 0
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,2) ui.redraw()] <- 0.5
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,4) ui.redraw()] <- 1
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,4000000000) ui.redraw()] <- 1e9
+e top pc read $in Δ{_top:$in} stub[yoga.setPosition(1,20) ui.redraw()] <- 5
+e top: the other 18 as in c
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,NaN) ui.redraw()] <- NaN
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,Infinity) ui.redraw()] <- Infinity
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,-Infinity) ui.redraw()] <- -Infinity
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,-4) ui.redraw()] <- -1
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,-0) ui.redraw()] <- -0
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,0) ui.redraw()] <- 0
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,2) ui.redraw()] <- 0.5
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,4) ui.redraw()] <- 1
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,4000000000) ui.redraw()] <- 1e9
+e right pc read $in Δ{_right:$in} stub[yoga.setPosition(2,20) ui.redraw()] <- 5
+e right: the other 18 as in c
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,NaN) ui.redraw()] <- NaN
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,Infinity) ui.redraw()] <- Infinity
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,-Infinity) ui.redraw()] <- -Infinity
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,-4) ui.redraw()] <- -1
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,-0) ui.redraw()] <- -0
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,0) ui.redraw()] <- 0
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,2) ui.redraw()] <- 0.5
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,4) ui.redraw()] <- 1
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,4000000000) ui.redraw()] <- 1e9
+e bottom pc read $in Δ{_bottom:$in} stub[yoga.setPosition(3,20) ui.redraw()] <- 5
+e bottom: the other 18 as in c
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,NaN) ui.redraw()] <- NaN
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,Infinity) ui.redraw()] <- Infinity
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,-Infinity) ui.redraw()] <- -Infinity
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,-4) ui.redraw()] <- -1
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,-0) ui.redraw()] <- -0
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,0) ui.redraw()] <- 0
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,2) ui.redraw()] <- 0.5
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,4) ui.redraw()] <- 1
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,4000000000) ui.redraw()] <- 1e9
+e left pc read $in Δ{_left:$in} stub[yoga.setPosition(0,20) ui.redraw()] <- 5
+e left: the other 18 as in c
+e margin pc read $in Δ{_margin:$in} stub[yoga.setMargin(8,NaN) ui.redraw()] <- NaN
+e margin pc read $in Δ{_margin:$in} stub[yoga.setMargin(8,Infinity) ui.redraw()] <- Infinity
+e margin pc read $in Δ{_margin:$in} stub[yoga.setMargin(8,-Infinity) ui.redraw()] <- -Infinity
+e margin pc read $in Δ{_margin:$in} stub[yoga.setMargin(8,-4) ui.redraw()] <- -1
+e margin pc read $in Δ{_margin:$in} stub[yoga.setMargin(8,2) ui.redraw()] <- 0.5
+e margin pc read $in Δ{_margin:$in} stub[yoga.setMargin(8,4) ui.redraw()] <- 1
+e margin pc read $in Δ{_margin:$in} stub[yoga.setMargin(8,4000000000) ui.redraw()] <- 1e9
+e margin pc read [1,2,3,4]F Δ{_margin:[1,2,3,4]F} stub[yoga.setMargin(1,4) yoga.setMargin(2,8) yoga.setMargin(3,12) yoga.setMargin(0,16) ui.redraw()] <- [1,2,3,4]
+e margin: the other 21 as in c
+e padding pc read $in Δ{_padding:$in} stub[yoga.setPadding(8,NaN) ui.redraw()] <- NaN
+e padding pc read $in Δ{_padding:$in} stub[yoga.setPadding(8,Infinity) ui.redraw()] <- Infinity
+e padding pc read $in Δ{_padding:$in} stub[yoga.setPadding(8,-Infinity) ui.redraw()] <- -Infinity
+e padding pc read $in Δ{_padding:$in} stub[yoga.setPadding(8,-4) ui.redraw()] <- -1
+e padding pc read $in Δ{_padding:$in} stub[yoga.setPadding(8,2) ui.redraw()] <- 0.5
+e padding pc read $in Δ{_padding:$in} stub[yoga.setPadding(8,4) ui.redraw()] <- 1
+e padding pc read $in Δ{_padding:$in} stub[yoga.setPadding(8,4000000000) ui.redraw()] <- 1e9
+e padding pc read [1,2,3,4]F Δ{_padding:[1,2,3,4]F} stub[yoga.setPadding(1,4) yoga.setPadding(2,8) yoga.setPadding(3,12) yoga.setPadding(0,16) ui.redraw()] <- [1,2,3,4]
+e padding: the other 21 as in c
+== f. the constructor: defaults (read through the proxy); each key given through data
+f default display = "flex"
+f default absolute = false
+f default top = null
+f default right = null
+f default bottom = null
+f default left = null
+f default backgroundColor = null
+f default borderRadius = 0
+f default margin = 0
+f default padding = 0
+f default value = ""
+f default fontSize = 16
+f default color = "#000000"
+f default lineHeight = 1.2
+f default textAlign = "left"
+f default fontFamily = "Rubik"
+f default fontWeight = "normal"
+f default flexBasis = "auto"
+f default flexGrow = 0
+f default flexShrink = 1
+f default name = "uitext"
+f defaults as on node: id position quaternion rotation scale matrixWorld active parent children _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+f display: through data as through the class (all 29)
+f absolute: through data as through the class (all 27)
+f top: through data as through the class (all 28)
+f right: through data as through the class (all 28)
+f bottom: through data as through the class (all 28)
+f left: through data as through the class (all 28)
+f backgroundColor: through data as through the class (all 28)
+f borderRadius data 0 <- undefined
+f borderRadius data throw Error: "[uitext] borderRadius not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f borderRadius data $in <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+f margin data 0 <- undefined
+f margin data throw Error: "[uitext] margin not a number or array of numbers" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} [1,"x",3,4]
+f margin data $in <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+f margin data [1,2,3,4]F <- [1,2,3,4]
+f padding data 0 <- undefined
+f padding data throw Error: "[uitext] padding not a number or array of numbers" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} [1,"x",3,4]
+f padding data $in <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+f padding data [1,2,3,4]F <- [1,2,3,4]
+f value: through data as through the class (all 29)
+f fontSize: through data as through the class (all 27)
+f color: through data as through the class (all 28)
+f lineHeight: through data as through the class (all 27)
+f textAlign: through data as through the class (all 30)
+f fontFamily: through data as through the class (all 28)
+f fontWeight: through data as through the class (all 29)
+f flexBasis: through data as through the class (all 29)
+f flexGrow data 0 <- undefined
+f flexGrow data throw Error: "[uitext] flexGrow not a number" <- null '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f flexGrow data $in <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9
+f flexShrink: through data as through the class (all 27)
+f as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== g. own fields after construction, and what clone() and clone(true) make of them
+g field name = "uitext"
+g field _display = "flex"
+g field _absolute = false
+g field _top = null
+g field _right = null
+g field _bottom = null
+g field _left = null
+g field _backgroundColor = null
+g field _borderRadius = 0
+g field _margin = 0
+g field _padding = 0
+g field _value = ""
+g field _fontSize = 16
+g field _color = "#000000"
+g field _lineHeight = 1.2
+g field _textAlign = "left"
+g field _fontFamily = "Rubik"
+g field _fontWeight = "normal"
+g field _flexBasis = "auto"
+g field _flexGrow = 0
+g field _flexShrink = 1
+g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
+g full: 26 properties set (display absolute top right bottom left backgroundColor borderRadius margin padding value fontSize color lineHeight textAlign fontFamily fontWeight flexBasis flexGrow flexShrink active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
+g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
+g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _display="none" _absolute=true _top=5 _right=5 _bottom=5 _left=5 _backgroundColor="red" _borderRadius=0.5 _margin=[1,2,3,4]F _padding=[1,2,3,4]F _value="Hello" _fontSize=0.5 _color="red" _lineHeight=0.5 _textAlign="center" _fontFamily="x" _fontWeight="bold" _flexBasis=10 _flexGrow=0.5 _flexShrink=0.5
+g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _display _absolute _top _right _bottom _left _backgroundColor _borderRadius _value _fontSize _color _lineHeight _textAlign _fontFamily _fontWeight _flexBasis _flexGrow _flexShrink
+g full clone(false) copy: position quaternion scale matrix matrixWorld _margin _padding
+g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) source only: _proxy
+g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _display _absolute _top _right _bottom _left _backgroundColor _borderRadius _value _fontSize _color _lineHeight _textAlign _fontFamily _fontWeight _flexBasis _flexGrow _flexShrink
+g full clone(true) copy: children position quaternion scale matrix matrixWorld _margin _padding
+g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) source only: _proxy
+g full clone(true) children: node#child -> node#child
+g a clone reads as its source, each sample property alone (52 clones): yes

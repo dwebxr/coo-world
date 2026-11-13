@@ -1,0 +1,284 @@
+# the 'collider' node type, written by test/lib/nodeGolden.mjs (legend: test/nodeGolden.test.js)
+== a. the proxy: own keys in order, descriptors, functions shared by two instances
+a proxy: prototype Object.prototype, extensible true, frozen false, 39 keys, getNodeRef(proxy) is the node: true
+a 1 type: get+set enum conf get:"get type"/0 per-instance set:"set"/1 shared
+a 2 width: get+set enum conf get:"get width"/0 per-instance set:"set"/1 shared
+a 3 height: get+set enum conf get:"get height"/0 per-instance set:"set"/1 shared
+a 4 depth: get+set enum conf get:"get depth"/0 per-instance set:"set"/1 shared
+a 5 setSize: method enum conf writable fn:"setSize"/3 per-instance
+a 6 radius: get+set enum conf get:"get radius"/0 per-instance set:"set"/1 shared
+a 7 geometry: get+set enum conf get:"get geometry"/0 per-instance set:"set"/1 shared
+a 8 convex: get+set enum conf get:"get convex"/0 per-instance set:"set"/1 shared
+a 9 trigger: get+set enum conf get:"get trigger"/0 per-instance set:"set"/1 shared
+a 10 layer: get+set enum conf get:"get layer"/0 per-instance set:"set"/1 shared
+a 11 staticFriction: get+set enum conf get:"get staticFriction"/0 per-instance set:"set"/1 shared
+a 12 dynamicFriction: get+set enum conf get:"get dynamicFriction"/0 per-instance set:"set"/1 shared
+a 13 restitution: get+set enum conf get:"get restitution"/0 per-instance set:"set"/1 shared
+a 14 setMaterial: method enum conf writable fn:"setMaterial"/3 per-instance
+a 15 requestRebuild: method enum conf writable fn:"requestRebuild"/0 per-instance
+a node keys: 24 at 16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39; order as on node; descriptors as on node
+== b. a stopped run (ctx.run is not its entity's deadHook), a live run, and receivers
+b set throws Error: "[app] this app has stopped": type width height depth radius geometry convex trigger layer staticFriction dynamicFriction restitution id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b method throws Error: "[app] this app has stopped": setSize setMaterial requestRebuild get getWorldMatrix add remove traverse clone clean
+b get reads "box": type
+b get reads 1: width height depth
+b get reads 0.5: radius
+b get reads ref(null): geometry
+b get reads false: convex trigger
+b get reads "environment": layer
+b get reads 0.6: staticFriction dynamicFriction
+b get reads 0: restitution
+b get reads <auto id>: id
+b get reads "collider": name
+b get reads V3(0,0,0)S: position
+b get reads Q(0,0,0,1)S: quaternion
+b get reads E(0,0,0,YXZ)S: rotation
+b get reads V3(1,1,1)S: scale
+b get reads view:M4(I)S: matrixWorld
+b get reads true: active _isRef
+b get reads undefined: parent cursor
+b get reads []: children
+b get reads null: _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
+b stopped through _created: 24 of 24 setters throw Error: "[app] this app has stopped"
+b stopped through a parent: 24 of 24 setters throw Error: "[app] this app has stopped"
+b a live run: each setter with a sample value takes it
+b receiver Object.create(proxy): as through the proxy: 24 of 24
+b receiver a plain object: throws TypeError: "[node] not a node": all 24
+b receiver no receiver: throws TypeError: "[node] not a node": all 24
+b receiver a group's proxy: throws TypeError: "[node] a group node has no <key> to set": type width height depth radius geometry convex trigger layer staticFriction dynamicFriction restitution
+b receiver a group's proxy: throws Error: "Setting ID not currently supported": id
+b receiver a group's proxy: throws Error: "Cannot replace node <key>": position quaternion rotation scale
+b receiver a group's proxy: runs: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b receiver a group's proxy: throws Error: "Cannot set <key> directly": parent
+b receiver another type's proxy with the key: throws Error: "[joint] invalid type: sphere": type(joint)
+b receiver another type's proxy with the key: sets that node: width(image) height(controller) depth(mesh) radius(controller) geometry(mesh) trigger(prim) layer(controller) staticFriction(prim) dynamicFriction(prim) restitution(prim)
+== c. one set on a fresh unmounted node: pc the proxy and the class alike, p the proxy, c the class
+c type pc read "box" <- undefined
+c type pc throw Error: "[collider] invalid type:" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws}
+c type pc throw Error: "[collider] invalid type:" traps[has:cause] <- Proxy[1,2,3]
+c type pc read $in <- 'box'
+c type pc read $in Δ{_type:$in needsRebuild:true} calls[setDirty] <- 'sphere' 'geometry'
+c width pc read 1 <- undefined
+c width pc throw Error: "[collider] width must be a finite number >= 0" <- null NaN Infinity -Infinity -1 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c width pc read $in Δ{_width:$in} <- -0 0 0.5 1e9
+c width pc read $in <- 1
+c height pc read 1 <- undefined
+c height pc throw Error: "[collider] height must be a finite number >= 0" <- null NaN Infinity -Infinity -1 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c height pc read $in Δ{_height:$in} <- -0 0 0.5 1e9
+c height pc read $in <- 1
+c depth pc read 1 <- undefined
+c depth pc throw Error: "[collider] depth must be a finite number >= 0" <- null NaN Infinity -Infinity -1 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c depth pc read $in Δ{_depth:$in} <- -0 0 0.5 1e9
+c depth pc read $in <- 1
+c radius pc read 0.5 <- undefined
+c radius pc throw Error: "[collider] radius must be a finite number >= 0" <- null NaN Infinity -Infinity -1 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c radius pc read $in Δ{_radius:$in} <- -0 0 1 1e9
+c radius pc read $in <- 0.5
+c geometry pc read ref(null) fresh <- undefined null
+c geometry pc read ref(geometry#A) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- geometry#A
+c geometry pc read $in~ fresh Δ{needsRebuild:true _geometry:geometry#B} calls[setDirty] <- ref(geometry#B)
+c geometry p read ref(null) fresh log[error:"[collider] geometry invalid"] <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws}
+c geometry p read ref(null) fresh traps[gopd:_ref] log[error:"[collider] geometry invalid"] <- Proxy[1,2,3]
+c geometry c read ref(NaN) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- NaN
+c geometry c read ref(Infinity) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- Infinity
+c geometry c read ref(-Infinity) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- -Infinity
+c geometry c read ref(-1) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- -1
+c geometry c read ref(-0) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- -0
+c geometry c read ref(0) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- 0
+c geometry c read ref(0.5) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- 0.5
+c geometry c read ref(1) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- 1
+c geometry c read ref(1000000000) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- 1e9
+c geometry c read ref("") fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- ''
+c geometry c read ref("x") fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- 'x'
+c geometry c read ref(true) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- true
+c geometry c read ref(false) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- false
+c geometry c read ref({}) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- {}
+c geometry c read ref([]) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- []
+c geometry c read ref([1,2,3]) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- [1,2,3]
+c geometry c read ref([NaN]) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- [NaN]
+c geometry c read ref(Number(1)) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- Number(1)
+c geometry c read ref(String("x")) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- String('x')
+c geometry c read ref(Boolean(true)) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- Boolean(true)
+c geometry c read ref(Proxy) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] traps[gopd:_ref] <- Proxy[1,2,3]
+c geometry c read ref(fn:hostileFn) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- fn
+c geometry c read ref(Symbol(s)) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- Symbol
+c geometry c read ref(1n) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- 1n
+c geometry c read ref({toString:fn:toString}) fresh Δ{needsRebuild:true _geometry:$in} calls[setDirty] <- {toString throws}
+c convex pc read false <- undefined
+c convex pc throw Error: "[collider] convex not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c convex pc read $in Δ{_convex:$in} <- true
+c convex pc read $in <- false
+c trigger pc read false <- undefined
+c trigger pc throw Error: "[collider] trigger not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c trigger pc read $in Δ{_trigger:$in} <- true
+c trigger pc read $in <- false
+c layer pc read "environment" <- undefined
+c layer pc throw Error: "[collider] invalid layer: <in>" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 'x' true false {} [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn 1n 'bogus'
+c layer pc throw Error: "[collider] invalid layer: " <- '' []
+c layer pc throw Error: "[collider] invalid layer: <in>" traps[get:@Symbol.toPrimitive,get:toString,get:join,get:length,get:0,get:1,get:2] <- Proxy[1,2,3]
+c layer pc throw TypeError: "Cannot convert a Symbol value to a string" <- Symbol
+c layer pc throw Error: "toString called" <- {toString throws}
+c layer pc read $in <- 'environment'
+c layer pc read $in Δ{_layer:$in} <- 'prop' 'tool'
+c layer p throw Error: "[collider] layer invalid: <in>" <- 'player'
+c layer c read $in Δ{_layer:$in} <- 'player'
+c staticFriction pc read 0.6 <- undefined
+c staticFriction pc throw Error: "[collider] staticFriction must be a finite number >= 0" <- null NaN Infinity -Infinity -1 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c staticFriction pc read $in Δ{_staticFriction:$in} <- -0 0 0.5 1 1e9
+c dynamicFriction pc read 0.6 <- undefined
+c dynamicFriction pc throw Error: "[collider] dynamicFriction must be a finite number >= 0" <- null NaN Infinity -Infinity -1 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c dynamicFriction pc read $in Δ{_dynamicFriction:$in} <- -0 0 0.5 1 1e9
+c restitution pc read 0 <- undefined -0
+c restitution pc throw Error: "[collider] restitution must be a finite number >= 0" <- null NaN Infinity -Infinity -1 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c restitution pc read $in <- 0
+c restitution pc read $in Δ{_restitution:$in} <- 0.5 1 1e9
+c as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
+d type same: - | NaN,NaN: first throws Error: "[collider] invalid type:" | 0,-0: first throws Error: "[collider] invalid type:"
+d width same: - | NaN,NaN: first throws Error: "[collider] width must be a finite number >= 0" | 0,-0: read 0
+d height same: - | NaN,NaN: first throws Error: "[collider] height must be a finite number >= 0" | 0,-0: read 0
+d depth same: - | NaN,NaN: first throws Error: "[collider] depth must be a finite number >= 0" | 0,-0: read 0
+d radius same: - | NaN,NaN: first throws Error: "[collider] radius must be a finite number >= 0" | 0,-0: read 0
+d geometry same: read ref(geometry#A) fresh | copy: read ref(geometry#A) fresh | NaN,NaN: read ref(null) fresh log[error:"[collider] geometry invalid"] | 0,-0: read ref(null) fresh log[error:"[collider] geometry invalid"]
+d convex same: - | NaN,NaN: first throws Error: "[collider] convex not a boolean" | 0,-0: first throws Error: "[collider] convex not a boolean"
+d trigger same: - | NaN,NaN: first throws Error: "[collider] trigger not a boolean" | 0,-0: first throws Error: "[collider] trigger not a boolean"
+d layer same: - | NaN,NaN: first throws Error: "[collider] invalid layer: NaN" | 0,-0: first throws Error: "[collider] invalid layer: 0"
+d staticFriction same: - | NaN,NaN: first throws Error: "[collider] staticFriction must be a finite number >= 0" | 0,-0: read 0
+d dynamicFriction same: - | NaN,NaN: first throws Error: "[collider] dynamicFriction must be a finite number >= 0" | 0,-0: read 0
+d restitution same: - | NaN,NaN: first throws Error: "[collider] restitution must be a finite number >= 0" | 0,-0: read 0
+d type [mounted (shape)] same: - | NaN,NaN: first throws Error: "[collider] invalid type:" | 0,-0: first throws Error: "[collider] invalid type:"
+d width [mounted (shape)] same: - | NaN,NaN: first throws Error: "[collider] width must be a finite number >= 0" | 0,-0: read 0
+d height [mounted (shape)] same: - | NaN,NaN: first throws Error: "[collider] height must be a finite number >= 0" | 0,-0: read 0
+d depth [mounted (shape)] same: - | NaN,NaN: first throws Error: "[collider] depth must be a finite number >= 0" | 0,-0: read 0
+d radius [mounted (shape)] same: - | NaN,NaN: first throws Error: "[collider] radius must be a finite number >= 0" | 0,-0: read 0
+d geometry [mounted (shape)] same: read ref(geometry#A) fresh | copy: read ref(geometry#A) fresh | NaN,NaN: read ref(null) fresh log[error:"[collider] geometry invalid"] | 0,-0: read ref(null) fresh log[error:"[collider] geometry invalid"]
+d convex [mounted (shape)] same: - | NaN,NaN: first throws Error: "[collider] convex not a boolean" | 0,-0: first throws Error: "[collider] convex not a boolean"
+d trigger [mounted (shape)] same: - | NaN,NaN: first throws Error: "[collider] trigger not a boolean" | 0,-0: first throws Error: "[collider] trigger not a boolean"
+d layer [mounted (shape)] same: - | NaN,NaN: first throws Error: "[collider] invalid layer: NaN" | 0,-0: first throws Error: "[collider] invalid layer: 0"
+d staticFriction [mounted (shape)] same: - | NaN,NaN: first throws Error: "[collider] staticFriction must be a finite number >= 0" | 0,-0: read 0
+d dynamicFriction [mounted (shape)] same: - | NaN,NaN: first throws Error: "[collider] dynamicFriction must be a finite number >= 0" | 0,-0: read 0
+d restitution [mounted (shape)] same: - | NaN,NaN: first throws Error: "[collider] restitution must be a finite number >= 0" | 0,-0: read 0
+== e. the sets of c in a mounted-like state (stubs record what is done to them): what differs from c
+e [mounted (shape)]
+e width pc read $in Δ{needsRebuild:true _width:$in} calls[setDirty] <- -0 0 0.5 1e9
+e width: the other 23 as in c
+e height pc read $in Δ{needsRebuild:true _height:$in} calls[setDirty] <- -0 0 0.5 1e9
+e height: the other 23 as in c
+e depth pc read $in Δ{needsRebuild:true _depth:$in} calls[setDirty] <- -0 0 0.5 1e9
+e depth: the other 23 as in c
+e convex pc read $in Δ{needsRebuild:true _convex:$in} calls[setDirty] <- true
+e convex: the other 26 as in c
+e trigger pc read $in Δ{needsRebuild:true _trigger:$in} calls[setDirty] <- true
+e trigger: the other 26 as in c
+e layer pc read $in Δ{needsRebuild:true _layer:$in} calls[setDirty] <- 'prop' 'tool'
+e layer p throw Error: "[collider] layer invalid: <in>" <- 'player'
+e layer c read $in Δ{needsRebuild:true _layer:$in} calls[setDirty] <- 'player'
+e layer: the other 29 as in c
+e staticFriction pc read $in Δ{needsRebuild:true _staticFriction:$in} calls[setDirty] <- -0 0 0.5 1 1e9
+e staticFriction: the other 22 as in c
+e dynamicFriction pc read $in Δ{needsRebuild:true _dynamicFriction:$in} calls[setDirty] <- -0 0 0.5 1 1e9
+e dynamicFriction: the other 22 as in c
+e restitution pc read $in Δ{needsRebuild:true _restitution:$in} calls[setDirty] <- 0.5 1 1e9
+e restitution: the other 24 as in c
+e as in c: type radius geometry
+e [physics skipped ('size')]
+e width pc read $in Δ{needsRebuild:true _width:$in} calls[setDirty] <- -0 0 0.5 1e9
+e width: the other 23 as in c
+e height pc read $in Δ{needsRebuild:true _height:$in} calls[setDirty] <- -0 0 0.5 1e9
+e height: the other 23 as in c
+e depth pc read $in Δ{needsRebuild:true _depth:$in} calls[setDirty] <- -0 0 0.5 1e9
+e depth: the other 23 as in c
+e convex pc read $in Δ{needsRebuild:true _convex:$in} calls[setDirty] <- true
+e convex: the other 26 as in c
+e trigger pc read $in Δ{needsRebuild:true _trigger:$in} calls[setDirty] <- true
+e trigger: the other 26 as in c
+e layer pc read $in Δ{needsRebuild:true _layer:$in} calls[setDirty] <- 'prop' 'tool'
+e layer p throw Error: "[collider] layer invalid: <in>" <- 'player'
+e layer c read $in Δ{needsRebuild:true _layer:$in} calls[setDirty] <- 'player'
+e layer: the other 29 as in c
+e staticFriction pc read $in Δ{needsRebuild:true _staticFriction:$in} calls[setDirty] <- -0 0 0.5 1 1e9
+e staticFriction: the other 22 as in c
+e dynamicFriction pc read $in Δ{needsRebuild:true _dynamicFriction:$in} calls[setDirty] <- -0 0 0.5 1 1e9
+e dynamicFriction: the other 22 as in c
+e restitution pc read $in Δ{needsRebuild:true _restitution:$in} calls[setDirty] <- 0.5 1 1e9
+e restitution: the other 24 as in c
+e as in c: type radius geometry
+e [_type sphere, mounted (shape)]
+e radius pc read $in Δ{needsRebuild:true _radius:$in} calls[setDirty] <- -0 0 1 1e9
+e radius: the other 23 as in c
+e as in c: width height depth
+e [_type sphere, physics skipped ('size')]
+e radius pc read $in Δ{needsRebuild:true _radius:$in} calls[setDirty] <- -0 0 1 1e9
+e radius: the other 23 as in c
+e as in c: width height depth
+e [_type geometry, mounted (shape)]
+e as in c: width height depth radius
+e [_type geometry, physics skipped ('size')]
+e as in c: width height depth radius
+== f. the constructor: defaults (read through the proxy); each key given through data
+f default type = "box"
+f default width = 1
+f default height = 1
+f default depth = 1
+f default radius = 0.5
+f default geometry = ref(null) fresh
+f default convex = false
+f default trigger = false
+f default layer = "environment"
+f default staticFriction = 0.6
+f default dynamicFriction = 0.6
+f default restitution = 0
+f default name = "collider"
+f defaults as on node: id position quaternion rotation scale matrixWorld active parent children _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+f type: through data as through the class (all 30)
+f width: through data as through the class (all 27)
+f height: through data as through the class (all 27)
+f depth: through data as through the class (all 27)
+f radius: through data as through the class (all 27)
+f geometry: through data as through the class (all 29)
+f convex: through data as through the class (all 27)
+f trigger: through data as through the class (all 27)
+f layer: through data as through the class (all 32)
+f staticFriction: through data as through the class (all 27)
+f dynamicFriction: through data as through the class (all 27)
+f restitution data 0 <- undefined
+f restitution data throw Error: "[collider] restitution must be a finite number >= 0" <- null NaN Infinity -Infinity -1 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f restitution data $in <- -0 0 0.5 1 1e9
+f as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== g. own fields after construction, and what clone() and clone(true) make of them
+g field name = "collider"
+g field _type = "box"
+g field needsRebuild = true
+g field _width = 1
+g field _height = 1
+g field _depth = 1
+g field _radius = 0.5
+g field _geometry = null
+g field _convex = false
+g field _trigger = false
+g field _layer = "environment"
+g field _staticFriction = 0.6
+g field _dynamicFriction = 0.6
+g field _restitution = 0
+g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
+g full: 18 properties set (type width height depth radius geometry convex trigger layer staticFriction dynamicFriction restitution active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
+g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
+g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _type="sphere" _width=0.5 _height=0.5 _depth=0.5 _radius=1 _geometry=geometry#A _convex=true _trigger=true _layer="prop" _staticFriction=0.5 _dynamicFriction=0.5 _restitution=0.5
+g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type needsRebuild _width _height _depth _radius _geometry _convex _trigger _layer _staticFriction _dynamicFriction _restitution
+g full clone(false) copy: position quaternion scale matrix matrixWorld
+g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) source only: _proxy
+g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type needsRebuild _width _height _depth _radius _geometry _convex _trigger _layer _staticFriction _dynamicFriction _restitution
+g full clone(true) copy: children position quaternion scale matrix matrixWorld
+g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) source only: _proxy
+g full clone(true) children: node#child -> node#child
+g glb glbCollider fields unlike a new node's: parent=node:rigidbody rotation=E(-0,0,0,YXZ)S _type="geometry" _geometry=<BoxGeometry> _convex=true _layer="prop"
+g glb glbCollider clone(false) same: id name ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type needsRebuild _width _height _depth _radius _geometry _convex _trigger _layer _staticFriction _dynamicFriction _restitution
+g glb glbCollider clone(false) copy: children position rotation quaternion scale matrix matrixWorld
+g glb glbCollider clone(false) differs: parent(node:rigidbody -> null)
+g glb glbCollider clone(true) same: id name ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type needsRebuild _width _height _depth _radius _geometry _convex _trigger _layer _staticFriction _dynamicFriction _restitution
+g glb glbCollider clone(true) copy: children position rotation quaternion scale matrix matrixWorld
+g glb glbCollider clone(true) differs: parent(node:rigidbody -> null)
+g glb glbCollider clone(true) children: -
+g a clone reads as its source, each sample property alone (36 clones): yes

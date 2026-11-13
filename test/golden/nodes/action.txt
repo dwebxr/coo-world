@@ -1,0 +1,119 @@
+# the 'action' node type, written by test/lib/nodeGolden.mjs (legend: test/nodeGolden.test.js)
+== a. the proxy: own keys in order, descriptors, functions shared by two instances
+a proxy: prototype Object.prototype, extensible true, frozen false, 30 keys, getNodeRef(proxy) is the node: true
+a 1 label: get+set enum conf get:"get label"/0 per-instance set:"set"/1 shared
+a 2 distance: get+set enum conf get:"get distance"/0 per-instance set:"set"/1 shared
+a 3 duration: get+set enum conf get:"get duration"/0 per-instance set:"set"/1 shared
+a 4 onStart: get+set enum conf get:"get onStart"/0 per-instance set:"set"/1 shared
+a 5 onTrigger: get+set enum conf get:"get onTrigger"/0 per-instance set:"set"/1 shared
+a 6 onCancel: get+set enum conf get:"get onCancel"/0 per-instance set:"set"/1 shared
+a node keys: 24 at 7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30; order as on node; descriptors as on node
+== b. a stopped run (ctx.run is not its entity's deadHook), a live run, and receivers
+b set throws Error: "[app] this app has stopped": label distance duration onStart onTrigger onCancel id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b method throws Error: "[app] this app has stopped": get getWorldMatrix add remove traverse clone clean
+b get reads "Interact": label
+b get reads 3: distance
+b get reads 0.5: duration
+b get reads fn:<anon>F: onStart onTrigger onCancel
+b get reads <auto id>: id
+b get reads "action": name
+b get reads V3(0,0,0)S: position
+b get reads Q(0,0,0,1)S: quaternion
+b get reads E(0,0,0,YXZ)S: rotation
+b get reads V3(1,1,1)S: scale
+b get reads view:M4(I)S: matrixWorld
+b get reads true: active _isRef
+b get reads undefined: parent cursor
+b get reads []: children
+b get reads null: _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
+b stopped through _created: 18 of 18 setters throw Error: "[app] this app has stopped"
+b stopped through a parent: 18 of 18 setters throw Error: "[app] this app has stopped"
+b a live run: each setter with a sample value takes it
+b receiver Object.create(proxy): as through the proxy: 18 of 18
+b receiver a plain object: throws TypeError: "[node] not a node": all 18
+b receiver no receiver: throws TypeError: "[node] not a node": all 18
+b receiver a group's proxy: throws TypeError: "[node] a group node has no <key> to set": label distance duration onStart onTrigger onCancel
+b receiver a group's proxy: throws Error: "Setting ID not currently supported": id
+b receiver a group's proxy: throws Error: "Cannot replace node <key>": position quaternion rotation scale
+b receiver a group's proxy: runs: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b receiver a group's proxy: throws Error: "Cannot set <key> directly": parent
+b receiver another type's proxy with the key: sets that node: label(nametag) duration(particles)
+== c. one set on a fresh unmounted node: pc the proxy and the class alike, p the proxy, c the class
+c label pc read "Interact" <- undefined null true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c label pc read "NaN" Δ{_label:"NaN"} <- NaN
+c label pc read "Infinity" Δ{_label:"Infinity"} <- Infinity
+c label pc read "-Infinity" Δ{_label:"-Infinity"} <- -Infinity
+c label pc read "-1" Δ{_label:"-1"} <- -1
+c label pc read "0" Δ{_label:"0"} <- -0 0
+c label pc read "0.5" Δ{_label:"0.5"} <- 0.5
+c label pc read "1" Δ{_label:"1"} <- 1
+c label pc read "1000000000" Δ{_label:"1000000000"} <- 1e9
+c label pc read $in Δ{_label:$in} <- '' 'x' 'Use'
+c label pc read "wwwwwwww…"(len 256) Δ{_label:"wwwwwwww…"(len 256)} <- "wwwwwwww…"(len 257)
+c distance pc read 3 <- undefined
+c distance pc throw Error: "[action] distance not a number" <- null NaN Infinity -Infinity '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c distance pc read $in Δ{_distance:$in} <- -1 -0 0 0.5 1 1e9
+c duration pc read 0.5 <- undefined
+c duration pc throw Error: "[action] duration not a number" <- null NaN Infinity -Infinity '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c duration pc read $in Δ{_duration:$in} <- -1 -0 0 1 1e9
+c duration pc read $in <- 0.5
+c onStart pc read fn:<anon>F <- undefined
+c onStart pc throw Error: "[action] onStart not a function" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Symbol 1n {toString throws}
+c onStart pc throw Error: "[action] onStart not a function" traps[has:@Symbol.toStringTag,get:@Symbol.toStringTag] <- Proxy[1,2,3]
+c onStart pc read $in Δ{_onStart:$in} <- fn
+c onTrigger pc read fn:<anon>F <- undefined
+c onTrigger pc throw Error: "[action] onTrigger not a function" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Symbol 1n {toString throws}
+c onTrigger pc throw Error: "[action] onTrigger not a function" traps[has:@Symbol.toStringTag,get:@Symbol.toStringTag] <- Proxy[1,2,3]
+c onTrigger pc read $in Δ{_onTrigger:$in} <- fn
+c onCancel pc read fn:<anon>F <- undefined
+c onCancel pc throw Error: "[action] onCancel not a function" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Symbol 1n {toString throws}
+c onCancel pc throw Error: "[action] onCancel not a function" traps[has:@Symbol.toStringTag,get:@Symbol.toStringTag] <- Proxy[1,2,3]
+c onCancel pc read $in Δ{_onCancel:$in} <- fn
+c as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
+d label same: - | NaN,NaN: read "NaN" | 0,-0: read "0"
+d distance same: - | NaN,NaN: first throws Error: "[action] distance not a number" | 0,-0: Δ{_distance:$in}
+d duration same: - | NaN,NaN: first throws Error: "[action] duration not a number" | 0,-0: Δ{_duration:$in}
+d onStart same: - | NaN,NaN: first throws Error: "[action] onStart not a function" | 0,-0: first throws Error: "[action] onStart not a function"
+d onTrigger same: - | NaN,NaN: first throws Error: "[action] onTrigger not a function" | 0,-0: first throws Error: "[action] onTrigger not a function"
+d onCancel same: - | NaN,NaN: first throws Error: "[action] onCancel not a function" | 0,-0: first throws Error: "[action] onCancel not a function"
+== f. the constructor: defaults (read through the proxy); each key given through data
+f default label = "Interact"
+f default distance = 3
+f default duration = 0.5
+f default onStart = fn:<anon>F
+f default onTrigger = fn:<anon>F
+f default onCancel = fn:<anon>F
+f default name = "action"
+f defaults as on node: id position quaternion rotation scale matrixWorld active parent children _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+f label: through data as through the class (all 29)
+f distance: through data as through the class (all 27)
+f duration: through data as through the class (all 27)
+f onStart: through data as through the class (all 27)
+f onTrigger: through data as through the class (all 27)
+f onCancel: through data as through the class (all 27)
+f as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== g. own fields after construction, and what clone() and clone(true) make of them
+g field name = "action"
+g field _label = "Interact"
+g field _distance = 3
+g field _duration = 0.5
+g field _onStart = fn:<anon>F
+g field _onTrigger = fn:<anon>F
+g field _onCancel = fn:<anon>F
+g field worldPos = V3(0,0,0)
+g field progress = 0
+g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
+g full: 12 properties set (label distance duration onStart onTrigger onCancel active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
+g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
+g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _label="Use" _distance=0.5 _duration=1 _onStart=fn:hostileFn _onTrigger=fn:hostileFn _onCancel=fn:hostileFn
+g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _label _distance _duration _onStart _onTrigger _onCancel progress
+g full clone(false) copy: position quaternion scale matrix matrixWorld worldPos
+g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) source only: _proxy
+g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _label _distance _duration _onStart _onTrigger _onCancel progress
+g full clone(true) copy: children position quaternion scale matrix matrixWorld worldPos
+g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) source only: _proxy
+g full clone(true) children: node#child -> node#child
+g a clone reads as its source, each sample property alone (24 clones): yes

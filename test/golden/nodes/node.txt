@@ -1,0 +1,209 @@
+# the 'node' node type, written by test/lib/nodeGolden.mjs (legend: test/nodeGolden.test.js)
+== a. the proxy: own keys in order, descriptors, functions shared by two instances
+a proxy: prototype Object.prototype, extensible true, frozen false, 24 keys, getNodeRef(proxy) is the node: true
+a 1 id: get+set enum conf get:"get id"/0 per-instance set:"set"/1 shared
+a 2 name: get enum conf get:"get name"/0 per-instance
+a 3 position: get+set enum conf get:"get position"/0 per-instance set:"set"/1 shared
+a 4 quaternion: get+set enum conf get:"get quaternion"/0 per-instance set:"set"/1 shared
+a 5 rotation: get+set enum conf get:"get rotation"/0 per-instance set:"set"/1 shared
+a 6 scale: get+set enum conf get:"get scale"/0 per-instance set:"set"/1 shared
+a 7 matrixWorld: get enum conf get:"get matrixWorld"/0 per-instance
+a 8 active: get+set enum conf get:"get active"/0 per-instance set:"set"/1 shared
+a 9 parent: get+set enum conf get:"get parent"/0 per-instance set:"set"/1 shared
+a 10 children: get enum conf get:"get children"/0 per-instance
+a 11 get: method enum conf writable fn:"get"/1 per-instance
+a 12 getWorldMatrix: method enum conf writable fn:"getWorldMatrix"/1 per-instance
+a 13 add: method enum conf writable fn:"add"/1 per-instance
+a 14 remove: method enum conf writable fn:"remove"/1 per-instance
+a 15 traverse: method enum conf writable fn:"traverse"/1 per-instance
+a 16 clone: method enum conf writable fn:"clone"/1 per-instance
+a 17 clean: method enum conf writable fn:"clean"/0 per-instance
+a 18 _ref: get enum conf get:"get _ref"/0 per-instance
+a 19 _isRef: get enum conf get:"get _isRef"/0 per-instance
+a 20 onPointerEnter: get+set enum conf get:"get onPointerEnter"/0 per-instance set:"set"/1 shared
+a 21 onPointerLeave: get+set enum conf get:"get onPointerLeave"/0 per-instance set:"set"/1 shared
+a 22 onPointerDown: get+set enum conf get:"get onPointerDown"/0 per-instance set:"set"/1 shared
+a 23 onPointerUp: get+set enum conf get:"get onPointerUp"/0 per-instance set:"set"/1 shared
+a 24 cursor: get+set enum conf get:"get cursor"/0 per-instance set:"set"/1 shared
+== b. a stopped run (ctx.run is not its entity's deadHook), a live run, and receivers
+b set throws Error: "[app] this app has stopped": id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b method throws Error: "[app] this app has stopped": get getWorldMatrix add remove traverse clone clean
+b get reads <auto id>: id
+b get reads "node": name
+b get reads V3(0,0,0)S: position
+b get reads Q(0,0,0,1)S: quaternion
+b get reads E(0,0,0,YXZ)S: rotation
+b get reads V3(1,1,1)S: scale
+b get reads view:M4(I)S: matrixWorld
+b get reads true: active _isRef
+b get reads undefined: parent cursor
+b get reads []: children
+b get reads null: _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
+b stopped through _created: 12 of 12 setters throw Error: "[app] this app has stopped"
+b stopped through a parent: 12 of 12 setters throw Error: "[app] this app has stopped"
+b a live run: each setter with a sample value takes it
+b receiver Object.create(proxy): as through the proxy: 12 of 12
+b receiver a plain object: throws TypeError: "[node] not a node": all 12
+b receiver no receiver: throws TypeError: "[node] not a node": all 12
+b receiver a group's proxy: throws Error: "Setting ID not currently supported": id
+b receiver a group's proxy: throws Error: "Cannot replace node <key>": position quaternion rotation scale
+b receiver a group's proxy: runs: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b receiver a group's proxy: throws Error: "Cannot set <key> directly": parent
+== c. one set on a fresh unmounted node: pc the proxy and the class alike, p the proxy, c the class
+c id p throw Error: "Setting ID not currently supported" <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} 'id-a'
+c id c read $in Δ{id:$in} <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} 'id-a'
+c position p throw Error: "Cannot replace node position" <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} V3(1,2,3)
+c position c read $in Δ{position:$in} <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} V3(1,2,3)
+c quaternion p throw Error: "Cannot replace node quaternion" <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} Q(0,1,0,0)
+c quaternion c read $in Δ{quaternion:$in} <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} Q(0,1,0,0)
+c rotation p throw Error: "Cannot replace node rotation" <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} E(0,1,0,YXZ)
+c rotation c read $in Δ{rotation:$in} <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} E(0,1,0,YXZ)
+c scale p throw Error: "Cannot replace node scale" <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} V3(2,2,2)
+c scale c read $in Δ{scale:$in} <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} V3(2,2,2)
+c active pc read $in Δ{_active:$in} <- undefined null NaN -0 0 '' false
+c active pc read $in Δ{_active:$in} calls[activate] <- Infinity -Infinity -1 0.5 1 1e9 'x' Symbol 1n
+c active pc read $in <- true
+c active pc throw Error: "[node] active must be a boolean" <- {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn {toString throws}
+c parent p throw Error: "Cannot set parent directly" <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} node#other
+c parent c read $in Δ{parent:$in} <- undefined NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} node#other
+c parent c read $in <- null
+c onPointerEnter pc read $in <- undefined
+c onPointerEnter pc read $in Δ{_onPointerEnter:$in} <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c onPointerLeave pc read $in <- undefined
+c onPointerLeave pc read $in Δ{_onPointerLeave:$in} <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c onPointerDown pc read $in <- undefined
+c onPointerDown pc read $in Δ{_onPointerDown:$in} <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c onPointerUp pc read $in <- undefined
+c onPointerUp pc read $in Δ{_onPointerUp:$in} <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c cursor pc read $in <- undefined
+c cursor pc read $in Δ{_cursor:$in} <- null 'pointer'
+c cursor pc throw Error: "[node] cursor must be a string of at most 128 characters" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} "wwwwwwww…"(len 129)
+c cursor pc read null Δ{_cursor:null} <- 'x'
+c cursor pc read "grab" Δ{_cursor:"grab"} <- 'url(hand.png), grab'
+c cursor p read null Δ{_cursor:null} log[warn:"[node] cursor: only CSS cursor keywords are used (pointer, grab, crosshair, ...), not images"] <- ''
+c cursor c read null Δ{_cursor:null} <- ''
+== d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
+d id NaN,NaN: first throws Error: "Setting ID not currently supported" | 0,-0: first throws Error: "Setting ID not currently supported"
+d position NaN,NaN: first throws Error: "Cannot replace node position" | 0,-0: first throws Error: "Cannot replace node position"
+d quaternion NaN,NaN: first throws Error: "Cannot replace node quaternion" | 0,-0: first throws Error: "Cannot replace node quaternion"
+d rotation NaN,NaN: first throws Error: "Cannot replace node rotation" | 0,-0: first throws Error: "Cannot replace node rotation"
+d scale NaN,NaN: first throws Error: "Cannot replace node scale" | 0,-0: first throws Error: "Cannot replace node scale"
+d active same: - | NaN,NaN: - | 0,-0: read 0
+d parent NaN,NaN: first throws Error: "Cannot set parent directly" | 0,-0: first throws Error: "Cannot set parent directly"
+d onPointerEnter same: - | NaN,NaN: - | 0,-0: Δ{_onPointerEnter:$in}
+d onPointerLeave same: - | NaN,NaN: - | 0,-0: Δ{_onPointerLeave:$in}
+d onPointerDown same: - | NaN,NaN: - | 0,-0: Δ{_onPointerDown:$in}
+d onPointerUp same: - | NaN,NaN: - | 0,-0: Δ{_onPointerUp:$in}
+d cursor same: - | NaN,NaN: first throws Error: "[node] cursor must be a string of at most 128 characters" | 0,-0: first throws Error: "[node] cursor must be a string of at most 128 characters"
+== e. the sets of c in a mounted-like state (stubs record what is done to them): what differs from c
+e [mounted, with its context]
+e active pc read $in Δ{_active:$in mounted:false} calls[deactivate,unmount] <- undefined null NaN -0 0 '' false
+e active: the other 20 as in c
+e [inactive, under a mounted parent]
+e active pc read $in Δ{_active:$in isTransformed:false mounted:true} calls[activate,mount] <- Infinity -Infinity -1 0.5 1 1e9 'x' true Symbol 1n
+e active pc read $in <- false
+e active: the other 16 as in c
+e [inactive, no parent, a context kept from before]
+e active pc read $in Δ{_active:$in isTransformed:false mounted:true} calls[activate,mount] <- Infinity -Infinity -1 0.5 1 1e9 'x' true Symbol 1n
+e active pc read $in <- false
+e active: the other 16 as in c
+e [its entity crashed]
+e onPointerEnter pc read null <- undefined
+e onPointerEnter pc read null Δ{_onPointerEnter:$in} <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+e onPointerEnter: the other 1 as in c
+e onPointerLeave pc read null <- undefined
+e onPointerLeave pc read null Δ{_onPointerLeave:$in} <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+e onPointerLeave: the other 1 as in c
+e onPointerDown pc read null <- undefined
+e onPointerDown pc read null Δ{_onPointerDown:$in} <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+e onPointerDown: the other 1 as in c
+e onPointerUp pc read null <- undefined
+e onPointerUp pc read null Δ{_onPointerUp:$in} <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+e onPointerUp: the other 1 as in c
+e cursor pc read null Δ{_cursor:null} <- ''
+e cursor: the other 29 as in c
+== f. the constructor: defaults (read through the proxy); each key given through data
+f default id = <auto id>
+f default name = "node"
+f default position = V3(0,0,0)S
+f default quaternion = Q(0,0,0,1)S
+f default rotation = E(0,0,0,YXZ)S
+f default scale = V3(1,1,1)S
+f default matrixWorld = view:M4(I)S
+f default active = true
+f default parent = undefined
+f default children = [] fresh
+f default _isRef = true
+f default onPointerEnter = undefined
+f default onPointerLeave = undefined
+f default onPointerDown = undefined
+f default onPointerUp = undefined
+f default cursor = undefined
+f id data <auto id> <- undefined null NaN -0 0 '' false
+f id data $in <- Infinity -Infinity -1 0.5 1 1e9 'x' true {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} 'id-a'
+f position data V3(0,0,0)S <- undefined null NaN -0 0 '' false
+f position data V3(NaN,NaN,NaN)S <- Infinity -Infinity -1 0.5 1 1e9 'x' true {} [] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws}
+f position data V3(1,2,3)S <- [1,2,3] Proxy[1,2,3] V3(1,2,3)
+f quaternion data Q(0,0,0,1)S <- undefined null NaN -0 0 '' false
+f quaternion data Q(NaN,NaN,NaN,NaN)S <- Infinity -Infinity -1 0.5 1 1e9 'x' true {} [] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws}
+f quaternion data Q(1,2,3,NaN)S <- [1,2,3] Proxy[1,2,3]
+f quaternion data Q(0,1,0,0)S <- Q(0,1,0,0)
+f rotation data E(0,0,0,YXZ)S <- undefined null NaN -0 0 '' false
+f rotation data E(NaN,NaN,NaN,YXZ)S <- Infinity -Infinity -1 0.5 1 1e9 'x' true {} [] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws}
+f rotation data E(1,2,3,YXZ)S <- [1,2,3] Proxy[1,2,3]
+f rotation data E(0,1,0,YXZ)S <- E(0,1,0,YXZ)
+f scale data V3(1,1,1)S <- undefined null NaN -0 0 '' false
+f scale data V3(NaN,NaN,NaN)S <- Infinity -Infinity -1 0.5 1 1e9 'x' true {} [] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws}
+f scale data V3(1,2,3)S <- [1,2,3] Proxy[1,2,3]
+f scale data V3(2,2,2)S <- V3(2,2,2)
+f active data true <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f active data $in <- true false
+f parent data null <- undefined NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} node#other
+f parent data $in <- null
+f onPointerEnter: through data as through the class (all 27)
+f onPointerLeave: through data as through the class (all 27)
+f onPointerDown: through data as through the class (all 27)
+f onPointerUp: through data as through the class (all 27)
+f cursor data $in <- undefined null 'pointer'
+f cursor data null <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws} "wwwwwwww…"(len 129)
+f cursor data "grab" <- 'url(hand.png), grab'
+== g. own fields after construction, and what clone() and clone(true) make of them
+g field id = <auto id>
+g field name = "node"
+g field parent = null
+g field children = []
+g field ctx = null
+g field position = V3(0,0,0)S
+g field rotation = E(0,0,0,YXZ)S
+g field quaternion = Q(0,0,0,1)S
+g field scale = V3(1,1,1)S
+g field matrix = M4(I)S
+g field matrixWorld = M4(I)S
+g field _onPointerEnter = undefined
+g field _onPointerLeave = undefined
+g field _onPointerDown = undefined
+g field _onPointerUp = undefined
+g field _cursor = undefined
+g field _active = true
+g field isDirty = false
+g field isTransformed = true
+g field mounted = false
+g field _nodeOwner = null
+g field _nodeDepth = 0
+g field _worldOwner = null
+g field _appRoot = null
+g field _unmounting = false
+g field _created = null
+g full: 6 properties set (active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
+g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
+g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false
+g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
+g full clone(false) copy: position quaternion scale matrix matrixWorld
+g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) source only: _proxy
+g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
+g full clone(true) copy: children position quaternion scale matrix matrixWorld
+g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) source only: _proxy
+g full clone(true) children: node#child -> node#child
+g a clone reads as its source, each sample property alone (12 clones): yes

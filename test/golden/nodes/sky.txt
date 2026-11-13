@@ -1,0 +1,144 @@
+# the 'sky' node type, written by test/lib/nodeGolden.mjs (legend: test/nodeGolden.test.js)
+== a. the proxy: own keys in order, descriptors, functions shared by two instances
+a proxy: prototype Object.prototype, extensible true, frozen false, 33 keys, getNodeRef(proxy) is the node: true
+a 1 bg: get+set enum conf get:"get bg"/0 per-instance set:"set"/1 shared
+a 2 hdr: get+set enum conf get:"get hdr"/0 per-instance set:"set"/1 shared
+a 3 rotationY: get+set enum conf get:"get rotationY"/0 per-instance set:"set"/1 shared
+a 4 sunDirection: get+set enum conf get:"get sunDirection"/0 per-instance set:"set"/1 shared
+a 5 sunIntensity: get+set enum conf get:"get sunIntensity"/0 per-instance set:"set"/1 shared
+a 6 sunColor: get+set enum conf get:"get sunColor"/0 per-instance set:"set"/1 shared
+a 7 fogNear: get+set enum conf get:"get fogNear"/0 per-instance set:"set"/1 shared
+a 8 fogFar: get+set enum conf get:"get fogFar"/0 per-instance set:"set"/1 shared
+a 9 fogColor: get+set enum conf get:"get fogColor"/0 per-instance set:"set"/1 shared
+a node keys: 24 at 10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33; order as on node; descriptors as on node
+== b. a stopped run (ctx.run is not its entity's deadHook), a live run, and receivers
+b set throws Error: "[app] this app has stopped": bg hdr rotationY sunDirection sunIntensity sunColor fogNear fogFar fogColor id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b method throws Error: "[app] this app has stopped": get getWorldMatrix add remove traverse clone clean
+b get reads null: bg hdr rotationY sunDirection sunIntensity sunColor fogNear fogFar fogColor _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
+b get reads <auto id>: id
+b get reads "sky": name
+b get reads V3(0,0,0)S: position
+b get reads Q(0,0,0,1)S: quaternion
+b get reads E(0,0,0,YXZ)S: rotation
+b get reads V3(1,1,1)S: scale
+b get reads view:M4(I)S: matrixWorld
+b get reads true: active _isRef
+b get reads undefined: parent cursor
+b get reads []: children
+b stopped through _created: 21 of 21 setters throw Error: "[app] this app has stopped"
+b stopped through a parent: 21 of 21 setters throw Error: "[app] this app has stopped"
+b a live run: each setter with a sample value takes it
+b receiver Object.create(proxy): as through the proxy: 21 of 21
+b receiver a plain object: throws TypeError: "[node] not a node": all 21
+b receiver no receiver: throws TypeError: "[node] not a node": all 21
+b receiver a group's proxy: throws TypeError: "[node] a group node has no <key> to set": bg hdr rotationY sunDirection sunIntensity sunColor fogNear fogFar fogColor
+b receiver a group's proxy: throws Error: "Setting ID not currently supported": id
+b receiver a group's proxy: throws Error: "Cannot replace node <key>": position quaternion rotation scale
+b receiver a group's proxy: runs: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b receiver a group's proxy: throws Error: "Cannot set <key> directly": parent
+== c. one set on a fresh unmounted node: pc the proxy and the class alike, p the proxy, c the class
+c bg pc read null <- undefined
+c bg pc read $in <- null
+c bg pc throw Error: "[sky] bg not a string" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c bg pc read $in Δ{_bg:$in needsRebuild:true} calls[setDirty] <- '' 'x' 'asset://bg.png'
+c hdr pc read null <- undefined
+c hdr pc read $in <- null
+c hdr pc throw Error: "[sky] hdr not a string" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c hdr pc read $in Δ{needsRebuild:true _hdr:$in} calls[setDirty] <- '' 'x' 'asset://h.hdr'
+c rotationY pc read null <- undefined NaN
+c rotationY pc read $in <- null
+c rotationY pc read 1000000000 Δ{needsRebuild:true _rotationY:1000000000} calls[setDirty] <- Infinity 2000000000
+c rotationY pc read -1000000000 Δ{needsRebuild:true _rotationY:-1000000000} calls[setDirty] <- -Infinity
+c rotationY pc read $in Δ{needsRebuild:true _rotationY:$in} calls[setDirty] <- -1 -0 0 0.5 1 1e9
+c rotationY pc throw Error: "[sky] rotationY not a number" <- '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c sunDirection pc read null <- undefined
+c sunDirection pc read $in <- null
+c sunDirection pc throw Error: "[sky] sunDirection not a Vector3" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn Symbol 1n {toString throws} V3(NaN,0,0)
+c sunDirection pc throw Error: "[sky] sunDirection not a Vector3" traps[get:isVector3] <- Proxy[1,2,3]
+c sunDirection pc read $in~ fresh Δ{needsRebuild:true _sunDirection:$in~} calls[setDirty] <- V3(0,-1,0)
+c sunDirection pc read V3(1,2,3) fresh Δ{needsRebuild:true _sunDirection:V3(1,2,3)} calls[setDirty] <- {isVector3:true,x:1,y:2,z:3}
+c sunIntensity pc read null <- undefined NaN
+c sunIntensity pc read $in <- null
+c sunIntensity pc read 1000000000 Δ{needsRebuild:true _sunIntensity:1000000000} calls[setDirty] <- Infinity
+c sunIntensity pc read 0 Δ{needsRebuild:true _sunIntensity:0} calls[setDirty] <- -Infinity -1
+c sunIntensity pc read $in Δ{needsRebuild:true _sunIntensity:$in} calls[setDirty] <- -0 0 0.5 1 1e9
+c sunIntensity pc throw Error: "[sky] sunIntensity not a number" <- '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c sunColor pc read null <- undefined
+c sunColor pc read $in <- null
+c sunColor pc throw Error: "[sky] sunColor not a string" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c sunColor pc read $in Δ{needsRebuild:true _sunColor:$in} calls[setDirty] <- '' 'x' 'red'
+c fogNear pc read null <- undefined NaN
+c fogNear pc read $in <- null
+c fogNear pc read 1000000000 Δ{needsRebuild:true _fogNear:1000000000} calls[setDirty] <- Infinity
+c fogNear pc read 0 Δ{needsRebuild:true _fogNear:0} calls[setDirty] <- -Infinity -1
+c fogNear pc read $in Δ{needsRebuild:true _fogNear:$in} calls[setDirty] <- -0 0 0.5 1 1e9
+c fogNear pc throw Error: "[sky] fogNear not a number" <- '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c fogFar pc read null <- undefined NaN
+c fogFar pc read $in <- null
+c fogFar pc read 1000000000 Δ{needsRebuild:true _fogFar:1000000000} calls[setDirty] <- Infinity
+c fogFar pc read 0 Δ{needsRebuild:true _fogFar:0} calls[setDirty] <- -Infinity -1
+c fogFar pc read $in Δ{needsRebuild:true _fogFar:$in} calls[setDirty] <- -0 0 0.5 1 1e9
+c fogFar pc throw Error: "[sky] fogFar not a number" <- '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c fogColor pc read null <- undefined
+c fogColor pc read $in <- null
+c fogColor pc throw Error: "[sky] fogColor not a string" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c fogColor pc read $in Δ{needsRebuild:true _fogColor:$in} calls[setDirty] <- '' 'x' 'red'
+c as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
+d bg same: - | NaN,NaN: first throws Error: "[sky] bg not a string" | 0,-0: first throws Error: "[sky] bg not a string"
+d hdr same: - | NaN,NaN: first throws Error: "[sky] hdr not a string" | 0,-0: first throws Error: "[sky] hdr not a string"
+d rotationY same: read 1000000000 | NaN,NaN: read null | 0,-0: read 0
+d sunDirection same: read $in~ fresh | copy: read $in~ fresh | NaN,NaN: first throws Error: "[sky] sunDirection not a Vector3" | 0,-0: first throws Error: "[sky] sunDirection not a Vector3"
+d sunIntensity same: - | NaN,NaN: read null | 0,-0: read 0
+d sunColor same: - | NaN,NaN: first throws Error: "[sky] sunColor not a string" | 0,-0: first throws Error: "[sky] sunColor not a string"
+d fogNear same: - | NaN,NaN: read null | 0,-0: read 0
+d fogFar same: - | NaN,NaN: read null | 0,-0: read 0
+d fogColor same: - | NaN,NaN: first throws Error: "[sky] fogColor not a string" | 0,-0: first throws Error: "[sky] fogColor not a string"
+== f. the constructor: defaults (read through the proxy); each key given through data
+f default bg = null
+f default hdr = null
+f default rotationY = null
+f default sunDirection = null
+f default sunIntensity = null
+f default sunColor = null
+f default fogNear = null
+f default fogFar = null
+f default fogColor = null
+f default name = "sky"
+f defaults as on node: id position quaternion rotation scale matrixWorld active parent children _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+f bg: through data as through the class (all 28)
+f hdr: through data as through the class (all 28)
+f rotationY: through data as through the class (all 28)
+f sunDirection: through data as through the class (all 30)
+f sunIntensity: through data as through the class (all 27)
+f sunColor: through data as through the class (all 28)
+f fogNear: through data as through the class (all 27)
+f fogFar: through data as through the class (all 27)
+f fogColor: through data as through the class (all 28)
+f as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== g. own fields after construction, and what clone() and clone(true) make of them
+g field name = "sky"
+g field _bg = null
+g field needsRebuild = true
+g field _hdr = null
+g field _rotationY = null
+g field _sunDirection = null
+g field _sunIntensity = null
+g field _sunColor = null
+g field _fogNear = null
+g field _fogFar = null
+g field _fogColor = null
+g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
+g full: 15 properties set (bg hdr rotationY sunDirection sunIntensity sunColor fogNear fogFar fogColor active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
+g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
+g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _bg="asset://bg.png" _hdr="asset://h.hdr" _rotationY=1000000000 _sunDirection=V3(0,-1,0) _sunIntensity=0.5 _sunColor="red" _fogNear=0.5 _fogFar=0.5 _fogColor="red"
+g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _bg needsRebuild _hdr _rotationY _sunIntensity _sunColor _fogNear _fogFar _fogColor
+g full clone(false) copy: position quaternion scale matrix matrixWorld _sunDirection
+g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) source only: _proxy
+g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _bg needsRebuild _hdr _rotationY _sunIntensity _sunColor _fogNear _fogFar _fogColor
+g full clone(true) copy: children position quaternion scale matrix matrixWorld _sunDirection
+g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) source only: _proxy
+g full clone(true) children: node#child -> node#child
+g a clone reads as its source, each sample property alone (30 clones): yes

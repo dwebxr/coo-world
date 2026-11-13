@@ -1,0 +1,102 @@
+# the 'nametag' node type, written by test/lib/nodeGolden.mjs (legend: test/nodeGolden.test.js)
+== a. the proxy: own keys in order, descriptors, functions shared by two instances
+a proxy: prototype Object.prototype, extensible true, frozen false, 26 keys, getNodeRef(proxy) is the node: true
+a 1 label: get+set enum conf get:"get label"/0 per-instance set:"set"/1 shared
+a 2 health: get+set enum conf get:"get health"/0 per-instance set:"set"/1 shared
+a node keys: 24 at 3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26; order as on node; descriptors as on node
+== b. a stopped run (ctx.run is not its entity's deadHook), a live run, and receivers
+b set throws Error: "[app] this app has stopped": label health id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b method throws Error: "[app] this app has stopped": get getWorldMatrix add remove traverse clone clean
+b get reads "...": label
+b get reads 100: health
+b get reads <auto id>: id
+b get reads "nametag": name
+b get reads V3(0,0,0)S: position
+b get reads Q(0,0,0,1)S: quaternion
+b get reads E(0,0,0,YXZ)S: rotation
+b get reads V3(1,1,1)S: scale
+b get reads view:M4(I)S: matrixWorld
+b get reads true: active _isRef
+b get reads undefined: parent cursor
+b get reads []: children
+b get reads null: _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
+b stopped through _created: 14 of 14 setters throw Error: "[app] this app has stopped"
+b stopped through a parent: 14 of 14 setters throw Error: "[app] this app has stopped"
+b a live run: each setter with a sample value takes it
+b receiver Object.create(proxy): as through the proxy: 14 of 14
+b receiver a plain object: throws TypeError: "[node] not a node": all 14
+b receiver no receiver: throws TypeError: "[node] not a node": all 14
+b receiver a group's proxy: throws TypeError: "[node] a group node has no <key> to set": label health
+b receiver a group's proxy: throws Error: "Setting ID not currently supported": id
+b receiver a group's proxy: throws Error: "Cannot replace node <key>": position quaternion rotation scale
+b receiver a group's proxy: runs: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b receiver a group's proxy: throws Error: "Cannot set <key> directly": parent
+b receiver another type's proxy with the key: sets that node: label(action)
+== c. one set on a fresh unmounted node: pc the proxy and the class alike, p the proxy, c the class
+c label pc read "..." <- undefined
+c label pc throw Error: "[nametag] label invalid" <- null true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c label pc read "NaN" Δ{_label:"NaN"} <- NaN
+c label pc read "Infinity" Δ{_label:"Infinity"} <- Infinity
+c label pc read "-Infinity" Δ{_label:"-Infinity"} <- -Infinity
+c label pc read "-1" Δ{_label:"-1"} <- -1
+c label pc read "0" Δ{_label:"0"} <- -0 0
+c label pc read "0.5" Δ{_label:"0.5"} <- 0.5
+c label pc read "1" Δ{_label:"1"} <- 1
+c label pc read "1000000000" Δ{_label:"1000000000"} <- 1e9
+c label pc read $in Δ{_label:$in} <- '' 'x' 'Hi'
+c label pc read "wwwwwwww…"(len 256) Δ{_label:"wwwwwwww…"(len 256)} <- "wwwwwwww…"(len 257)
+c health pc read 100 <- undefined
+c health pc throw Error: "[nametag] health not a number" <- null NaN Infinity -Infinity '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c health pc read $in Δ{_health:$in} <- -1 -0 0 0.5 1 1e9
+c as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
+d label same: - | NaN,NaN: read "NaN" | 0,-0: read "0"
+d health same: - | NaN,NaN: first throws Error: "[nametag] health not a number" | 0,-0: read 0
+d label [mounted (handle)] same: - | NaN,NaN: read "NaN" | 0,-0: read "0"
+d health [mounted (handle)] same: - | NaN,NaN: first throws Error: "[nametag] health not a number" | 0,-0: read 0
+== e. the sets of c in a mounted-like state (stubs record what is done to them): what differs from c
+e [mounted (handle)]
+e label pc read "NaN" Δ{_label:"NaN"} stub[handle.setName("NaN")] <- NaN
+e label pc read "Infinity" Δ{_label:"Infinity"} stub[handle.setName("Infinity")] <- Infinity
+e label pc read "-Infinity" Δ{_label:"-Infinity"} stub[handle.setName("-Infinity")] <- -Infinity
+e label pc read "-1" Δ{_label:"-1"} stub[handle.setName("-1")] <- -1
+e label pc read "0" Δ{_label:"0"} stub[handle.setName("0")] <- -0 0
+e label pc read "0.5" Δ{_label:"0.5"} stub[handle.setName("0.5")] <- 0.5
+e label pc read "1" Δ{_label:"1"} stub[handle.setName("1")] <- 1
+e label pc read "1000000000" Δ{_label:"1000000000"} stub[handle.setName("1000000000")] <- 1e9
+e label pc read $in Δ{_label:$in} stub[handle.setName($in)] <- '' 'x' 'Hi'
+e label pc read "wwwwwwww…"(len 256) Δ{_label:"wwwwwwww…"(len 256)} stub[handle.setName("wwwwwwww…"(len 256))] <- "wwwwwwww…"(len 257)
+e label: the other 16 as in c
+e health pc read $in Δ{_health:$in} stub[handle.setHealth(-1)] <- -1
+e health pc read $in Δ{_health:$in} stub[handle.setHealth(-0)] <- -0
+e health pc read $in Δ{_health:$in} stub[handle.setHealth(0)] <- 0
+e health pc read $in Δ{_health:$in} stub[handle.setHealth(0.5)] <- 0.5
+e health pc read $in Δ{_health:$in} stub[handle.setHealth(1)] <- 1
+e health pc read $in Δ{_health:$in} stub[handle.setHealth(1000000000)] <- 1e9
+e health: the other 21 as in c
+== f. the constructor: defaults (read through the proxy); each key given through data
+f default label = "..."
+f default health = 100
+f default name = "nametag"
+f defaults as on node: id position quaternion rotation scale matrixWorld active parent children _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+f label: through data as through the class (all 29)
+f health: through data as through the class (all 27)
+f as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== g. own fields after construction, and what clone() and clone(true) make of them
+g field name = "nametag"
+g field _label = "..."
+g field _health = 100
+g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
+g full: 8 properties set (label health active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
+g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
+g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _label="Hi" _health=0.5
+g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _label _health
+g full clone(false) copy: position quaternion scale matrix matrixWorld
+g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) source only: _proxy
+g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _label _health
+g full clone(true) copy: children position quaternion scale matrix matrixWorld
+g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) source only: _proxy
+g full clone(true) children: node#child -> node#child
+g a clone reads as its source, each sample property alone (16 clones): yes

@@ -1,0 +1,203 @@
+# the 'rigidbody' node type, written by test/lib/nodeGolden.mjs (legend: test/nodeGolden.test.js)
+== a. the proxy: own keys in order, descriptors, functions shared by two instances
+a proxy: prototype Object.prototype, extensible true, frozen false, 50 keys, getNodeRef(proxy) is the node: true
+a 1 type: get+set enum conf get:"get type"/0 per-instance set:"set"/1 shared
+a 2 mass: get+set enum conf get:"get mass"/0 per-instance set:"set"/1 shared
+a 3 linearDamping: set enum conf set:"set"/1 shared
+a 4 angularDamping: set enum conf set:"set"/1 shared
+a 5 tag: get+set enum conf get:"get tag"/0 per-instance set:"set"/1 shared
+a 6 onContactStart: get+set enum conf get:"get onContactStart"/0 per-instance set:"set"/1 shared
+a 7 onContactEnd: get+set enum conf get:"get onContactEnd"/0 per-instance set:"set"/1 shared
+a 8 onTriggerEnter: get+set enum conf get:"get onTriggerEnter"/0 per-instance set:"set"/1 shared
+a 9 onTriggerLeave: get+set enum conf get:"get onTriggerLeave"/0 per-instance set:"set"/1 shared
+a 10 sleeping: get enum conf get:"get sleeping"/0 per-instance
+a 11 addForce: method enum conf writable fn:"addForce"/2 per-instance
+a 12 addForceAtPos: method enum conf writable fn:"addForceAtPos"/3 per-instance
+a 13 addForceAtLocalPos: method enum conf writable fn:"addForceAtLocalPos"/3 per-instance
+a 14 addTorque: method enum conf writable fn:"addTorque"/2 per-instance
+a 15 getPosition: method enum conf writable fn:"getPosition"/1 per-instance
+a 16 setPosition: method enum conf writable fn:"setPosition"/1 per-instance
+a 17 getQuaternion: method enum conf writable fn:"getQuaternion"/1 per-instance
+a 18 setQuaternion: method enum conf writable fn:"setQuaternion"/1 per-instance
+a 19 getLinearVelocity: method enum conf writable fn:"getLinearVelocity"/1 per-instance
+a 20 setLinearVelocity: method enum conf writable fn:"setLinearVelocity"/1 per-instance
+a 21 getAngularVelocity: method enum conf writable fn:"getAngularVelocity"/1 per-instance
+a 22 setAngularVelocity: method enum conf writable fn:"setAngularVelocity"/1 per-instance
+a 23 getVelocityAtPos: method enum conf writable fn:"getVelocityAtPos"/2 per-instance
+a 24 getLocalVelocityAtLocalPos: method enum conf writable fn:"getLocalVelocityAtLocalPos"/2 per-instance
+a 25 setCenterOfMass: method enum conf writable fn:"setCenterOfMass"/1 per-instance
+a 26 setKinematicTarget: method enum conf writable fn:"setKinematicTarget"/2 per-instance
+a node keys: 24 at 27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50; order as on node; descriptors as on node
+== b. a stopped run (ctx.run is not its entity's deadHook), a live run, and receivers
+b set throws Error: "[app] this app has stopped": type mass linearDamping angularDamping tag onContactStart onContactEnd onTriggerEnter onTriggerLeave id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b method throws Error: "[app] this app has stopped": addForce addForceAtPos addForceAtLocalPos addTorque getPosition setPosition getQuaternion setQuaternion getLinearVelocity setLinearVelocity getAngularVelocity setAngularVelocity getVelocityAtPos getLocalVelocityAtLocalPos setCenterOfMass setKinematicTarget get getWorldMatrix add remove traverse clone clean
+b get reads "static": type
+b get reads 1: mass
+b get reads null: tag onContactStart onContactEnd onTriggerEnter onTriggerLeave _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
+b get reads false: sleeping
+b get reads <auto id>: id
+b get reads "rigidbody": name
+b get reads V3(0,0,0)S: position
+b get reads Q(0,0,0,1)S: quaternion
+b get reads E(0,0,0,YXZ)S: rotation
+b get reads V3(1,1,1)S: scale
+b get reads view:M4(I)S: matrixWorld
+b get reads true: active _isRef
+b get reads undefined: parent cursor
+b get reads []: children
+b stopped through _created: 21 of 21 setters throw Error: "[app] this app has stopped"
+b stopped through a parent: 21 of 21 setters throw Error: "[app] this app has stopped"
+b a live run: each setter with a sample value takes it
+b receiver Object.create(proxy): as through the proxy: 21 of 21
+b receiver a plain object: throws TypeError: "[node] not a node": all 21
+b receiver no receiver: throws TypeError: "[node] not a node": all 21
+b receiver a group's proxy: throws TypeError: "[node] a group node has no <key> to set": type mass linearDamping angularDamping tag onContactStart onContactEnd onTriggerEnter onTriggerLeave
+b receiver a group's proxy: throws Error: "Setting ID not currently supported": id
+b receiver a group's proxy: throws Error: "Cannot replace node <key>": position quaternion rotation scale
+b receiver a group's proxy: runs: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b receiver a group's proxy: throws Error: "Cannot set <key> directly": parent
+b receiver another type's proxy with the key: throws Error: "[collider] invalid type:": type(collider)
+b receiver another type's proxy with the key: sets that node: mass(prim) linearDamping(prim) angularDamping(prim) tag(controller) onContactStart(controller) onContactEnd(controller) onTriggerEnter(prim) onTriggerLeave(prim)
+== c. one set on a fresh unmounted node: pc the proxy and the class alike, p the proxy, c the class
+c type pc read "static" <- undefined
+c type pc throw Error: "[rigidbody] type invalid: <in>" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 'x' true false {} [1,2,3] [NaN] Number(1) String('x') Boolean(true) fn 1n 'bogus'
+c type pc throw Error: "[rigidbody] type invalid: " <- '' []
+c type pc throw Error: "[rigidbody] type invalid: <in>" traps[get:@Symbol.toPrimitive,get:toString,get:join,get:length,get:0,get:1,get:2] <- Proxy[1,2,3]
+c type pc throw TypeError: "Cannot convert a Symbol value to a string" <- Symbol
+c type pc throw Error: "toString called" <- {toString throws}
+c type pc read $in <- 'static'
+c type pc read $in Δ{_type:$in needsRebuild:true} calls[setDirty] <- 'kinematic' 'dynamic'
+c mass pc read 1 <- undefined
+c mass pc throw Error: "[rigidbody] mass not a finite number" <- null NaN Infinity -Infinity '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c mass pc throw Error: "[rigidbody] mass cannot be less than zero" <- -1
+c mass pc read $in Δ{needsRebuild:true _mass:$in} calls[setDirty] <- -0 0 0.5 1e9 2 1e-9
+c mass pc read $in <- 1
+c mass pc throw Error: "[rigidbody] mass must be 0 or at least 1e-9" <- 1e-10
+c linearDamping pc throw Error: "[rigidbody] linearDamping not a finite number" <- null NaN Infinity -Infinity '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c linearDamping pc throw Error: "[rigidbody] linearDamping cannot be less than zero" <- -1
+c linearDamping p read $in <- undefined
+c linearDamping p read undefined <- -0 0
+c linearDamping p read undefined Δ{needsRebuild:true _linearDamping:$in} calls[setDirty] <- 0.5 1 1e9
+c linearDamping c read 0 <- undefined -0
+c linearDamping c read $in <- 0
+c linearDamping c read $in Δ{needsRebuild:true _linearDamping:$in} calls[setDirty] <- 0.5 1 1e9
+c angularDamping pc throw Error: "[rigidbody] angularDamping not a finite number" <- null NaN Infinity -Infinity '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c angularDamping pc throw Error: "[rigidbody] angularDamping cannot be less than zero" <- -1
+c angularDamping p read $in <- undefined
+c angularDamping p read undefined Δ{needsRebuild:true _angularDamping:$in} calls[setDirty] <- -0 0 0.5 1 1e9
+c angularDamping c read 0.05 <- undefined
+c angularDamping c read $in Δ{needsRebuild:true _angularDamping:$in} calls[setDirty] <- -0 0 0.5 1 1e9
+c tag pc read null <- undefined
+c tag pc read $in <- null
+c tag pc read "NaN" Δ{_tag:"NaN"} <- NaN
+c tag pc read "Infinity" Δ{_tag:"Infinity"} <- Infinity
+c tag pc read "-Infinity" Δ{_tag:"-Infinity"} <- -Infinity
+c tag pc read "-1" Δ{_tag:"-1"} <- -1
+c tag pc read "0" Δ{_tag:"0"} <- -0 0
+c tag pc read "0.5" Δ{_tag:"0.5"} <- 0.5
+c tag pc read "1" Δ{_tag:"1"} <- 1
+c tag pc read "1000000000" Δ{_tag:"1000000000"} <- 1e9
+c tag pc read $in Δ{_tag:$in} <- '' 'x' 't'
+c tag pc throw Error: "[rigidbody] tag not a string" <- true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c onContactStart pc read null <- undefined
+c onContactStart pc read $in <- null
+c onContactStart pc throw Error: "[rigidbody] onContactStart not a function" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Symbol 1n {toString throws}
+c onContactStart pc throw Error: "[rigidbody] onContactStart not a function" traps[has:@Symbol.toStringTag,get:@Symbol.toStringTag] <- Proxy[1,2,3]
+c onContactStart pc read $in Δ{_onContactStart:$in} <- fn
+c onContactEnd pc read null <- undefined
+c onContactEnd pc read $in <- null
+c onContactEnd pc throw Error: "[rigidbody] onContactEnd not a function" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Symbol 1n {toString throws}
+c onContactEnd pc throw Error: "[rigidbody] onContactEnd not a function" traps[has:@Symbol.toStringTag,get:@Symbol.toStringTag] <- Proxy[1,2,3]
+c onContactEnd pc read $in Δ{_onContactEnd:$in} <- fn
+c onTriggerEnter pc read null <- undefined
+c onTriggerEnter pc read $in <- null
+c onTriggerEnter pc throw Error: "[rigidbody] onTriggerEnter not a function" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Symbol 1n {toString throws}
+c onTriggerEnter pc throw Error: "[rigidbody] onTriggerEnter not a function" traps[has:@Symbol.toStringTag,get:@Symbol.toStringTag] <- Proxy[1,2,3]
+c onTriggerEnter pc read $in Δ{_onTriggerEnter:$in} <- fn
+c onTriggerLeave pc read null <- undefined
+c onTriggerLeave pc read $in <- null
+c onTriggerLeave pc throw Error: "[rigidbody] onTriggerLeave not a function" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Symbol 1n {toString throws}
+c onTriggerLeave pc throw Error: "[rigidbody] onTriggerLeave not a function" traps[has:@Symbol.toStringTag,get:@Symbol.toStringTag] <- Proxy[1,2,3]
+c onTriggerLeave pc read $in Δ{_onTriggerLeave:$in} <- fn
+c as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
+d type same: - | NaN,NaN: first throws Error: "[rigidbody] type invalid: NaN" | 0,-0: first throws Error: "[rigidbody] type invalid: 0"
+d mass same: - | NaN,NaN: first throws Error: "[rigidbody] mass not a finite number" | 0,-0: read 0
+d linearDamping same: read undefined | NaN,NaN: first throws Error: "[rigidbody] linearDamping not a finite number" | 0,-0: read undefined
+d angularDamping same: read undefined | NaN,NaN: first throws Error: "[rigidbody] angularDamping not a finite number" | 0,-0: read undefined
+d tag same: - | NaN,NaN: read "NaN" | 0,-0: read "0"
+d onContactStart same: - | NaN,NaN: first throws Error: "[rigidbody] onContactStart not a function" | 0,-0: first throws Error: "[rigidbody] onContactStart not a function"
+d onContactEnd same: - | NaN,NaN: first throws Error: "[rigidbody] onContactEnd not a function" | 0,-0: first throws Error: "[rigidbody] onContactEnd not a function"
+d onTriggerEnter same: - | NaN,NaN: first throws Error: "[rigidbody] onTriggerEnter not a function" | 0,-0: first throws Error: "[rigidbody] onTriggerEnter not a function"
+d onTriggerLeave same: - | NaN,NaN: first throws Error: "[rigidbody] onTriggerLeave not a function" | 0,-0: first throws Error: "[rigidbody] onTriggerLeave not a function"
+== f. the constructor: defaults (read through the proxy); each key given through data
+f default type = "static"
+f default mass = 1
+f default tag = null
+f default onContactStart = null
+f default onContactEnd = null
+f default onTriggerEnter = null
+f default onTriggerLeave = null
+f default sleeping = false
+f default name = "rigidbody"
+f defaults as on node: id position quaternion rotation scale matrixWorld active parent children _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+f type: through data as through the class (all 31)
+f mass: through data as through the class (all 30)
+f linearDamping data 0 <- undefined
+f linearDamping data throw Error: "[rigidbody] linearDamping not a finite number" <- null NaN Infinity -Infinity '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f linearDamping data throw Error: "[rigidbody] linearDamping cannot be less than zero" <- -1
+f linearDamping data $in <- -0 0 0.5 1 1e9
+f angularDamping: through data as through the class (all 27)
+f tag: through data as through the class (all 28)
+f onContactStart: through data as through the class (all 27)
+f onContactEnd: through data as through the class (all 27)
+f onTriggerEnter: through data as through the class (all 27)
+f onTriggerLeave: through data as through the class (all 27)
+f as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== g. own fields after construction, and what clone() and clone(true) make of them
+g field name = "rigidbody"
+g field onInterpolate = fn:onInterpolate
+g field shapes = Set(0)
+g field _type = "static"
+g field needsRebuild = true
+g field _mass = 1
+g field _linearDamping = 0
+g field _angularDamping = 0.05
+g field _tag = null
+g field _onContactStart = null
+g field _onContactEnd = null
+g field _onTriggerEnter = null
+g field _onTriggerLeave = null
+g field _tm = null
+g field joints = Set(0)
+g field pendingJoints = Set(0)
+g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
+g full: 15 properties set (type mass linearDamping angularDamping tag onContactStart onContactEnd onTriggerEnter onTriggerLeave active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
+g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
+g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _type="kinematic" _mass=2 _linearDamping=0.5 _angularDamping=0.5 _tag="t" _onContactStart=fn:hostileFn _onContactEnd=fn:hostileFn _onTriggerEnter=fn:hostileFn _onTriggerLeave=fn:hostileFn
+g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type needsRebuild _mass _linearDamping _angularDamping _tag _onContactStart _onContactEnd _onTriggerEnter _onTriggerLeave _tm
+g full clone(false) copy: position quaternion scale matrix matrixWorld onInterpolate shapes joints pendingJoints
+g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) source only: _proxy
+g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type needsRebuild _mass _linearDamping _angularDamping _tag _onContactStart _onContactEnd _onTriggerEnter _onTriggerLeave _tm
+g full clone(true) copy: children position quaternion scale matrix matrixWorld onInterpolate shapes joints pendingJoints
+g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) source only: _proxy
+g full clone(true) children: node#child -> node#child
+g glb glbBody fields unlike a new node's: parent=node:group children=[node:collider(below)] rotation=E(-0,0,0,YXZ)S _type="dynamic" _mass=2
+g glb glbBody clone(false) same: id name ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type needsRebuild _mass _linearDamping _angularDamping _tag _onContactStart _onContactEnd _onTriggerEnter _onTriggerLeave _tm
+g glb glbBody clone(false) copy: position rotation quaternion scale matrix matrixWorld onInterpolate shapes joints pendingJoints
+g glb glbBody clone(false) differs: parent(node:group -> null) children([node:collider(below)] -> [])
+g glb glbBody clone(true) same: id name ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type needsRebuild _mass _linearDamping _angularDamping _tag _onContactStart _onContactEnd _onTriggerEnter _onTriggerLeave _tm
+g glb glbBody clone(true) copy: children position rotation quaternion scale matrix matrixWorld onInterpolate shapes joints pendingJoints
+g glb glbBody clone(true) differs: parent(node:group -> null)
+g glb glbBody clone(true) children: collider#glbCollider -> collider#glbCollider
+g host rigidbody (setCenterOfMass) fields unlike a new node's: _type="dynamic" _centerOfMass=V3(1,2,3)
+g host rigidbody (setCenterOfMass) clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type needsRebuild _mass _linearDamping _angularDamping _tag _onContactStart _onContactEnd _onTriggerEnter _onTriggerLeave _tm
+g host rigidbody (setCenterOfMass) clone(false) copy: children position quaternion scale matrix matrixWorld onInterpolate shapes joints pendingJoints _centerOfMass
+g host rigidbody (setCenterOfMass) clone(false) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g host rigidbody (setCenterOfMass) clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _type needsRebuild _mass _linearDamping _angularDamping _tag _onContactStart _onContactEnd _onTriggerEnter _onTriggerLeave _tm
+g host rigidbody (setCenterOfMass) clone(true) copy: children position quaternion scale matrix matrixWorld onInterpolate shapes joints pendingJoints _centerOfMass
+g host rigidbody (setCenterOfMass) clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g host rigidbody (setCenterOfMass) clone(true) children: -
+g a clone reads as its source, each sample property alone (30 clones): yes

@@ -1,0 +1,80 @@
+# the 'lod' node type, written by test/lib/nodeGolden.mjs (legend: test/nodeGolden.test.js)
+== a. the proxy: own keys in order, descriptors, functions shared by two instances
+a proxy: prototype Object.prototype, extensible true, frozen false, 26 keys, getNodeRef(proxy) is the node: true
+a 1 scaleAware: get+set enum conf get:"get scaleAware"/0 per-instance set:"set"/1 shared
+a 2 insert: method enum conf writable fn:"insert"/2 per-instance
+a node keys: 24 at 3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26; order as on node; descriptors as on node
+== b. a stopped run (ctx.run is not its entity's deadHook), a live run, and receivers
+b set throws Error: "[app] this app has stopped": scaleAware id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b method throws Error: "[app] this app has stopped": insert get getWorldMatrix add remove traverse clone clean
+b get reads true: scaleAware active _isRef
+b get reads <auto id>: id
+b get reads "lod": name
+b get reads V3(0,0,0)S: position
+b get reads Q(0,0,0,1)S: quaternion
+b get reads E(0,0,0,YXZ)S: rotation
+b get reads V3(1,1,1)S: scale
+b get reads view:M4(I)S: matrixWorld
+b get reads undefined: parent cursor
+b get reads []: children
+b get reads null: _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
+b stopped through _created: 13 of 13 setters throw Error: "[app] this app has stopped"
+b stopped through a parent: 13 of 13 setters throw Error: "[app] this app has stopped"
+b a live run: each setter with a sample value takes it
+b receiver Object.create(proxy): as through the proxy: 13 of 13
+b receiver a plain object: throws TypeError: "[node] not a node": all 13
+b receiver no receiver: throws TypeError: "[node] not a node": all 13
+b receiver a group's proxy: throws TypeError: "[node] a group node has no <key> to set": scaleAware
+b receiver a group's proxy: throws Error: "Setting ID not currently supported": id
+b receiver a group's proxy: throws Error: "Cannot replace node <key>": position quaternion rotation scale
+b receiver a group's proxy: runs: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b receiver a group's proxy: throws Error: "Cannot set <key> directly": parent
+== c. one set on a fresh unmounted node: pc the proxy and the class alike, p the proxy, c the class
+c scaleAware pc read true <- undefined
+c scaleAware pc throw Error: "[lod] scaleAware not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c scaleAware pc read $in <- true
+c scaleAware pc read $in Δ{_scaleAware:$in} <- false
+c as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
+d scaleAware same: - | NaN,NaN: first throws Error: "[lod] scaleAware not a boolean" | 0,-0: first throws Error: "[lod] scaleAware not a boolean"
+== f. the constructor: defaults (read through the proxy); each key given through data
+f default scaleAware = true
+f default name = "lod"
+f defaults as on node: id position quaternion rotation scale matrixWorld active parent children _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+f scaleAware: through data as through the class (all 27)
+f as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== g. own fields after construction, and what clone() and clone(true) make of them
+g field name = "lod"
+g field _scaleAware = true
+g field lods = []
+g field readding = null
+g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
+g full: 7 properties set (scaleAware active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
+g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
+g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _scaleAware=false
+g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _scaleAware readding
+g full clone(false) copy: position quaternion scale matrix matrixWorld lods
+g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(false) source only: _proxy
+g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _scaleAware readding
+g full clone(true) copy: children position quaternion scale matrix matrixWorld lods
+g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g full clone(true) source only: _proxy
+g full clone(true) children: node#child -> node#child
+g glb glbLod fields unlike a new node's: parent=node:group children=[node:mesh(below)] rotation=E(-0,0,0,YXZ)S _scaleAware=false lods=[{node:node:mesh(below),maxDistance:10}]
+g glb glbLod clone(false) same: id name ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _scaleAware readding
+g glb glbLod clone(false) copy: position rotation quaternion scale matrix matrixWorld
+g glb glbLod clone(false) differs: parent(node:group -> null) children([node:mesh(below)] -> []) lods([{node:node:mesh(below),maxDistance:10}] -> [])
+g glb glbLod clone(true) same: id name ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _scaleAware readding
+g glb glbLod clone(true) copy: children position rotation quaternion scale matrix matrixWorld lods
+g glb glbLod clone(true) differs: parent(node:group -> null)
+g glb glbLod clone(true) children: mesh#glbNear -> mesh#glbNear
+g host lod (insert near 5, far 50) fields unlike a new node's: children=[node:group(below),node:group(below)] lods=[{node:node:group(below),maxDistance:5},{node:node:group(below),maxDistance:50}]
+g host lod (insert near 5, far 50) clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _scaleAware readding
+g host lod (insert near 5, far 50) clone(false) copy: position quaternion scale matrix matrixWorld
+g host lod (insert near 5, far 50) clone(false) differs: children([node:group(below),node:group(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S) lods([{node:node:group(below),maxDistance:5},{node:node:group(below),maxDistance:50}] -> [])
+g host lod (insert near 5, far 50) clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _scaleAware readding
+g host lod (insert near 5, far 50) clone(true) copy: children position quaternion scale matrix matrixWorld lods
+g host lod (insert near 5, far 50) clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g host lod (insert near 5, far 50) clone(true) children: group#near -> group#near, group#far -> group#far
+g a clone reads as its source, each sample property alone (14 clones): yes

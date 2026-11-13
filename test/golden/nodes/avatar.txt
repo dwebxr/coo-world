@@ -1,0 +1,122 @@
+# the 'avatar' node type, written by test/lib/nodeGolden.mjs (legend: test/nodeGolden.test.js)
+== a. the proxy: own keys in order, descriptors, functions shared by two instances
+a proxy: prototype Object.prototype, extensible true, frozen false, 34 keys, getNodeRef(proxy) is the node: true
+a 1 src: get+set enum conf get:"get src"/0 per-instance set:"set"/1 shared
+a 2 emote: get+set enum conf get:"get emote"/0 per-instance set:"set"/1 shared
+a 3 visible: get+set enum conf get:"get visible"/0 per-instance set:"set"/1 shared
+a 4 onLoad: get+set enum conf get:"get onLoad"/0 per-instance set:"set"/1 shared
+a 5 getHeight: method enum conf writable fn:"getHeight"/0 per-instance
+a 6 getHeadToHeight: method enum conf writable fn:"getHeadToHeight"/0 per-instance
+a 7 getBoneTransform: method enum conf writable fn:"getBoneTransform"/1 per-instance
+a 8 setLocomotion: method enum conf writable fn:"setLocomotion"/3 per-instance
+a 9 setEmote: method enum conf writable fn:"setEmote"/1 per-instance
+a 10 height: get enum conf get:"get height"/0 per-instance
+a node keys: 24 at 11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34; order as on node; descriptors as on node
+== b. a stopped run (ctx.run is not its entity's deadHook), a live run, and receivers
+b set throws Error: "[app] this app has stopped": src emote visible onLoad id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b method throws Error: "[app] this app has stopped": getHeight getHeadToHeight getBoneTransform setLocomotion setEmote get getWorldMatrix add remove traverse clone clean
+b get reads null: src emote height _ref onPointerEnter onPointerLeave onPointerDown onPointerUp
+b get reads true: visible active _isRef
+b get reads undefined: onLoad parent cursor
+b get reads <auto id>: id
+b get reads "avatar": name
+b get reads V3(0,0,0)S: position
+b get reads Q(0,0,0,1)S: quaternion
+b get reads E(0,0,0,YXZ)S: rotation
+b get reads V3(1,1,1)S: scale
+b get reads view:M4(I)S: matrixWorld
+b get reads []: children
+b stopped through _created: 16 of 16 setters throw Error: "[app] this app has stopped"
+b stopped through a parent: 16 of 16 setters throw Error: "[app] this app has stopped"
+b a live run: each setter with a sample value takes it
+b receiver Object.create(proxy): as through the proxy: 16 of 16
+b receiver a plain object: throws TypeError: "[node] not a node": all 16
+b receiver no receiver: throws TypeError: "[node] not a node": all 16
+b receiver a group's proxy: throws TypeError: "[node] a group node has no <key> to set": src emote visible onLoad
+b receiver a group's proxy: throws Error: "Setting ID not currently supported": id
+b receiver a group's proxy: throws Error: "Cannot replace node <key>": position quaternion rotation scale
+b receiver a group's proxy: runs: active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+b receiver a group's proxy: throws Error: "Cannot set <key> directly": parent
+b receiver another type's proxy with the key: sets that node: src(audio) onLoad(video)
+b receiver another type's proxy with the key: leaves that node as it was: visible(controller)
+== c. one set on a fresh unmounted node: pc the proxy and the class alike, p the proxy, c the class
+c src pc read null <- undefined
+c src pc read $in <- null
+c src pc throw Error: "[avatar] src not a string" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c src pc read $in Δ{_src:$in n:1 factory:null hooks:null needsRebuild:true} calls[setDirty] <- '' 'x' 'asset://a.vrm'
+c emote pc read null <- undefined
+c emote pc read $in <- null
+c emote pc throw Error: "[avatar] emote not a string" <- NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c emote pc read $in Δ{_emote:$in} <- '' 'x' 'asset://e.glb'
+c visible pc read true <- undefined
+c visible pc throw Error: "[avatar] visible not a boolean" <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c visible pc read $in <- true
+c visible pc read $in Δ{_visible:$in} <- false
+c onLoad pc read $in <- undefined
+c onLoad pc read $in Δ{_onLoad:$in} <- null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+c as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+== d. a second set: same (the same value), copy (an equal new object), NaN then NaN, 0 then -0
+d src same: - | NaN,NaN: first throws Error: "[avatar] src not a string" | 0,-0: first throws Error: "[avatar] src not a string"
+d emote same: - | NaN,NaN: first throws Error: "[avatar] emote not a string" | 0,-0: first throws Error: "[avatar] emote not a string"
+d visible same: - | NaN,NaN: first throws Error: "[avatar] visible not a boolean" | 0,-0: first throws Error: "[avatar] visible not a boolean"
+d onLoad same: - | NaN,NaN: - | 0,-0: Δ{_onLoad:$in}
+d src [mounted (instance)] same: - | NaN,NaN: first throws Error: "[avatar] src not a string" | 0,-0: first throws Error: "[avatar] src not a string"
+d emote [mounted (instance)] same: - | NaN,NaN: first throws Error: "[avatar] emote not a string" | 0,-0: first throws Error: "[avatar] emote not a string"
+d visible [mounted (instance)] same: - | NaN,NaN: first throws Error: "[avatar] visible not a boolean" | 0,-0: first throws Error: "[avatar] visible not a boolean"
+d onLoad [mounted (instance)] same: - | NaN,NaN: - | 0,-0: Δ{_onLoad:$in}
+== e. the sets of c in a mounted-like state (stubs record what is done to them): what differs from c
+e [mounted (instance)]
+e emote pc read $in Δ{_emote:$in} stub[instance.setEmote($in)] <- '' 'x' 'asset://e.glb'
+e emote: the other 25 as in c
+e visible pc read $in Δ{_visible:$in} stub[instance.setVisible(false)] <- false
+e visible: the other 26 as in c
+e as in c: src onLoad
+== f. the constructor: defaults (read through the proxy); each key given through data
+f default src = null
+f default emote = null
+f default visible = true
+f default onLoad = undefined
+f default height = null
+f default name = "avatar"
+f defaults as on node: id position quaternion rotation scale matrixWorld active parent children _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+f src: through data as through the class (all 28)
+f emote: through data as through the class (all 28)
+f visible: through data as through the class (all 27)
+f onLoad: through data as through the class (all 27)
+f as on node: id position quaternion rotation scale active parent onPointerEnter onPointerLeave onPointerDown onPointerUp cursor
+f factory (host-only data, read as factory) $in <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+f hooks (host-only data, read as hooks) $in <- undefined null NaN Infinity -Infinity -1 -0 0 0.5 1 1e9 '' 'x' true false {} [] [1,2,3] [NaN] Number(1) String('x') Boolean(true) Proxy[1,2,3] fn Symbol 1n {toString throws}
+== g. own fields after construction, and what clone() and clone(true) make of them
+g field name = "avatar"
+g field _src = null
+g field n = 0
+g field factory = undefined
+g field hooks = undefined
+g field needsRebuild = true
+g field _emote = null
+g field _visible = true
+g field _onLoad = undefined
+g field instance = null
+g field mounting = null
+g fields as on node: id parent children ctx position rotation quaternion scale matrix matrixWorld _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created
+g full: 10 properties set (src emote visible onLoad active onPointerEnter onPointerLeave onPointerDown onPointerUp cursor), one child
+g no sample value (no value accepted reads otherwise than the default): id position quaternion rotation scale parent
+g full fields unlike a new node's: children=[node:node(below)] _onPointerEnter=fn:hostileFn _onPointerLeave=fn:hostileFn _onPointerDown=fn:hostileFn _onPointerUp=fn:hostileFn _cursor="pointer" _active=false _src="asset://a.vrm" n=1 factory=null hooks=null _emote="asset://e.glb" _visible=false _onLoad=fn:hostileFn
+g full clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _src factory hooks needsRebuild _emote _visible _onLoad instance mounting
+g full clone(false) copy: position quaternion scale matrix matrixWorld
+g full clone(false) differs: children([node:node(below)] -> []) rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S) n(1 -> 0)
+g full clone(false) source only: _proxy
+g full clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _src factory hooks needsRebuild _emote _visible _onLoad instance mounting
+g full clone(true) copy: children position quaternion scale matrix matrixWorld
+g full clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S) n(1 -> 0)
+g full clone(true) source only: _proxy
+g full clone(true) children: node#child -> node#child
+g host avatar (factory, hooks) fields unlike a new node's: factory=factory#host hooks=hooks#host
+g host avatar (factory, hooks) clone(false) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _src n factory hooks needsRebuild _emote _visible _onLoad instance mounting
+g host avatar (factory, hooks) clone(false) copy: children position quaternion scale matrix matrixWorld
+g host avatar (factory, hooks) clone(false) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g host avatar (factory, hooks) clone(true) same: id name parent ctx _onPointerEnter _onPointerLeave _onPointerDown _onPointerUp _cursor _active isDirty isTransformed mounted _nodeOwner _nodeDepth _worldOwner _appRoot _unmounting _created _src n factory hooks needsRebuild _emote _visible _onLoad instance mounting
+g host avatar (factory, hooks) clone(true) copy: children position quaternion scale matrix matrixWorld
+g host avatar (factory, hooks) clone(true) differs: rotation(E(0,0,0,YXZ)S -> E(-0,0,0,YXZ)S)
+g host avatar (factory, hooks) clone(true) children: -
+g a clone reads as its source, each sample property alone (20 clones): yes

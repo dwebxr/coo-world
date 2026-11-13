@@ -162,7 +162,11 @@ const names = [
   'onEntityEvent',
   'onSettingsModified',
   'onSpawnModified',
+  'onPlayerTeleport',
+  'onPlayerPush',
+  'onPlayerSessionAvatar',
   'onAi',
+  'onPing',
 ]
 const methods = names
   .map(name => {

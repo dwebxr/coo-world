@@ -52,6 +52,21 @@ jobs:
       - name: Test
         run: npm test
 
+      # Access control and server secrets against the built server, over real sockets (test/e2e/access-control.mjs).
+      # It needs no browser, so it runs here, once, and not in the e2e workflow's matrix of engines. The values it
+      # starts the server with are made up in the suite: the job has no secrets.
+      - name: Access control (real server, no browser)
+        timeout-minutes: 10
+        run: node test/e2e/access-control.mjs
+
+      - name: Upload the access-control logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: access-control
+          path: test/e2e/out/
+          if-no-files-found: ignore
+
       # LAST STEP OF THE JOB (new steps go above this one). The image itself is built and run by image.yml, for changes
       # that touch what it is built from; this is the check, on every run of this job, that the server starts without
       # dev dependencies: scripts/prod-smoke.mjs copies build/ and

@@ -391,6 +391,8 @@ test('network helper: settings of the environment the tests run in change nothin
 
 test('network helper: the ported files pass with those settings in their environment', { timeout: 120000 }, async t => {
   const files = [
+    'actionBudgetHandlers',
+    'adminCommand',
     'aiBudget',
     'announceBeforeApply',
     'blueprintEnforcement',

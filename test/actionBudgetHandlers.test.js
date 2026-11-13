@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { Ranks } from '../src/core/extras/ranks.js'
 import { readPacket, writeClientPacket, writePacket } from '../src/core/packets.js'
 import { BACKLOG_CAP, SCRIPT_BACKLOG_CAP } from '../src/core/extras/writeLedger.js'
-import { fixture } from './lib/joinFixture.mjs'
+import { fixture, settle } from './lib/joinFixture.mjs'
 
 // A world with an admin code (so a visitor is a visitor), an admin, and two visitors: `a` acts, `b` watches
 async function stage(t) {
@@ -204,13 +204,21 @@ test('own player: a name or avatar that is not new is not told or written again'
   assert.equal(s.got(s.b).length, 4)
 })
 
-test("own player: over the budget, name and avatar are taken out, the sender gets the server's back, movement goes on", async () => {
-  const s = await stage()
+test("own player: over the budget, name and avatar are taken out, the sender gets the server's back, movement goes on", async t => {
+  const s = await stage(t)
   s.f.world.settings.customAvatars = true
   const modify = (data, at) => s.tick(s.f.network.onEntityModified(s.a.socket, { id: 'a', ...data }, { at }))
   for (let i = 0; i < 5; i++) await modify({ name: `n${i}` }, 1000)
   s.got(s.a)
   s.got(s.b)
+  // Was: the count taken at once. A user's row has one writer (userRows.js): a name decided while its statement is
+  // under way goes out with the next statement. In the old harness each `await` of the handler (a promise of the vm's
+  // realm) took turns enough for every statement to land first; run in this realm, as the server runs, the last
+  // statement is still to come here, and would be counted as written by the sixth change. Now: counted once the
+  // writer is done, with the row on the last name.
+  await settle()
+  assert.deepEqual(s.f.store.userUpdates.at(-1).changes, { name: 'n4' })
+  assert.equal(s.f.users.get('a').name, 'n4')
   const writes = s.f.store.userUpdates.length
   // the sixth: the sender had applied "sixth" and an avatar before sending
   await modify({ name: 'sixth', avatar: 'asset://mine.vrm', p: [4, 5, 6] }, 1000)
@@ -665,10 +673,10 @@ test('a refusal that says nothing leaves the telling to the next one that does',
   assert.equal(m.chats(m.got(m.admin)).filter(x => x.body === 'You are changing ranks too fast.').length, 1)
 })
 
-test('rank: where no admin code is set, an admin cannot lower their own rank; with a code, or for anyone else, they can', async () => {
+test('rank: where no admin code is set, an admin cannot lower their own rank; with a code, or for anyone else, they can', async t => {
   const told = s => s.chats(s.got(s.admin)).filter(m => /no admin code/.test(m.body)).length
   // locked: no code is set, so nobody becomes admin by typing one
-  const locked = await stage()
+  const locked = await stage(t)
   locked.f.network.admin().mode = 'locked'
   for (const rank of [Ranks.BUILDER, Ranks.VISITOR]) {
     await locked.f.network.onModifyRank(locked.admin.socket, { playerId: 'admin', rank }, { at: 1000 })
@@ -682,20 +690,33 @@ test('rank: where no admin code is set, an admin cannot lower their own rank; wi
     await locked.f.network.onModifyRank(locked.admin.socket, { playerId: 'b', rank: i % 2 ? 0 : 1 }, { at: 1000 })
   }
   assert.equal(locked.b.socket.player.data.rank, Ranks.VISITOR)
-  assert.equal(locked.f.store.userUpdates.length, 10)
+  // each of them was made and told to the others, and the row is left with the rank of the tenth
+  const changes = locked.got(locked.a).filter(([name, data]) => name === 'onEntityModified' && data.id === 'b')
+  assert.deepEqual(
+    changes.map(([, data]) => data.rank),
+    [1, 0, 1, 0, 1, 0, 1, 0, 1, 0]
+  )
+  assert.deepEqual(locked.f.store.userUpdates.at(-1), { id: 'b', changes: { rank: Ranks.VISITOR } })
+  assert.equal(locked.f.users.get('b').rank, Ranks.VISITOR)
+  // Was 10. A user's row has one writer (userRows.js): a rank decided while its statement is under way goes out with
+  // the next statement, and one replaced before its turn is not written. In the old harness each `await` of the
+  // handler (a promise of the vm's realm) took turns enough for every statement to land first; run in this realm, as
+  // the server runs, the writer takes the first change, then the latest of every two: builder, then visitor five
+  // times.
+  assert.equal(locked.f.store.userUpdates.length, 6)
   // their own rank kept as it is (admin to admin) is not a lowering
-  const same = await stage()
+  const same = await stage(t)
   same.f.network.admin().mode = 'locked'
   await same.f.network.onModifyRank(same.admin.socket, { playerId: 'admin', rank: Ranks.ADMIN }, { at: 1000 })
   assert.equal(told(same), 0)
   // another admin can still be lowered (this is a guard against a slip, not a rule that an admin remains)
-  const two = await stage()
+  const two = await stage(t)
   two.f.network.admin().mode = 'locked'
   two.a.socket.player.data.rank = Ranks.ADMIN
   await two.f.network.onModifyRank(two.admin.socket, { playerId: 'a', rank: Ranks.VISITOR }, { at: 1000 })
   assert.equal(two.a.socket.player.data.rank, Ranks.VISITOR)
   // with a code the way back exists: lowering oneself is allowed
-  const coded = await stage()
+  const coded = await stage(t)
   coded.f.network.admin().mode = 'code'
   await coded.f.network.onModifyRank(coded.admin.socket, { playerId: 'admin', rank: Ranks.BUILDER }, { at: 1000 })
   assert.equal(coded.admin.socket.player.data.rank, Ranks.BUILDER)

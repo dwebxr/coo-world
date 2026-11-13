@@ -4,7 +4,6 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { fakeWs, makeNetwork } from './lib/network.mjs'
-import { makeNetwork as vmNetwork } from './lib/networkHarness.mjs'
 import { clientWorld, loadClient } from './lib/clientHarness.mjs'
 import { fixture as joinFixture, net, sentTo } from './lib/joinFixture.mjs'
 import { Ranks } from '../src/core/extras/ranks.js'
@@ -33,51 +32,6 @@ function fixture(t, env = { ADMIN_CODE: CODE }) {
     },
   })
   network.send = (name, data) => broadcasts.push([name, data])
-  let sockets = 0
-  // a connected player: `user` is the user id (a socket's id is its user's), `address` its address key
-  const connect = ({
-    user = `user-${++sockets}`,
-    rank = Ranks.VISITOR,
-    address = '203.0.113.5',
-    parents = [],
-  } = {}) => {
-    const data = { id: user, userId: user, rank }
-    const socket = {
-      id: user,
-      addressKey: address,
-      addressParents: parents,
-      sent: [],
-      closed: false,
-      send: (name, payload) => socket.sent.push([name, payload]),
-      disconnect: () => (socket.closed = true),
-      player: {
-        data,
-        rankRevision: 0,
-        isAdmin: () => data.rank >= Ranks.ADMIN,
-        modify: patch => Object.assign(data, patch),
-      },
-    }
-    network.sockets.set(user, socket)
-    return socket
-  }
-  const admin = (socket, ...args) => network.onCommand(socket, { args: ['admin', ...args] })
-  const said = socket => socket.sent.filter(([name]) => name === 'chatAdded').map(([, line]) => line.body)
-  return { network, writes, broadcasts, commands, connect, admin, said }
-}
-
-// (the old harness's network, for the one test that has not moved yet: removed once it has)
-function vmFixture(env = { ADMIN_CODE: CODE }) {
-  const writes = []
-  const broadcasts = []
-  const commands = []
-  const network = vmNetwork(() => {}, { context: { process: { env } } })
-  network.db = () => ({
-    where: (_column, id) => ({
-      update: async patch => writes.push({ id, ...patch }),
-    }),
-  })
-  network.send = (name, data) => broadcasts.push([name, data])
-  network.world.events = { emit: (name, payload) => commands.push([name, payload]) }
   let sockets = 0
   // a connected player: `user` is the user id (a socket's id is its user's), `address` its address key
   const connect = ({
@@ -139,15 +93,24 @@ test('a wrong, missing or malformed code changes nothing and is answered to that
   assert.equal(socket.closed, false)
 })
 
-test('the admin command is never handed on as a command event, in any letter case; other commands are', async () => {
-  const f = vmFixture()
+test('the admin command is never handed on as a command event, in any letter case; other commands are', async t => {
+  const f = fixture(t)
   const socket = f.connect()
   for (const cmd of ['admin', 'Admin', 'ADMIN', 'aDmIn']) {
     await f.network.onCommand(socket, { args: [cmd, CODE] })
   }
   assert.deepEqual(f.commands, [], 'the code never reaches a script')
-  // and each of those spellings is the admin command: four right codes toggle admin four times
-  assert.equal(f.writes.length, 4)
+  // and each of those spellings is the admin command: four right codes toggle admin four times, and the row is left
+  // with the rank of the fourth
+  assert.deepEqual(f.said(socket), ['Admin granted!', 'Admin revoked!', 'Admin granted!', 'Admin revoked!'])
+  assert.equal(socket.player.data.rank, Ranks.VISITOR)
+  assert.deepEqual(f.writes.at(-1), { id: socket.id, rank: Ranks.VISITOR })
+  // Was 4. A user's row has one writer (userRows.js): a rank decided while its statement is under way goes out with
+  // the next statement, and one replaced before its turn is not written. In the old harness each `await` of the
+  // handler (a promise of the vm's realm) took turns enough for every statement to land first; run in this realm, as
+  // the server runs, the second toggle finds the first statement under way and the fourth replaces the third:
+  // admin, visitor, visitor.
+  assert.equal(f.writes.length, 3)
   await f.network.onCommand(socket, { args: ['dance', 'now'] })
   assert.equal(f.commands.length, 1)
   assert.equal(f.commands[0][0], 'command')

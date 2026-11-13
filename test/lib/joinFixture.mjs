@@ -5,13 +5,6 @@ import assert from 'node:assert/strict'
 import { readPacket, writeClientPacket, writePacket } from '../../src/core/packets.js'
 import { WORLD_JOIN_BYTES, joinStateBytes } from '../../src/core/extras/joinBudget.js'
 import { entityClasses, fakeWs, loadNetwork, makeNetwork } from './network.mjs'
-// (the old harness, for the files that have not moved yet: removed once none calls it)
-import moment from 'moment'
-import { isAvatarUrl, sanitizeName } from '../../src/core/extras/entityModifyPolicy.js'
-import { Blueprints as VmBlueprints } from './clientHarness.mjs'
-import { load, Settings as VmSettings } from './persistenceHarness.mjs'
-import { connectionMethod, makeNetwork as vmNetwork, Socket as VmSocket } from './networkHarness.mjs'
-import { FakeApp, FakePlayer } from './joinEntities.mjs'
 
 // The stand-ins a join reads (network.mjs standIns): a session token is the id of its user (readJWT, createJWT),
 // one that fails to verify is taken for a forgery, not for an expired session (expiredSessionUser), and new ids are
@@ -57,7 +50,6 @@ const session = {
 // `t`: the test; `env`: the process environment the network sees while the test runs; `modules`: the gating modules
 // the handlers see in place of the real ones ({ solanaGating, evmGating }: objects with the modules' names)
 export function fixture(t, { env = {}, modules = {} } = {}) {
-  if (typeof t?.after !== 'function') return vmFixture(t)
   for (const name of Object.keys(modules)) assert.ok(GATING[name], `fixture: ${name} is not a module it can give`)
   const logs = []
   const users = new Map()
@@ -129,120 +121,6 @@ export function fixture(t, { env = {}, modules = {} } = {}) {
   network.collectionsBytes = writePacket('settingsModified', []).length
   // a builder connection that sends packets (its player is not in the world)
   const builder = new Socket({
-    id: 'builder',
-    ws: fakeWs(),
-    network,
-    player: { isBuilder: () => true, isAdmin: () => true, data: { rank: 2 } },
-  })
-  const send = (name, data, socket = builder) => {
-    socket.ws.emit('message', writeClientPacket(name, data))
-    network.flush()
-  }
-  // a connection as the route hands it over: the server's close is recorded, and `terminate()` is the client going
-  // away (the transport reports its close)
-  const connection = () => {
-    const ws = fakeWs()
-    ws.closeCodes = []
-    ws.close = code => {
-      ws.closeCodes.push(code)
-      ws.readyState = 3
-    }
-    return ws
-  }
-  // `origin`: where the connection comes from ({ key, parents }), as the route gives it; `ws`: a test's own
-  // connection, to close while the join waits
-  const join = async (params = {}, origin, ws = connection()) => {
-    await network.onConnection(ws, params, origin)
-    ws.drain()
-    const [method, snapshot] = ws.packets.length ? readPacket(ws.packets[0]) : []
-    return { ws, method, snapshot, bytes: ws.packets[0]?.length }
-  }
-  world.blueprints.add({ id: 'bp', version: 0, name: 'Box' })
-  return { logs, network, world, builder, send, join, connection, users, store }
-}
-
-// The fixture of the old harness (networkHarness.mjs: the network's methods cut out of their file and run in a vm
-// context of their own), as it was, for a file that has not moved yet: `fixture` without a test context. Removed
-// once every file has moved.
-const VmEntities = load('core/systems/Entities.js', 'Entities', {
-  App: FakeApp,
-  PlayerLocal: FakePlayer,
-  PlayerRemote: FakePlayer,
-})
-function vmFixture({ env = {}, context = {} } = {}) {
-  const logs = []
-  const network = vmNetwork(line => logs.push(line), { context: { process: { env }, ...context } })
-  const world = network.world
-  world.network = network
-  world.entities = new VmEntities(world)
-  world.blueprints = new VmBlueprints(world)
-  world.settings = new VmSettings(world)
-  world.collections = { serialize: () => [] }
-  world.chat = { msgs: [], serialize: () => world.chat.msgs }
-  world.ai = { serialize: () => ({ enabled: false }) }
-  world.livekit = { state: null, serialize: async () => world.livekit.state, clearModifiers() {} }
-  world.events = { emit() {} }
-  network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
-  network.settingsBytes = writePacket('settingsModified', world.settings.serialize()).length
-  network.collectionsBytes = writePacket('settingsModified', []).length
-  const users = new Map()
-  // the stored app rows, as the database holds them; `store.hangAfter` makes every write after that many hang for
-  // ever (the process stopping there), `store.transactions()` gives the database transactions
-  const store = { rows: new Map(), writes: 0, hangAfter: Infinity }
-  const write = apply => {
-    if (store.writes++ >= store.hangAfter) return new Promise(() => {})
-    apply()
-    return Promise.resolve()
-  }
-  const appTable = rows => ({
-    insert: row => ({
-      onConflict: () => ({
-        merge: () =>
-          store.failInserts
-            ? Promise.reject(new Error('disk full'))
-            : write(() => rows.set(row.id, JSON.parse(row.data))),
-      }),
-    }),
-    where: (key, id) => ({ delete: () => write(() => rows.delete(id)) }),
-  })
-  network.db = table => {
-    if (table === 'entities') return appTable(store.rows)
-    assert.equal(table, 'users')
-    return {
-      where: (key, id) => ({
-        first: async () => users.get(id),
-        // a user row's UPDATE, applied and recorded in `store.userUpdates`
-        update: async changes => {
-          ;(store.userUpdates ??= []).push({ id, changes: { ...changes } })
-          const row = users.get(id)
-          if (row) Object.assign(row, changes)
-          return row ? 1 : 0
-        },
-      }),
-      insert: async row => users.set(row.id, row),
-    }
-  }
-  store.transactions = () => {
-    network.db.transaction = async fn => {
-      const staged = new Map(store.rows)
-      await fn(table => (assert.equal(table, 'entities'), appTable(staged)))
-      store.rows = staged
-    }
-  }
-  network.onConnection = connectionMethod({
-    isNumber: value => typeof value === 'number',
-    sanitizeName,
-    isAvatarUrl,
-    moment,
-    performance,
-    HEALTH_MAX: 100,
-    readJWT: async token => (token ? { userId: token } : null),
-    createJWT: async ({ userId }) => userId,
-    uuid: nextId,
-    process: { env },
-  })
-  // a builder connection that sends packets (its player is not in the world)
-  const builder = new VmSocket({
     id: 'builder',
     ws: fakeWs(),
     network,

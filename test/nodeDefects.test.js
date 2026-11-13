@@ -105,3 +105,74 @@ test('rigidbody: linearDamping and angularDamping read back through the handle (
       'onContactStart',
     ])
   }))
+
+// A UI in a browser (a window, a document whose canvases are stand-ins), screen-space (its canvas goes to the pointer
+// layer, no scene), mounted and unmounted as Node.activate and Node.deactivate do it.
+test('UI: an unmount drops a pending rebuild (it set a stray needRebuild); a mount builds with what was set meanwhile', () =>
+  runProbe(
+    bundle,
+    ({ createNode }) => {
+      const canvases = []
+      globalThis.document = {
+        createElement: () => {
+          const ctx2d = new Proxy(
+            {},
+            { get: (target, key) => (key === 'measureText' ? () => ({ width: 0 }) : () => {}) }
+          )
+          const canvas = { width: 0, height: 0, style: {}, getContext: () => ctx2d }
+          canvas.addEventListener = canvas.removeEventListener = () => {}
+          canvases.push(canvas)
+          return canvas
+        },
+      }
+      const layer = new Set()
+      const world = {
+        network: { isServer: false },
+        stage: { dirtyNodes: new Set() },
+        pointer: { ui: { prepend: canvas => layer.add(canvas), removeChild: canvas => layer.delete(canvas) } },
+      }
+      const clean = () => {
+        for (const node of world.stage.dirtyNodes) node.clean()
+        world.stage.dirtyNodes.clear()
+      }
+      const node = createNode('ui', { space: 'screen', width: 100, height: 100, res: 1, pointerEvents: false })
+      const ui = node.getProxy()
+      let builds = 0
+      const build = node.build
+      node.build = function () {
+        builds++
+        return build.call(this)
+      }
+      node.activate({ world, entity: {} })
+      clean()
+      assert.equal(builds, 1)
+      assert.equal(node.needsRebuild, false)
+      // a property set while it is mounted asks for a rebuild; the UI is unmounted before the next clean
+      ui.width = 50
+      assert.equal(node.needsRebuild, true)
+      node.deactivate()
+      assert.equal(node.mounted, false)
+      assert.equal(layer.size, 0, 'the canvas is out of the page')
+      assert.equal(node.needsRebuild, false, 'the pending rebuild went with what it would have rebuilt')
+      assert.equal(Object.hasOwn(node, 'needRebuild'), false, 'no stray field')
+      // mounted again: built once, at the size set before the unmount
+      node.activate({ world, entity: {} })
+      clean()
+      assert.equal(builds, 2)
+      assert.equal(canvases.at(-1).width, 50)
+      assert.deepEqual([...layer], [canvases.at(-1)])
+      // a property set while it is unmounted is built by the next mount
+      node.deactivate()
+      ui.height = 30
+      assert.equal(node.needsRebuild, true)
+      node.activate({ world, entity: {} })
+      clean()
+      assert.equal(builds, 3)
+      assert.deepEqual([canvases.at(-1).width, canvases.at(-1).height], [50, 30])
+      assert.equal(node.needsRebuild, false)
+      assert.deepEqual([...layer], [canvases.at(-1)])
+      node.deactivate()
+      assert.equal(layer.size, 0)
+    },
+    { browser: true }
+  ))

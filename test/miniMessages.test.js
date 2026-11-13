@@ -42,8 +42,9 @@ const line = (id, fromId, body) => ({
   createdAt: '2026-01-01T00:00:00Z',
 })
 
-// MiniMessages from CoreUI.js: a state set by a listener is drawn by the next render(), as React would schedule it;
-// its timers are held, not run
+// MiniMessages from CoreUI.js. A state set by a listener or a timer is drawn by the next render(), as React would
+// schedule it. Timers run on a clock of the test's own: each keeps the delay it was asked for, advance() moves the
+// time and runs the callbacks that are due (in the order they are due, drawing after each), and clearTimeout cancels.
 function mountMiniMessages(world) {
   const source = fs.readFileSync(new URL('../src/client/components/CoreUI.js', import.meta.url), 'utf8')
   const code = transformSync(source.replace(/^import[\s\S]*?from ['"][^'"]+['"]\n/gm, '').replace(/^export /gm, ''), {
@@ -53,8 +54,9 @@ function mountMiniMessages(world) {
   const slots = []
   const effects = []
   let cursor = 0
-  const timers = new Map()
+  let now = 0
   let timerIds = 0
+  const timers = new Map()
   const context = {
     useState(initial) {
       const index = cursor++
@@ -78,7 +80,10 @@ function mountMiniMessages(world) {
     },
     css: () => '',
     element: (type, props) => ({ type, props }),
-    setTimeout: fn => (timers.set(++timerIds, fn), timerIds),
+    setTimeout(fn, delay) {
+      timers.set(++timerIds, { fn, delay, at: now + delay })
+      return timerIds
+    },
     clearTimeout: id => timers.delete(id),
   }
   const MiniMessages = new Function(...Object.keys(context), `${code}\nreturn MiniMessages`)(...Object.values(context))
@@ -99,6 +104,22 @@ function mountMiniMessages(world) {
       render()
       return output ? output.props.msg.body : null
     },
+    advance(ms) {
+      render()
+      const end = now + ms
+      for (;;) {
+        let next = null
+        for (const [id, timer] of timers) if (timer.at <= end && (!next || timer.at < next[1].at)) next = [id, timer]
+        if (!next) break
+        timers.delete(next[0])
+        now = next[1].at
+        next[1].fn()
+        render()
+      }
+      now = end
+    },
+    // the delays of the timers not yet run or cancelled
+    pending: () => [...timers.values()].map(timer => timer.delay),
     unmount() {
       for (const slot of slots) if (slot?.effect) slot.cleanup?.()
     },
@@ -135,6 +156,67 @@ test('a cleared chat: the touch chat line throws nothing and goes, as the full c
   assert.equal(errors.mock.callCount(), 0)
   mini.unmount()
   assert.equal(world.chat.listeners.size, 0)
+})
+
+// the line goes after 4 s (CoreUI.js: setTimeout(…, 4000)), counted from when it was shown
+test('the touch chat line goes when its 4 s are up and not before, and a newer line starts its time again', () => {
+  const world = chatWorld()
+  const mini = mountMiniMessages(world)
+  world.receive('chatAdded', line('1', 'bob', 'hello from bob'))
+  assert.equal(mini.shown(), 'hello from bob')
+  assert.deepEqual(mini.pending(), [4000], 'one timer, of the delay the line is shown for')
+  mini.advance(3999)
+  assert.equal(mini.shown(), 'hello from bob')
+  mini.advance(1)
+  assert.equal(mini.shown(), null)
+
+  // a line replaced by another: the newer one has its own 4 s
+  world.receive('chatAdded', line('2', 'carol', 'carol'))
+  assert.equal(mini.shown(), 'carol')
+  mini.advance(3000)
+  world.receive('chatAdded', line('3', 'dave', 'dave'))
+  assert.equal(mini.shown(), 'dave')
+  mini.advance(1000)
+  assert.equal(mini.shown(), 'dave', "carol's time ended dave's line")
+  mini.advance(2999)
+  assert.equal(mini.shown(), 'dave')
+  mini.advance(1)
+  assert.equal(mini.shown(), null)
+  mini.unmount()
+})
+
+test('a line after a clear keeps its own 4 s: the time of the line the clear took away does not end it', () => {
+  const world = chatWorld()
+  const mini = mountMiniMessages(world)
+  world.receive('chatAdded', line('1', 'bob', 'hello from bob'))
+  assert.equal(mini.shown(), 'hello from bob')
+  mini.advance(1000)
+  world.receive('chatCleared')
+  assert.equal(mini.shown(), null)
+  mini.advance(500)
+  world.receive('chatAdded', line('2', 'carol', 'carol after the clear'))
+  assert.equal(mini.shown(), 'carol after the clear')
+  assert.deepEqual(mini.pending(), [4000], "only the new line's timer is left")
+  // bob's line would have gone at 4000; carol's goes at 1500 + 4000
+  mini.advance(2500)
+  assert.equal(mini.shown(), 'carol after the clear', "the cleared line's time ended the new line")
+  mini.advance(1499)
+  assert.equal(mini.shown(), 'carol after the clear')
+  mini.advance(1)
+  assert.equal(mini.shown(), null)
+  mini.unmount()
+})
+
+test('closing the touch chat line (unmount) cancels its timer and its subscription', () => {
+  const world = chatWorld()
+  const mini = mountMiniMessages(world)
+  world.receive('chatAdded', line('1', 'bob', 'hello from bob'))
+  assert.equal(mini.shown(), 'hello from bob')
+  assert.equal(mini.pending().length, 1)
+  assert.equal(world.chat.listeners.size, 1)
+  mini.unmount()
+  assert.deepEqual(mini.pending(), [], 'a timer outlived the line')
+  assert.equal(world.chat.listeners.size, 0, 'still subscribed')
 })
 
 test('an empty chat handed to the touch chat line (Chat.deserialize([])) throws nothing', () => {

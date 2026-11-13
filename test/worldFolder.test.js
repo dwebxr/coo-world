@@ -126,8 +126,13 @@ test('world folder: the system trees, as written and through a link, and /tmp it
       `WORLD=${JSON.stringify(`${up}usr/local/bin`)} resolves to ${real('/usr/local/bin')}: that is a system folder (at or under /usr)`
     )
     for (const shared of SHARED_FOLDERS) {
-      assert.match(refusedAs(app, `${up}${shared.slice(1)}`), /shared by every user of the container/)
-      assert.match(refusedAs(app, `${up}${shared.slice(1)}/`), /shared by every user of the container/)
+      // (where this test's own folders are below it, as on a Linux runner, it is refused sooner, as the folder that
+      // holds the code: refused either way, and the reason is the first that applies)
+      const why = [app, real(app)].some(root => root.startsWith(`${shared}/`))
+        ? /that folder holds the image's own code/
+        : /shared by every user of the container/
+      assert.match(refusedAs(app, `${up}${shared.slice(1)}`), why)
+      assert.match(refusedAs(app, `${up}${shared.slice(1)}/`), why)
       // a folder below it is not refused
       const below = decide(app, `${up}${shared.slice(1)}/coo-world-test-${process.pid}`)
       assert.equal(below.ok, true, below.reason)

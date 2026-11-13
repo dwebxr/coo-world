@@ -1,7 +1,7 @@
 import * as THREE from '../extras/three'
 import { every, isArray } from 'lodash-es'
 import { isBoolean, isNumber, isPrimitive, isString } from '../extras/scriptPrimitives.js'
-import { boundedInteger, boundedNumber, boundedText } from '../extras/boundedValue.js'
+import { boundedInteger, boundedNumber, boundedText, FLOAT32_MAX } from '../extras/boundedValue.js'
 
 import { Node } from './Node'
 import { scriptView, sealMath } from '../extras/sealMath.js'
@@ -56,6 +56,12 @@ export const PARTICLES_MAX_TIMESCALE = 100
 // twice, a comma and a bar), so 64 of them fit; what is past the limit is cut.
 export const PARTICLES_MAX_START_LENGTH = 256
 export const PARTICLES_MAX_CURVE_LENGTH = 4096
+// `direction` and `velocityRadial`, which the worker multiplies by, are kept within the largest float32 (the most its
+// Float32Array buffers hold), so an Infinity there becomes this number; as Infinity it gave the worker 0 * Infinity
+// and Infinity / Infinity, which are NaN. This does not keep the worker free of NaN in general (a timescale of 0 with a
+// radial velocity still gives it). A direction of this size randomizes completely: the shape's own direction is lost in
+// the rounding.
+export const PARTICLES_MAX_FACTOR = FLOAT32_MAX
 
 // prettier-ignore
 const defaults = {
@@ -293,7 +299,7 @@ export class Particles extends Node {
     if (!isNumber(value)) {
       throw new Error('[particles] direction not a number')
     }
-    this._direction = value
+    this._direction = boundedNumber(value, defaults.direction, -PARTICLES_MAX_FACTOR, PARTICLES_MAX_FACTOR)
     this.needsRebuild = true
     this.setDirty()
   }
@@ -611,7 +617,8 @@ export class Particles extends Node {
     if (value !== null && !isNumber(value)) {
       throw new Error('[particles] velocityRadial not a number')
     }
-    this._velocityRadial = value
+    this._velocityRadial =
+      value === null ? null : boundedNumber(value, defaults.velocityRadial, -PARTICLES_MAX_FACTOR, PARTICLES_MAX_FACTOR)
     this.needsRebuild = true
     this.setDirty()
   }

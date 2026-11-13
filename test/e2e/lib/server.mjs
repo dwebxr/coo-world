@@ -13,6 +13,17 @@ import { memoryReader } from './memory.mjs'
 const MEMORY_PROBE = path.join(E2E_DIR, 'lib', 'memory-probe.js')
 const MiB = 1024 * 1024
 
+// true once `promise` settles, false after `ms`; the timer is cleared either way, so it keeps no process alive
+async function within(promise, ms) {
+  let timer
+  const late = new Promise(resolve => (timer = setTimeout(() => resolve(false), ms)))
+  try {
+    return await Promise.race([promise.then(() => true), late])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export function serverEnv(port, world, extra = {}) {
   return {
     PATH: process.env.PATH,
@@ -88,31 +99,57 @@ export async function startServer({
     stdio: memoryProbe ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'],
   })
   const server = { child, port, world, worldDir, url: `http://localhost:${port}/`, out: '', exited: null }
+  // the log is written until it is closed, and not after (a chunk of output can still arrive then)
+  let logOpen = log !== null
   const onData = data => {
     server.out += data
-    if (log !== null) fs.writeSync(log, data)
+    if (logOpen) fs.writeSync(log, data)
   }
   child.stdout.on('data', onData)
   child.stderr.on('data', onData)
   child.on('exit', code => (server.exited = code ?? 'signal'))
+  // 'exit': the process has ended; 'close': it has, and its output has ended too
+  const exited = new Promise(resolve => child.once('exit', resolve))
+  const closed = new Promise(resolve => child.once('close', resolve))
   const readMemory = memoryProbe ? memoryReader(child) : null
+  // Stops the process (SIGTERM, then SIGKILL after 5 s), waits for its output to end, closes the log and removes the
+  // world directory. Each of those is tried whatever became of the one before; what failed is thrown at the end.
   server.stop = async () => {
+    const failed = []
+    const attempt = (what, run) => {
+      try {
+        run()
+      } catch (err) {
+        failed.push(`${what}: ${err?.message ?? err}`)
+      }
+    }
     if (server.exited === null) {
       const asked = Date.now()
-      child.kill('SIGTERM')
-      await Promise.race([once(child, 'exit'), sleep(5000)])
+      attempt('SIGTERM', () => child.kill('SIGTERM'))
+      await within(exited, 5000)
       const how =
         server.exited === null
           ? 'did not exit within 5 s of SIGTERM and was killed'
           : `exited (${server.exited}) ${Date.now() - asked} ms after SIGTERM`
-      if (server.exited === null) child.kill('SIGKILL')
-      if (log !== null) fs.writeSync(log, `[harness] server ${how}\n`)
+      if (server.exited === null) attempt('SIGKILL', () => child.kill('SIGKILL'))
+      if (logOpen) attempt('writing to the log', () => fs.writeSync(log, `[harness] server ${how}\n`))
     }
-    if (log !== null) fs.closeSync(log)
-    fs.rmSync(worldDir, { recursive: true, force: true })
+    // what the process wrote before it ended reaches the log (a process that does not end after SIGKILL, or output
+    // held open by another process, is waited for 5 s at most, and said in the log; nothing is written to it after it
+    // is closed)
+    if (!(await within(closed, 5000)) && logOpen) {
+      attempt('writing to the log', () => fs.writeSync(log, '[harness] its output had not ended 5 s after the stop\n'))
+    }
+    if (logOpen) {
+      logOpen = false
+      attempt('closing the log', () => fs.closeSync(log))
+    }
+    attempt('removing the world directory', () => fs.rmSync(worldDir, { recursive: true, force: true }))
+    if (failed.length) throw new Error(`[harness] stopping the server: ${failed.join('; ')}`)
   }
   // A start-up that fails (the process ended early, or it did not say it listens before the deadline) stops what it
   // started (the process, the log, the world directory) before it throws: the caller gets no handle to stop it with.
+  // The error thrown is the start-up's; a cleanup that failed too is added to its message.
   const deadline = Date.now() + timeout
   try {
     while (!server.out.includes(`server listening on port ${port}`)) {
@@ -121,7 +158,11 @@ export async function startServer({
       await sleep(200)
     }
   } catch (err) {
-    await server.stop()
+    try {
+      await server.stop()
+    } catch (cleanup) {
+      err.message += `\n(and the cleanup after it failed: ${cleanup?.message ?? cleanup})`
+    }
     throw err
   }
   server.count = text => server.out.split(text).length - 1

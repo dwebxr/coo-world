@@ -61,6 +61,7 @@ import * as gltfLimits from '../../src/core/extras/gltfLimits.js'
 import { setDebugGlobal } from '../../src/core/extras/debugGlobals.js'
 import { LOADER_BUSY } from '../../src/core/extras/playerAvatarFallback.js'
 import * as aiBudget from '../../src/server/aiBudget.js'
+import { takeAsset } from '../../src/core/extras/appTools.js'
 
 class System extends EventEmitter {
   constructor(world) {
@@ -152,6 +153,7 @@ export function loadClient(file, name, context = {}) {
     ...assetURL,
     ...joinBudget,
     resolveAssetFile,
+    takeAsset,
     createOutboundFetch,
     OutboundError,
     LoadingManager,

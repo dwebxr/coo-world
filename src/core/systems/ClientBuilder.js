@@ -9,7 +9,7 @@ import { hashFile } from '../utils-client'
 import { uuid } from '../utils'
 import { ControlPriorities } from '../extras/ControlPriorities'
 import { guardTransform } from '../nodes/Node'
-import { importApp } from '../extras/appTools'
+import { importApp, takeAsset } from '../extras/appTools'
 import { fetchDroppedLink, LINK_TOO_LARGE } from '../extras/droppedLink'
 import { DEG2RAD, RAD2DEG } from '../extras/general'
 import { createNode } from '../extras/createNode'
@@ -1106,6 +1106,25 @@ export class ClientBuilder extends System {
     console.error(`File too large. Maximum size is ${maxSize}MB`)
   }
 
+  // The assets of a dropped .hyp file this client puts in its loader and uploads: only those stored under the hash of
+  // their own bytes, of a kind a blueprint loads (takeAsset, appTools.js). Every asset used to be put in the loader
+  // under the url the file gave it, so a file could make this client show its bytes wherever that address is loaded
+  // (another app's model or script, the default avatar, an emote, an https URL) until a reload. Any other asset is left
+  // out: the blueprint keeps its reference, which this client loads from its own address, as everyone else does. That
+  // loses nothing for anyone: the server names an upload by the hash of its bytes, so the uploaded copy of such an
+  // asset was never what its reference loads; only this client's own cache made it so. Said once in the console when
+  // some are left out.
+  takeAssets(assets) {
+    const taken = assets.filter(takeAsset)
+    const left = assets.length - taken.length
+    if (left > 0) {
+      console.warn(
+        `[builder] ${left} of the ${assets.length} assets of this .hyp file ${left === 1 ? 'is' : 'are'} not cached or uploaded (not stored under the hash of ${left === 1 ? 'its' : 'their'} bytes, or of a kind no app loads): ${left === 1 ? 'it loads' : 'they load'} from ${left === 1 ? 'its' : 'their'} own address`
+      )
+    }
+    return taken
+  }
+
   async addApp(file, transform) {
     const info = await importApp(file)
     // if scene, update existing scene
@@ -1139,17 +1158,18 @@ export class ClientBuilder extends System {
         disabled: info.blueprint.disabled,
       })
       if (!change) return
-      for (const asset of info.assets) {
+      const assets = this.takeAssets(info.assets)
+      for (const asset of assets) {
         this.world.loader.insert(asset.type, asset.url, asset.file)
       }
-      if (!info.assets.length) {
+      if (!assets.length) {
         return this.world.blueprints.modify(change, true)
       }
       this.world.blueprints.modify(cloneDeep(change))
       const applied = this.world.blueprints.getScene()
       // upload assets as one batch: the first failure cancels the rest before they are sent
       const batch = new AbortController()
-      const promises = info.assets.map(asset => this.world.network.upload(asset.file, { batch }))
+      const promises = assets.map(asset => this.world.network.upload(asset.file, { batch }))
       try {
         await Promise.all(promises)
       } catch (err) {
@@ -1206,16 +1226,17 @@ export class ClientBuilder extends System {
       state: {},
     }
     if (!preflightPacket(this.world, 'entityAdded', data)) return
-    for (const asset of info.assets) {
+    const assets = this.takeAssets(info.assets)
+    for (const asset of assets) {
       this.world.loader.insert(asset.type, asset.url, asset.file)
     }
-    const uploading = info.assets.length > 0
+    const uploading = assets.length > 0
     if (!this.world.blueprints.add(uploading ? cloneDeep(blueprint) : blueprint, !uploading)) return
     const app = this.world.entities.add(uploading ? cloneDeep(data) : data, !uploading)
     if (!app) return
     // upload assets as one batch: the first failure cancels the rest before they are sent
     const batch = new AbortController()
-    const promises = info.assets.map(asset => this.world.network.upload(asset.file, { batch }))
+    const promises = assets.map(asset => this.world.network.upload(asset.file, { batch }))
     try {
       await Promise.all(promises)
       if (uploading) {

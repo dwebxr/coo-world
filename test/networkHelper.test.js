@@ -575,6 +575,7 @@ test('network helper: the ported files pass with those settings in their environ
     'announceBeforeApply',
     'blueprintEnforcement',
     'connectionHolds',
+    'connectionLifecycle',
     'eventBudget',
     'externalAvatarUrls',
     'joinAdmission',

@@ -54,18 +54,12 @@ import { hasRank, Ranks } from '../../src/core/extras/ranks.js'
 import { clientIpKeys } from '../../src/server/uploadLimits.js'
 import { previewValue } from '../../src/core/extras/assetURL.js'
 import {
-  GROWTH_RESERVE_BYTES,
   OWN_AVATAR_MAX_LENGTH,
-  RANKED_RESERVE_PLAYERS,
   SNAPSHOT_FIXED_BYTES,
-  SNAPSHOT_STEP_NAMES,
-  encodeSnapshot,
   envelopeBytes,
   fitsJoinState,
-  joinStateBytes,
   joinStateReport,
   settingsBytes,
-  visitorShortfall,
 } from '../../src/core/extras/joinBudget.js'
 import {
   PLAYER_NAME_MAX_LENGTH,
@@ -321,37 +315,4 @@ export function loadRoute(limits, network, config = { clientIpHeader: '' }) {
     preValidation: vm.runInContext('admitConnection', context),
     options: vm.runInContext(`(${options})`, context),
   }
-}
-
-export function connectionMethod(context) {
-  const method = source.match(/^ {2}async onConnection\([^]*?^ {2}}/m)?.[0]
-  assert.ok(method)
-  return vm.runInNewContext(`(class { ${method} }).prototype.onConnection`, {
-    setTimeout,
-    clearTimeout,
-    TAKEOVER_CLOSE_MS: 2000,
-    writePacket,
-    SNAPSHOT_CAP,
-    SNAPSHOT_STEP_NAMES,
-    encodeSnapshot,
-    envelopeBytes,
-    visitorShortfall,
-    joinStateBytes,
-    RANKED_RESERVE_PLAYERS,
-    GROWTH_RESERVE_BYTES,
-    SNAPSHOT_FIXED_BYTES,
-    Ranks,
-    hasRank,
-    isExternalUrl,
-    Socket,
-    briefError,
-    previewValue,
-    // a token that fails to verify is taken for a forgery here, not for an expired session (tests of expiry give
-    // their own)
-    expiredSessionUser: async () => null,
-    solanaGating,
-    evmGating,
-    eventPayload,
-    ...context,
-  })
 }

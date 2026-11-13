@@ -1,21 +1,19 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import fs from 'node:fs'
-import vm from 'node:vm'
-import moment from 'moment'
-import { isAvatarUrl, sanitizeName } from '../src/core/extras/entityModifyPolicy.js'
 import { SNAPSHOT_CAP } from '../src/core/extras/writeLedger.js'
 import { readPacket } from '../src/core/packets.js'
 import { createConnectionLimits, readConnectionLimitsEnv } from '../src/server/connectionLimits.js'
-import { connectionMethod, fakeWs, loadRoute, makeNetwork } from './lib/networkHarness.mjs'
+import { fakeWs, loadNetwork, makeNetwork } from './lib/network.mjs'
+// (the route is still cut out of src/server/index.js's text: it moves to a module of its own later)
+import { loadRoute } from './lib/networkHarness.mjs'
 
-const source = fs.readFileSync(new URL('../src/core/systems/ServerNetwork.js', import.meta.url), 'utf8')
-const disconnect = source.match(/^ {2}onDisconnect = [^]*?^ {2}}/m)?.[0]
-assert.ok(disconnect)
-const Disconnect = vm.runInNewContext(`(class { ${disconnect.replace(' = ', '').replace(' =>', '')} })`, {
-  solanaGating: { clearSocket() {} },
-})
+// The real network (test/lib/network.mjs), its own onConnection and onDisconnect. What the old harness injected
+// into the join is given per test through stand-in modules: the session tokens (each step of the join can be held,
+// below) and the id of a new user
+const UTILS = 'src/core/utils.js'
+const SESSION = 'src/core/utils-server.js'
+const net = await loadNetwork({ standIns: [UTILS, SESSION] })
 const stages = ['readJWT', 'lookup', 'insert', 'createJWT', 'livekit']
 
 function deferred() {
@@ -29,7 +27,7 @@ function deferred() {
 
 // `lapsed`: the user row of a genuine token that is past its end ({ id, rank }), for a connection whose token no
 // longer signs anyone in
-function fixture({ pause, fail, existing = false, auth = { userId: 'player' }, lapsed = null } = {}) {
+function fixture(t, { pause, fail, existing = false, auth = { userId: 'player' }, lapsed = null } = {}) {
   const logs = []
   const calls = []
   const players = new Map()
@@ -48,12 +46,8 @@ function fixture({ pause, fail, existing = false, auth = { userId: 'player' }, l
     }
     return Promise.resolve(value)
   }
-  const network = makeNetwork(line => logs.push(line))
-  network.onDisconnect = Disconnect.prototype.onDisconnect
-  network.connecting = new Set()
-  network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
   const user = { id: 'player', name: 'Saved', rank: 0 }
-  network.db = table => {
+  const db = table => {
     assert.equal(table, 'users')
     return {
       where(key, id) {
@@ -68,6 +62,20 @@ function fixture({ pause, fail, existing = false, auth = { userId: 'player' }, l
       },
     }
   }
+  const network = makeNetwork(t, {
+    net,
+    log: line => logs.push(line),
+    init: { db },
+    modules: {
+      [SESSION]: {
+        readJWT: () => step('readJWT', auth),
+        createJWT: () => step('createJWT', 'new-token'),
+        expiredSessionUser: () => step('expiredSessionUser', lapsed?.id ?? null),
+      },
+      [UTILS]: { uuid: () => user.id },
+    },
+  })
+  network.spawn = { position: [0, 0, 0], quaternion: [0, 0, 0, 1] }
   const serial = { serialize: () => [] }
   Object.assign(network.world, {
     settings: { ...serial, playerLimit: 0 },
@@ -118,19 +126,6 @@ function fixture({ pause, fail, existing = false, auth = { userId: 'player' }, l
     network.write = () => {
       throw failure
     }
-  network.onConnection = connectionMethod({
-    isNumber: value => typeof value === 'number',
-    sanitizeName,
-    isAvatarUrl,
-    readJWT: () => step('readJWT', auth),
-    createJWT: () => step('createJWT', 'new-token'),
-    expiredSessionUser: () => step('expiredSessionUser', lapsed?.id ?? null),
-    uuid: () => user.id,
-    moment,
-    process: { env: {} },
-    performance,
-    HEALTH_MAX: 100,
-  })
   const limits = createConnectionLimits({ ...readConnectionLimitsEnv({}), ratePerMin: 0 })
   const { preValidation } = loadRoute(limits, network)
   const peer = () => {
@@ -173,8 +168,8 @@ function fixture({ pause, fail, existing = false, auth = { userId: 'player' }, l
 }
 
 for (const pause of stages) {
-  test(`onConnection: close during ${pause} stops setup and releases the transport lease`, async () => {
-    const f = fixture({ pause })
+  test(`onConnection: close during ${pause} stops setup and releases the transport lease`, async t => {
+    const f = fixture(t, { pause })
     const running = f.run()
     const value = await f.reached.promise
     assert.equal(f.ws.listenerCount('close'), 1, 'cancellation listener is installed before awaiting')
@@ -194,8 +189,8 @@ for (const pause of stages) {
     assert.deepEqual(f.entered, [])
   })
 
-  test(`onConnection: rejection of ${pause} closes with 1011 and holds the lease until close`, async () => {
-    const f = fixture({ pause })
+  test(`onConnection: rejection of ${pause} closes with 1011 and holds the lease until close`, async t => {
+    const f = fixture(t, { pause })
     const running = f.run()
     await f.reached.promise
     f.pending.reject(f.failure)
@@ -213,8 +208,8 @@ for (const pause of stages) {
 }
 
 for (const fail of ['add-before', 'add-after', 'snapshot', 'write', 'enter', 'cleanup']) {
-  test(`onConnection: ${fail} failure after users insert cleans up before closing`, async () => {
-    const f = fixture({ fail })
+  test(`onConnection: ${fail} failure after users insert cleans up before closing`, async t => {
+    const f = fixture(t, { fail })
     await f.run()
     assert.equal(f.inserted.length, 1)
     assert.equal(f.added.length, fail === 'add-before' || fail === 'snapshot' ? 0 : 1)
@@ -231,9 +226,9 @@ for (const fail of ['add-before', 'add-after', 'snapshot', 'write', 'enter', 'cl
   })
 }
 
-test('onConnection: new and existing users receive a snapshot and disconnect normally', async () => {
+test('onConnection: new and existing users receive a snapshot and disconnect normally', async t => {
   for (const existing of [false, true]) {
-    const f = fixture({ existing })
+    const f = fixture(t, { existing })
     await f.run()
     const socket = f.network.sockets.get('player')
     assert.ok(socket)
@@ -253,9 +248,9 @@ test('onConnection: new and existing users receive a snapshot and disconnect nor
   }
 })
 
-test('onConnection: an invalid or absent JWT still creates an anonymous user', async () => {
+test('onConnection: an invalid or absent JWT still creates an anonymous user', async t => {
   for (const params of [{ authToken: 'invalid' }, {}]) {
-    const f = fixture({ auth: null })
+    const f = fixture(t, { auth: null })
     await f.run(params)
     assert.equal(f.inserted.length, 1)
     assert.ok(!f.calls.includes('lookup'))
@@ -264,8 +259,8 @@ test('onConnection: an invalid or absent JWT still creates an anonymous user', a
   }
 })
 
-test('onConnection: a second connection while the first is still connecting is refused', async () => {
-  const f = fixture({ existing: true, pause: 'livekit' })
+test('onConnection: a second connection while the first is still connecting is refused', async t => {
+  const f = fixture(t, { existing: true, pause: 'livekit' })
   const running = f.run()
   const value = await f.reached.promise
   const ws = f.peer()
@@ -282,8 +277,8 @@ test('onConnection: a second connection while the first is still connecting is r
   assert.equal(f.limits.stats().active, 0)
 })
 
-test('onConnection: a registered player whose connection answers a ping keeps it; the newcomer is refused', async () => {
-  const f = fixture({ existing: true })
+test('onConnection: a registered player whose connection answers a ping keeps it; the newcomer is refused', async t => {
+  const f = fixture(t, { existing: true })
   f.network.takeoverPingMs = 1000
   await f.run()
   const first = f.network.sockets.get('player')
@@ -308,8 +303,8 @@ test('onConnection: a registered player whose connection answers a ping keeps it
   assert.equal(f.limits.stats().active, 0)
 })
 
-test('onConnection: a registered player whose connection is silent (a suspended phone tab) gives way', async () => {
-  const f = fixture({ existing: true })
+test('onConnection: a registered player whose connection is silent (a suspended phone tab) gives way', async t => {
+  const f = fixture(t, { existing: true })
   f.network.takeoverPingMs = 20
   await f.run()
   const first = f.network.sockets.get('player')
@@ -331,8 +326,8 @@ test('onConnection: a registered player whose connection is silent (a suspended 
   assert.equal(f.limits.stats().active, 0)
 })
 
-test('onConnection: player limit kicks through the writer before touching the database', async () => {
-  const f = fixture()
+test('onConnection: player limit kicks through the writer before touching the database', async t => {
+  const f = fixture(t)
   f.network.world.settings.playerLimit = 1
   const other = {}
   f.network.sockets.set('other', other)
@@ -345,7 +340,7 @@ test('onConnection: player limit kicks through the writer before touching the da
   f.ws.finishClose()
   assert.equal(f.limits.stats().active, 0)
   // no token at all: refused without reading anything
-  const g = fixture()
+  const g = fixture(t)
   g.network.world.settings.playerLimit = 1
   g.network.sockets.set('other', {})
   await g.run({})
@@ -354,8 +349,8 @@ test('onConnection: player limit kicks through the writer before touching the da
   g.ws.finishClose()
 })
 
-test('onConnection: in a full world, a player whose old connection went silent can still come back', async () => {
-  const f = fixture({ existing: true })
+test('onConnection: in a full world, a player whose old connection went silent can still come back', async t => {
+  const f = fixture(t, { existing: true })
   f.network.takeoverPingMs = 20
   f.network.world.settings.playerLimit = 1
   await f.run()
@@ -369,8 +364,8 @@ test('onConnection: in a full world, a player whose old connection went silent c
   f.ws.finishClose()
 })
 
-test('onConnection: a newcomer that closes while the old connection is asked frees the id at once', async () => {
-  const f = fixture({ existing: true })
+test('onConnection: a newcomer that closes while the old connection is asked frees the id at once', async t => {
+  const f = fixture(t, { existing: true })
   // long enough that only an early end (not the deadline) can finish the wait within the check below
   f.network.takeoverPingMs = 3000
   await f.run()
@@ -405,8 +400,8 @@ test('onConnection: a newcomer that closes while the old connection is asked fre
 // (What a join gets when its user's rank, name or avatar changed while it was being set up, the takeover included,
 // is in test/userRowsNetwork.test.js, through the handlers that make those changes.)
 
-test('answersPing: the mark stays until its own deadline, and a later probe keeps its own', async () => {
-  const f = fixture({ existing: true })
+test('answersPing: the mark stays until its own deadline, and a later probe keeps its own', async t => {
+  const f = fixture(t, { existing: true })
   await f.run()
   const socket = f.network.sockets.get('player')
   const answered = f.network.answersPing(socket, 40)
@@ -427,8 +422,8 @@ test('answersPing: the mark stays until its own deadline, and a later probe keep
   f.ws.finishClose()
 })
 
-test('playersPresent: a user counts once, registered or joining, and a join of no known user counts on its own', () => {
-  const f = fixture()
+test('playersPresent: a user counts once, registered or joining, and a join of no known user counts on its own', t => {
+  const f = fixture(t)
   f.network.sockets.set('player', {})
   f.network.sockets.set('other', {})
   assert.equal(f.network.playersPresent(), 2)
@@ -458,8 +453,8 @@ const holdVoice = f => {
   return hold
 }
 
-test('onConnection: in a full world, nobody else can take the place of a player being replaced', async () => {
-  const f = fixture({ existing: true })
+test('onConnection: in a full world, nobody else can take the place of a player being replaced', async t => {
+  const f = fixture(t, { existing: true })
   f.network.takeoverPingMs = 20
   f.network.world.settings.playerLimit = 1
   await f.run()
@@ -483,8 +478,8 @@ test('onConnection: in a full world, nobody else can take the place of a player 
   f.ws.finishClose()
 })
 
-test('onConnection: a replacement that closes during its last wait gives back the place and the id at once', async () => {
-  const f = fixture({ existing: true })
+test('onConnection: a replacement that closes during its last wait gives back the place and the id at once', async t => {
+  const f = fixture(t, { existing: true })
   f.network.takeoverPingMs = 20
   f.network.world.settings.playerLimit = 1
   await f.run()
@@ -516,8 +511,8 @@ test('onConnection: a replacement that closes during its last wait gives back th
   f.ws.finishClose()
 })
 
-test('checkSockets: a connection being asked by a takeover is left to it', () => {
-  const f = fixture()
+test('checkSockets: a connection being asked by a takeover is left to it', t => {
+  const f = fixture(t)
   const terminated = []
   const probing = { probing: true, pingPending: true, alive: false, disconnect: () => terminated.push('probing') }
   const stale = { probing: false, pingPending: true, alive: false, disconnect: () => terminated.push('stale') }
@@ -527,8 +522,8 @@ test('checkSockets: a connection being asked by a takeover is left to it', () =>
   assert.deepEqual(terminated, ['stale'])
 })
 
-test('onConnection: a refused snapshot write cleans up the player before transport close', async () => {
-  const f = fixture()
+test('onConnection: a refused snapshot write cleans up the player before transport close', async t => {
+  const f = fixture(t)
   f.network.write = () => false
   await f.run()
   assert.equal(f.destroyed.length, 1)
@@ -542,8 +537,8 @@ test('onConnection: a refused snapshot write cleans up the player before transpo
   assert.equal(f.limits.stats().active, 0)
 })
 
-test('onConnection: a snapshot over its cap is refused before any player is added (player_limit kick)', async () => {
-  const f = fixture()
+test('onConnection: a snapshot over its cap is refused before any player is added (player_limit kick)', async t => {
+  const f = fixture(t)
   // over the cap in what it sends, not in what is counted (a world stored before the budget): the visitor passes
   // the headroom rule and the real size refuses it
   f.network.world.blueprints = { serialize: () => 'x'.repeat(SNAPSHOT_CAP) }
@@ -564,8 +559,8 @@ test('onConnection: a snapshot over its cap is refused before any player is adde
   assert.equal(f.limits.stats().active, 0)
 })
 
-test('onConnection: a snapshot near 900 KiB is the first write and completes a join', async () => {
-  const f = fixture()
+test('onConnection: a snapshot near 900 KiB is the first write and completes a join', async t => {
+  const f = fixture(t)
   f.network.world.blueprints = { serialize: () => [{ id: 'loaded', props: { text: 'x'.repeat(900 * 1024) } }] }
   await f.run()
   assert.equal(f.network.sockets.size, 1)
@@ -580,8 +575,8 @@ test('onConnection: a snapshot near 900 KiB is the first write and completes a j
   assert.equal(f.limits.stats().active, 0)
 })
 
-test('onConnection: arbitrary thrown values are never inspected or stringified', async () => {
-  const f = fixture({ pause: 'createJWT' })
+test('onConnection: arbitrary thrown values are never inspected or stringified', async t => {
+  const f = fixture(t, { pause: 'createJWT' })
   const running = f.run()
   await f.reached.promise
   const error = {
@@ -602,9 +597,9 @@ test('onConnection: arbitrary thrown values are never inspected or stringified',
   f.ws.finishClose()
 })
 
-test('onConnection: a token due for renewal is replaced in the snapshot, for the same user; a fresh one is kept', async () => {
+test('onConnection: a token due for renewal is replaced in the snapshot, for the same user; a fresh one is kept', async t => {
   for (const renew of [true, false]) {
-    const f = fixture({ existing: true, auth: { userId: 'player', renew } })
+    const f = fixture(t, { existing: true, auth: { userId: 'player', renew } })
     await f.run()
     const [, snapshot] = readPacket(f.ws.packets[0])
     assert.equal(snapshot.id, 'player')
@@ -614,20 +609,20 @@ test('onConnection: a token due for renewal is replaced in the snapshot, for the
     f.ws.finishClose()
   }
   // a token to renew whose user row is gone signs nobody in: a new user, with that user's own new token
-  const f = fixture({ existing: false, auth: { userId: 'player', renew: true } })
+  const f = fixture(t, { existing: false, auth: { userId: 'player', renew: true } })
   await f.run()
   assert.equal(f.inserted.length, 1)
   assert.equal(f.calls.filter(call => call === 'createJWT').length, 1)
   f.ws.finishClose()
 })
 
-test('onConnection: a session that ended unused starts a new visitor, and says so when its user had a rank', async () => {
+test('onConnection: a session that ended unused starts a new visitor, and says so when its user had a rank', async t => {
   for (const [rank, said] of [
     [2, true],
     [1, true],
     [0, false],
   ]) {
-    const f = fixture({ auth: null, lapsed: { id: 'gone-admin\nforged', rank } })
+    const f = fixture(t, { auth: null, lapsed: { id: 'gone-admin\nforged', rank } })
     await f.run({ authToken: 'expired-token' })
     const warnings = f.logs
     assert.equal(f.inserted.length, 1, 'a new anonymous user')
@@ -640,7 +635,7 @@ test('onConnection: a session that ended unused starts a new visitor, and says s
     f.ws.finishClose()
   }
   // the same expired token presented again and again is said once
-  const again = fixture({ auth: null, lapsed: { id: 'gone-admin', rank: 2 } })
+  const again = fixture(t, { auth: null, lapsed: { id: 'gone-admin', rank: 2 } })
   await again.run({ authToken: 'expired-token' })
   again.ws.finishClose()
   for (let i = 0; i < 3; i++) {
@@ -650,7 +645,7 @@ test('onConnection: a session that ended unused starts a new visitor, and says s
   }
   assert.equal(again.logs.filter(line => line.startsWith('[auth] the session of a ranked user')).length, 1)
   // a token that is simply not genuine is not looked up at all
-  const f = fixture({ auth: null })
+  const f = fixture(t, { auth: null })
   await f.run({ authToken: 'forged' })
   assert.ok(!f.calls.includes('lapsed lookup'))
   f.ws.finishClose()

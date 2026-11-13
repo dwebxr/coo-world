@@ -422,7 +422,9 @@ function Messages({ world, active }) {
 
 // A chat line. Text is rendered only as host strings (toText). The kind is set by the host (chatPolicy.js): system
 // and tip lines carry an icon and a colour no other line can show, an app's line always shows the app's name, and
-// a player's line always shows the sender. A line without a kind (an older server) is a plain line.
+// a player's line always shows the sender. An app line a visitor's client sent also shows whose (`via`, set by the
+// server: chatPolicy.js CHAT_KINDS); one without it is drawn as before. A line without a kind (an older server) is a
+// plain line.
 export function Message({ msg }) {
   const kind = msg?.kind
   const body = toText(msg?.body, CHAT_BODY_MAX_LENGTH)
@@ -441,10 +443,17 @@ export function Message({ msg }) {
       </span>
     )
   } else if (kind === 'app') {
+    const via = msg.via
+    const viaName = via && typeof via === 'object' ? toText(via.name, NAME_MAX_LENGTH) || 'Anonymous' : ''
     head = (
       <>
         <span className='message-app'>{toText(msg.app, CHAT_APP_NAME_MAX_LENGTH) || 'App'}</span>
         {from && <span className='message-from'>[{from}]</span>}
+        {viaName && (
+          <span className='message-via' title={`Sent from ${viaName}'s browser by this app's script`}>
+            via {viaName}
+          </span>
+        )}
       </>
     )
   } else if (kind === 'player' || msg?.fromId != null) {
@@ -464,6 +473,11 @@ export function Message({ msg }) {
         -webkit-text-stroke: 0.25rem rgba(0, 0, 0, 0.2);
         .message-from {
           margin-right: 0.25rem;
+        }
+        .message-via {
+          margin-right: 0.25rem;
+          font-size: 0.8125rem;
+          opacity: 0.6;
         }
         .message-marker {
           display: inline-flex;

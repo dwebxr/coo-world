@@ -1291,7 +1291,10 @@ export class ServerNetwork extends System {
 
   // a client script's broadcast world.chat(): relayed as that app's line. Only the text and a display name come
   // from the packet (through the script chat rules); the kind, the missing player id and the app's name (from the
-  // server's blueprint) are the server's. Any visitor may send it, since client scripts run in visitors' browsers
+  // server's blueprint) are the server's. Any visitor may send it, since client scripts run in visitors' browsers,
+  // so the line also says whose: `via`, the id and the name this connection's player has here, never anything of
+  // the packet (its own `via` or any other field is not read). An attribution, not an authentication: it does not
+  // show that the app's script wrote the line, and the name is the one the visitor chose (chatPolicy.js CHAT_KINDS)
   onAppChat = async (socket, data, meta) => {
     if (!isObject(data) || Array.isArray(data) || typeof data.id !== 'string') {
       return this.logOnce(
@@ -1319,7 +1322,13 @@ export class ServerNetwork extends System {
     // a client script speaking through the player's connection: a budget of its own, and nothing said to a player
     // who typed nothing
     if (!this.spend(socket, 'appChat', meta)) return
-    const message = { id: uuid(), ...line, createdAt: moment().toISOString() }
+    const player = socket.player.data
+    const message = {
+      id: uuid(),
+      ...line,
+      via: { id: player.id, name: player.name },
+      createdAt: moment().toISOString(),
+    }
     this.world.chat.add(message, false)
     this.send('chatAdded', message, socket.id, { skippable: true })
   }

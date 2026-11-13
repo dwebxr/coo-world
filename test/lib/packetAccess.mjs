@@ -25,7 +25,7 @@ export const CLASSES = {
   'no-handler': 'server to client; the server has no handler for it, so a copy a client sends does nothing',
   nobody: 'refused whoever sends it, an admin included',
   'app-line':
-    "a client script's line of chat: any connection may send it, and a line the server relays is the line of the app it names, never a player's",
+    "a client script's line of chat: any connection may send it, and a line the server relays is the line of the app it names, never a player's, and names the sender's player in `via`",
   world: "depends on the world's settings: what is refused in one world is allowed in another",
 }
 
@@ -176,7 +176,7 @@ export const PACKET_RULES = {
   appChat: [
     e2e(
       'app-line',
-      "a client script's world.chat(): relayed, if at all, as the line of an app that exists (kind app, no player id, the app's name from the server's blueprint), within the connection's budget. Not checked by anything: which app's script sent it (a known gap, CHANGELOG \"What remains\"; the suite says in a GAP line what the server did)",
+      "a client script's world.chat(): relayed, if at all, as the line of an app that exists (kind app, no player id, the app's name from the server's blueprint), naming the sender's player in `via` (the server's, whatever the packet claimed), within the connection's budget. Not checked by anything, and the server cannot tell: which app's script sent it (CHANGELOG \"What remains\")",
       'app-chat'
     ),
   ],

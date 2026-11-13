@@ -81,8 +81,10 @@
   },
   "devDependencies": {
     "@babel/eslint-parser": "^7.23.10",
+    "@babel/parser": "^7.29.11",
     "@babel/preset-react": "^7.23.10",
     "@solana/spl-token": "^0.4.14",
+    "acorn": "^8.14.0",
     "esbuild": "^0.25.12",
     "esbuild-plugin-polyfill-node": "^0.3.0",
     "eslint": "^8.57.0",

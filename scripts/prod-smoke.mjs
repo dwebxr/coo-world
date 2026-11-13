@@ -24,6 +24,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { serverStartEnv } from './lib/startEnv.mjs'
 
 const INSTALL_TIMEOUT_MS = 5 * 60 * 1000
 const HEALTH_TIMEOUT_MS = 60 * 1000
@@ -251,15 +252,8 @@ async function run() {
       TMPDIR: process.env.TMPDIR,
       NODE_ENV: 'production', // as the image sets it
       COMMIT_HASH: 'prod-smoke',
-      WORLD: 'world-smoke',
-      PORT: String(port),
-      JWT_SECRET: crypto.randomBytes(32).toString('hex'),
-      SAVE_INTERVAL: '60',
-      PUBLIC_MAX_UPLOAD_SIZE: '12',
-      PUBLIC_WS_URL: `ws://127.0.0.1:${port}/ws`,
-      PUBLIC_API_URL: `${origin}/api`,
-      ASSETS: 'local',
-      ASSETS_BASE_URL: `${origin}/assets`,
+      // (the same set the image check gives its containers: scripts/lib/startEnv.mjs)
+      ...serverStartEnv({ world: 'world-smoke', port, jwtSecret: crypto.randomBytes(32).toString('hex') }),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: GROUPS,

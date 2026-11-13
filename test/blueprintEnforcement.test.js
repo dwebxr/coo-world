@@ -174,6 +174,31 @@ test('blueprint enforcement: a refused add removes the matching optimistic entit
   assert.ok(f.world.entities.get('next-app'), 'the pending refusal is consumed once')
 })
 
+test('blueprint enforcement: a valid add under a stored id is refused and changes nothing', t => {
+  const f = fixture(t)
+  const current = { id: 'bp', version: 0, name: 'stored' }
+  f.world.blueprints.add(current)
+  const accounting = () => ({
+    bytes: f.world.blueprints.bytes,
+    sizes: [...f.world.blueprints.sizes],
+    authors: [...f.world.blueprints.authors],
+  })
+  const before = accounting()
+  // the policy takes it: only the id that is taken refuses it
+  const replacement = { id: 'bp', version: 1, name: 'replacement' }
+  assert.equal(sanitizeBlueprintAdd(replacement).ok, true)
+  f.send('blueprintAdded', replacement)
+  assert.equal(f.world.blueprints.get('bp'), current)
+  assert.deepEqual(accounting(), before)
+  assert.equal(f.packets().length, 0, 'nobody else is told')
+  assert.deepEqual(f.packets(f.author), [['onBlueprintModified', current]], 'the sender gets the stored one back')
+  assert.equal(f.network.dirtyBlueprints.size, 0)
+  // the entity its client announced with it is taken back, as for any refused add
+  f.send('entityAdded', app('replacement-app', 'bp'))
+  assert.deepEqual(f.packets(f.author)[1], ['onEntityRemoved', 'replacement-app'])
+  assert.equal(f.world.entities.get('replacement-app'), undefined)
+})
+
 test('blueprint enforcement: a model/script the server would read as a local file is refused at the packet', t => {
   const f = fixture(t)
   for (const [i, change] of [

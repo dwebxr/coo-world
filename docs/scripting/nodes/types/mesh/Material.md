@@ -16,8 +16,9 @@ A material has only the properties below; `id` is read-only, and setting it thro
 property a material does not have (`material.opacity = 0.5`) does nothing: the write is ignored, and the app's console
 says so once per name in each run of the app, for the first 16 names of a run; the next new name gets one line saying
 that further ones are not reported, and after that nothing is said in that run. What counts as one name: a name of up
-to 64 characters is itself; a longer one counts by its length only (two long names of the same length count as one,
-and the line shows only the length); a symbol counts by its description under the same rule, and a string and a
+to 64 UTF-16 code units (JavaScript's `length`: a letter of the Latin alphabet is one, an emoji usually two) is
+itself; a longer one counts by its length only (two long names of the same length count as one, and the line shows
+only the length, in UTF-16 code units); a symbol counts by its description under the same rule, and a string and a
 symbol never count as one. So the 17th different property set need not be the one that gets the last line.
 
 ### `.id`: String

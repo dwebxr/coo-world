@@ -180,13 +180,17 @@ test("the app's console is told once per app run and property name, naming the p
   const shown = warningsOf(() =>
     write(
       mount(app('c')),
-      `world.material[Symbol('s')] = 1; world.material['x'.repeat(500)] = 1; world.material[Symbol('z'.repeat(300))] = 1`
+      `world.material[Symbol('s')] = 1; world.material['x'.repeat(500)] = 1; world.material[Symbol('z'.repeat(300))] = 1
+      world.material['\u{1F525}'.repeat(32)] = 1; world.material['\u{1F30A}'.repeat(33)] = 1`
     )
   )
+  // (lengths are in UTF-16 code units: 32 emoji are 64, still a short name shown as it is; 33 are 66, a long one)
   assert.deepEqual(shown, [
     '[material] Symbol(s) not set: a material has no such property (it has id, textureX, textureY, color, emissiveIntensity, fog)',
-    '[material] a property name of 500 characters not set: a material has no such property (it has id, textureX, textureY, color, emissiveIntensity, fog)',
-    '[material] a symbol whose description has 300 characters not set: a material has no such property (it has id, textureX, textureY, color, emissiveIntensity, fog)',
+    '[material] a property name of 500 UTF-16 code units not set: a material has no such property (it has id, textureX, textureY, color, emissiveIntensity, fog)',
+    '[material] a symbol whose description has 300 UTF-16 code units not set: a material has no such property (it has id, textureX, textureY, color, emissiveIntensity, fog)',
+    `[material] ${'\u{1F525}'.repeat(32)} not set: a material has no such property (it has id, textureX, textureY, color, emissiveIntensity, fog)`,
+    '[material] a property name of 66 UTF-16 code units not set: a material has no such property (it has id, textureX, textureY, color, emissiveIntensity, fog)',
   ])
 })
 
@@ -288,6 +292,10 @@ test('what the host keeps of the names it told, and its warnings, are its own co
     // arguments are kept, and the run and its material are used after the measurement. (Symbols: with string keys made
     // the same way this measurement shows no difference in V8, which handed this code a copy of its own of such a
     // property key; a symbol's description is the very string the symbol was made with.)
+    // What tells the mutants apart (a table or a warning that kept the slices: about 64 MiB) is how V8 represents a short
+    // slice of a large string today, as observed on Node 24: a slice that points into the large string. An engine that
+    // copied such slices eagerly would keep nothing either way: the correct tree would still pass, and this probe would
+    // no longer tell those mutants from it.
     const out = reportingProbe(
       small.url,
       `

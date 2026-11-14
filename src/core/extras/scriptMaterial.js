@@ -23,19 +23,21 @@ const handles = new WeakMap() // wrapper -> { run, assertRun, names }
 // next new name gets one line saying that further ones are not told, and from then on an ignored write of that run
 // does nothing more (its key is not looked at).
 //
-// What counts as one name: a string and a symbol never count as one. A name of at most NAME_TEXT code units (a string
-// key, or a symbol's description) is itself, compared exactly; a symbol without a description is told apart from one
-// whose description is empty. A longer name is not read: it counts by its kind and its length only, so two long names
-// of the same kind and length count as one, and it is shown by its length, without any of its text.
+// What counts as one name: a string and a symbol never count as one. A name of at most NAME_TEXT UTF-16 code units (a
+// string key, or a symbol's description; a length is always in code units, so 33 emoji are 66) is itself, compared
+// exactly; a symbol without a description is told apart from one whose description is empty. A longer name is not
+// read: it counts by its kind and its length only, so two long names of the same kind and length count as one, and it
+// is shown by its length, without any of its text.
 //
 // What is read of a key here: its kind, its length (a symbol's description, then that string's length), and its code
-// units only when there are at most NAME_TEXT of them. What the host keeps for a run: at most MATERIAL_REPORT_LIMIT
+// units only when there are at most NAME_TEXT of them. What this table keeps for a run: at most MATERIAL_REPORT_LIMIT
 // names, each its own copy of at most NAME_TEXT code units (made from their char codes, so that it shares nothing
-// with the key) or a kind and a length, and nothing once the line has been said; the warnings are made from those
-// copies too. So the warnings per run (MATERIAL_REPORT_LIMIT + 1), what the host keeps of a run's names and the work
-// done here for an ignored write are bounded. Not bounded: what the script itself keeps or spends (it can hold as much
-// in its own variables, and write as often, while its run lasts), and the engine's own handling of a key before it
-// reaches this code, which a script pays with any use of that key.
+// with the key) or a kind and a length; once the limit's line has been said the table keeps none of them (a console
+// that keeps its arguments still holds the earlier warnings, which are made from those same short copies). So the
+// warnings per run (MATERIAL_REPORT_LIMIT + 1), what is kept of a run's names and the work done here for an ignored
+// write are bounded. Not bounded: what the script itself keeps or spends (it can hold as much in its own variables,
+// and write as often, while its run lasts), and the engine's own handling of a key before it reaches this code, which
+// a script pays with any use of that key.
 export const MATERIAL_REPORT_LIMIT = 16
 const NAME_TEXT = 64
 // app run -> { strings: the short string names told, others: the other names told (`kind:text` or `kind#length`) },
@@ -73,7 +75,9 @@ function reportIgnored({ run, names }, key) {
   let shown
   if (long) {
     seen.add(`${kind}#${length}`)
-    shown = symbol ? `a symbol whose description has ${length} characters` : `a property name of ${length} characters`
+    shown = symbol
+      ? `a symbol whose description has ${length} UTF-16 code units`
+      : `a property name of ${length} UTF-16 code units`
   } else {
     const copy = copyStart(text ?? '', length)
     seen.add(shortString ? copy : `${kind}:${copy}`)

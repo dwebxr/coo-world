@@ -24,10 +24,10 @@ const handles = new WeakMap() // wrapper -> { run, assertRun, names }
 // does nothing more (its key is not looked at).
 //
 // What counts as one name: a string and a symbol never count as one. A name of at most NAME_TEXT UTF-16 code units (a
-// string key, or a symbol's description; a length is always in code units, so 33 emoji are 66) is itself, compared
-// exactly; a symbol without a description is told apart from one whose description is empty. A longer name is not
-// read: it counts by its kind and its length only, so two long names of the same kind and length count as one, and it
-// is shown by its length, without any of its text.
+// string key, or a symbol's description; a length is always in code units, so 33 emoji of two code units each are
+// 66) is itself, compared exactly; a symbol without a description is told apart from one whose description is empty.
+// A longer name is not read: it counts by its kind and its length only, so two long names of the same kind and length
+// count as one, and it is shown by its length, without any of its text.
 //
 // What is read of a key here: its kind, its length (a symbol's description, then that string's length), and its code
 // units only when there are at most NAME_TEXT of them. What this table keeps for a run: at most MATERIAL_REPORT_LIMIT

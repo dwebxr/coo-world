@@ -214,6 +214,7 @@ test("a mesh's material belongs to its app run: kept past the app's teardown it 
       same: material === world.mesh.material,
       sameMaterial: material === world.other.material,
       frozen: Object.isFrozen(material),
+      extra: material.extra,
       attempts,
     }
   `,
@@ -222,7 +223,9 @@ test("a mesh's material belongs to its app run: kept past the app's teardown it 
   assert.equal(result.same, true, 'the same object within the run')
   assert.equal(result.sameMaterial, true, 'and for another mesh of the run with that material')
   assert.equal(result.frozen, true)
-  assert.deepEqual(result.attempts, ['TypeError', 'TypeError', 'TypeError', 'TypeError', 'TypeError'])
+  // a write of a property a material does not have is ignored (it stores nothing; scriptMaterialWrites.test.js)
+  assert.deepEqual(result.attempts, ['TypeError', 'allowed', 'TypeError', 'TypeError', 'TypeError'])
+  assert.equal(result.extra, undefined)
   assert.notEqual(meshB.getProxy().material, host.material, "the other app's run gets its own")
   // the app's own (synchronous) destroy handler still runs inside its run
   host.destroy()

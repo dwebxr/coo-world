@@ -88,6 +88,7 @@ export async function bundleNodes() {
         export * as THREE from './src/core/extras/three'
         export { getNodeRef, resolveValueRef } from './src/core/nodes/refs'
         export { isScriptView } from './src/core/extras/sealMath.js'
+        export { isMaterialHandle } from './src/core/extras/scriptMaterial.js'
         export { glbToNodes } from './src/core/extras/glbToNodes'
       `,
       resolveDir: root,
@@ -788,6 +789,10 @@ class Characterization {
     const stubName = this.stubNameOf(value)
     if (stubName) return `stub:${stubName}`
     if (!raw && this.m.isScriptView(value)) return `view:${this.canon(value, depth, seen, true)}`
+    // a script's material: its own properties, as a plain object's (its prototype is the one all of them share)
+    if (!raw && this.m.isMaterialHandle(value)) {
+      return `material${this.plain(value, Object.isFrozen(value) ? 'F' : Object.isSealed(value) ? 'S' : '', depth, seen)}`
+    }
     if (!raw && utilTypes.isProxy(value)) {
       const node = this.m.getNodeRef(value)
       if (node) return node === this.current?.node ? 'proxy:self' : `proxy:${node.name}${idTag(node)}`
@@ -880,7 +885,9 @@ class Characterization {
   deep(value) {
     let text = this.canon(value)
     const plain =
-      value !== null && typeof value === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(value))
+      value !== null &&
+      typeof value === 'object' &&
+      ([Object.prototype, null].includes(Object.getPrototypeOf(value)) || this.m.isMaterialHandle(value))
     if (!plain || this.m.getNodeRef(value) || this.m.resolveValueRef(value)) return text
     const reads = []
     for (const key of Reflect.ownKeys(value)) {

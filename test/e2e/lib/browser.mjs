@@ -57,9 +57,10 @@ export async function openWorld(
   return { page, consoleLines, pageErrors, errorLines }
 }
 
-// Collects what the page's policies say they refuse, or (report-only) would refuse, in every document of the context:
-// the `securitypolicyviolation` events, as `{ directive, blocked, source, line, disposition }`. A violation inside a
-// worker fires no event in a document; the server's `[csp]` lines have those too (they are posted to it).
+// Collects what the page's policies refuse, or (report-only) would refuse, in every document of the context: the
+// `securitypolicyviolation` events, as `{ directive, blocked, source, line, disposition }` (`enforce` or `report`).
+// A violation inside a worker fires no event in a document; the server's `[csp]` lines have those too (they are posted
+// to it).
 export async function watchPolicy(context) {
   const violations = []
   await context.exposeFunction('__policyViolation', violation => violations.push(violation))
@@ -77,11 +78,13 @@ export async function watchPolicy(context) {
   return violations
 }
 
-// Puts an inline script without the nonce into the page: outside the world page's report-only policy. Returns how
-// many times such a script has run in this page (it runs: the policy is not enforced). The browser posts a report,
-// which the server writes as REPORTED_INLINE.
+// Puts an inline script without the nonce into the page: outside the world page's policy. Returns how many times such
+// a script has run in this page: undefined when the policy is enforced (CSP_MODE=enforce, the harness's default:
+// lib/server.mjs), as it refuses the script; 1 the first time in report mode, where it runs. Either way the browser
+// posts a report, which the server writes as REFUSED_INLINE (enforce) or REPORTED_INLINE (report).
 // (not page.addScriptTag: in WebKit it takes the engine's report-only console message for a failure)
 export const REPORTED_INLINE = /\[csp\] report-only: script-src-elem would refuse inline, asked by /
+export const REFUSED_INLINE = /\[csp\] enforced: script-src-elem refused inline, asked by /
 export function runInlineScript(page) {
   return page.evaluate(() => {
     const script = document.createElement('script')

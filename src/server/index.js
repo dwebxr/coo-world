@@ -26,7 +26,7 @@ import { cleaner } from './cleaner'
 import { errorHandler } from './errorHandler'
 import { checkJwtSecret, checkPreviousJwtSecret } from './jwtSecret'
 import { adminMode, adminStartupNotes } from './adminCode'
-import { pageRoutes, readHstsEnv, securityHeaders } from './pageRoutes'
+import { cspModeNote, pageRoutes, readCspModeEnv, readHstsEnv, securityHeaders } from './pageRoutes'
 import { cspReportRoute } from './cspReports'
 import { walletOf } from './solana-gating'
 import { createUploadLimits, readUploadLimitsEnv } from './uploadLimits'
@@ -49,6 +49,9 @@ if (!process.env.PORT) {
 }
 // HSTS_MAX_AGE (pageRoutes.js): a bad value stops here
 const hstsMaxAge = readHstsEnv(process.env)
+// CSP_MODE (pageRoutes.js): how the world page's policy is sent; a bad value stops here, and the mode is said
+const cspMode = readCspModeEnv(process.env)
+console.log(cspModeNote(cspMode))
 checkJwtSecret(process.env.JWT_SECRET)
 checkPreviousJwtSecret(process.env.JWT_SECRET_PREVIOUS, process.env.JWT_SECRET)
 // the admin mode (a code, open to all, or locked: adminCode.js) and what there is to say about it
@@ -224,9 +227,10 @@ fastify.register(pageRoutes, {
     url: process.env.ASSETS_BASE_URL,
   }),
   envsCode,
+  cspMode,
 })
-// where browsers post what the world page's report-only policy would have refused (cspReports.js)
-fastify.register(cspReportRoute, { clientIpHeader: uploadLimitsConfig.clientIpHeader })
+// where browsers post what the world page's policy refused, or in report mode would have refused (cspReports.js)
+fastify.register(cspReportRoute, { mode: cspMode, clientIpHeader: uploadLimitsConfig.clientIpHeader })
 if (world.assetsDir) {
   fastify.register(assetRoutes, { root: world.assetsDir })
 }

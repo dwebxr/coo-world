@@ -68,6 +68,7 @@ export const ENV_TABLE = {
   KICK_MINUTES: operator('how long a kick keeps a user out'),
   KICK_BY_ADDRESS: operator('a kick by an admin also holds new users from that address'),
   HSTS_MAX_AGE: operator('the Strict-Transport-Security header'),
+  CSP_MODE: operator("`report` or `enforce`: how the world page's Content-Security-Policy is sent"),
   CLEAN: operator('the clean-up of unused assets at start-up'),
   CLEAN_TRASH_DAYS: operator('how long removed assets stay in the trash'),
   DB_SCHEMA: operator('the PostgreSQL schema'),

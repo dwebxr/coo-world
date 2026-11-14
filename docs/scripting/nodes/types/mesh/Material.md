@@ -11,6 +11,9 @@ is not mounted (not yet added to the app or to world space, or removed again) ha
 
 ## Properties
 
+A material has only the properties below. Setting any other (`material.opacity = 0.5`) does nothing: the write is
+ignored, and the app's console says so once per property name in each run of the app.
+
 ### `.textureX`: Number
 
 The offset of the texture on the `x` axis. Useful for UV scrolling. Must be a finite number.

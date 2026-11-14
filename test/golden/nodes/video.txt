@@ -538,7 +538,7 @@ i playing = true
 i isPlaying = true
 i time = 3
 i currentTime = 3
-i material = {textureX:<accessor>,textureY:<accessor>}F reads{textureX=0.25 textureY=0.75} (class: {textureX:<accessor>,textureY:<accessor>} reads{textureX=0.25 textureY=0.75})
+i material = material{textureX:<accessor>,textureY:<accessor>}F reads{textureX=0.25 textureY=0.75} (class: {textureX:<accessor>,textureY:<accessor>} reads{textureX=0.25 textureY=0.75})
 i onLoad = undefined
 i name = "video"
 i as on node: id position quaternion rotation scale matrixWorld active parent children _ref _isRef onPointerEnter onPointerLeave onPointerDown onPointerUp cursor

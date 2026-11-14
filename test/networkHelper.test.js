@@ -488,6 +488,7 @@ test("network helper: a sourceRoot whose class does not import tips.js (from bef
     '// src/server/network/solanaWallet.js',
     '// src/server/network/evmWallet.js',
     '// src/server/network/persistence.js',
+    '// src/server/network/authority.js',
   ])
   const calls = []
   const network = makeNetwork(t, {
@@ -522,6 +523,7 @@ test("network helper: a sourceRoot whose class does not import persistence.js (f
     '// src/server/network/solanaWallet.js',
     '// src/server/network/evmWallet.js',
     '// src/server/network/tips.js',
+    '// src/server/network/authority.js',
   ])
   const calls = []
   const network = makeNetwork(t, {

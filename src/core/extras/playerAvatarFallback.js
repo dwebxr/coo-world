@@ -47,8 +47,11 @@ export function avatarSettled(player, url) {
 // new avatar is made, added beside the one showing and mounted; the player takes it only once it is mounted and
 // everything about it is set, and only then does the previous avatar go. A failure on the way takes the new avatar out
 // again and leaves the player as it was, then rethrows, so that avatarLoadFailed finds the player with the avatar it
-// still shows: the player's avatar, its url and the fields from `takes` are set last, after everything that can fail,
-// and the heights of the name and the bubble, and whether the name shows, are put back. The previous avatar goes out of
+// still shows: the player's avatar, its url and the fields from `takes` are set after the making, the mount and the
+// set-up of the new avatar, which is all that is undone on a failure, and the heights of the name and the bubble, and
+// whether the name shows, are put back. What comes after the player has taken the new avatar is not undone: if taking
+// the previous one out throws, that is logged (takeOut), the new avatar stays, and the old one may be left partly
+// taken down (Node.remove detaches it and Node.deactivate marks it unmounted either way). The previous avatar goes out of
 // the player's base, not only out of the world: only deactivated (as every replaced avatar was, before #51 too), it
 // stayed there for good, one more node for every change of avatar for as long as the player stayed, each gone through
 // again whenever the player moved.

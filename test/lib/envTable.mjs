@@ -105,6 +105,8 @@ export const ENV_TABLE = {
   WS_CONNECT_CONCURRENT_PER_48: operator('connection limit'),
   WS_MAX_SOCKETS: operator('connection limit'),
   WS_CONNECT_MAX_TRACKED: operator('connection limit'),
+  WS_RESERVED_SOCKETS: operator('connection places kept for ranked users'),
+  WS_RESERVED_RANK: operator('connection places kept for ranked users'),
   AI_MAX_PER_USER_PER_HOUR: operator('AI limit'),
   AI_MAX_PER_HOUR: operator('AI limit'),
   AI_MAX_CONCURRENT: operator('AI limit'),

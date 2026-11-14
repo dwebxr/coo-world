@@ -15,6 +15,7 @@ import { previewValue } from '../../core/extras/assetURL'
 import { SNAPSHOT_CAP } from '../../core/extras/writeLedger'
 import { joinStateReport, settingsBytes } from '../../core/extras/joinBudget'
 import { briefError } from '../../core/extras/logOnce'
+import { Ranks } from '../../core/extras/ranks'
 
 const SAVE_INTERVAL = parseInt(process.env.SAVE_INTERVAL || '60') // seconds
 const defaultSpawn = '{ "position": [0, 0, 0], "quaternion": [0, 0, 0, 1] }'
@@ -94,12 +95,17 @@ export async function hydrate() {
     console.error(err)
   }
   // the user ids, so that no new app takes one: an app holding the id of a user who is away would otherwise make
-  // that user's next join collide with it (ids only, about 60 bytes each in memory)
+  // that user's next join collide with it (ids only, about 60 bytes each in memory); and the ranks stored with them,
+  // builder and above, for the places kept for ranked users (storedRankOf), which the door asks without a database
+  // read. A read that fails leaves the list empty: those places stay unused until a restart reads it.
   try {
-    for (const row of await this.db('users').select('id')) this.userIds.add(row.id)
+    for (const row of await this.db('users').select('id', 'rank')) {
+      this.userIds.add(row.id)
+      if (row.rank >= Ranks.BUILDER) this.storedRanks.set(row.id, row.rank)
+    }
   } catch (err) {
     console.error(
-      `[network] user ids could not be read (${briefError(err)}); an app that takes one is moved to a new id when that user joins`
+      `[network] user ids could not be read (${briefError(err)}); an app that takes one is moved to a new id when that user joins, and the places kept for ranked users stay unused until a restart`
     )
   }
   // the join snapshot's world state (joinBudget.js): a world stored over the budget loads whole, is reported,

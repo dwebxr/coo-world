@@ -57,6 +57,7 @@ import { endGrantByDecision } from '../../server/rankGrants'
 import { createUserRows } from '../../server/userRows'
 import { adminMode, adminWaitScale, createAdminGate } from '../../server/adminCode'
 import { createKickList, readKickEnv } from '../../server/kickList'
+import { keptPlacesInEffect, readConnectionLimitsEnv } from '../../server/connectionLimits'
 import { createActionBudgets } from '../extras/actionBudget'
 import { createPendingChanges } from '../extras/pendingChanges'
 import { eventPayload } from '../extras/eventPayload.js'
@@ -93,6 +94,10 @@ export class ServerNetwork extends System {
     this.connecting = new Set() // user ids reserved while their connection is still being set up
     // every user id this world has issued (start-up read and new users): a new app id may not be one of them
     this.userIds = new Set()
+    // user id -> the rank stored with that user, for each user whose stored rank is builder or above: read at start
+    // (hydrate) and changed with every rank this server gives or takes (storeRank). What the door asks about places
+    // kept for ranked users (storedRankOf), without a database read
+    this.storedRanks = new Map()
     this.socketIntervalId = setInterval(() => this.checkSockets(), PING_RATE * 1000)
     this.saveTimerId = null
     this.stopping = false
@@ -692,9 +697,28 @@ export class ServerNetwork extends System {
   // A rank an admin (or the admin code) decided for a player, in the turn in which the player was given it. It is
   // the user's rank for this server from here on, so a token grant of the session is over now (rankGrants.js), and
   // the user's row is to hold it (userRows.js). Whether and when the write lands changes nothing in the session.
+  // The list of stored ranks (storedRankOf) takes it in the same turn, whether or not the write lands: as the row
+  // does for a join (userRows.js), what this server decided holds for it from the decision on.
   storeRank(player, rank) {
     endGrantByDecision({ player, wallets: solanaGating })
     this.userRows().intend(player.data.id, { rank })
+    if (rank >= Ranks.BUILDER) this.storedRanks.set(player.data.id, rank)
+    else this.storedRanks.delete(player.data.id)
+  }
+
+  // The rank stored with user `id` as this server knows it (the list above): its row's at start-up, or the last one
+  // this server gave or took since. A rank edited in the database while the server runs is not seen here until a
+  // restart. Visitor for anything else, an id that is not a string included. Never the session's rank (a token's
+  // grant, the world's rank setting, admin for everyone where admin is open to all).
+  storedRankOf(id) {
+    return this.storedRanks.get(id) ?? Ranks.VISITOR
+  }
+
+  // The places kept for ranked users (connectionLimits.js: WS_RESERVED_SOCKETS and WS_RESERVED_RANK), as they are
+  // in effect for this world's admin mode, made from the environment on first use: { places, rank }, places 0 where
+  // there are none (not configured, or admin open to all). The door (wsRoute.js) and onConnection read it.
+  keptPlaces() {
+    return (this.keptPlaceState ??= keptPlacesInEffect(readConnectionLimitsEnv(process.env), this.admin().mode))
   }
 
   // The world's admin mode and the brake on `/admin` codes (adminCode.js), made from the environment on first use:
@@ -721,7 +745,10 @@ export class ServerNetwork extends System {
 
   // `origin`: the connection's address key and its wider networks (clientIpKeys), for the brake on admin codes and
   // for a kick that holds new users at its address
-  async onConnection(ws, params, origin) {
+  // `rankedUser`: the user id the door let in on a place kept for ranked users (wsRoute.js), null for any other
+  // connection. Such a connection joins only as that user, whose row (with what this server decided over it,
+  // userRows.js) has the kept places' rank: otherwise it is refused (kick `player_limit`) before a user is made for it
+  async onConnection(ws, params, origin, { rankedUser = null } = {}) {
     // still loading (start): the user ids and the join-state accounting are not complete yet
     if (this.stopping || this.starting) return ws.close()
     let cancelled = false
@@ -732,6 +759,7 @@ export class ServerNetwork extends System {
     //   user, whose one place it shares with that user's other connections (registered, being replaced, or joining
     //   too), or `{ user: null }`, a place of its own. A join is counted as a socket only once registered, after waits
     //   on the database and the voice token: without a place held meanwhile, joins arriving together all found room.
+    //   `ranked`: taken with the room kept for ranked users (takePlace's `listed`).
     // - `reserved`, its user id against a second join of the same user (`connecting`).
     let place = null
     let reserved = null
@@ -745,18 +773,33 @@ export class ServerNetwork extends System {
       // what this server decided for the user's row was kept while the join could still need it (userRows.js)
       if (id !== null) this.userRows().sweep(id)
     }
+    // The places kept for ranked users (connectionLimits.js), and whether user `id` is one they are for by the list
+    // of stored ranks (storedRankOf): asked before the database is read, and asked of the row once it is (below)
+    const kept = this.keptPlaces()
+    const isListed = id => kept.places > 0 && this.storedRankOf(id) >= kept.rank
     // Takes the place of user `id` (null: a place of its own), giving back the one held before. A user who has a
     // place already shares it, whatever the limit; otherwise the limit is asked here, with no wait between the
     // question and the taking. The limit is asked only when a place is taken: a limit lowered while joins are being
     // set up does not turn away those that hold one.
-    const takePlace = id => {
+    // `listed`: the user is one the places kept for ranked users are for, by the list of stored ranks (below), and
+    // the limit is playerLimit plus those places. Said once per user id when one of them is taken.
+    const takePlace = (id, listed = false) => {
       releasePlace()
       const shared = id !== null && (this.sockets.has(id) || !!this.joining?.has(id))
       const limit = this.world.settings.playerLimit
-      if (!shared && isNumber(limit) && limit > 0 && this.playersPresent() >= limit) return false
+      const limited = !shared && isNumber(limit) && limit > 0
+      const room = listed ? kept.places : 0
+      if (limited && this.playersPresent() >= limit + room) return false
+      if (limited && this.playersPresent() >= limit) {
+        this.logOnce(
+          this,
+          `kept-place:${id}`,
+          `[network] ${previewValue(id, 64)} (stored rank ${this.storedRankOf(id)}) was let past playerLimit (${limit}) on a place kept for ranked users (${this.playersPresent() - limit + 1} of ${room} in use)`
+        )
+      }
       if (id === null) this.arriving = (this.arriving ?? 0) + 1
       else (this.joining ??= new Map()).set(id, (this.joining.get(id) ?? 0) + 1)
-      place = { user: id }
+      place = { user: id, ranked: listed }
       return true
     }
     // Run when the join ends (the finally below: registered, refused or failed) and when its connection closes, which
@@ -785,7 +828,7 @@ export class ServerNetwork extends System {
         this.write(ws, writePacket('kick', 'player_limit'), { name: 'kick' })
         ws.close()
       }
-      if (!takePlace(auth?.userId ?? null)) return refuseFull()
+      if (!takePlace(auth?.userId ?? null, isListed(auth?.userId))) return refuseFull()
 
       // A kicked user waits (kickList.js): told so and closed, with nothing added or announced. Asked where the
       // user is first known, and once more after the join's last wait (below)
@@ -832,9 +875,27 @@ export class ServerNetwork extends System {
           }
         }
       }
+      // The rank stored with the user, as this server means it: the row read above, with what this server decided
+      // over it and may not have stored yet (userRows.js). The places kept for ranked users answer to it: the door
+      // and the place above asked the list of stored ranks.
+      const stored = user ? (this.userRows().intended(user.id)?.rank ?? user.rank) : null
+      // A connection the door let in on a kept place is that user's with that rank, or it is refused here: before a
+      // new user is made for it or it takes a place as anyone's (a kept place never makes a new user). Said once per
+      // user id.
+      if (rankedUser !== null && !(user?.id === rankedUser && stored >= kept.rank)) {
+        this.logOnce(
+          this,
+          `kept-refused:${rankedUser}`,
+          `[network] a connection let in through a place kept for ranked users is not one: ${user?.id === rankedUser ? `${previewValue(rankedUser, 64)} has a stored rank of ${stored}` : `its session token brought no user row of ${previewValue(rankedUser, 64)}`}; refused`
+        )
+        return refuseFull()
+      }
       // A token whose user row is gone makes a new user (below), not the one the token names: the place held so far is
       // that user's, and the new one needs a place of its own (the limit is asked again)
       if (place.user !== (user?.id ?? null) && !takePlace(user?.id ?? null)) return refuseFull()
+      // A place taken with the kept room for a user whose row does not have the kept places' rank (the list said
+      // otherwise): taken again as anyone's, which the limit may refuse
+      if (place.ranked && !(stored >= kept.rank) && !takePlace(user.id)) return refuseFull()
       if (!user) {
         // no valid session token: a new user. Where an admin's kick holds new users at this address, it waits
         // before a row is made for it

@@ -147,9 +147,9 @@ export function fixture(t, { env = {}, modules = {}, uuid = nextId } = {}) {
     return ws
   }
   // `origin`: where the connection comes from ({ key, parents }), as the route gives it; `ws`: a test's own
-  // connection, to close while the join waits
-  const join = async (params = {}, origin, ws = connection()) => {
-    await network.onConnection(ws, params, origin)
+  // connection, to close while the join waits; `admission`: what the route hands on of the door ({ rankedUser })
+  const join = async (params = {}, origin, ws = connection(), admission) => {
+    await network.onConnection(ws, params, origin, admission)
     ws.drain()
     const [method, snapshot] = ws.packets.length ? readPacket(ws.packets[0]) : []
     return { ws, method, snapshot, bytes: ws.packets[0]?.length }

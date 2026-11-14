@@ -220,7 +220,7 @@ export const OTHER_COVER = [
 export const REFUSED_EVENT_NAMES = ['tip', 'evmWallet', 'command']
 
 // the cases of access-control.mjs that are not about one packet
-export const OTHER_CASES = ['identity', 'secrets', 'secrets-wallet-world']
+export const OTHER_CASES = ['identity', 'secrets', 'secrets-wallet-world', 'reserve']
 
 export const rulesOf = name => (Object.prototype.hasOwnProperty.call(PACKET_RULES, name) ? PACKET_RULES[name] : null)
 export const isHandled = name => (rulesOf(name) ?? []).some(rule => HANDLED.includes(rule.class))

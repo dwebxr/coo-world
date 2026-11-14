@@ -230,6 +230,8 @@ for (const [name, result, granted] of [
     assert.equal(socket.player.data.rank, granted ? Ranks.BUILDER : Ranks.VISITOR)
     assert.equal(socket.player.rankRevision, granted ? 1 : 0)
     assert.equal(gating.walletOf(socket.id), granted ? address : null)
+    // a grant is the session's, not a stored rank: no place kept for ranked users comes with it (storedRankOf)
+    assert.equal(f.network.storedRankOf(socket.id), Ranks.VISITOR)
     assert.equal(f.calls.length, 1)
     assert.equal(f.calls[0].wallet, address)
     assert.equal(f.calls[0].options.fresh, true)

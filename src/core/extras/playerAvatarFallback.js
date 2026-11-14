@@ -57,6 +57,14 @@ export function avatarSettled(player, url) {
 // promise (Avatar.mounting) does: it is awaited (which is also what handles its rejection), the load is checked again
 // (anything may have happened meanwhile), and the instance must be there.
 //
+// Except for an avatar with no factory, which never has an instance: Avatar.mountInstance makes one from the factory
+// and from nothing else. That is what ServerLoader gives for every avatar url, on the server (and in the node client,
+// which loads with it): it reads no VRM, and its avatar is a stand-in. A stand-in is taken as it is, as every avatar was
+// before the mount was checked (#51): the player has it and its url, so asking again for the same url loads nothing,
+// and with no heights to read the name and the bubble go to 0.2. It is not a failed mount: nothing is reported and no
+// other avatar is tried (the built-in one would be a stand-in too). A browser's loader gives every avatar its factory
+// (ClientLoader, createVRMFactory), so in a browser no instance after the mount is still a failed mount.
+//
 // `prepare(avatar)` sets what the avatar needs before it mounts; `takes(avatar)` returns the fields the player takes
 // from the mounted avatar, set together with the avatar.
 export async function installAvatar(player, load, url, src, { prepare, takes } = {}) {
@@ -75,7 +83,8 @@ export async function installAvatar(player, load, url, src, { prepare, takes } =
       takeOut(base, avatar)
       return
     }
-    if (!avatar.instance) throw new Error(`[avatar] ${url} could not be mounted`)
+    // (a stand-in, with no factory, can have no instance: above)
+    if (!avatar.instance && avatar.factory) throw new Error(`[avatar] ${url} could not be mounted`)
     // read from the mounted avatar: before its mount it has no instance and no heights
     const headToHeight = avatar.getHeadToHeight()
     const fields = takes?.(avatar)

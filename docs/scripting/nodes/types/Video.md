@@ -57,10 +57,11 @@ a `play()` they now keep pending, and so start to sound.
 
 `material.textureX` and `material.textureY` offset the video texture (finite numbers only); setting any other
 property does nothing, as on a mesh's material (the app's console says so once per name and run, for the first 16
-names of a run, then one more line, and then nothing). As a mesh's material, it belongs to the run of the app the
-video is mounted for: the same frozen object within the run, and setting a property throws `[app] this app has
-stopped` once that app has stopped. Before the video is mounted (added to the app or to world space), once it is
-unmounted, and on the server, `material` is `undefined`, as for a mesh.
+names of a run, then one more line, and then nothing; what counts as one name is said under
+[Material](/docs/scripting/nodes/types/mesh/Material.md#properties)). As a mesh's material, it belongs to the run of
+the app the video is mounted for: the same frozen object within the run, and setting a property throws `[app] this
+app has stopped` once that app has stopped. Before the video is mounted (added to the app or to world space), once
+it is unmounted, and on the server, `material` is `undefined`, as for a mesh.
 
 ### `.color`: String
 

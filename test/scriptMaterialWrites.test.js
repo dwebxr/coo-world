@@ -176,18 +176,21 @@ test("the app's console is told once per app run and property name, naming the p
   // (b's run has told `opacity` already: the limit counts its names)
   assert.equal(many.length, m.MATERIAL_REPORT_LIMIT)
   assert.match(many.at(-1), /^\[material\] more properties .* without a further warning$/)
-  // a long name is cut, a symbol is named
-  const long = warningsOf(() =>
-    write(mount(app('c')), `world.material['x'.repeat(500)] = 1; world.material[Symbol('s')] = 1`)
+  // a short name is shown as it is, a symbol by its description; a longer name by its length, without its text
+  const shown = warningsOf(() =>
+    write(
+      mount(app('c')),
+      `world.material[Symbol('s')] = 1; world.material['x'.repeat(500)] = 1; world.material[Symbol('z'.repeat(300))] = 1`
+    )
   )
-  assert.equal(
-    long[0],
-    `[material] ${'x'.repeat(64)}… not set: a material has no such property (it has id, textureX, textureY, color, emissiveIntensity, fog)`
-  )
-  assert.match(long[1], /^\[material\] Symbol\(s\) not set/)
+  assert.deepEqual(shown, [
+    '[material] Symbol(s) not set: a material has no such property (it has id, textureX, textureY, color, emissiveIntensity, fog)',
+    '[material] a property name of 500 characters not set: a material has no such property (it has id, textureX, textureY, color, emissiveIntensity, fog)',
+    '[material] a symbol whose description has 300 characters not set: a material has no such property (it has id, textureX, textureY, color, emissiveIntensity, fog)',
+  ])
 })
 
-test('what tells two names apart: a string never counts as a symbol, short names exactly, long ones by start and length', () => {
+test('what tells two names apart: a string never counts as a symbol, short names exactly, longer ones by length', () => {
   const { app, mount } = linkedMeshes()
   const told = code => warningsOf(() => run(code, { material: mount(app('a')).getProxy().material }))
   const long = 'x'.repeat(64)
@@ -198,14 +201,18 @@ test('what tells two names apart: a string never counts as a symbol, short names
   assert.equal(told(`world.material[Symbol()] = 1; world.material[Symbol('')] = 1`).length, 2)
   // two names of 64 code units or fewer are told apart exactly (here they differ in the last one)
   assert.equal(told(`world.material['${'y'.repeat(63)}a'] = 1; world.material['${'y'.repeat(63)}b'] = 1`).length, 2)
-  // longer names that start alike: told apart by their length; of the same length, they count as one
-  assert.equal(told(`world.material['${long}a'] = 1; world.material['${long}ab'] = 1`).length, 2)
-  assert.equal(told(`world.material['${long}a'] = 1; world.material['${long}b'] = 1`).length, 1)
   // two symbols with the same description count as one
   assert.equal(told(`world.material[Symbol('d')] = 1; world.material[Symbol('d')] = 1`).length, 1)
-  // a run that writes as many long names alike in start and length as it likes is told of one of them
+  // longer names: told apart by their length only; of the same length, they count as one, whatever their text
+  assert.equal(told(`world.material['${long}a'] = 1; world.material['${long}ab'] = 1`).length, 2)
+  assert.equal(told(`world.material['${long}a'] = 1; world.material['b${long}'] = 1`).length, 1)
+  assert.equal(told(`world.material[Symbol('${long}a')] = 1; world.material[Symbol('${long}ab')] = 1`).length, 2)
+  assert.equal(told(`world.material[Symbol('${long}a')] = 1; world.material[Symbol('b${long}')] = 1`).length, 1)
+  // a long string and a long symbol of the same length are two names
+  assert.equal(told(`world.material['${long}a'] = 1; world.material[Symbol('${long}a')] = 1`).length, 2)
+  // a run that writes as many long names of one length as it likes is told of one of them
   assert.equal(
-    told(`for (let i = 0; i < 40; i++) world.material['${long}' + String.fromCharCode(97 + (i % 26))] = 1`).length,
+    told(`for (let i = 0; i < 40; i++) world.material[String.fromCharCode(97 + (i % 26)) + '${long}'] = 1`).length,
     1
   )
 })
@@ -219,8 +226,9 @@ function reportingProbe(url, body) {
     const run = {}
     const entity = { deadHook: run, world: {} }
     const material = materialForScript({ ctx: { run, entity } }, { get color() { return 'white' }, set color(value) {} })
-    let warnings = 0
-    console.warn = () => warnings++
+    // every warning's arguments are kept (as a console that keeps its lines would) until the probe ends
+    const warned = []
+    console.warn = (...args) => warned.push(args)
     const out = {}
     ${body}
     process.stdout.write(JSON.stringify(out))
@@ -233,6 +241,9 @@ function reportingProbe(url, body) {
   return JSON.parse(result.stdout)
 }
 
+// (What is counted is a read of a symbol's description, which is a getter. A read of a string's own code units cannot be
+// observed from a script: that a name of more than 64 code units is not read is so by construction (scriptMaterial.js
+// takes only its length), and pinned by its warning, which holds none of its text: the test before this one.)
 test('once the limit is said, an ignored write does not look at its key; a name told already is read once per write', async () => {
   const small = await bundleProbe(`export * from './src/core/extras/scriptMaterial'`)
   try {
@@ -251,13 +262,14 @@ test('once the limit is said, an ignored write does not look at its key; a name 
       })
       const told = Symbol('told')
       for (let i = 0; i < 3; i++) material[told] = 1
-      out.repeated = { reads, warnings }
+      out.repeated = { reads, warnings: warned.length }
       for (let i = 1; i < MATERIAL_REPORT_LIMIT; i++) material[Symbol('s' + i)] = 1
       material[Symbol('over')] = 1
-      out.limit = { reads, warnings }
+      out.limit = { reads, warnings: warned.length }
       for (let i = 0; i < 1000; i++) material[Symbol('after' + i)] = 1
       material[told] = 1
-      out.after = { reads, warnings }
+      material[Symbol('x'.repeat(1 << 20) + 'y')] = 1
+      out.after = { reads, warnings: warned.length }
     `
     )
     assert.deepEqual(out.repeated, { reads: 3, warnings: 1 }, 'a name told already: its description read, no warning')
@@ -268,10 +280,14 @@ test('once the limit is said, an ignored write does not look at its key; a name 
   }
 })
 
-test("what the host keeps of the names it told is its own copy: a script's long keys are not kept alive by it", async () => {
+test('what the host keeps of the names it told, and its warnings, are its own copies: less than 8 MiB kept where slices keep about 64', async () => {
   const small = await bundleProbe(`export * from './src/core/extras/scriptMaterial'`)
   try {
-    // 16 names of 4 MiB each (their first 64 code units differ), dropped by the script once written
+    // 16 symbols whose descriptions are 40 code units, each the start of a string of 4 MiB of its own (a slice, which
+    // keeps that string alive while it is kept as it is), written and then dropped by the script; the warnings'
+    // arguments are kept, and the run and its material are used after the measurement. (Symbols: with string keys made
+    // the same way this measurement shows no difference in V8, which handed this code a copy of its own of such a
+    // property key; a symbol's description is the very string the symbol was made with.)
     const out = reportingProbe(
       small.url,
       `
@@ -279,18 +295,23 @@ test("what the host keeps of the names it told is its own copy: a script's long 
       globalThis.gc()
       const before = process.memoryUsage().heapUsed
       for (let i = 0; i < 16; i++) {
-        let key = String.fromCharCode(65 + i) + 'k'.repeat(4 << 20)
+        let huge = String.fromCharCode(65 + i).repeat(40) + 'k'.repeat(4 << 20)
+        let key = Symbol(huge.slice(0, 40))
         material[key] = 1
-        key = null
+        huge = key = null
       }
       globalThis.gc()
       globalThis.gc()
       out.keptMiB = (process.memoryUsage().heapUsed - before) / (1 << 20)
-      out.warnings = warnings
+      material.color = 'red'
+      out.after = { warnings: warned.length, sameRun: entity.deadHook === run, color: material.color }
     `
     )
-    assert.equal(out.warnings, 16)
-    assert.ok(out.keptMiB < 8, `the host keeps ${out.keptMiB.toFixed(1)} MiB after the keys are dropped`)
+    assert.deepEqual(out.after, { warnings: 16, sameRun: true, color: 'white' })
+    assert.ok(
+      out.keptMiB < 8,
+      `less than 8 MiB is kept once the script's strings are dropped (a table or a warning that kept the slices keeps about 64): ${out.keptMiB.toFixed(1)} MiB`
+    )
   } finally {
     small.destroy()
   }

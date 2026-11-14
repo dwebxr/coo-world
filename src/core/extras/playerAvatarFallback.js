@@ -47,8 +47,14 @@ export function avatarSettled(player, url) {
 // new avatar is made, added beside the one showing and mounted; the player takes it only once it is mounted and
 // everything about it is set, and only then does the previous avatar go. A failure on the way takes the new avatar out
 // again and leaves the player as it was, then rethrows, so that avatarLoadFailed finds the player with the avatar it
-// still shows: the player's avatar, its url and the fields from `takes` are set last, after everything that can fail,
-// and the heights of the name and the bubble, and whether the name shows, are put back.
+// still shows: the player's avatar, its url and the fields from `takes` are set after the making, the mount and the
+// set-up of the new avatar, which is all that is undone on a failure, and the heights of the name and the bubble, and
+// whether the name shows, are put back. What comes after the player has taken the new avatar is not undone: if taking
+// the previous one out throws, that is logged (takeOut), the new avatar stays, and the old one may be left partly
+// taken down (Node.remove detaches it and Node.deactivate marks it unmounted either way). The previous avatar goes out of
+// the player's base, not only out of the world: only deactivated (as every replaced avatar was, before #51 too), it
+// stayed there for good, one more node for every change of avatar for as long as the player stayed, each gone through
+// again whenever the player moved.
 //
 // How the mount is known to have worked: an avatar from the loader's toNodes() carries its factory, so its mount
 // reaches no await and has ended when base.add returns. But Avatar.mount is async and Node.activate drops its promise:
@@ -56,6 +62,14 @@ export function avatarSettled(player, url) {
 // before the steps that follow create, so an instance alone does not prove the mount ended well. The mount's own
 // promise (Avatar.mounting) does: it is awaited (which is also what handles its rejection), the load is checked again
 // (anything may have happened meanwhile), and the instance must be there.
+//
+// Except for an avatar with no factory, which never has an instance: Avatar.mountInstance makes one from the factory
+// and from nothing else. That is what ServerLoader gives for every avatar url, on the server (and in the node client,
+// which loads with it): it reads no VRM, and its avatar is a stand-in. A stand-in is taken as it is, as every avatar was
+// before the mount was checked (#51): the player has it and its url, so asking again for the same url loads nothing,
+// and with no heights to read the name and the bubble go to 0.2. It is not a failed mount: nothing is reported and no
+// other avatar is tried (the built-in one would be a stand-in too). A browser's loader gives every avatar its factory
+// (ClientLoader, createVRMFactory), so in a browser no instance after the mount is still a failed mount.
 //
 // `prepare(avatar)` sets what the avatar needs before it mounts; `takes(avatar)` returns the fields the player takes
 // from the mounted avatar, set together with the avatar.
@@ -75,7 +89,8 @@ export async function installAvatar(player, load, url, src, { prepare, takes } =
       takeOut(base, avatar)
       return
     }
-    if (!avatar.instance) throw new Error(`[avatar] ${url} could not be mounted`)
+    // (a stand-in, with no factory, can have no instance: above)
+    if (!avatar.instance && avatar.factory) throw new Error(`[avatar] ${url} could not be mounted`)
     // read from the mounted avatar: before its mount it has no instance and no heights
     const headToHeight = avatar.getHeadToHeight()
     const fields = takes?.(avatar)
@@ -94,16 +109,17 @@ export async function installAvatar(player, load, url, src, { prepare, takes } =
     throw err
   }
   avatarSettled(player, url)
-  previous?.deactivate()
+  if (previous) takeOut(base, previous)
 }
 
-// a new avatar that is not taken leaves the player's base, and its instance leaves the world
+// an avatar the player does not keep (a new one that is not taken, or the one a new one replaced) leaves the player's
+// base, and its instance leaves the world
 function takeOut(base, avatar) {
   try {
     if (avatar.parent === base) base.remove(avatar)
     else if (avatar.mounted) avatar.deactivate()
   } catch (err) {
-    console.error('[avatar] a new avatar could not be taken out', err)
+    console.error('[avatar] an avatar could not be taken out', err)
   }
 }
 

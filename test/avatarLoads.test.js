@@ -641,3 +641,115 @@ test('PlayerLocal: an avatar that arrives while the view is in first person is h
   await tick()
   assert.equal(p.installed.visible, true)
 })
+
+// A replaced avatar leaves its player: out of the base, as well as out of the world. Only deactivated (as every replaced
+// avatar was, before #51 too), it stayed under the player for good, one more node for every change.
+// `answered(shown)` records the loads asked for from here on; `installed()` waits for the last one's answer (on which
+// installAvatar waited first: it then made the new avatar, added it and began to wait for its mount) and then for that
+// mount (on which installAvatar again waited first, and after which it waits for nothing more). No timer is waited for.
+function answered(shown) {
+  const answers = []
+  const load = shown.p.world.loader.load
+  shown.p.world.loader.load = (type, url) => {
+    const answer = load(type, url)
+    answers.push(answer)
+    return answer
+  }
+  return {
+    answers,
+    installed: async () => {
+      await answers.at(-1)
+      await shown.p.base.children.at(-1)?.mounting
+    },
+  }
+}
+
+// a real player who shows avatar A, a real Avatar node (as showingReal, waiting for the load and the mount instead of a
+// timer)
+async function placedReal(Cls) {
+  const shown = realPlayer(Cls)
+  const waits = answered(shown)
+  const file = avatarFile()
+  shown.p.applyAvatar()
+  shown.loads['https://example.com/a.vrm'].with(file)
+  await waits.installed()
+  shown.a = file.made[0]
+  assert.ok(shown.p.avatar === shown.a, 'A is the player avatar')
+  assert.ok(shown.a.instance, 'A is mounted, with an instance')
+  return { shown, ...waits }
+}
+
+// the avatar nodes under a real player, mounted or not, compared by identity (a failed deepEqual of node trees prints
+// them whole)
+function assertAvatarsUnder(shown, expected, label) {
+  const avatars = shown.p.base.children.filter(node => node.name === 'avatar')
+  assert.equal(avatars.length, expected.length, `${label}: ${expected.length} avatar(s) under the player`)
+  expected.forEach((node, i) => assert.ok(avatars[i] === node, `${label}: avatar ${i}`))
+}
+
+for (const name of ['PlayerRemote', 'PlayerLocal']) {
+  test(`${name}, real nodes: each replaced avatar leaves the player and the world; after five changes one is under it`, async t => {
+    quiet(t)
+    const unhandled = noUnhandled(t)
+    const { shown, installed } = await placedReal(m[name])
+    const { p, world } = shown
+    let previous = shown.a
+    for (let i = 0; i < 5; i++) {
+      const instance = previous.instance
+      const url = `https://example.com/change-${i}.vrm`
+      const file = avatarFile({ headToHeight: 1 + i / 10 })
+      p.modify({ avatar: url })
+      shown.loads[url].with(file)
+      await installed()
+      const next = file.made[0]
+      const label = `change ${i + 1}`
+      assert.ok(p.avatar === next, `${label}: the new avatar is the player's`)
+      assert.equal(p.avatarUrl, url, label)
+      assert.ok(previous.parent === null, `${label}: the replaced one has left the player`)
+      assert.equal(previous.mounted, false, label)
+      assert.equal(previous.instance, null, label)
+      assert.equal(instance.destroyed, true, `${label}: its instance was destroyed`)
+      assert.equal(world.hot.has(instance), false, `${label}: and is out of the hot set`)
+      assert.equal(world.avatars.has(instance), false, `${label}: and out of the avatars`)
+      assertAvatarsUnder(shown, [next], label)
+      assert.equal(world.avatars.size, 1, label)
+      assert.ok(world.avatars.has(next.instance), label)
+      previous = next
+    }
+    assert.deepEqual(unhandled, [])
+  })
+
+  test(`${name}, real nodes: a load superseded while its avatar mounts takes out that avatar alone`, async t => {
+    quiet(t)
+    const unhandled = noUnhandled(t)
+    const { shown, answers, installed } = await placedReal(m[name])
+    const { p, a, world } = shown
+    const fileB = avatarFile()
+    p.modify({ avatar: 'https://example.com/b.vrm' })
+    shown.loads['https://example.com/b.vrm'].with(fileB)
+    // installAvatar has made B, added it beside A and waits for its mount
+    await answers.at(-1)
+    const b = fileB.made[0]
+    assert.ok(b.parent === p.base, 'B is being put in place')
+    // a newer choice: B's load is superseded before installAvatar sees B's mount end
+    p.modify({ avatar: 'https://example.com/c.vrm' })
+    await b.mounting
+    assert.ok(b.parent === null, 'B has left the player')
+    assert.equal(b.mounted, false)
+    assert.equal(b.instance, null)
+    assert.ok(p.avatar === a, 'A is still the player avatar')
+    assert.equal(a.mounted, true, 'and still mounted')
+    assertAvatarsUnder(shown, [a], 'after B was let go')
+    assert.equal(world.avatars.size, 1)
+    assert.ok(world.avatars.has(a.instance))
+    // C takes A's place, and A goes
+    const fileC = avatarFile()
+    shown.loads['https://example.com/c.vrm'].with(fileC)
+    await installed()
+    const c = fileC.made[0]
+    assert.ok(p.avatar === c)
+    assert.ok(a.parent === null, 'A has left the player')
+    assertAvatarsUnder(shown, [c], 'after C')
+    assert.deepEqual(unhandled, [])
+  })
+}

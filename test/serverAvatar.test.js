@@ -14,7 +14,8 @@ import { serializeError } from '../src/core/extras/serializeError.js'
 // PlayerRemote.init makes the parts its avatar uses (the base, the name and the bubble, both mounted) and then asks for
 // its avatar as init does; its physics body is left out (its mount needs PhysX), and nothing here reads it.
 // What the server had before #51 (6b4a892a), for a player on the stand-in: the stand-in as its avatar and its url,
-// the name and the bubble at 0.2 with the name shown, and for a server script `height` and `headToHeight` null.
+// the name and the bubble at 0.2 with the name shown, and for a server script `height` and `headToHeight` null. Not
+// as before #51: a stand-in that is replaced leaves the player (it stayed under it, deactivated).
 
 let bundle
 let m
@@ -115,6 +116,14 @@ function join(world, avatar, { mounted = true } = {}) {
   return p
 }
 
+// the player's avatar is the one avatar node under it, mounted or not (compared by identity: a failed deepEqual of two
+// node trees would print them whole)
+function assertOneAvatarUnder(p, label) {
+  const avatars = p.base.children.filter(node => node.name === 'avatar')
+  assert.equal(avatars.length, 1, `${label}: one avatar under the player, not ${avatars.length}`)
+  assert.ok(avatars[0] === p.avatar, `${label}: the player's own`)
+}
+
 // what a player on the server's stand-in has, as before #51
 function assertOnStandIn(p, url, label) {
   const avatar = p.avatar
@@ -122,7 +131,7 @@ function assertOnStandIn(p, url, label) {
   assert.equal(avatar.name, 'avatar', label)
   assert.equal(avatar.factory, null, `${label}: the loader's stand-in`)
   assert.equal(avatar.instance, null, label)
-  assert.equal(avatar.parent, p.base, `${label}: under the player`)
+  assert.ok(avatar.parent === p.base, `${label}: under the player`)
   assert.equal(avatar.mounted, true, label)
   assert.equal(p.avatarUrl, url, `${label}: with its url`)
   assert.equal(p.avatarFallback ?? null, null, `${label}: no fallback`)
@@ -178,8 +187,10 @@ test('server: an avatar change loads the new url once; the same url again, or a 
   await settle()
   assert.deepEqual(loads, [WORLD_AVATAR, 'asset://other.vrm'])
   assertOnStandIn(p, 'asset://other.vrm', 'the new avatar')
-  assert.notEqual(p.avatar, first, 'a stand-in of its own')
+  assert.ok(p.avatar !== first, 'a stand-in of its own')
   assert.equal(first.mounted, false, 'the one before is unmounted')
+  assert.ok(first.parent === null, 'and has left the player')
+  assertOneAvatarUnder(p, 'after a change')
   // the same url, told again (a server script's setSessionAvatar applies it whatever the player has): nothing loads
   p.modify({ sessionAvatar: 'asset://other.vrm' })
   p.modify({ avatar: WORLD_AVATAR })
@@ -193,6 +204,28 @@ test('server: an avatar change loads the new url once; the same url again, or a 
   assert.deepEqual(loads.slice(2), [WORLD_AVATAR])
   assertOnStandIn(p, WORLD_AVATAR, 'the stored avatar')
   assert.deepEqual(lines, [])
+})
+
+// Before #51 the stand-in a change replaced stayed under the player, deactivated: one more node for every change,
+// for as long as the player stayed, each gone through again whenever the player moved
+test('server: a player whose avatar changes many times keeps one stand-in under it', async t => {
+  const lines = consoleLines(t)
+  const { world, loads } = makeWorld()
+  const p = join(world, WORLD_AVATAR)
+  await settle()
+  for (let i = 0; i < 20; i++) {
+    p.modify({ sessionAvatar: `asset://choice-${i % 2}.vrm` })
+    await settle()
+  }
+  assert.equal(loads.length, 21)
+  assertOnStandIn(p, 'asset://choice-1.vrm', 'the last choice')
+  assertOneAvatarUnder(p, 'after twenty changes')
+  // and after a switch to the built-in avatar (World.hotFailed)
+  world.hotFailed(p, 'update', new Error('boom'))
+  await settle()
+  assert.equal(p.avatarUrl, m.BUILTIN_AVATAR_URL)
+  assertOneAvatarUnder(p, 'after the switch')
+  assert.equal(lines.length, 1, 'the frame loop says the player failed, and nothing else is said')
 })
 
 test('server: a player that throws in the frame loop is kept once, on the built-in avatar, and dropped the second time', async t => {

@@ -64,6 +64,9 @@ export function avatarSettled(player, url) {
 // and with no heights to read the name and the bubble go to 0.2. It is not a failed mount: nothing is reported and no
 // other avatar is tried (the built-in one would be a stand-in too). A browser's loader gives every avatar its factory
 // (ClientLoader, createVRMFactory), so in a browser no instance after the mount is still a failed mount.
+// A stand-in that is replaced leaves the player's base. Before #51 it was only deactivated, as an avatar with a factory
+// still is, and stayed there: one more node for every change of avatar, for as long as the player stayed, each gone
+// through again whenever the player moved.
 //
 // `prepare(avatar)` sets what the avatar needs before it mounts; `takes(avatar)` returns the fields the player takes
 // from the mounted avatar, set together with the avatar.
@@ -103,7 +106,9 @@ export async function installAvatar(player, load, url, src, { prepare, takes } =
     throw err
   }
   avatarSettled(player, url)
-  previous?.deactivate()
+  // (a stand-in leaves the base as well: above)
+  if (previous && !previous.factory) base.remove(previous)
+  else previous?.deactivate()
 }
 
 // a new avatar that is not taken leaves the player's base, and its instance leaves the world

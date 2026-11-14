@@ -260,18 +260,22 @@ export const TIP_RECEIVE_COOLDOWN_MS = 1_000
 export const TIP_TICKET_TTL_MS = 600_000
 export const TIP_TICKETS_PER_SOCKET = 3
 export const TIP_WATCH_PER_SOCKET = 2
-// The watch table of the whole world: 2 jobs for each connection the server admits (WS_MAX_SOCKETS, 64 unless set:
-// 128 jobs). It was 16, which 8 connections filled, and one address may hold 8. With WS_MAX_SOCKETS=0 (no limit on
-// connections) there is no number to derive it from: the table is then 2 x the default, and can be full while a
-// connection has reported nothing. A job is about 1.1 KB of heap with its hash and ticket (measured), so 128 jobs are
-// about 0.14 MB and the table grows by about 2.2 KB per admitted connection.
+// The watch table of the whole world: 2 jobs for each connection the server admits (WS_MAX_SOCKETS and the
+// WS_RESERVED_SOCKETS places kept beyond it for ranked users, 64 + 4 unless set: 136 jobs; the kept places are
+// counted whatever the admin mode, which can only leave room unused). It was 16, which 8 connections filled, and one
+// address may hold 8. With WS_MAX_SOCKETS=0 (no limit on connections) there is no number to derive it from: the
+// table is then 2 x the default WS_MAX_SOCKETS (128), and can be full while a connection has reported nothing. A
+// job is about 1.1 KB of heap with its hash and ticket (measured), so 136 jobs are about 0.15 MB and the table grows
+// by about 2.2 KB per admitted connection.
 // What this is: room in the table. It is not a share of the chain calls: those stay one budget for all jobs
 // (evmTipWatcher.js), so reports from many connections still delay every confirmation.
 // A bad WS_* value throws here as it does in index.js, which reads the same variables at start-up.
 export function resolveTipWatchMax(env = process.env) {
-  const { maxSockets } = readConnectionLimitsEnv(env)
-  // the connection limit admits ceil(maxSockets) connections (connectionLimits.js): the table has room for each
-  return TIP_WATCH_PER_SOCKET * Math.ceil(maxSockets > 0 ? maxSockets : readConnectionLimitsEnv({}).maxSockets)
+  const { maxSockets, reserved } = readConnectionLimitsEnv(env)
+  // the connection limit admits ceil(maxSockets) connections, and `reserved` more for ranked users
+  // (connectionLimits.js): the table has room for each
+  if (!(maxSockets > 0)) return TIP_WATCH_PER_SOCKET * readConnectionLimitsEnv({}).maxSockets
+  return TIP_WATCH_PER_SOCKET * (Math.ceil(maxSockets) + reserved)
 }
 export const TIP_WATCH_MAX = resolveTipWatchMax()
 export const TIP_SEEN_TTL_MS = 1_800_000

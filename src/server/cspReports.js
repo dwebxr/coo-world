@@ -1,11 +1,15 @@
 import { clientIpKey } from './uploadLimits.js'
 
-// Where browsers post what the world page's report-only policy (pageRoutes.js) would have refused, and what the
-// server writes about it.
+// Where browsers post what the world page's policy (pageRoutes.js) refused, or in report mode would have refused,
+// and what the server writes about it.
 //
 // What this is, and no more:
-// - a log for the operator: which directive, what kind of thing it would have refused, and which script asked.
-//   Nothing here blocks anything, and nothing reads the log back.
+// - a log for the operator: which directive, what kind of thing it refused or would have refused, and which script
+//   asked. Nothing here blocks anything (the browser does, when the policy is enforced), and nothing reads the log
+//   back.
+// - what a line says follows the server's own mode (CSP_MODE, pageRoutes.js), never what a post says of itself (a
+//   report's `disposition` is the poster's text): `[csp] report-only: <directive> would refuse …` in report mode,
+//   `[csp] enforced: <directive> refused …` in enforce mode.
 // - anyone can post to it, a browser or not: a line says what was POSTED. Someone can make lines up, and can fill
 //   the hour's table of kinds so that a real one is only counted. The bounds below keep what that costs small
 //   (bytes read, lines written); they do not make the lines true.
@@ -100,7 +104,15 @@ export function readReport(text) {
 
 const powerOfTen = n => n >= 10 && /^10*$/.test(String(n))
 
-export function createCspReports({ log = line => console.log(line), now = Date.now } = {}) {
+// the words of a line, by the server's mode
+const WORDING = {
+  report: { mode: 'report-only', refuse: 'would refuse' },
+  enforce: { mode: 'enforced', refuse: 'refused' },
+}
+
+export function createCspReports({ log = line => console.log(line), now = Date.now, mode = 'report' } = {}) {
+  if (!Object.hasOwn(WORDING, mode)) throw new Error('unknown CSP mode')
+  const words = WORDING[mode]
   let minute = { start: now(), total: 0, addresses: new Map() }
   let hour = { start: now(), kinds: new Map(), reports: 0, uncounted: 0, refused: 0 }
 
@@ -109,7 +121,7 @@ export function createCspReports({ log = line => console.log(line), now = Date.n
     if (at - hour.start < HOUR_MS) return
     if (hour.reports || hour.refused) {
       log(
-        `[csp] report-only, the hour to ${new Date(hour.start + HOUR_MS).toISOString()}: ${hour.reports} reports of ` +
+        `[csp] ${words.mode}, the hour to ${new Date(hour.start + HOUR_MS).toISOString()}: ${hour.reports} reports of ` +
           `${hour.kinds.size} kinds` +
           (hour.uncounted ? `, ${hour.uncounted} more of kinds past the first ${KINDS_MAX}` : '') +
           (hour.refused ? `, ${hour.refused} posts over the rate` : '')
@@ -136,7 +148,7 @@ export function createCspReports({ log = line => console.log(line), now = Date.n
   const take = text => {
     const report = readReport(text)
     if (!report) return false
-    const key = `${report.directive} would refuse ${report.blocked}, asked by ${report.source}`
+    const key = `${report.directive} ${words.refuse} ${report.blocked}, asked by ${report.source}`
     const count = hour.kinds.get(key)
     if (count === undefined && hour.kinds.size >= KINDS_MAX) {
       hour.uncounted++
@@ -145,8 +157,8 @@ export function createCspReports({ log = line => console.log(line), now = Date.n
     const next = (count || 0) + 1
     hour.kinds.set(key, next)
     hour.reports++
-    if (next === 1) log(`[csp] report-only: ${key}`)
-    else if (powerOfTen(next)) log(`[csp] report-only: ${key} (${next} this hour)`)
+    if (next === 1) log(`[csp] ${words.mode}: ${key}`)
+    else if (powerOfTen(next)) log(`[csp] ${words.mode}: ${key} (${next} this hour)`)
     return true
   }
 
@@ -154,7 +166,11 @@ export function createCspReports({ log = line => console.log(line), now = Date.n
 }
 
 // POST /csp-report. Registered as its own plugin: the body parsers below are for this route alone.
-export async function cspReportRoute(fastify, { reports = createCspReports(), clientIpHeader = null } = {}) {
+// `mode`: the server's CSP_MODE, `report` or `enforce` (readCspModeEnv in pageRoutes.js), for the words of its lines.
+export async function cspReportRoute(
+  fastify,
+  { mode = 'report', reports = createCspReports({ mode }), clientIpHeader = null } = {}
+) {
   const text = (req, body, done) => done(null, body)
   // read as text and parsed here: a body that is not JSON is a 400 of this route
   fastify.removeContentTypeParser(['application/json', 'text/plain'])

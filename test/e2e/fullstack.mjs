@@ -30,7 +30,7 @@ import { waitForMemoryToSettle } from './lib/memory.mjs'
 import { failedStart, installAsset, startServer } from './lib/server.mjs'
 import { WireClient, snapshot } from './lib/ws.mjs'
 import {
-  REPORTED_INLINE,
+  REFUSED_INLINE,
   appState,
   becomeAdmin,
   installApp,
@@ -2532,23 +2532,25 @@ async function probes(admin, watcher) {
     'B27 server log: no unhandled rejections or SES errors'
   )
 
-  // ---------- the report-only policy ----------
-  // Everything this run did in the browser (the world, uploads, the script editor from cdnjs with its workers, the
-  // apps above) is inside the policy the page is tried against: no document saw a violation, and no browser posted
-  // one (a worker's would only show there). Reports are posted a moment after the event.
+  // ---------- the world page's policy, enforced ----------
+  // The server runs with CSP_MODE=enforce (lib/server.mjs): a refusal in what this run did in the browser (the world,
+  // uploads, the script editor from cdnjs with its workers, the apps above) would have broken the step that needed it.
+  // No document saw a violation, and no report had reached the server three seconds after the last step (a worker's
+  // violation shows only there; reports are posted a moment after the event, and one later than that is not seen).
   await sleep(3000)
   const posted = server.lines(/\[csp\]/)
   record(
     violations.length === 0 && posted.length === 0,
-    'B28 the report-only policy: nothing this run did is outside it',
+    'B28 the enforced policy: nothing this run did was refused',
     JSON.stringify({ violations: violations.slice(0, 5), posted: posted.slice(0, 5) })
   )
-  // And what it is: a report. An inline script without the nonce is outside the policy; it RUNS all the same (the
-  // policy is not enforced), the document is told, and the server writes what was posted to it.
+  // And that it is enforced: an inline script without the nonce is outside the policy; it does NOT run, the document
+  // is told (disposition `enforce`), and the server writes what was posted to it. (Report mode, where the same script
+  // runs and is reported, is checked by gate-extras.mjs.)
   const before = violations.length
   const ran = await runInlineScript(page)
   // the report reaches the server and the event reaches this process each in its own time: wait for both
-  const wrote = await waitUntil(() => server.lines(REPORTED_INLINE).length === 1 && violations.length > before, {
+  const wrote = await waitUntil(() => server.lines(REFUSED_INLINE).length === 1 && violations.length > before, {
     timeout: 15000,
     message: 'the report and the event',
   })
@@ -2556,13 +2558,14 @@ async function probes(admin, watcher) {
     .catch(() => false)
   const seen = violations.slice(before)
   record(
-    ran === 1 &&
+    ran === undefined &&
       wrote &&
       seen.length === 1 &&
       seen[0].directive === 'script-src-elem' &&
       seen[0].blocked === 'inline' &&
-      seen[0].disposition === 'report',
-    'B29 an inline script without the nonce runs, and is reported (the policy is report-only)',
+      seen[0].disposition === 'enforce' &&
+      server.lines(/\[csp\]/).length === 1,
+    'B29 an inline script without the nonce does not run, and is reported (the policy is enforced)',
     JSON.stringify({ ran, seen, posted: server.lines(/\[csp\]/).slice(0, 5) })
   )
 }

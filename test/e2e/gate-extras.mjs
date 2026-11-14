@@ -10,14 +10,48 @@ import path from 'node:path'
 
 import { BUILD_ROOT, TIMEOUT_SCALE, arg, createResults, ensureOut, eq, ok, sleep, waitUntil } from './lib/common.mjs'
 import { startServer, worldAssetsDir } from './lib/server.mjs'
-import { becomeAdmin, launchBrowser, openWorld, saveArtifacts } from './lib/browser.mjs'
+import {
+  REPORTED_INLINE,
+  becomeAdmin,
+  launchBrowser,
+  openWorld,
+  runInlineScript,
+  saveArtifacts,
+  watchPolicy,
+} from './lib/browser.mjs'
 
 const ENGINE = arg('engine', 'chromium')
+// the report-mode server takes the next port
 const PORT = Number(arg('port', 3123))
 const WORLD_SOURCE = arg('world', null)
 const AGENT_SECONDS = Number(arg('agent-seconds', 60))
 const OUT = ensureOut()
 const { record, step, finish } = createResults(`gate-extras/${ENGINE}`)
+
+// The page headers as src/server/pageRoutes.js sends them, spelled out: PAGE_CSP on every page, and the world page's
+// full policy around the nonce of its response, report-only (beside PAGE_CSP) or enforced (in its place, with
+// frame-ancestors).
+const PAGE_CSP = "frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'"
+const MONACO = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.49.0/'
+const NONCE = /'nonce-([A-Za-z0-9+/]{24})'/
+const fullPolicy = (nonce, { enforced }) =>
+  [
+    "default-src 'self'",
+    `script-src 'self' 'nonce-${nonce}' 'unsafe-eval' 'wasm-unsafe-eval' ${MONACO}`,
+    `style-src 'self' 'unsafe-inline' ${MONACO}`,
+    `font-src 'self' data: ${MONACO}`,
+    'img-src * data: blob:',
+    'media-src * data: blob:',
+    "connect-src 'self' * ws: wss: data: blob:",
+    "worker-src 'self' blob:",
+    "child-src 'self' blob:",
+    'frame-src https://verify.walletconnect.org https://verify.walletconnect.com',
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    ...(enforced ? ["frame-ancestors 'none'"] : []),
+    'report-uri /csp-report',
+  ].join('; ')
 
 // mock Anthropic Messages API: every call returns a tiny valid app script. Like current models, the reply
 // starts with a thinking block (empty text by default), so the server must read the text block by type.
@@ -250,6 +284,7 @@ try {
           return {
             status: res.status,
             csp: res.headers.get('content-security-policy'),
+            reportOnly: res.headers.get('content-security-policy-report-only'),
             xfo: res.headers.get('x-frame-options'),
             permissions: res.headers.get('permissions-policy'),
             nosniff: res.headers.get('x-content-type-options'),
@@ -263,10 +298,14 @@ try {
           asset: await head(`/assets/${script}`),
         }
       }, script)
-      const CSP = "frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'"
       for (const [name, res] of Object.entries(got.pages)) {
         eq(res.status, 200, `${name}: status`)
-        eq(res.csp, CSP, `${name}: Content-Security-Policy`)
+        // the world page by either name: the harness's server enforces its policy (lib/server.mjs), so one policy,
+        // the full one with frame-ancestors (two headers of a name would read here as one text joined by a comma);
+        // the other page: PAGE_CSP
+        const csp = name === 'terms' ? PAGE_CSP : fullPolicy(NONCE.exec(res.csp ?? '')?.[1], { enforced: true })
+        eq(res.csp, csp, `${name}: Content-Security-Policy`)
+        eq(res.reportOnly, null, `${name}: no Content-Security-Policy-Report-Only`)
         eq(res.xfo, 'DENY', `${name}: X-Frame-Options`)
         eq(res.permissions, 'camera=(), geolocation=(), payment=(), usb=()', `${name}: Permissions-Policy`)
         eq(res.nosniff, 'nosniff', `${name}: nosniff`)
@@ -397,6 +436,58 @@ try {
         [...lines, ...errors.map(error => `[pageerror] ${error}`)].join('\n')
       )
       await context.close()
+    }
+  })
+
+  // Report mode, the server's default (CSP_MODE unset or empty), in a real engine. Every other server of the harness
+  // enforces the policy (lib/server.mjs): this is the one browser check of report mode. A short-lived server of its
+  // own, and its world page in a context of its own with the page's script files held back (the page and its inline
+  // scripts load; the world does not start).
+  await step('report mode: an inline script without the nonce runs, and is reported', async () => {
+    const reporting = await startServer({
+      port: PORT + 1,
+      logPath: path.join(OUT, `extras-${ENGINE}-report-mode-server.log`),
+      env: { CSP_MODE: '' },
+    })
+    let context
+    try {
+      context = await browser.newContext()
+      ok(
+        reporting.out.includes(
+          "[envs] CSP_MODE=report: the world page's full policy is tried only: nothing is refused"
+        ),
+        'the server says the mode at start-up'
+      )
+      const violations = await watchPolicy(context)
+      await context.route('**/*', route =>
+        route.request().resourceType() === 'script' ? route.abort() : route.continue()
+      )
+      const probe = await context.newPage()
+      const response = await probe.goto(reporting.url, { waitUntil: 'domcontentloaded' })
+      const headers = await response.allHeaders()
+      const nonce = NONCE.exec(headers['content-security-policy-report-only'] ?? '')?.[1]
+      eq(headers['content-security-policy'], PAGE_CSP, 'Content-Security-Policy: the four directives alone')
+      eq(
+        headers['content-security-policy-report-only'],
+        fullPolicy(nonce, { enforced: false }),
+        'Content-Security-Policy-Report-Only: the full policy'
+      )
+      eq(headers['x-frame-options'], 'DENY', 'X-Frame-Options')
+      eq(await runInlineScript(probe), 1, 'the inline script ran')
+      // the report reaches the server and the event reaches this process each in its own time: wait for both
+      await waitUntil(() => reporting.lines(REPORTED_INLINE).length === 1 && violations.length > 0, {
+        timeout: 15000,
+        message: 'the report and the event',
+      })
+      eq(violations.length, 1, `one violation: ${JSON.stringify(violations)}`)
+      eq(violations[0].directive, 'script-src-elem', 'its directive')
+      eq(violations[0].blocked, 'inline', 'what it was')
+      eq(violations[0].disposition, 'report', 'reported, not enforced')
+      eq(reporting.lines(/\[csp\]/).length, 1, `that report and no other: ${reporting.lines(/\[csp\]/).join(' | ')}`)
+      return reporting.lines(REPORTED_INLINE)[0]
+    } finally {
+      await context?.close().catch(() => {})
+      await reporting.stop()
     }
   })
 

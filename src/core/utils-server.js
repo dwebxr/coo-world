@@ -61,22 +61,25 @@ export function createSessionTokens({ secret, previous = null, now = Date.now })
     })
   }
 
+  // (the library's synchronous form: the same checks as its callback form, which calls back in the same turn)
   function verify(token, key, options) {
-    return new Promise(resolve => {
-      jwt.verify(token, key, { algorithms: [ALGORITHM], clockTimestamp: seconds(), ...options }, (err, data) => {
-        resolve(err ? null : data)
-      })
-    })
+    try {
+      return jwt.verify(token, key, { algorithms: [ALGORITHM], clockTimestamp: seconds(), ...options })
+    } catch {
+      return null
+    }
   }
 
   // -> { userId, renew } for a token that is good now, or null. `renew`: the connection should get a new token
   //    (this one is older than a day, has no end, or was signed with the previous secret).
-  async function read(token) {
+  // readNow answers in the turn it is asked in (the door, wsRoute.js, takes a connection's lease in one turn);
+  // read is the same answer as a promise.
+  function readNow(token) {
     if (typeof token !== 'string' || !token) return null
-    let data = await verify(token, secret)
+    let data = verify(token, secret)
     let old = false
     if (!data && previous) {
-      data = await verify(token, previous)
+      data = verify(token, previous)
       old = true
     }
     if (!data || typeof data.userId !== 'string') return null
@@ -85,20 +88,38 @@ export function createSessionTokens({ secret, previous = null, now = Date.now })
     return { ...data, renew }
   }
 
+  async function read(token) {
+    return readNow(token)
+  }
+
+  // The user id a token CLAIMS, read without checking its signature or its end: anyone can write a token that names
+  // any user, so this is never who a connection is. It is a question asked before the signature is checked, to
+  // spare that check to a token that could not be let in even if it were genuine (wsRoute.js). null for anything
+  // that does not decode to a payload with a string userId.
+  function claimedUserId(token) {
+    if (typeof token !== 'string' || !token) return null
+    try {
+      const payload = jwt.decode(token)
+      return typeof payload?.userId === 'string' ? payload.userId : null
+    } catch {
+      return null
+    }
+  }
+
   // the user id of a token that is genuine but past its end, or null (also for a token that is still good): to tell
   // an operator that a ranked user came back too late, never to sign anyone in
   async function expiredUser(token) {
     if (typeof token !== 'string' || !token) return null
-    if (await read(token)) return null
+    if (readNow(token)) return null
     for (const key of [secret, previous]) {
       if (!key) continue
-      const data = await verify(token, key, { ignoreExpiration: true })
+      const data = verify(token, key, { ignoreExpiration: true })
       if (data && typeof data.userId === 'string') return data.userId
     }
     return null
   }
 
-  return { sign, read, expiredUser }
+  return { sign, read, readNow, claimedUserId, expiredUser }
 }
 
 // the server's own, from the environment
@@ -118,4 +139,13 @@ export function readJWT(token) {
 
 export function expiredSessionUser(token) {
   return sessions.expiredUser(token)
+}
+
+// the door's two questions (wsRoute.js): readJWT's answer in the same turn, and the user id a token claims, unchecked
+export function readJWTNow(token) {
+  return sessions.readNow(token)
+}
+
+export function claimedSessionUser(token) {
+  return sessions.claimedUserId(token)
 }

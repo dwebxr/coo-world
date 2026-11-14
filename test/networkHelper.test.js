@@ -28,6 +28,7 @@ const AMBIENT = {
   PUBLIC_EVM_CHAIN_IDS: '137',
   PUBLIC_API_URL: 'https://ambient.example/api',
   WS_MAX_SOCKETS: '7',
+  WS_RESERVED_SOCKETS: '0',
   ADMIN_CODE: 'an-ambient-code',
   ASSETS_BASE_URL: 'https://ambient.example/assets',
   KICK_MINUTES: 'not a number',
@@ -1079,7 +1080,7 @@ test('network helper: settings of the environment the tests run in change nothin
   // the evaluation is the one made without them; WS_MAX_SOCKETS=many would have thrown at import
   assert.equal((await loadNetwork()).ServerNetwork, net.ServerNetwork)
   assert.equal((await loadNetwork({ env: { WS_MAX_SOCKETS: undefined } })).ServerNetwork, net.ServerNetwork)
-  assert.equal(net.evmGating.TIP_WATCH_MAX, 128)
+  assert.equal(net.evmGating.TIP_WATCH_MAX, 136)
   await t.test('a test under them', async t => {
     t.mock.method(console, 'log', () => {})
     t.mock.method(console, 'error', () => {})
@@ -1091,9 +1092,11 @@ test('network helper: settings of the environment the tests run in change nothin
     assert.equal(process.env.ASSETS_BASE_URL, undefined)
     await network.start()
     assert.ok(network.saveTimerId, 'the first save, after the default interval')
+    assert.deepEqual(network.keptPlaces(), { places: 0, rank: 2 }, 'admin open to all (no ADMIN_CODE): none')
     // a test's own value on top
-    makeNetwork(t, { net, env: { ADMIN_CODE: 'this-test' } })
+    const coded = makeNetwork(t, { net, env: { ADMIN_CODE: 'this-test' } })
     assert.equal(process.env.ADMIN_CODE, 'this-test')
+    assert.deepEqual(coded.keptPlaces(), { places: 4, rank: 2 }, "the default, not the shell's WS_RESERVED_SOCKETS")
   })
   for (const [name, value] of Object.entries(AMBIENT)) assert.equal(process.env[name], value)
 })

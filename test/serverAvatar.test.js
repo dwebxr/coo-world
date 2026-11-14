@@ -54,7 +54,6 @@ const World = loadClient('core/World.js', 'World', {
 })
 
 const WORLD_AVATAR = 'asset://world-default.vrm'
-const settle = () => new Promise(resolve => setTimeout(resolve, 5))
 
 // what is said in the console while a test runs
 function consoleLines(t) {
@@ -65,8 +64,20 @@ function consoleLines(t) {
   return lines
 }
 
+// Every microtask queued so far has run: a setImmediate callback comes after all of them. Not a wait for time. A load
+// whose avatar fails, and the built-in avatar's load after it, run in microtasks only here (the loaders answer with
+// promises, with no timer and no I/O), so after this nothing more of them is to come. A test of that failure waits for
+// this rather than for the failure being said, which would wait for ever where it is not said.
+const drained = () => new Promise(resolve => setImmediate(resolve))
+
 // a world as a player's avatar sees it; `loads` lists the avatar urls asked of the loader. `loader`: another loader
-// (the server's by default); `server`: whether the network is the server's
+// (the server's by default); `server`: whether the network is the server's (else a client's, the node client's when
+// the loader is the server's).
+// `installed(p)`: the avatar the player asked for last is in place, or let go. It waits for that load's answer, on
+// which installAvatar waited first (it then made the new avatar, added it to the player and began to wait for its
+// mount), then for that mount, on which installAvatar again waited first and after which it waits for nothing more.
+// Every step is a microtask: ServerLoader answers with a promise that has already resolved, and an avatar's mount
+// reaches no await. (For a load that fails, a test waits for `drained()` instead.)
 function makeWorld({ loader, server = true } = {}) {
   const world = Object.create(World.prototype)
   Object.assign(world, {
@@ -83,12 +94,19 @@ function makeWorld({ loader, server = true } = {}) {
   world.avatars.remove = world.avatars.delete
   world.loader = loader ?? new m.ServerLoader(world)
   const loads = []
+  const answers = []
   const load = world.loader.load.bind(world.loader)
   world.loader.load = (type, url) => {
+    const answer = load(type, url)
     loads.push(url)
-    return load(type, url)
+    answers.push(answer)
+    return answer
   }
-  return { world, loads }
+  const installed = async p => {
+    await answers.at(-1)
+    await p.base.children.at(-1)?.mounting
+  }
+  return { world, loads, installed }
 }
 
 // a remote player as PlayerRemote.init makes the parts its avatar uses, then asks for its avatar; `mounted: false`
@@ -147,9 +165,9 @@ test('server: a joining player takes the stand-in its avatar url gives; nothing 
     ['the world avatar', WORLD_AVATAR, WORLD_AVATAR],
     ['no avatar (the built-in one)', null, m.BUILTIN_AVATAR_URL],
   ]) {
-    const { world, loads } = makeWorld()
+    const { world, loads, installed } = makeWorld()
     const p = join(world, avatar)
-    await settle()
+    await installed(p)
     assert.deepEqual(lines, [], `${label}: nothing in the log`)
     assert.deepEqual(loads, [url], `${label}: its url loaded once, no built-in avatar after it`)
     assertOnStandIn(p, url, label)
@@ -165,11 +183,11 @@ test('server: a joining player takes the stand-in its avatar url gives; nothing 
 
 test('server: what a server script reads of the player is what it read before #51', async t => {
   const lines = consoleLines(t)
-  const { world } = makeWorld()
+  const { world, installed } = makeWorld()
   const p = join(world, WORLD_AVATAR)
   const app = { deadHook: {}, getDeadHook: () => app.deadHook }
   const player = m.createPlayerProxy(app, p)
-  await settle()
+  await installed(p)
   assert.equal(player.height, null)
   assert.equal(player.headToHeight, null)
   assert.equal(player.getBoneTransform('head'), undefined)
@@ -178,13 +196,13 @@ test('server: what a server script reads of the player is what it read before #5
 
 test('server: an avatar change loads the new url once; the same url again, or a name, loads nothing', async t => {
   const lines = consoleLines(t)
-  const { world, loads } = makeWorld()
+  const { world, loads, installed } = makeWorld()
   const p = join(world, WORLD_AVATAR)
-  await settle()
+  await installed(p)
   const first = p.avatar
   // a visitor's session avatar (ServerNetwork applies a changed one with modify), and a server script's
   p.modify({ sessionAvatar: 'asset://other.vrm' })
-  await settle()
+  await installed(p)
   assert.deepEqual(loads, [WORLD_AVATAR, 'asset://other.vrm'])
   assertOnStandIn(p, 'asset://other.vrm', 'the new avatar')
   assert.ok(p.avatar !== first, 'a stand-in of its own')
@@ -195,12 +213,12 @@ test('server: an avatar change loads the new url once; the same url again, or a 
   p.modify({ sessionAvatar: 'asset://other.vrm' })
   p.modify({ avatar: WORLD_AVATAR })
   p.modify({ name: 'Renamed' })
-  await settle()
   assert.equal(loads.length, 2, 'nothing more was loaded')
+  await installed(p)
   assertOnStandIn(p, 'asset://other.vrm', 'the same avatar')
   // back to the stored avatar: one load
   p.modify({ sessionAvatar: null })
-  await settle()
+  await installed(p)
   assert.deepEqual(loads.slice(2), [WORLD_AVATAR])
   assertOnStandIn(p, WORLD_AVATAR, 'the stored avatar')
   assert.deepEqual(lines, [])
@@ -210,19 +228,19 @@ test('server: an avatar change loads the new url once; the same url again, or a 
 // for as long as the player stayed, each gone through again whenever the player moved
 test('server: a player whose avatar changes many times keeps one stand-in under it', async t => {
   const lines = consoleLines(t)
-  const { world, loads } = makeWorld()
+  const { world, loads, installed } = makeWorld()
   const p = join(world, WORLD_AVATAR)
-  await settle()
+  await installed(p)
   for (let i = 0; i < 20; i++) {
     p.modify({ sessionAvatar: `asset://choice-${i % 2}.vrm` })
-    await settle()
+    await installed(p)
   }
   assert.equal(loads.length, 21)
   assertOnStandIn(p, 'asset://choice-1.vrm', 'the last choice')
   assertOneAvatarUnder(p, 'after twenty changes')
   // and after a switch to the built-in avatar (World.hotFailed)
   world.hotFailed(p, 'update', new Error('boom'))
-  await settle()
+  await installed(p)
   assert.equal(p.avatarUrl, m.BUILTIN_AVATAR_URL)
   assertOneAvatarUnder(p, 'after the switch')
   assert.equal(lines.length, 1, 'the frame loop says the player failed, and nothing else is said')
@@ -230,12 +248,12 @@ test('server: a player whose avatar changes many times keeps one stand-in under 
 
 test('server: a player that throws in the frame loop is kept once, on the built-in avatar, and dropped the second time', async t => {
   const lines = consoleLines(t)
-  const { world, loads } = makeWorld()
+  const { world, loads, installed } = makeWorld()
   const p = join(world, WORLD_AVATAR)
-  await settle()
+  await installed(p)
   world.hotFailed(p, 'update', new Error('boom'))
   assert.equal(world.hot.has(p), true, 'kept')
-  await settle()
+  await installed(p)
   assert.deepEqual(loads, [WORLD_AVATAR, m.BUILTIN_AVATAR_URL])
   assert.equal(p.avatarUrl, m.BUILTIN_AVATAR_URL)
   assert.equal(p.avatarFallback, 'ready')
@@ -249,7 +267,8 @@ test('server: a player that throws in the frame loop is kept once, on the built-
 
 // The rule that decides is the avatar's factory, not where it runs. An avatar that has one and was not mounted (its
 // player's base is out of the world) is a failed mount, in a browser's world and in the server's: reported, and the
-// built-in avatar asked for (whose load fails the same way here). The stand-in, with no factory, is taken in both.
+// built-in avatar asked for (whose load fails the same way here). The stand-in, with no factory, is taken in both, and
+// in a client that loads with ServerLoader (the node client) with the player's base in the world, as there.
 test('an avatar with a factory and no instance after its mount is still a failed mount; the stand-in is not, anywhere', async t => {
   const lines = consoleLines(t)
   // a loader that gives an avatar with a factory (as ClientLoader's buildAvatarResult does) for every url
@@ -264,7 +283,8 @@ test('an avatar with a factory and no instance after its mount is still a failed
     const where = server ? 'the server' : 'a browser'
     const { world, loads } = makeWorld({ loader: factoryLoader(), server })
     const p = join(world, WORLD_AVATAR, { mounted: false })
-    await settle()
+    // the failure of the avatar and then of the built-in one
+    await drained()
     assert.deepEqual(loads, [WORLD_AVATAR, m.BUILTIN_AVATAR_URL], `${where}: the built-in avatar was asked for`)
     assert.equal(p.avatar, undefined, where)
     assert.equal(p.avatarUrl, undefined, where)
@@ -274,13 +294,19 @@ test('an avatar with a factory and no instance after its mount is still a failed
       [`[avatar] ${WORLD_AVATAR} could not be mounted`, `[avatar] ${m.BUILTIN_AVATAR_URL} could not be mounted`],
       where
     )
-
-    const standIn = makeWorld({ server })
-    const q = join(standIn.world, WORLD_AVATAR, { mounted: false })
-    await settle()
-    assert.deepEqual(standIn.loads, [WORLD_AVATAR], where)
-    assert.equal(q.avatarUrl, WORLD_AVATAR, `${where}: the stand-in is taken`)
-    assert.equal(q.avatar?.factory, null, where)
+  }
+  for (const [where, server, mounted] of [
+    ['a browser, the player out of the world', false, false],
+    ['the server, the player out of the world', true, false],
+    ['the node client, the player in the world', false, true],
+  ]) {
+    const { world, loads, installed } = makeWorld({ server })
+    const p = join(world, WORLD_AVATAR, { mounted })
+    await installed(p)
+    assert.deepEqual(loads, [WORLD_AVATAR], where)
+    assert.equal(p.avatarUrl, WORLD_AVATAR, `${where}: the stand-in is taken`)
+    assert.equal(p.avatar?.factory, null, where)
+    assert.equal(p.avatar?.mounted, mounted, where)
     assert.deepEqual(lines, [], where)
   }
 })

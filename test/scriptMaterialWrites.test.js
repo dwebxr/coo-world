@@ -1,5 +1,6 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 
 // the real lockdown config (ses must be imported first, as in src/server/index.js)
 import 'ses'
@@ -12,9 +13,10 @@ import { createSweep } from './lib/sweepWorld.mjs'
 // portal fading its particles in its update handler) crashed its app. Until #47 a script's material was a plain
 // object, where the write made a property nobody read; #47 made it a frozen object, where the write throws in a
 // script (scripts are strict), so the update handler threw and the app was shown as the crash block. Now such a write
-// is ignored and the app's console says so once per app run and property name; everything #47 established stays.
-// Each test runs the script in a real compartment with the real Stage, Mesh node and material handle; the last one
-// runs a script like the portal's in the sweep world (the real App, Apps, Stage and nodes).
+// is ignored and the app's console says so once per app run and property name (for a bounded number of names);
+// everything #47 established stays. The tests run scripts in real compartments with the real Stage, Mesh node and
+// material handle; the teardown tests and the last one run in the sweep world (the real App, Apps, Stage and nodes),
+// and two tests of the reporting's bounds run the module alone in a process of their own (reportingProbe).
 let bundle
 let m
 let scripts
@@ -164,20 +166,134 @@ test("the app's console is told once per app run and property name, naming the p
   assert.match(nextRun[0], /^\[material\] opacity not set/)
   // a run that writes a new name every time says it a bounded number of times, then once that it goes on
   const many = warningsOf(() =>
-    write(mount(b), `for (let i = 0; i < ${m.MATERIAL_REPORT_LIMIT + 20}; i++) world.material['p' + i] = i`)
+    write(
+      mount(b),
+      `for (let i = 0; i < ${m.MATERIAL_REPORT_LIMIT + 20}; i++) world.material['p' + i] = i
+      for (let i = 0; i < 20; i++) world.material[Symbol('q' + i)] = i
+      world.material.opacity = 2`
+    )
   )
   // (b's run has told `opacity` already: the limit counts its names)
   assert.equal(many.length, m.MATERIAL_REPORT_LIMIT)
-  assert.match(many.at(-1), /without a further warning/)
+  assert.match(many.at(-1), /^\[material\] more properties .* without a further warning$/)
   // a long name is cut, a symbol is named
   const long = warningsOf(() =>
     write(mount(app('c')), `world.material['x'.repeat(500)] = 1; world.material[Symbol('s')] = 1`)
   )
   assert.equal(
     long[0],
-    `[material] ${'x'.repeat(64)} not set: a material has no such property (it has id, textureX, textureY, color, emissiveIntensity, fog)`
+    `[material] ${'x'.repeat(64)}… not set: a material has no such property (it has id, textureX, textureY, color, emissiveIntensity, fog)`
   )
   assert.match(long[1], /^\[material\] Symbol\(s\) not set/)
+})
+
+test('what tells two names apart: a string never counts as a symbol, short names exactly, long ones by start and length', () => {
+  const { app, mount } = linkedMeshes()
+  const told = code => warningsOf(() => run(code, { material: mount(app('a')).getProxy().material }))
+  const long = 'x'.repeat(64)
+  // a string and a symbol with the same text, or with the text a symbol is shown as
+  assert.equal(told(`world.material.s = 1; world.material[Symbol('s')] = 1`).length, 2)
+  assert.equal(told(`world.material['Symbol(s)'] = 1; world.material[Symbol('s')] = 1`).length, 2)
+  // a symbol without a description, and one whose description is empty
+  assert.equal(told(`world.material[Symbol()] = 1; world.material[Symbol('')] = 1`).length, 2)
+  // two names of 64 code units or fewer are told apart exactly (here they differ in the last one)
+  assert.equal(told(`world.material['${'y'.repeat(63)}a'] = 1; world.material['${'y'.repeat(63)}b'] = 1`).length, 2)
+  // longer names that start alike: told apart by their length; of the same length, they count as one
+  assert.equal(told(`world.material['${long}a'] = 1; world.material['${long}ab'] = 1`).length, 2)
+  assert.equal(told(`world.material['${long}a'] = 1; world.material['${long}b'] = 1`).length, 1)
+  // two symbols with the same description count as one
+  assert.equal(told(`world.material[Symbol('d')] = 1; world.material[Symbol('d')] = 1`).length, 1)
+  // a run that writes as many long names alike in start and length as it likes is told of one of them
+  assert.equal(
+    told(`for (let i = 0; i < 40; i++) world.material['${long}' + String.fromCharCode(97 + (i % 26))] = 1`).length,
+    1
+  )
+})
+
+// The bounds of the reporting, in a process of their own without lockdown (so the test can count what is read from a
+// key, and collect garbage): the scriptMaterial module itself, a run and a material of a stand-in mesh, writes made by
+// host code (strict, as a script's are).
+function reportingProbe(url, body) {
+  const code = `
+    const { materialForScript, MATERIAL_REPORT_LIMIT } = await import(${JSON.stringify(url)})
+    const run = {}
+    const entity = { deadHook: run, world: {} }
+    const material = materialForScript({ ctx: { run, entity } }, { get color() { return 'white' }, set color(value) {} })
+    let warnings = 0
+    console.warn = () => warnings++
+    const out = {}
+    ${body}
+    process.stdout.write(JSON.stringify(out))
+  `
+  const result = spawnSync(process.execPath, ['--expose-gc', '--input-type=module', '-e', code], {
+    encoding: 'utf8',
+    timeout: 30000,
+  })
+  assert.equal(result.status, 0, result.stderr)
+  return JSON.parse(result.stdout)
+}
+
+test('once the limit is said, an ignored write does not look at its key; a name told already is read once per write', async () => {
+  const small = await bundleProbe(`export * from './src/core/extras/scriptMaterial'`)
+  try {
+    const out = reportingProbe(
+      small.url,
+      `
+      // every read of a symbol's description, counted
+      let reads = 0
+      const description = Object.getOwnPropertyDescriptor(Symbol.prototype, 'description')
+      Object.defineProperty(Symbol.prototype, 'description', {
+        ...description,
+        get() {
+          reads++
+          return Reflect.apply(description.get, this, [])
+        },
+      })
+      const told = Symbol('told')
+      for (let i = 0; i < 3; i++) material[told] = 1
+      out.repeated = { reads, warnings }
+      for (let i = 1; i < MATERIAL_REPORT_LIMIT; i++) material[Symbol('s' + i)] = 1
+      material[Symbol('over')] = 1
+      out.limit = { reads, warnings }
+      for (let i = 0; i < 1000; i++) material[Symbol('after' + i)] = 1
+      material[told] = 1
+      out.after = { reads, warnings }
+    `
+    )
+    assert.deepEqual(out.repeated, { reads: 3, warnings: 1 }, 'a name told already: its description read, no warning')
+    assert.deepEqual(out.limit, { reads: 3 + 16, warnings: 17 }, 'the limit, then its one line')
+    assert.deepEqual(out.after, out.limit, 'after the line: no key read, no warning')
+  } finally {
+    small.destroy()
+  }
+})
+
+test("what the host keeps of the names it told is its own copy: a script's long keys are not kept alive by it", async () => {
+  const small = await bundleProbe(`export * from './src/core/extras/scriptMaterial'`)
+  try {
+    // 16 names of 4 MiB each (their first 64 code units differ), dropped by the script once written
+    const out = reportingProbe(
+      small.url,
+      `
+      globalThis.gc()
+      globalThis.gc()
+      const before = process.memoryUsage().heapUsed
+      for (let i = 0; i < 16; i++) {
+        let key = String.fromCharCode(65 + i) + 'k'.repeat(4 << 20)
+        material[key] = 1
+        key = null
+      }
+      globalThis.gc()
+      globalThis.gc()
+      out.keptMiB = (process.memoryUsage().heapUsed - before) / (1 << 20)
+      out.warnings = warnings
+    `
+    )
+    assert.equal(out.warnings, 16)
+    assert.ok(out.keptMiB < 8, `the host keeps ${out.keptMiB.toFixed(1)} MiB after the keys are dropped`)
+  } finally {
+    small.destroy()
+  }
 })
 
 test("a material's own accessors cannot be replaced, redefined or deleted; its prototype cannot be changed", () => {
@@ -256,33 +372,74 @@ test('a write to a getter-only property still throws, as it did before #47', () 
   assert.equal(run(`return world.mesh.material.id`, { mesh: mesh.getProxy() }), id)
 })
 
-test("once the app's run has ended, a kept material refuses every write; its own destroy handler still writes", () => {
-  const { app, mount, end } = linkedMeshes()
-  const a = app('a')
-  const mesh = mount(a)
-  const facade = mesh.material
-  const host = { mesh: mesh.getProxy() }
-  run(
-    `
-    const material = world.mesh.material
-    world.destroy = () => { material.color = 'blue'; material.opacity = 0 }
-    world.lateColor = () => { material.color = 'red' }
-    world.lateUnknown = () => { material.opacity = 1 }
-  `,
-    host
-  )
-  // (the synchronous destroy handler runs inside the run)
-  const during = warningsOf(() => host.destroy())
-  assert.equal(during.length, 1)
-  assert.equal(mesh.material.color.getHexString(), '0000ff')
-  end(a, [mesh])
-  const late = warningsOf(() => {
-    assert.throws(() => host.lateColor(), STOPPED)
-    assert.throws(() => host.lateUnknown(), STOPPED)
+// The real App's teardown, in the sweep world: the app is removed, or its update handler throws (it crashes, and its
+// run is torn down as for a removal, with its destroy event). The script's destroy handler writes its material (a
+// setter, and a property a material does not have); afterwards a kept function writes it again.
+async function teardown(ending) {
+  const { world } = sweep.makeWorld({})
+  const code = `
+    const material = app.get('first').material
+    app.on('destroy', () => {
+      material.color = 'blue'
+      material.opacity = 0
+      app.state.destroyed = true
+    })
+    app.state.lateColor = () => { material.color = 'red' }
+    app.state.lateUnknown = () => { material.opacity = 1 }
+    ${ending === 'crashed' ? `app.on('update', () => { throw new Error('boom') })` : ''}
+  `
+  const lines = []
+  const realConsole = globalThis.console
+  const keep =
+    level =>
+    (...args) =>
+      lines.push(`${level} ${args.map(arg => (arg instanceof Error ? arg.message : String(arg))).join(' ')}`)
+  globalThis.console = { ...realConsole, warn: keep('warn'), error: keep('error') }
+  let app
+  let facade
+  try {
+    app = sweep.addApp(world, code)
+    await sweep.tick()
+    assert.equal(app.crashed, false, `the script ran: ${app.scriptError?.message}`)
+    // the host's material of the app's mesh (a linked one: it outlives the app's nodes)
+    facade = app.root.get('first').material
+    if (ending === 'crashed') app.update(1 / 60)
+    else app.destroy()
+    await sweep.tick()
+  } finally {
+    globalThis.console = realConsole
+  }
+  if (ending === 'crashed') assert.equal(app.crashed, true)
+  else assert.equal(app.destroyed, true)
+  const { destroyed, lateColor, lateUnknown } = app.data.state
+  return { facade, destroyed, lateColor, lateUnknown, lines }
+}
+
+for (const ending of ['removed', 'crashed']) {
+  test(`an app ${ending}: its destroy handler writes its material; once the teardown is over, a kept material refuses every write`, async () => {
+    const { facade, destroyed, lateColor, lateUnknown, lines } = await teardown(ending)
+    assert.equal(destroyed, true, 'the destroy handler ran to its end')
+    assert.equal(facade.color.getHexString(), '0000ff', "the destroy handler's setter acted")
+    assert.deepEqual(
+      lines.filter(line => line.startsWith('warn')),
+      [
+        'warn [material] opacity not set: a material has no such property (it has id, textureX, textureY, color, emissiveIntensity, fog)',
+      ],
+      "the destroy handler's write of a property a material does not have was ignored and told"
+    )
+    assert.deepEqual(
+      lines.filter(line => /destroy\(\) crashed|stopped/.test(line)),
+      [],
+      'nothing in the destroy handler threw'
+    )
+    const late = warningsOf(() => {
+      assert.throws(lateColor, STOPPED)
+      assert.throws(lateUnknown, STOPPED)
+    })
+    assert.deepEqual(late, [], 'a refused write is not told as ignored')
+    assert.equal(facade.color.getHexString(), '0000ff', 'the material is unchanged')
   })
-  assert.deepEqual(late, [], 'a refused write is not reported as ignored')
-  assert.equal(facade.color.getHexString(), '0000ff', 'the material is unchanged')
-})
+}
 
 test('nothing a script writes on its material is visible to another app or to another run', () => {
   const { app, mount, end } = linkedMeshes()

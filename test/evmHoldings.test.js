@@ -208,7 +208,12 @@ test('holding contracts: not set, the list is the OpenPay license contract on Po
   const preset = door.match(/^const OPENPAY_LICENSE_CONTRACT = '(0x[0-9a-fA-F]{40})'$/m)[1]
   assert.equal(preset.toLowerCase(), OPENPAY)
   assert.match(door, /\{ key: 'chainId', type: 'number', label: 'Chain ID', initial: 137 \}/)
-  for (const file of ['../docs/scripting/world/Player.md', '../README.md', '../.env.example']) {
+  for (const file of [
+    '../docs/scripting/world/Player.md',
+    '../README.md',
+    '../docs/operations/nft-checks.md',
+    '../.env.example',
+  ]) {
     assert.ok(fs.readFileSync(new URL(file, import.meta.url), 'utf8').includes(`137:${preset}`), file)
   }
   // nobody can add to the default by reaching the array

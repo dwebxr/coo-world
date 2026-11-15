@@ -380,7 +380,7 @@ export class AssetsS3 {
 
   // the type the local /assets/ route serves for this extension (uploadPolicy.js): every extension uploads accept
   // and the built-in assets' own; anything else is application/octet-stream. The bucket's front must still add
-  // nosniff and the download headers for non-media files itself (README)
+  // nosniff and the download headers for non-media files itself (docs/operations/uploads.md)
   getContentType(filename) {
     return assetHeaders(extensionOf(filename))['Content-Type']
   }

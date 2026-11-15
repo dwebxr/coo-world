@@ -80,7 +80,8 @@ function makeWindow({ announced = [], ethereum } = {}) {
   return win
 }
 
-function setup(t, { env = { PUBLIC_EVM_CHAIN_IDS: '137' }, provider = makeProvider(), win, options } = {}) {
+// `context`: more of what the integration's source sees in place of its globals (its timers, for one)
+function setup(t, { env = { PUBLIC_EVM_CHAIN_IDS: '137' }, provider = makeProvider(), win, options, context } = {}) {
   const world = clientWorld()
   world.entities.player = { data: { id: 'player', rank: Ranks.VISITOR } }
   world.chat = { add() {} }
@@ -90,6 +91,7 @@ function setup(t, { env = { PUBLIC_EVM_CHAIN_IDS: '137' }, provider = makeProvid
     process: { env },
     window: win ?? makeWindow({ ethereum: provider }),
     ...deps,
+    ...context,
   })
   const evm = create(world, options)
   t.after(() => {
@@ -1525,13 +1527,27 @@ function fakeWalletConnect() {
   adapter.walletRedirect = () => adapter.redirect
   const loader = {
     loads: 0,
+    creates: 0,
     fail: false,
+    // 'import' or 'create': that step of a start waits until the test settles it with release() or
+    // reject(error) ('create' stands for SignClient.init, which createWalletConnectProvider awaits)
+    hold: null,
+    release: null,
+    reject: null,
+    held: () =>
+      new Promise((resolve, reject) => {
+        loader.release = resolve
+        loader.reject = reject
+      }),
     load: async () => {
       loader.loads++
+      if (loader.hold === 'import') await loader.held()
       if (loader.fail) throw new Error('chunk 404')
       return {
         createWalletConnectProvider: async opts => {
+          loader.creates++
           adapter.options = opts
+          if (loader.hold === 'create') await loader.held()
           return adapter
         },
       }
@@ -1540,12 +1556,40 @@ function fakeWalletConnect() {
   return { adapter, loader }
 }
 
-function wcSetup(t, env = wcEnv) {
+// the integration's timers, run on the global ones (the mock timers where a test enables them) and counted while
+// they are pending
+function countedTimers() {
+  const pending = new Set()
+  return {
+    pending,
+    setTimeout: (fn, ms) => {
+      const handle = setTimeout(() => {
+        pending.delete(handle)
+        fn()
+      }, ms)
+      pending.add(handle)
+      return handle
+    },
+    clearTimeout: handle => {
+      pending.delete(handle)
+      clearTimeout(handle)
+    },
+  }
+}
+
+// no injected wallet by default: WalletConnect is the only way in (a phone browser)
+function wcSetup(t, env = wcEnv, { win = makeWindow() } = {}) {
   const { adapter, loader } = fakeWalletConnect()
-  // no injected wallet: WalletConnect is the only way in (a phone browser)
-  const h = setup(t, { env, win: makeWindow(), options: { loadWalletConnect: loader.load } })
+  const timers = countedTimers()
+  const h = setup(t, {
+    env,
+    win,
+    options: { loadWalletConnect: loader.load },
+    context: { setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+  })
   h.adapter = adapter
   h.loader = loader
+  h.timers = timers.pending
   h.toasts = []
   h.world.on('toast', text => h.toasts.push(text))
   h.wcStatuses = []
@@ -1739,4 +1783,242 @@ test('walletconnect: Cancel while the sign-in waits in the wallet withdraws the 
   await flush()
   assert.equal(revoked, 1, 'the WalletConnect session is ended too')
   assert.equal(h.evm.getState().status, 'disconnected')
+})
+
+// --- WalletConnect's start (the import, then createWalletConnectProvider): each attempt waits at most 30 s ---
+
+const NOT_STARTED =
+  'WalletConnect did not start in time. Reload the page and try again. If it keeps happening, try a private window or another browser.'
+
+// nothing may be left unhandled (a start that fails after its attempts gave up has no one waiting for it)
+function noUnhandled(t) {
+  const unhandled = []
+  const onUnhandled = reason => unhandled.push(reason)
+  process.on('unhandledRejection', onUnhandled)
+  t.after(() => process.off('unhandledRejection', onUnhandled))
+  return unhandled
+}
+// past the microtasks, where Node tells of a rejection nobody handled (setImmediate is not mocked here)
+const macrotask = () => new Promise(resolve => setImmediate(resolve))
+
+for (const [name, step, made] of [
+  ['an import of the WalletConnect code', 'import', 0],
+  ['a createWalletConnectProvider (SignClient.init)', 'create', 1],
+]) {
+  test(`walletconnect: ${name} that never settles ends the attempt after 30 s, with one message`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const h = wcSetup(t)
+    h.loader.hold = step
+    const pending = h.evm.connect('walletconnect')
+    await flush()
+    assert.deepEqual([h.loader.loads, h.loader.creates], [1, made])
+    assert.equal(h.evm.getWalletConnectStatus().state, 'loading')
+    assert.equal(h.evm.getState().status, 'connecting')
+    assert.equal(h.timers.size, 1, "the attempt's limit")
+    t.mock.timers.tick(29_999)
+    await flush()
+    assert.equal(h.evm.getWalletConnectStatus().state, 'loading', 'nothing before 30 s')
+    assert.equal(h.evm.getState().status, 'connecting')
+    assert.deepEqual(h.toasts, [])
+    t.mock.timers.tick(1)
+    await flush()
+    assert.deepEqual(h.toasts, [NOT_STARTED])
+    assert.equal(await pending, null)
+    assert.equal(h.evm.getWalletConnectStatus().state, 'idle', 'the sheet closes')
+    assert.equal(h.wcStatuses.at(-1).state, 'idle')
+    // as after any failure before the wallet answered (a failed load goes the same way)
+    assert.deepEqual(
+      h.states.map(state => state.status),
+      ['connecting', 'disconnected']
+    )
+    assert.deepEqual(h.evm.getState(), { status: 'disconnected', address: null, verified: false })
+    assert.equal(requests(h.world, 'RevokeEvmWallet').length, 0, 'no server attempt had begun')
+    assert.equal(h.timers.size, 0)
+    t.mock.timers.tick(600_000)
+    await flush()
+    assert.deepEqual(h.toasts, [NOT_STARTED], 'one message in all')
+  })
+}
+
+test('walletconnect: a press while the start is pending joins it, with its own 30 s from its own press', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = wcSetup(t)
+  h.loader.hold = 'create'
+  const first = h.evm.connect('walletconnect')
+  await flush()
+  // 20 s on, a second press replaces the first attempt (a newer attempt: it ends silently)
+  t.mock.timers.tick(20_000)
+  const second = h.evm.connect('walletconnect')
+  await flush()
+  assert.equal(await first, null)
+  assert.deepEqual([h.loader.loads, h.loader.creates], [1, 1], 'the same start, not a second one')
+  assert.equal(h.timers.size, 1, "only the second attempt's limit")
+  // 30 s after the first press: the second attempt still waits
+  t.mock.timers.tick(10_000)
+  await flush()
+  assert.deepEqual(h.toasts, [])
+  assert.equal(h.evm.getWalletConnectStatus().state, 'loading')
+  assert.equal(h.evm.getState().status, 'connecting')
+  t.mock.timers.tick(19_999)
+  await flush()
+  assert.deepEqual(h.toasts, [])
+  // 30 s after its own press
+  t.mock.timers.tick(1)
+  await flush()
+  assert.deepEqual(h.toasts, [NOT_STARTED])
+  assert.equal(await second, null)
+  // a press after an attempt gave up, the start still pending: joined too, again with 30 s of its own
+  t.mock.timers.tick(5_000)
+  const third = h.evm.connect('walletconnect')
+  await flush()
+  assert.deepEqual([h.loader.loads, h.loader.creates], [1, 1], 'still the same start')
+  assert.equal(h.evm.getWalletConnectStatus().state, 'loading')
+  t.mock.timers.tick(29_999)
+  await flush()
+  assert.deepEqual(h.toasts, [NOT_STARTED])
+  // the start finishes in time for this one: it goes on to the wallet and signs in
+  h.loader.release()
+  await flush()
+  assert.equal(h.evm.getState().status, 'signing')
+  const attempt = requests(h.world, 'RequestEvmNonce').at(-1)[1].attempt
+  h.challenge(attempt)
+  await flush()
+  h.status(attempt)
+  assert.equal(await third, checksummed)
+  assert.deepEqual([h.loader.loads, h.loader.creates], [1, 1])
+  assert.equal(h.timers.size, 0)
+  t.mock.timers.tick(60_000)
+  await flush()
+  assert.deepEqual(h.toasts, [NOT_STARTED])
+  assert.equal(h.evm.isVerified(), true)
+})
+
+test('walletconnect: a start that finishes after its attempt gave up is kept, silently, for the next press', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = wcSetup(t)
+  h.loader.hold = 'create'
+  const first = h.evm.connect('walletconnect')
+  await flush()
+  t.mock.timers.tick(30_000)
+  await flush()
+  assert.equal(await first, null)
+  assert.deepEqual(h.toasts, [NOT_STARTED])
+  h.loader.release()
+  await flush()
+  assert.deepEqual(h.toasts, [NOT_STARTED], 'nothing said when it comes')
+  assert.equal(h.evm.getWalletConnectStatus().state, 'idle')
+  assert.deepEqual(h.evm.getState(), { status: 'disconnected', address: null, verified: false })
+  // the next press goes on with it: no loading step, no second load, straight to the wallet
+  h.loader.hold = null
+  const shown = h.wcStatuses.length
+  const run = await h.start('walletconnect')
+  assert.deepEqual([h.loader.loads, h.loader.creates], [1, 1])
+  assert.equal(h.wcStatuses.length, shown, 'no "Connecting to WalletConnect…"')
+  assert.equal(h.evm.getState().status, 'signing')
+  assert.deepEqual(h.adapter.calls, ['eth_requestAccounts'])
+  h.challenge(run.attempt)
+  await flush()
+  h.status(run.attempt)
+  assert.equal(await run.promise, checksummed)
+  assert.equal(h.timers.size, 0)
+  assert.deepEqual(h.toasts, [NOT_STARTED])
+})
+
+for (const step of ['import', 'create']) {
+  test(`walletconnect: a start that fails (${step}) after its attempt gave up is forgotten, silently; the next press starts again`, async t => {
+    const unhandled = noUnhandled(t)
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const h = wcSetup(t)
+    h.loader.hold = step
+    const first = h.evm.connect('walletconnect')
+    await flush()
+    t.mock.timers.tick(30_000)
+    await flush()
+    assert.equal(await first, null)
+    assert.deepEqual(h.toasts, [NOT_STARTED])
+    h.loader.reject(new Error('the start failed late'))
+    await flush()
+    await macrotask()
+    assert.deepEqual(unhandled, [])
+    assert.deepEqual(h.toasts, [NOT_STARTED], 'nothing said when it fails')
+    assert.equal(h.evm.getWalletConnectStatus().state, 'idle')
+    h.loader.hold = null
+    const run = await h.start('walletconnect')
+    assert.equal(h.loader.loads, 2, 'loaded afresh')
+    assert.equal(h.wcStatuses.at(-1).state, 'loading')
+    assert.equal(h.evm.getState().status, 'signing')
+    h.challenge(run.attempt)
+    await flush()
+    h.status(run.attempt)
+    assert.equal(await run.promise, checksummed)
+    assert.equal(h.timers.size, 0)
+    assert.deepEqual(h.toasts, [NOT_STARTED])
+  })
+}
+
+for (const [name, injected, end] of [
+  ['Cancel', false, async h => assert.equal(h.evm.cancelConnect(), true)],
+  ['Disconnect', false, async h => assert.equal(h.evm.disconnect(), true)],
+  ['dispose', false, async h => h.evm.dispose('close')],
+  [
+    'a newer attempt with the browser wallet',
+    true,
+    async h => {
+      const run = await h.start('injected')
+      h.challenge(run.attempt)
+      await flush()
+      h.status(run.attempt)
+      assert.equal(await run.promise, checksummed)
+    },
+  ],
+]) {
+  test(`walletconnect: ${name} while it starts ends the attempt's wait and its limit, with no message then or later`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const h = wcSetup(t, wcEnv, injected ? { win: makeWindow({ ethereum: makeProvider() }) } : {})
+    h.loader.hold = 'create'
+    const pending = h.evm.connect('walletconnect')
+    await flush()
+    t.mock.timers.tick(10_000)
+    assert.equal(h.timers.size, 1)
+    await end(h)
+    assert.equal(await pending, null, 'the wait ended')
+    assert.equal(h.timers.size, 0, 'no timer left pending')
+    if (name === 'Cancel') {
+      assert.equal(h.evm.getWalletConnectStatus().state, 'idle')
+      assert.deepEqual(h.evm.getState(), { status: 'disconnected', address: null, verified: false })
+    }
+    t.mock.timers.tick(60_000)
+    await flush()
+    assert.deepEqual(h.toasts, [])
+    assert.equal(h.evm.isVerified(), injected)
+  })
+}
+
+test('walletconnect: a start that finishes just before the limit goes on as before; the limit says nothing later', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = wcSetup(t)
+  h.loader.hold = 'create'
+  const pending = h.evm.connect('walletconnect')
+  await flush()
+  t.mock.timers.tick(29_999)
+  h.loader.release()
+  await flush()
+  assert.equal(h.evm.getState().status, 'signing')
+  assert.deepEqual(h.adapter.calls, ['eth_requestAccounts'])
+  // the limit is cleared: the timer left is the nonce wait's (15 s)
+  assert.equal(h.timers.size, 1)
+  t.mock.timers.tick(1)
+  await flush()
+  assert.deepEqual(h.toasts, [])
+  assert.equal(h.evm.getState().status, 'signing')
+  const attempt = requests(h.world, 'RequestEvmNonce').at(-1)[1].attempt
+  h.challenge(attempt)
+  await flush()
+  h.status(attempt)
+  assert.equal(await pending, checksummed)
+  assert.equal(h.timers.size, 0)
+  t.mock.timers.tick(60_000)
+  await flush()
+  assert.deepEqual(h.toasts, [])
+  assert.equal(h.evm.isVerified(), true)
 })

@@ -31,6 +31,10 @@ const MAX_ICON_LENGTH = 64 * 1024
 const INJECTED_ID = 'injected'
 // WalletConnect (Reown): an extra wallet entry, loaded only when picked (src/client/walletconnect.js)
 const WALLETCONNECT_ID = 'walletconnect'
+// How long one attempt waits for WalletConnect to start: the import of walletconnect.js, then
+// createWalletConnectProvider (which awaits SignClient.init); the relay wait (RELAY_WAIT_MS there) comes after it.
+// This bounds the attempt's wait, not the start: the start goes on, and why one hangs is not looked for here.
+const WALLETCONNECT_START_MS = 30_000
 const WALLETCONNECT_ICON =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%233b99fc'/%3E%3Cpath d='M9.6 12.4a9.1 9.1 0 0 1 12.8 0l.4.4a.4.4 0 0 1 0 .6l-1.5 1.5a.2.2 0 0 1-.3 0l-.6-.6a6.4 6.4 0 0 0-8.8 0l-.7.6a.2.2 0 0 1-.3 0l-1.5-1.5a.4.4 0 0 1 0-.6zm15.9 2.9 1.3 1.3a.4.4 0 0 1 0 .6l-6 5.9a.5.5 0 0 1-.6 0l-4.2-4.2a.1.1 0 0 0-.2 0l-4.2 4.2a.5.5 0 0 1-.6 0l-6-5.9a.4.4 0 0 1 0-.6l1.3-1.3a.5.5 0 0 1 .6 0l4.2 4.2a.1.1 0 0 0 .2 0l4.2-4.2a.5.5 0 0 1 .6 0l4.2 4.2a.1.1 0 0 0 .2 0l4.2-4.2a.5.5 0 0 1 .6 0z' fill='%23fff'/%3E%3C/svg%3E"
 
@@ -60,6 +64,9 @@ const utf8ToHex = text => {
 
 const failureMessage = (reason, error) => {
   if (error?.walletConnectLoad) return 'WalletConnect could not load. Reload the page and try again.'
+  if (error?.walletConnectStart) {
+    return 'WalletConnect did not start in time. Reload the page and try again. If it keeps happening, try a private window or another browser.'
+  }
   if (error?.message === 'relay_unreachable')
     return 'Could not reach WalletConnect. Check your connection and try again.'
   if (error?.code === 4901)
@@ -149,7 +156,7 @@ export function createEvmIntegration(
   const fail = (run, error) => {
     if (!current(run)) return
     const reason = run.reason
-    const viaWalletConnect = !!provider?.isWalletConnect || !!error?.walletConnectLoad
+    const viaWalletConnect = !!provider?.isWalletConnect || !!error?.walletConnectLoad || !!error?.walletConnectStart
     // close the WalletConnect steps whatever stage they reached (also a load that never produced a wallet)
     if (viaWalletConnect || (walletConnectStatus && walletConnectStatus.state !== 'idle')) {
       setWalletConnectStatus({ state: 'idle' })
@@ -194,10 +201,14 @@ export function createEvmIntegration(
     return list
   }
 
-  // the adapter is created once and kept: its session survives a new attempt (and a reload, in storage)
-  const ensureWalletConnect = async () => {
-    if (walletConnect) return walletConnect
-    walletConnectLoading ??= (async () => {
+  // the adapter is created once and kept: its session survives a new attempt (and a reload, in storage).
+  // Its start (the import, then createWalletConnectProvider) runs once at a time and is kept until it settles,
+  // also when the attempts waiting for it gave up: a later press joins it instead of starting another. An adapter
+  // that comes late is kept for the next press; a start that fails is forgotten, so the next press starts afresh
+  // (the attempt still waiting for it, if any, says what happened)
+  const startWalletConnect = () => {
+    if (walletConnectLoading) return walletConnectLoading
+    const start = (async () => {
       let module
       try {
         module = await loadWalletConnect()
@@ -211,13 +222,40 @@ export function createEvmIntegration(
         onStatus: setWalletConnectStatus,
       })
     })()
-    try {
-      walletConnect = await walletConnectLoading
-      return walletConnect
-    } finally {
-      walletConnectLoading = null
-    }
+    walletConnectLoading = start
+    start.then(
+      adapter => {
+        walletConnect = adapter
+        walletConnectLoading = null
+      },
+      () => {
+        walletConnectLoading = null
+      }
+    )
+    return start
   }
+
+  // the adapter for one attempt: the kept one, else the start's within WALLETCONNECT_START_MS of this attempt's
+  // press (a start that takes longer fails the attempt, marked walletConnectStart). Ending the attempt (Cancel, a
+  // newer attempt, disconnect, dispose) ends this wait with null and clears its timer
+  const ensureWalletConnect = run =>
+    walletConnect ??
+    new Promise((resolve, reject) => {
+      const finish = (settle, value) => {
+        clearTimeout(timer)
+        run.cleanups.delete(cancel)
+        settle(value)
+      }
+      const cancel = () => finish(resolve, null)
+      const timer = setTimeout(() => {
+        finish(reject, Object.assign(new Error('WalletConnect did not start in time'), { walletConnectStart: true }))
+      }, WALLETCONNECT_START_MS)
+      run.cleanups.add(cancel)
+      startWalletConnect().then(
+        adapter => finish(resolve, adapter),
+        error => finish(reject, error)
+      )
+    })
 
   const pickProvider = requested => {
     const id = requested ?? selectedId
@@ -368,7 +406,7 @@ export function createEvmIntegration(
       let chosen
       if (wanted === WALLETCONNECT_ID && config.walletConnectProjectId) {
         if (!walletConnect) setWalletConnectStatus({ state: 'loading' })
-        chosen = await ensureWalletConnect()
+        chosen = await ensureWalletConnect(run)
         if (!current(run)) return null
         // a new attempt, a disconnect or dispose stops a connection still waiting for the wallet, and its
         // steps leave the panel (also when the new attempt is another wallet)

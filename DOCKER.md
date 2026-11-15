@@ -43,7 +43,7 @@ The image has no `.env` file, so every setting comes from the container's enviro
 
 ## Where the world's data is
 
-The world folder is `WORLD` joined to the directory above `build/`: in the image that is `/app/<WORLD>`, so `/app/world` for `WORLD=world`. The server creates it when it starts. It holds `db.sqlite` (unless `DB_URI` names a PostgreSQL database), `assets/` (with `ASSETS=local`), `collections/`, and later `storage.json`, `assets-trash/` and `backups/` (made by `npm run world:backup`: see the README).
+The world folder is `WORLD` joined to the directory above `build/`: in the image that is `/app/<WORLD>`, so `/app/world` for `WORLD=world`. The server creates it when it starts. It holds `db.sqlite` (unless `DB_URI` names a PostgreSQL database), `assets/` (with `ASSETS=local`), `collections/`, and later `storage.json`, `assets-trash/` and `backups/` (made by `npm run world:backup`: see `docs/operations/backups.md`).
 
 To keep the world, mount a volume or a host folder at that path: `-v "$(pwd)/world:/app/world"` for `WORLD=world`.
 

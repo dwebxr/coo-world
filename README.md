@@ -76,7 +76,7 @@ For containerized deployment, check [DOCKER.md](DOCKER.md) for detailed instruct
 
 ## 🔧 Configuration
 
-Everything is set through environment variables. `.env.example` lists all of them with comments; these are the ones to look at first.
+Everything is set through environment variables. `.env.example` lists most of them, with comments; these are the ones to look at first.
 
 | Variable | What it is |
 | --- | --- |

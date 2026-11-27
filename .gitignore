@@ -10,9 +10,9 @@ build/
 /world*
 test/e2e/out/
 
-# files that live beside a checkout and must never be committed: the assistants' notes and worktrees, the
+# files at the root of a checkout that must never be committed: the assistants' notes and worktrees, the
 # operator's Fly configuration (kept out of the repository on purpose) and the operator's own app export.
-# An ignored file is still committed by `git add -f`, and a file already tracked is not affected.
+# `git add -f` can still stage an ignored file, and a file already tracked is not affected.
 /.claude/
 /fly.toml
 /nft_gate.hyp
